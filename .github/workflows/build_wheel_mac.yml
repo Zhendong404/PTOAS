@@ -4,7 +4,6 @@ on:
   push:
     tags-ignore:
       - '**'
-  pull_request:
   workflow_dispatch:
   release:
     types: [published]
@@ -24,6 +23,10 @@ jobs:
       matrix:
         python: ["3.10", "3.11", "3.12"]
         arch: ["x86_64", "aarch64"]
+        # Keep macOS matrix jobs at 5 to stay within GitHub Actions macOS job limits.
+        exclude:
+          - python: "3.10"
+            arch: "x86_64"
 
     steps:
       - name: Checkout repository
