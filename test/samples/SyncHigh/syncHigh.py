@@ -1,65 +1,81 @@
 #!/usr/bin/env python3
-from mlir.ir import Context, Location, Module, InsertionPoint, IndexType
-from mlir.dialects import func, pto, arith
-from mlir.dialects.pto import (
-    TLOAD, TSTORE_ACC, TSTORE_VEC,
-    TMOV_M2L, TMOV_M2S, TMOV_M2B, TMOV_M2V, TMOV_V2M,
-    TMATMUL, TVEC, TVECWAIT_EVENT,
-    EVENT_ID0, EVENT_ID1, EVENT_ID2, EVENT_ID3,
-    EVENT_ID4, EVENT_ID5, EVENT_ID6, EVENT_ID7,
-)
+from mlir.ir import Context, Location, Module, InsertionPoint
+from mlir.dialects import func, arith, pto
+from mlir.ir import F32Type, IndexType
 
-def cidx(v):
-    return arith.ConstantOp(IndexType.get(), v).result
 
-def main():
-    with Context() as ctx, Location.unknown():
-        pto.register_dialect(ctx)
-        module = Module.create()
-        with InsertionPoint(module.body):
-            f = func.FuncOp("run_sync_high", func.FunctionType.get([], []))
-        entry = f.add_entry_block()
-        with InsertionPoint(entry):
-            # Unrolled coverage for each SyncOpType (record + wait)
-            # Use string names to exercise helper auto-conversion.
-            pto.record_event(TLOAD,       TLOAD,       EVENT_ID0)
-            pto.wait_event  (TLOAD,       TLOAD,       EVENT_ID0)
+def build():
+    with Context() as ctx:
+        pto.register_dialect(ctx, load=True)
 
-            pto.record_event(TSTORE_ACC,  TSTORE_ACC,  EVENT_ID1)
-            pto.wait_event  (TSTORE_ACC,  TSTORE_ACC,  EVENT_ID1)
+        with Location.unknown(ctx):
+            m = Module.create()
 
-            pto.record_event(TSTORE_VEC,  TSTORE_VEC,  EVENT_ID2)
-            pto.wait_event  (TSTORE_VEC,  TSTORE_VEC,  EVENT_ID2)
+            f32 = F32Type.get(ctx)
+            ptr_f32 = pto.PtrType.get(f32, ctx)
 
-            pto.record_event(TMOV_M2L,    TMOV_M2L,    EVENT_ID3)
-            pto.wait_event  (TMOV_M2L,    TMOV_M2L,    EVENT_ID3)
+            tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
+            tile_view_32 = pto.PartitionTensorViewType.get([32, 32], f32, ctx)
+            vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
+            bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
+            sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
+            pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
 
-            pto.record_event(TMOV_M2S,    TMOV_M2S,    EVENT_ID4)
-            pto.wait_event  (TMOV_M2S,    TMOV_M2S,    EVENT_ID4)
+            fractal_ab_size = pto.TileConfig.fractalABSize
+            cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
+            tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
 
-            pto.record_event(TMOV_M2B,    TMOV_M2B,    EVENT_ID5)
-            pto.wait_event  (TMOV_M2B,    TMOV_M2B,    EVENT_ID5)
+            # A real kernel that manually inserts set_flag/wait_flag.
+            #
+            # NOTE(A5): `set_flag/wait_flag` only accept a subset of PIPE enums on A5.
+            # Keep this sample in the supported set by using MTE2/V/MTE3 only.
+            fn_ty = func.FunctionType.get([ptr_f32, ptr_f32], [])
+            with InsertionPoint(m.body):
+                fn = func.FuncOp("run_sync_high", fn_ty)
+                entry = fn.add_entry_block()
 
-            pto.record_event(TMOV_M2V,    TMOV_M2V,    EVENT_ID6)
-            pto.wait_event  (TMOV_M2V,    TMOV_M2V,    EVENT_ID6)
+            with InsertionPoint(entry):
+                c0 = arith.ConstantOp(IndexType.get(ctx), 0).result
+                c1 = arith.ConstantOp(IndexType.get(ctx), 1).result
+                c32 = arith.ConstantOp(IndexType.get(ctx), 32).result
+                scale = arith.ConstantOp(f32, 3.14).result
+                pipe_mte2 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE2, ctx)
+                pipe_v = pto.PipeAttr.get(pto.PIPE.PIPE_V, ctx)
+                pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
+                evt0 = pto.EventAttr.get(pto.EVENT.EVENT_ID0, ctx)
+                evt1 = pto.EventAttr.get(pto.EVENT.EVENT_ID1, ctx)
 
-            pto.record_event(TMOV_V2M,    TMOV_V2M,    EVENT_ID7)
-            pto.wait_event  (TMOV_V2M,    TMOV_V2M,    EVENT_ID7)
+                arg0, arg1 = entry.arguments
 
-            pto.record_event(TMATMUL,     TMATMUL,     EVENT_ID0)
-            pto.wait_event  (TMATMUL,     TMATMUL,     EVENT_ID0)
+                tv0 = pto.MakeTensorViewOp(tv2_f32, arg0, [c32, c32], [c32, c1]).result
+                tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c32, c32], [c32, c1]).result
 
-            pto.record_event(TVEC,        TVEC,        EVENT_ID1)
-            pto.wait_event  (TVEC,        TVEC,        EVENT_ID1)
+                sv0 = pto.PartitionViewOp(tile_view_32, tv0, offsets=[c0, c0], sizes=[c32, c32]).result
+                sv1 = pto.PartitionViewOp(tile_view_32, tv1, offsets=[c0, c0], sizes=[c32, c32]).result
 
-            pto.record_event(TVECWAIT_EVENT, TVECWAIT_EVENT, EVENT_ID2)
-            pto.wait_event  (TVECWAIT_EVENT, TVECWAIT_EVENT, EVENT_ID2)
+                tb0 = pto.AllocTileOp(tile_buf_32).result
+                tb1 = pto.AllocTileOp(tile_buf_32).result
 
-            # Barrier coverage for TMATMUL and TVEC
-            pto.barrier(TMATMUL)
-            pto.barrier(TVEC)
-            func.ReturnOp([])
-        print(module)
+                # Load (PIPE_MTE2)
+                pto.TLoadOp(None, sv0, tb0)
+                # MTE2 -> V sync before vector compute.
+                pto.set_flag(pipe_mte2, pipe_v, evt0)
+                pto.wait_flag(pipe_mte2, pipe_v, evt0)
+
+                # Compute (PIPE_V)
+                pto.TAddSOp(tb0, scale, tb1)
+                # V -> MTE3 sync before store.
+                pto.set_flag(pipe_v, pipe_mte3, evt1)
+                pto.wait_flag(pipe_v, pipe_mte3, evt1)
+
+                # Store (PIPE_MTE3)
+                pto.TStoreOp(None, tb1, sv1)
+
+                func.ReturnOp([])
+
+            m.operation.verify()
+            return m
+
 
 if __name__ == "__main__":
-    main()
+    print(build())
