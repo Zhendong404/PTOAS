@@ -49,6 +49,8 @@ static SmallVector<Value, 2> getBinarySrcs(Operation *op) {
 struct PTOCreateFusionGroupsPass
     : public pto::impl::PTOCreateFusionGroupsBase<PTOCreateFusionGroupsPass> {
   void runOnOperation() override {
+    // This pass runs after PlanMemory/InsertSync in the pipeline. Grouping is
+    // strict-contiguous; intervening ops (including sync) will split chains.
     func::FuncOp func = getOperation();
     MLIRContext *ctx = &getContext();
 

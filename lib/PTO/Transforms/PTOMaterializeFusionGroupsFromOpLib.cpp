@@ -787,6 +787,8 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
   }
 
   void runOnOperation() override {
+    // Materialization is scheduled after PlanMemory/InsertSync; it consumes
+    // strict-contiguous fusion groups produced earlier in the pipeline.
     ModuleOp module = getOperation();
     MLIRContext *ctx = &getContext();
     SymbolTable symbolTable(module);

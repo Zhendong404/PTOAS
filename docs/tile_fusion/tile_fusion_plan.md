@@ -31,21 +31,20 @@
    - 作用：低层 loop 融合
    - 建议 argument：`pto-low-level-loop-fusion`
 
-### 2.2 分组位置与内存规划关系
+### 2.2 分组位置与内存规划关系（更新）
 
-`PTOCreateFusionGroupsPass` 必须插在 `PlanMemory` 之前。  
-同时为了满足“fusion 中间结果不分配内存”的诉求，采用结构化边界改写而非仅打 marker：
+`PTOCreateFusionGroupsPass` 与后续物化/loop fusion 统一放在 `PlanMemory` 与 `InsertSync` 之后  
+（`level3` 跳过这两步时，融合紧跟 `InferPTOLayout` 或 Stage2 起点），以支持所有 IR level。
 
-1. 分组发生在高层（tile_buf 语义）阶段，准确识别中间结果。
-2. 物化阶段将 group 改写为 `func.call` 边界（或等效调用边界）。
-3. 中间 buffer 不再出现在 caller IR 中，`PlanMemory` 天然不会为其分配地址。
+1. 分组与物化发生在 memref-level（`PTOViewToMemref` 之后）。
+2. 分组保持严格连续性；插入的同步等中间 op 会切断链。
+3. `PlanMemory` 已完成，caller 中可能已有对中间结果的规划；融合会在 IR 层移除中间值，但不重新规划内存，V1 接受这类冗余。
+4. 物化仍采用 `func.call` 边界，便于低层 loop 融合与后续扩展。
 
-### 2.3 为什么不采用“仅中间结果打标记跳过分配”
+### 2.3 为什么不采用“仅中间结果打标记跳过分配”（更新）
 
-当前实现中，`PlanMemory` 主要处理 `memref.alloc`，最终还会通过 `AllocToPointerCast` 对未规划地址做 fallback。  
-因此“仅 marker 跳过规划”不等价于“最终无内存分配”，且易产生后续一致性问题。
-
-结论：V1 采用 `func.call` 封装 group 的方案更稳健。
+当前 `PlanMemory` 已在融合之前完成，单靠 marker 无法回收已规划的内存，且仍可能触发后续 fallback 分配。  
+结论：V1 仍采用 `func.call` 封装 group 的语义改写路径，而不是 marker skip 方案。
 
 ---
 
@@ -121,19 +120,21 @@ V1 推荐模板签名：
 ### 5.1 V1 推荐顺序
 
 1. `LoweringSyncToPipe`
-2. `PTOCreateFusionGroupsPass`
-3. `PTOViewToMemref`
-4. `PTOMaterializeFusionGroupsFromOpLibPass`
-5. `PTOLowLevelLoopFusionPass`
-6. `PlanMemory`
-7. `InsertSync`（按现有开关）
-8. `EmitPTOManual -> EmitC -> C++`
+2. `PTOViewToMemref`
+3. `InferPTOLayout`（可选）
+4. `PlanMemory`（`level1/level2`）
+5. `InsertSync`（按现有开关，`level1/level2`）
+6. `PTOCreateFusionGroupsPass`
+7. `PTOMaterializeFusionGroupsFromOpLibPass`
+8. `PTOInstantiateAndInlineOpLibPass -> Canonicalizer/CSE`
+9. `PTOLowLevelLoopFusionPass`
+10. `EmitPTOManual -> EmitC -> C++`
 
 说明：
 
-1. 分组在 `PTOViewToMemref` 前，便于基于 tile_buf 语义判定中间结果。
-2. 物化与 loop fusion 在 `PTOViewToMemref` 后，便于落在统一 memref/scf 层做实现。
-3. `PlanMemory` 在调用边界改写之后执行，自然避开组内中间 buffer。
+1. 融合发生在 `PTOViewToMemref` 之后，统一在 memref/scf 层实现。
+2. `PlanMemory/InsertSync` 在融合前执行，保证 `level1/level2/level3` 的统一支持；同步插入可能切断融合链。
+3. `PlanMemory` 已完成，融合后移除的中间结果不会被重新规划，新引入的 alloc 也不会被规划（V1 接受）。
 4. 当前实现以 OP-Lib `func.call` 链为主，`PTOLowLevelLoopFusionPass` 在无显式 loop body 时可能无改写（保持保守 no-op）。
 
 ### 5.2 全流程 IR 示例（`tmul -> tdiv -> tadd`）
@@ -177,7 +178,7 @@ module {
 }
 ```
 
-#### 阶段 B：`PTOCreateFusionGroupsPass` 之后（仅分组，不改写语义）
+#### 阶段 B：`PlanMemory/InsertSync` 之后 + `PTOCreateFusionGroupsPass` 之后（仅分组，不改写语义）
 
 ```mlir
 // 关键变化：组内 op 被打上 group/order 元数据
@@ -190,7 +191,7 @@ pto.tadd ... outs(%out) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 2 : i
 %t1 = pto.alloc_tile ... {pto.fusion.role = "intermediate", pto.fusion.group_id = 0 : i64}
 ```
 
-#### 阶段 C：`PTOViewToMemref` + `PTOMaterializeFusionGroupsFromOpLibPass` 之后
+#### 阶段 C：`PlanMemory/InsertSync` 之后 + `PTOMaterializeFusionGroupsFromOpLibPass` 之后
 
 Caller 被改写成一个 group 调用边界，中间结果不再出现在 caller 中：
 
@@ -274,8 +275,8 @@ func.func @__pto_fused_group_0(%a: memref<32x32xf32, #pto.address_space<vec>>,
 }
 ```
 
-该阶段完成后，`PlanMemory` 在 caller 侧只看到 `%a_buf/%b_buf/%d_buf/%out_buf` 等必要 buffer，  
-不会再为原本的 group 中间结果 `%t0/%t1` 分配内存。
+该阶段完成后，caller IR 中仅保留 `%a_buf/%b_buf/%d_buf/%out_buf` 等必要 buffer，  
+但 `PlanMemory` 已在此前执行，可能已对 `%t0/%t1` 做过规划，V1 不做回收与重规划。
 
 ---
 
@@ -310,13 +311,11 @@ func.func @__pto_fused_group_0(%a: memref<32x32xf32, #pto.address_space<vec>>,
 
 ## 7. 与 PlanMemory 的接口约定
 
-本方案不要求 PlanMemory 感知 fusion 中间 buffer 标记。  
-PlanMemory 只处理 caller 中实际存在的 alloc。
+PlanMemory 在融合之前执行，不要求其感知 fusion 中间 buffer 标记。
 
-由于 group 被封装成调用边界：
-
-1. caller 无中间 alloc。
-2. PlanMemory 无需新增“跳过中间结果”的专门规则即可满足需求。
+1. caller 侧可能已对中间结果完成规划；融合后这些中间值被移除，但不重新规划。
+2. 融合函数体内新增的 `memref.alloc` 不会被 PlanMemory 处理（V1 接受）。
+3. 若后续需要消除这类冗余或补规划，可考虑在融合后再执行一次 PlanMemory。
 
 ---
 
@@ -350,7 +349,7 @@ PlanMemory 只处理 caller 中实际存在的 alloc。
 1. 分组正确性（连续链 / 非连续链 / block 边界）。
 2. 库匹配与缺失报错。
 3. 调用边界改写后 caller 中间 alloc 消失验证。
-4. `PlanMemory` 后地址分配结果中无组内中间 buffer。
+4. `PlanMemory` 在融合前执行，融合后 caller 中间 alloc 消失但不重规划（允许规划冗余）。
 5. loop fusion 正确性与失败降级路径。
 6. 端到端 `pto -> cpp` 样例回归。
 

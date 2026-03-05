@@ -93,19 +93,22 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 
 **构建 Level 约束**
 
-- `level2`（默认）：启用 `PlanMemory`，可选启用 `InsertSync`
+- `level1/level2`（默认 `level2`）：启用 `PlanMemory`，可选启用 `InsertSync`
 - `level3`：跳过 `PlanMemory`，并忽略 `--enable-insert-sync`；要求 `alloc_tile` 显式提供 `addr`
+- OP Fusion 支持 `level1/level2/level3`，在 `level3` 中会在 `InferPTOLayout`（若开启）之后执行
 
 **OP Fusion V1 推荐 Pipeline（设计中）**
 
 1. `func::FuncOp`：`LoweringSyncToPipe`
-2. `func::FuncOp`：`PTOCreateFusionGroupsPass`（在 `PlanMemory` 前识别 group）
-3. `ModuleOp`：`PTOViewToMemref`
-4. `ModuleOp`：`PTOMaterializeFusionGroupsFromOpLibPass`（将 group 物化为调用边界）
-5. `ModuleOp`：`PTOLowLevelLoopFusionPass`
-6. `ModuleOp`：`PlanMemory`
-7. `func::FuncOp`（可选）：`PTOInsertSync`
-8. `ModuleOp`：`EmitPTOManual -> emitc::FormExpressions -> CSE`
+2. `ModuleOp`：`PTOViewToMemref`
+3. `func::FuncOp`（可选）：`InferPTOLayout`
+4. `ModuleOp`：`PlanMemory`（`level1/level2`）
+5. `func::FuncOp`（可选）：`PTOInsertSync`（`level1/level2`）
+6. `func::FuncOp`：`PTOCreateFusionGroupsPass`
+7. `ModuleOp`：`PTOMaterializeFusionGroupsFromOpLibPass`（将 group 物化为调用边界）
+8. `ModuleOp`：`PTOInstantiateAndInlineOpLibPass -> Canonicalizer/CSE`
+9. `ModuleOp`：`PTOLowLevelLoopFusionPass`
+10. `ModuleOp`：`EmitPTOManual -> emitc::FormExpressions -> CSE`
 
 说明：OP Fusion V1 的完整设计与约束见 `docs/tile_fusion_plan.md`。
 

@@ -641,8 +641,13 @@ int main(int argc, char **argv) {
         hasAddr = true;
       }
     });
-    if (hasAddr)
+  if (hasAddr)
       return 1;
+  }
+
+  if (enableOpFusion && opLibDir.empty()) {
+    llvm::errs() << "Error: --op-lib-dir is required when --enable-op-fusion is set.\n";
+    return 1;
   }
 
   // [Fix] ToolOutputFile Usage
@@ -653,7 +658,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Stage 1: run through OP-fusion related front-end passes.
+  // Stage 1: front-end lowering to memref-level IR.
   PassManager preCodegenPm(&context);
 
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
@@ -661,52 +666,11 @@ int main(int argc, char **argv) {
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
   preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
 
-  if (enableOpFusion) {
-    if (effectiveLevel == PTOBuildLevel::Level3) {
-      llvm::errs()
-          << "Warning: --enable-op-fusion is ignored because --pto-level=level3.\n";
-      preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
-    } else {
-      if (opLibDir.empty()) {
-        llvm::errs() << "Error: --op-lib-dir is required when --enable-op-fusion is set.\n";
-        return 1;
-      }
-      preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
-      preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
-      // PTOViewToMemref may rebuild ops; re-run grouping on memref-level PTO ops.
-      preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
-
-      pto::PTOMaterializeFusionGroupsFromOpLibOptions materializeOptions;
-      materializeOptions.opLibDir = opLibDir;
-      materializeOptions.debug = opFusionDebug;
-      preCodegenPm.addPass(
-          pto::createPTOMaterializeFusionGroupsFromOpLibPass(materializeOptions));
-
-      pto::PTOInstantiateAndInlineOpLibOptions instantiateInlineOptions;
-      instantiateInlineOptions.debug = opFusionDebug;
-      preCodegenPm.addPass(
-          pto::createPTOInstantiateAndInlineOpLibPass(instantiateInlineOptions));
-      preCodegenPm.addPass(createCanonicalizerPass());
-      preCodegenPm.addPass(createCSEPass());
-
-      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
-      loopFusionOptions.debug = opFusionDebug;
-      preCodegenPm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
-    }
-  } else {
-    preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
-  }
+  preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
 
   if (failed(preCodegenPm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
-  }
-
-  if (dumpIRAfterOpFusion) {
-    module->print(outputFile.os());
-    outputFile.os() << "\n";
-    outputFile.keep();
-    return 0;
   }
 
   // Stage 2: remaining optimization + codegen pipeline.
@@ -735,27 +699,61 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (enableOpFusion) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+
+    pto::PTOMaterializeFusionGroupsFromOpLibOptions materializeOptions;
+    materializeOptions.opLibDir = opLibDir;
+    materializeOptions.debug = opFusionDebug;
+    pm.addPass(
+        pto::createPTOMaterializeFusionGroupsFromOpLibPass(materializeOptions));
+
+    pto::PTOInstantiateAndInlineOpLibOptions instantiateInlineOptions;
+    instantiateInlineOptions.debug = opFusionDebug;
+    pm.addPass(
+        pto::createPTOInstantiateAndInlineOpLibPass(instantiateInlineOptions));
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+
+    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+    loopFusionOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+  }
+
+  if (failed(pm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  if (dumpIRAfterOpFusion) {
+    module->print(outputFile.os());
+    outputFile.os() << "\n";
+    outputFile.keep();
+    return 0;
+  }
+
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
-  pm.addPass(createCSEPass());
+  PassManager codegenPm(&context);
+  codegenPm.addPass(createCSEPass());
   std::string arch = ptoTargetArch;
   for (char &c : arch)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else if (arch == "a5") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
   } else {
     llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
                  << "'. Expected 'a3' or 'a5'.\n";
     return 1;
   }
-  pm.addPass(emitc::createFormExpressionsPass());
-  pm.addPass(mlir::createCSEPass());
+  codegenPm.addPass(emitc::createFormExpressionsPass());
+  codegenPm.addPass(mlir::createCSEPass());
 
-  if (failed(pm.run(*module))) {
+  if (failed(codegenPm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
   }
