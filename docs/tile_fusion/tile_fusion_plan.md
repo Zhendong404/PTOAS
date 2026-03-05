@@ -68,6 +68,8 @@
 
 ## 4. 外部 OP 库规范
 
+详细模板规范见：`docs/tile_fusion/oplib_ir_spec.md`。
+
 ### 4.1 组织方式
 
 采用“目录 + 多文件”：
@@ -79,19 +81,21 @@
 
 每个 OP 实现以 `func.func` 模板函数承载，不使用 fused pattern 模板。
 
-### 4.3 命名建议
+### 4.3 命名与匹配建议（模板化）
 
-建议使用统一命名以便索引（可调整但需稳定）：
+V1 改为“函数名表达 OP，dtype/shape 解耦”：
 
-`@__pto_oplib_<op>__<dtype>__<rows>x<cols>`
+1. 推荐模板函数名：`@__pto_oplib_<op>_template`
+2. 不再在函数名编码 `dtype/shape`
+3. 编译器通过函数属性匹配模板（而非纯名字解析）
 
 示例：
 
-`@__pto_oplib_tmul__f32__32x32`
+`@__pto_oplib_tmul_template`
 
-`@__pto_oplib_tdiv__f32__32x32`
+`@__pto_oplib_tdiv_template`
 
-`@__pto_oplib_tadd__f32__32x32`
+`@__pto_oplib_tadd_template`
 
 ### 4.4 签名原则
 
@@ -99,6 +103,16 @@
 例如二元逐元素：
 
 `(src0, src1, dst) -> ()`
+
+V1 推荐模板签名：
+
+`(memref<?x?xT, #pto.address_space<vec>>, memref<?x?xT, #pto.address_space<vec>>, memref<?x?xT, #pto.address_space<vec>>) -> ()`
+
+说明：
+
+1. shape 使用动态 `?x?`，与具体形状解耦
+2. seed template 以 `T=f32` 交付
+3. `PTOMaterializeFusionGroupsFromOpLibPass` 按目标 dtype 自动实例化（`f16/f32`）
 
 ---
 
@@ -120,6 +134,7 @@
 1. 分组在 `PTOViewToMemref` 前，便于基于 tile_buf 语义判定中间结果。
 2. 物化与 loop fusion 在 `PTOViewToMemref` 后，便于落在统一 memref/scf 层做实现。
 3. `PlanMemory` 在调用边界改写之后执行，自然避开组内中间 buffer。
+4. 当前实现以 OP-Lib `func.call` 链为主，`PTOLowLevelLoopFusionPass` 在无显式 loop body 时可能无改写（保持保守 no-op）。
 
 ### 5.2 全流程 IR 示例（`tmul -> tdiv -> tadd`）
 

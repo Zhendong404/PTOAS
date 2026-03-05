@@ -97,6 +97,27 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableOpFusion(
+    "enable-op-fusion",
+    llvm::cl::desc("Enable OP fusion pipeline: create groups + materialize from OP-Lib + low-level loop fusion"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> opLibDir(
+    "op-lib-dir",
+    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP fusion"),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""));
+
+static llvm::cl::opt<bool> opFusionDebug(
+    "op-fusion-debug",
+    llvm::cl::desc("Enable verbose debug logs for OP fusion (grouping/materialization/loop fusion)"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> dumpIRAfterOpFusion(
+    "dump-ir-after-op-fusion",
+    llvm::cl::desc("Run pipeline through OP fusion stage, dump MLIR, and exit before EmitC lowering"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -632,15 +653,65 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Main PassManager
+  // Stage 1: run through OP-fusion related front-end passes.
+  PassManager preCodegenPm(&context);
+
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
+  preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+
+  if (enableOpFusion) {
+    if (effectiveLevel == PTOBuildLevel::Level3) {
+      llvm::errs()
+          << "Warning: --enable-op-fusion is ignored because --pto-level=level3.\n";
+      preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
+    } else {
+      if (opLibDir.empty()) {
+        llvm::errs() << "Error: --op-lib-dir is required when --enable-op-fusion is set.\n";
+        return 1;
+      }
+      preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+      preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
+      // PTOViewToMemref may rebuild ops; re-run grouping on memref-level PTO ops.
+      preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+
+      pto::PTOMaterializeFusionGroupsFromOpLibOptions materializeOptions;
+      materializeOptions.opLibDir = opLibDir;
+      materializeOptions.debug = opFusionDebug;
+      preCodegenPm.addPass(
+          pto::createPTOMaterializeFusionGroupsFromOpLibPass(materializeOptions));
+
+      pto::PTOInstantiateAndInlineOpLibOptions instantiateInlineOptions;
+      instantiateInlineOptions.debug = opFusionDebug;
+      preCodegenPm.addPass(
+          pto::createPTOInstantiateAndInlineOpLibPass(instantiateInlineOptions));
+      preCodegenPm.addPass(createCanonicalizerPass());
+      preCodegenPm.addPass(createCSEPass());
+
+      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+      loopFusionOptions.debug = opFusionDebug;
+      preCodegenPm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    }
+  } else {
+    preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
+  }
+
+  if (failed(preCodegenPm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  if (dumpIRAfterOpFusion) {
+    module->print(outputFile.os());
+    outputFile.os() << "\n";
+    outputFile.keep();
+    return 0;
+  }
+
+  // Stage 2: remaining optimization + codegen pipeline.
   PassManager pm(&context);
-  
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
-  pm.addPass(pto::createPTOViewToMemrefPass());
+
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   // bufferizationPipeline(pm);

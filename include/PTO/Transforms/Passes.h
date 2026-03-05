@@ -64,6 +64,13 @@ std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPTOCreateFusionGroupsPass();
+std::unique_ptr<Pass> createPTOMaterializeFusionGroupsFromOpLibPass(
+    const PTOMaterializeFusionGroupsFromOpLibOptions &options = {});
+std::unique_ptr<Pass> createPTOInstantiateAndInlineOpLibPass(
+    const PTOInstantiateAndInlineOpLibOptions &options = {});
+std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
+    const PTOLowLevelLoopFusionOptions &options = {});
 // Declare register function
 void registerPTOPasses();
 

@@ -74,6 +74,41 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 - **PTOToEmitC**：降级到 EmitC
 - **PTOConvertToDPS**：转换到 DPS 风格
 
+### PTOAS Pass Pipeline 结构
+
+以下基于 `tools/ptoas/ptoas.cpp` 当前实现整理。
+
+**当前主干 Pipeline（默认）**
+
+1. `func::FuncOp`：`LoweringSyncToPipe`
+2. `ModuleOp`：`PTOViewToMemref`
+3. `func::FuncOp`（可选）：`InferPTOLayout`（当未设置 `--disable-infer-layout`）
+4. `ModuleOp`（可选）：`PlanMemory`（当 `--pto-level != level3`）
+5. `func::FuncOp`（可选）：`PTOInsertSync`（当 `--enable-insert-sync` 且 `--pto-level != level3`）
+6. `ModuleOp`：`CSE`
+7. `ModuleOp`：`EmitPTOManual`（由 `--pto-arch=a3|a5` 选择目标）
+8. `ModuleOp`：`emitc::FormExpressions`
+9. `ModuleOp`：`CSE`
+10. C++ 输出后处理（非 pass）：marker 重写与文本清理
+
+**构建 Level 约束**
+
+- `level2`（默认）：启用 `PlanMemory`，可选启用 `InsertSync`
+- `level3`：跳过 `PlanMemory`，并忽略 `--enable-insert-sync`；要求 `alloc_tile` 显式提供 `addr`
+
+**OP Fusion V1 推荐 Pipeline（设计中）**
+
+1. `func::FuncOp`：`LoweringSyncToPipe`
+2. `func::FuncOp`：`PTOCreateFusionGroupsPass`（在 `PlanMemory` 前识别 group）
+3. `ModuleOp`：`PTOViewToMemref`
+4. `ModuleOp`：`PTOMaterializeFusionGroupsFromOpLibPass`（将 group 物化为调用边界）
+5. `ModuleOp`：`PTOLowLevelLoopFusionPass`
+6. `ModuleOp`：`PlanMemory`
+7. `func::FuncOp`（可选）：`PTOInsertSync`
+8. `ModuleOp`：`EmitPTOManual -> emitc::FormExpressions -> CSE`
+
+说明：OP Fusion V1 的完整设计与约束见 `docs/tile_fusion_plan.md`。
+
 ## 构建系统
 
 项目使用 CMake 构建系统，依赖 LLVM/MLIR release/19.x。
@@ -154,6 +189,7 @@ A: 检查同步分析模式（NORMALSYNC vs BLOCKSYNC），并考虑手动优化
 
 - `README.md`：详细构建和使用说明
 - `docs/PTO_IR_manual.md`：PTO IR 规范手册
+- `docs/tile_fusion_plan.md`：OP Fusion V1 设计与落地方案
 - `PTO_OPS_SPEC.md`：PTO 操作规范
 - `ReleaseNotes.md`：发布说明
 
@@ -170,4 +206,4 @@ A: 检查同步分析模式（NORMALSYNC vs BLOCKSYNC），并考虑手动优化
 
 ---
 
-*最后更新：2026-03-02*
+*最后更新：2026-03-05*
