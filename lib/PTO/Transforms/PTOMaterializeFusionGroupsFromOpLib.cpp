@@ -189,6 +189,100 @@ static void eraseDeadValueDefChain(Value v) {
     eraseDeadValueDefChain(operand);
 }
 
+struct GroupInfo {
+  int64_t groupId = -1;
+  SmallVector<Operation *, 8> ops;
+};
+
+struct GroupInterface {
+  DenseSet<Operation *> groupSet;
+  SmallVector<Value, 8> producedInOrder;
+  DenseSet<Value> producedSet;
+  SmallVector<Value, 8> externalInputs;
+  SmallVector<Value, 8> externalOutputs;
+  SmallVector<Value, 8> callArgs;
+};
+
+struct TemplateRegistry;
+
+static GroupInterface buildGroupInterface(GroupInfo &group) {
+  GroupInterface iface;
+  iface.groupSet.insert(group.ops.begin(), group.ops.end());
+
+  for (Operation *op : group.ops) {
+    Value dst = getBinaryDst(op);
+    appendUniqueValue(iface.producedInOrder, dst);
+    iface.producedSet.insert(dst);
+  }
+
+  for (Operation *op : group.ops) {
+    for (Value src : getBinarySrcs(op)) {
+      if (!iface.producedSet.contains(src))
+        appendUniqueValue(iface.externalInputs, src);
+    }
+  }
+
+  for (Value dst : iface.producedInOrder) {
+    bool usedOutside = false;
+    for (Operation *user : dst.getUsers()) {
+      if (!iface.groupSet.contains(user)) {
+        usedOutside = true;
+        break;
+      }
+    }
+    if (usedOutside)
+      appendUniqueValue(iface.externalOutputs, dst);
+  }
+
+  for (Value v : iface.externalInputs)
+    appendUniqueValue(iface.callArgs, v);
+  for (Value v : iface.externalOutputs)
+    appendUniqueValue(iface.callArgs, v);
+
+  return iface;
+}
+
+static std::string makeUniqueFusedName(SymbolTable &symbolTable, int64_t groupId,
+                                       int &fusedCounter) {
+  std::string fusedName = "__pto_fused_group_" + std::to_string(groupId) +
+                          "_" + std::to_string(fusedCounter++);
+  while (symbolTable.lookup(fusedName))
+    fusedName += "_x";
+  return fusedName;
+}
+
+static func::FuncOp createFusedFunc(ModuleOp module, Location loc,
+                                    StringRef name, ArrayRef<Value> callArgs,
+                                    int64_t groupId) {
+  SmallVector<Type, 8> argTypes;
+  for (Value v : callArgs)
+    argTypes.push_back(v.getType());
+
+  OpBuilder moduleBuilder(module.getContext());
+  moduleBuilder.setInsertionPointToStart(module.getBody());
+  auto fusedFunc = moduleBuilder.create<func::FuncOp>(
+      loc, name, FunctionType::get(module.getContext(), argTypes, {}));
+  fusedFunc.setPrivate();
+  fusedFunc->setAttr("pto.fusion.group_id",
+                     IntegerAttr::get(IntegerType::get(module.getContext(), 64),
+                                      groupId));
+  return fusedFunc;
+}
+
+static DenseMap<Value, Value> mapCallArgsToEntry(Block *entry,
+                                                 ArrayRef<Value> callArgs) {
+  DenseMap<Value, Value> valueMap;
+  for (auto [orig, arg] : llvm::zip(callArgs, entry->getArguments()))
+    valueMap[orig] = arg;
+  return valueMap;
+}
+
+static LogicalResult materializeGroupOps(GroupInfo &group,
+                                         ArrayRef<Value> externalOutputs,
+                                         DenseMap<Value, Value> &valueMap,
+                                         OpBuilder &bodyBuilder,
+                                         TemplateRegistry &registry, bool debug);
+
 struct TemplateRegistry {
   ModuleOp module;
   SymbolTable &symbolTable;
@@ -470,16 +564,128 @@ struct TemplateRegistry {
   }
 };
 
+static LogicalResult materializeGroupOps(GroupInfo &group,
+                                         ArrayRef<Value> externalOutputs,
+                                         DenseMap<Value, Value> &valueMap,
+                                         OpBuilder &bodyBuilder,
+                                         TemplateRegistry &registry, bool debug) {
+  auto getMapped = [&](Value v) -> Value {
+    auto it = valueMap.find(v);
+    if (it == valueMap.end())
+      return {};
+    return it->second;
+  };
+
+  auto ensureMapped = [&](Value v) -> FailureOr<Value> {
+    if (Value mapped = getMapped(v))
+      return mapped;
+    return failure();
+  };
+
+  for (Operation *op : group.ops) {
+    StringRef opName = getFusionOpName(op);
+    if (opName.empty())
+      return emitError(op->getLoc(), "unsupported op in fusion group"), failure();
+
+    SmallVector<Value, 2> srcs = getBinarySrcs(op);
+    if (srcs.size() != 2)
+      return emitError(op->getLoc(), "expected binary op src arity = 2"), failure();
+
+    auto src0Or = ensureMapped(srcs[0]);
+    auto src1Or = ensureMapped(srcs[1]);
+    if (failed(src0Or) || failed(src1Or))
+      return emitError(op->getLoc(), "failed to map fusion op sources"), failure();
+
+    Value src0 = *src0Or;
+    Value src1 = *src1Or;
+
+    auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+    auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+    if (!src0Ty || !src1Ty)
+      return emitError(op->getLoc(), "fusion source must be memref"), failure();
+
+    Type elemTy = src0Ty.getElementType();
+    if (!isFloatDTypeSupported(elemTy))
+      return emitError(op->getLoc(), "V1 supports only f16/f32 fusion dtypes"),
+             failure();
+    if (src1Ty.getElementType() != elemTy)
+      return emitError(op->getLoc(), "fusion src dtype mismatch"), failure();
+
+    Value dst = getBinaryDst(op);
+    Value mappedDst = getMapped(dst);
+    bool isExternalOutput = valueInList(externalOutputs, dst);
+    if (!mappedDst) {
+      if (isExternalOutput)
+        return emitError(op->getLoc(), "external fusion output is not mapped"),
+               failure();
+
+      auto origDstTy = dyn_cast<MemRefType>(dst.getType());
+      if (!origDstTy)
+        return emitError(op->getLoc(), "fusion dst must be memref"), failure();
+
+      if (origDstTy.getElementType() != elemTy)
+        return emitError(op->getLoc(), "fusion dst dtype mismatch"), failure();
+
+      SmallVector<Value, 4> dynSizes;
+      for (int64_t dim = 0, e = origDstTy.getRank(); dim < e; ++dim) {
+        if (!origDstTy.isDynamicDim(dim))
+          continue;
+        Value dimIdx = bodyBuilder.create<arith::ConstantIndexOp>(op->getLoc(), dim);
+        dynSizes.push_back(
+            bodyBuilder.create<memref::DimOp>(op->getLoc(), src0, dimIdx));
+      }
+      mappedDst =
+          bodyBuilder.create<memref::AllocOp>(op->getLoc(), origDstTy, dynSizes);
+      valueMap[dst] = mappedDst;
+    }
+
+    auto dstTy = dyn_cast<MemRefType>(mappedDst.getType());
+    if (!dstTy)
+      return emitError(op->getLoc(), "fusion dst must be memref"), failure();
+    if (dstTy.getElementType() != elemTy)
+      return emitError(op->getLoc(), "fusion mapped dst dtype mismatch"), failure();
+
+    SmallVector<MemRefType, 3> concreteArgTypes{src0Ty, src1Ty, dstTy};
+    FailureOr<func::FuncOp> instanceOr =
+        registry.instantiate(opName, elemTy, concreteArgTypes, op->getLoc());
+    if (failed(instanceOr))
+      return failure();
+    func::FuncOp instance = *instanceOr;
+
+    auto instTy = instance.getFunctionType();
+    auto instSrc0Ty = cast<MemRefType>(instTy.getInput(0));
+    auto instSrc1Ty = cast<MemRefType>(instTy.getInput(1));
+    auto instDstTy = cast<MemRefType>(instTy.getInput(2));
+
+    Value callSrc0 =
+        castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), src0, instSrc0Ty);
+    Value callSrc1 =
+        castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), src1, instSrc1Ty);
+    Value callDst =
+        castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), mappedDst, instDstTy);
+    if (!callSrc0 || !callSrc1 || !callDst)
+      return emitError(op->getLoc(),
+                       "failed to adapt operands to OP-Lib instance signature"),
+             failure();
+
+    if (debug) {
+      llvm::errs() << "[op-fusion] materialize op=" << opName
+                   << " request_dtype=" << dtypeToString(elemTy)
+                   << " instance=@" << instance.getSymName() << "\n";
+    }
+
+    bodyBuilder.create<func::CallOp>(op->getLoc(), instance,
+                                     ValueRange{callSrc0, callSrc1, callDst});
+  }
+
+  return success();
+}
+
 struct PTOMaterializeFusionGroupsFromOpLibPass
     : public pto::impl::PTOMaterializeFusionGroupsFromOpLibBase<
           PTOMaterializeFusionGroupsFromOpLibPass> {
   using pto::impl::PTOMaterializeFusionGroupsFromOpLibBase<
       PTOMaterializeFusionGroupsFromOpLibPass>::PTOMaterializeFusionGroupsFromOpLibBase;
-
-  struct GroupInfo {
-    int64_t groupId = -1;
-    SmallVector<Operation *, 8> ops;
-  };
 
   void collectGroupsInRegion(Region &region,
                              SmallVectorImpl<GroupInfo> &groups) {
@@ -541,187 +747,34 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
     Operation *firstOp = group.ops.front();
     Location loc = firstOp->getLoc();
 
-    DenseSet<Operation *> groupSet(group.ops.begin(), group.ops.end());
-
-    SmallVector<Value, 8> producedInOrder;
-    DenseSet<Value> producedSet;
-    for (Operation *op : group.ops) {
-      Value dst = getBinaryDst(op);
-      appendUniqueValue(producedInOrder, dst);
-      producedSet.insert(dst);
-    }
-
-    SmallVector<Value, 8> externalInputs;
-    for (Operation *op : group.ops) {
-      for (Value src : getBinarySrcs(op)) {
-        if (!producedSet.contains(src))
-          appendUniqueValue(externalInputs, src);
-      }
-    }
-
-    SmallVector<Value, 8> externalOutputs;
-    for (Value dst : producedInOrder) {
-      bool usedOutside = false;
-      for (Operation *user : dst.getUsers()) {
-        if (!groupSet.contains(user)) {
-          usedOutside = true;
-          break;
-        }
-      }
-      if (usedOutside)
-        appendUniqueValue(externalOutputs, dst);
-    }
-
-    SmallVector<Value, 8> callArgs;
-    for (Value v : externalInputs)
-      appendUniqueValue(callArgs, v);
-    for (Value v : externalOutputs)
-      appendUniqueValue(callArgs, v);
-
-    if (callArgs.empty())
+    GroupInterface iface = buildGroupInterface(group);
+    if (iface.callArgs.empty())
       return emitError(loc, "fusion group has no external interface values"), failure();
 
-    std::string fusedName = "__pto_fused_group_" + std::to_string(group.groupId) +
-                            "_" + std::to_string(fusedCounter++);
-    while (symbolTable.lookup(fusedName))
-      fusedName += "_x";
-
-    SmallVector<Type, 8> argTypes;
-    for (Value v : callArgs)
-      argTypes.push_back(v.getType());
-
-    OpBuilder moduleBuilder(module.getContext());
-    moduleBuilder.setInsertionPointToStart(module.getBody());
-    auto fusedFunc = moduleBuilder.create<func::FuncOp>(
-        loc, fusedName, FunctionType::get(module.getContext(), argTypes, {}));
-    fusedFunc.setPrivate();
-    fusedFunc->setAttr("pto.fusion.group_id",
-                       IntegerAttr::get(IntegerType::get(module.getContext(), 64),
-                                        group.groupId));
+    std::string fusedName =
+        makeUniqueFusedName(symbolTable, group.groupId, fusedCounter);
+    auto fusedFunc = createFusedFunc(module, loc, fusedName, iface.callArgs,
+                                     group.groupId);
 
     Block *entry = fusedFunc.addEntryBlock();
     OpBuilder bodyBuilder = OpBuilder::atBlockBegin(entry);
 
-    DenseMap<Value, Value> valueMap;
-    for (auto [orig, arg] : llvm::zip(callArgs, entry->getArguments()))
-      valueMap[orig] = arg;
-
-    auto getMapped = [&](Value v) -> Value {
-      auto it = valueMap.find(v);
-      if (it == valueMap.end())
-        return {};
-      return it->second;
-    };
-
-    auto ensureMapped = [&](Value v) -> FailureOr<Value> {
-      if (Value mapped = getMapped(v))
-        return mapped;
+    DenseMap<Value, Value> valueMap =
+        mapCallArgsToEntry(entry, iface.callArgs);
+    if (failed(materializeGroupOps(group, iface.externalOutputs, valueMap,
+                                   bodyBuilder, registry, debug)))
       return failure();
-    };
-
-    for (Operation *op : group.ops) {
-      StringRef opName = getFusionOpName(op);
-      if (opName.empty())
-        return emitError(op->getLoc(), "unsupported op in fusion group"), failure();
-
-      SmallVector<Value, 2> srcs = getBinarySrcs(op);
-      if (srcs.size() != 2)
-        return emitError(op->getLoc(), "expected binary op src arity = 2"), failure();
-
-      auto src0Or = ensureMapped(srcs[0]);
-      auto src1Or = ensureMapped(srcs[1]);
-      if (failed(src0Or) || failed(src1Or))
-        return emitError(op->getLoc(), "failed to map fusion op sources"), failure();
-
-      Value src0 = *src0Or;
-      Value src1 = *src1Or;
-
-      auto src0Ty = dyn_cast<MemRefType>(src0.getType());
-      auto src1Ty = dyn_cast<MemRefType>(src1.getType());
-      if (!src0Ty || !src1Ty)
-        return emitError(op->getLoc(), "fusion source must be memref"), failure();
-
-      Type elemTy = src0Ty.getElementType();
-      if (!isFloatDTypeSupported(elemTy))
-        return emitError(op->getLoc(), "V1 supports only f16/f32 fusion dtypes"), failure();
-      if (src1Ty.getElementType() != elemTy)
-        return emitError(op->getLoc(), "fusion src dtype mismatch"), failure();
-
-      Value dst = getBinaryDst(op);
-      Value mappedDst = getMapped(dst);
-      bool isExternalOutput = valueInList(externalOutputs, dst);
-      if (!mappedDst) {
-        if (isExternalOutput)
-          return emitError(op->getLoc(), "external fusion output is not mapped"), failure();
-
-        auto origDstTy = dyn_cast<MemRefType>(dst.getType());
-        if (!origDstTy)
-          return emitError(op->getLoc(), "fusion dst must be memref"), failure();
-
-        if (origDstTy.getElementType() != elemTy)
-          return emitError(op->getLoc(), "fusion dst dtype mismatch"), failure();
-
-        SmallVector<Value, 4> dynSizes;
-        for (int64_t dim = 0, e = origDstTy.getRank(); dim < e; ++dim) {
-          if (!origDstTy.isDynamicDim(dim))
-            continue;
-          Value dimIdx = bodyBuilder.create<arith::ConstantIndexOp>(op->getLoc(), dim);
-          dynSizes.push_back(
-              bodyBuilder.create<memref::DimOp>(op->getLoc(), src0, dimIdx));
-        }
-        mappedDst = bodyBuilder.create<memref::AllocOp>(op->getLoc(), origDstTy, dynSizes);
-        valueMap[dst] = mappedDst;
-      }
-
-      auto dstTy = dyn_cast<MemRefType>(mappedDst.getType());
-      if (!dstTy)
-        return emitError(op->getLoc(), "fusion dst must be memref"), failure();
-      if (dstTy.getElementType() != elemTy)
-        return emitError(op->getLoc(), "fusion mapped dst dtype mismatch"), failure();
-
-      SmallVector<MemRefType, 3> concreteArgTypes{src0Ty, src1Ty, dstTy};
-      FailureOr<func::FuncOp> instanceOr =
-          registry.instantiate(opName, elemTy, concreteArgTypes, op->getLoc());
-      if (failed(instanceOr))
-        return failure();
-      func::FuncOp instance = *instanceOr;
-
-      auto instTy = instance.getFunctionType();
-      auto instSrc0Ty = cast<MemRefType>(instTy.getInput(0));
-      auto instSrc1Ty = cast<MemRefType>(instTy.getInput(1));
-      auto instDstTy = cast<MemRefType>(instTy.getInput(2));
-
-      Value callSrc0 =
-          castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), src0, instSrc0Ty);
-      Value callSrc1 =
-          castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), src1, instSrc1Ty);
-      Value callDst =
-          castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), mappedDst, instDstTy);
-      if (!callSrc0 || !callSrc1 || !callDst)
-        return emitError(op->getLoc(),
-                         "failed to adapt operands to OP-Lib instance signature"),
-               failure();
-
-      if (debug) {
-        llvm::errs() << "[op-fusion] materialize op=" << opName
-                     << " request_dtype=" << dtypeToString(elemTy)
-                     << " instance=@" << instance.getSymName() << "\n";
-      }
-
-      bodyBuilder.create<func::CallOp>(op->getLoc(), instance,
-                                       ValueRange{callSrc0, callSrc1, callDst});
-    }
 
     bodyBuilder.create<func::ReturnOp>(loc);
 
     OpBuilder callerBuilder(firstOp);
-    callerBuilder.create<func::CallOp>(loc, fusedFunc, callArgs);
+    callerBuilder.create<func::CallOp>(loc, fusedFunc, iface.callArgs);
 
     for (Operation *op : llvm::reverse(group.ops))
       op->erase();
 
-    for (Value dst : producedInOrder) {
-      if (!valueInList(externalOutputs, dst))
+    for (Value dst : iface.producedInOrder) {
+      if (!valueInList(iface.externalOutputs, dst))
         eraseDeadValueDefChain(dst);
     }
 
