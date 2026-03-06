@@ -15,7 +15,7 @@
 3. 支持 `seed` 自动实例化，实例化维度同时覆盖 `dtype + op name`。
 4. 通过模板函数属性提供融合选择信息（静态 cost model）。
 5. 版本选择行为确定性、可复现。
-6. 降低 OP-Lib 开发与维护成本（尤其是 `tadd/tsub/tmul/tdiv` 共用骨架场景）。
+6. 降低 OP-Lib 开发与维护成本（尤其是 `tadd/tsub/tmul/tdiv/tmax/tmin` 共用骨架场景）。
 
 首批 OP 范围限定为：
 
@@ -23,6 +23,8 @@
 - `tdiv`
 - `tadd`
 - `tsub`
+- `tmax`
+- `tmin`
 
 ### 1.2 非目标
 
@@ -52,7 +54,7 @@ Level-3 OP-Lib 的版本匹配与选择逻辑，定义在**逻辑上位于 `PTOV
 要求：
 
 1. 同一 OP 允许多个 `variant` 并存。
-2. 同一 `seed` 可覆盖多个 `dtype` 与多个 `op`（`tadd/tsub/tmul/tdiv`）。
+2. 同一 `seed` 可覆盖多个 `dtype` 与多个 `op`（`tadd/tsub/tmul/tdiv/tmax/tmin`）。
 3. 不依赖函数名编码语义，必须依赖函数属性驱动。
 
 ### 2.3 函数签名约束
@@ -92,7 +94,7 @@ Level-3 OP-Lib 的版本匹配与选择逻辑，定义在**逻辑上位于 `PTOV
 
 | 字段 | 类型 | 必需 | 说明 |
 |---|---|---|---|
-| `pto.oplib.op` | `string` | 是 | 取值：`tmul/tdiv/tadd/tsub` |
+| `pto.oplib.op` | `string` | 是 | 取值：`tmul/tdiv/tadd/tsub/tmax/tmin` |
 | `pto.oplib.variant_id` | `string` | 是 | 版本唯一标识 |
 | `pto.oplib.match.dtype` | `string` | 是 | 精确 dtype，如 `f16`/`f32` |
 
@@ -103,7 +105,7 @@ Level-3 OP-Lib 的版本匹配与选择逻辑，定义在**逻辑上位于 `PTOV
 | `pto.oplib.seed_id` | `string` | 是 | 种子唯一标识 |
 | `pto.oplib.seed_dtype` | `string` | 是 | seed 函数体基准 dtype |
 | `pto.oplib.seed.support_dtypes` | `array<string>` | 是 | 允许实例化的 dtype 列表 |
-| `pto.oplib.seed.support_ops` | `array<string>` | 是 | 允许实例化的 op 列表（可含 4 个二元逐元素 op） |
+| `pto.oplib.seed.support_ops` | `array<string>` | 是 | 允许实例化的 op 列表（首批 6 个二元逐元素 op） |
 | `pto.oplib.seed.core_slot` | `string` | 否 | 默认 `binary_ewise_core` |
 
 约束：
@@ -112,7 +114,7 @@ Level-3 OP-Lib 的版本匹配与选择逻辑，定义在**逻辑上位于 `PTOV
 2. `seed_id` 在同一 `kind` 下必须唯一。
 3. `rows/cols/fractal` 仅允许正整数或 `-1`。
 4. `cost`、`priority` 必须为整数。
-5. `seed.support_ops` 仅允许 `tmul/tdiv/tadd/tsub`（本规范首批范围）。
+5. `seed.support_ops` 仅允许 `tmul/tdiv/tadd/tsub/tmax/tmin`（本规范首批范围）。
 
 ### 2.5 Seed 的 core 指令槽位约定
 
@@ -125,6 +127,8 @@ Level-3 OP-Lib 的版本匹配与选择逻辑，定义在**逻辑上位于 `PTOV
    - `tsub -> arith.subf`
    - `tmul -> arith.mulf`
    - `tdiv -> arith.divf`
+   - `tmax -> arith.maximumf`
+   - `tmin -> arith.minimumf`
 
 说明：
 
@@ -161,7 +165,7 @@ seed:    @__pto_oplib_l3_seed_<seed_id>
 
 目标元信息主键为 `op + dtype + shape + layout`：
 
-1. `op`：`tmul/tdiv/tadd/tsub`。
+1. `op`：`tmul/tdiv/tadd/tsub/tmax/tmin`。
 2. `dtype`：`variant.match.dtype` 精确匹配；`seed.support_dtypes` 集合匹配。
 3. `shape/layout`：`rows/cols/fractal` 精确或 `-1`，`blayout/slayout` 精确或 `any`。
 
@@ -287,7 +291,7 @@ for i in validRows:
 
 ### 5.4 开发建议
 
-1. 优先提交一个高复用 `seed`（覆盖 `tadd/tsub/tmul/tdiv` 与常见 dtype）。
+1. 优先提交一个高复用 `seed`（覆盖 `tadd/tsub/tmul/tdiv/tmax/tmin` 与常见 dtype）。
 2. 再增补高优性能特化 `variant`，通过 `cost/priority` 覆盖 seed 默认选择。
 3. 对含同步版本显式打 `sync=true`，避免误融合。
 
@@ -344,7 +348,7 @@ module {
 }
 ```
 
-### 7.2 `seed` 示例（单 seed 覆盖 4 个 op + 2 个 dtype）
+### 7.2 `seed` 示例（单 seed 覆盖 6 个 op + 2 个 dtype）
 
 ```mlir
 module {
@@ -358,7 +362,7 @@ module {
         pto.oplib.seed_id = "vec_bin_2d",
         pto.oplib.seed_dtype = "f32",
         pto.oplib.seed.support_dtypes = ["f16", "f32"],
-        pto.oplib.seed.support_ops = ["tadd", "tsub", "tmul", "tdiv"],
+        pto.oplib.seed.support_ops = ["tadd", "tsub", "tmul", "tdiv", "tmax", "tmin"],
         pto.oplib.seed.core_slot = "binary_ewise_core",
         pto.oplib.match.rows = -1 : i64,
         pto.oplib.match.cols = -1 : i64,
@@ -391,7 +395,7 @@ module {
     pto.oplib.seed_id = "vec_bin",
     pto.oplib.seed_dtype = "f32",
     pto.oplib.seed.support_dtypes = ["f16", "f32"],
-    pto.oplib.seed.support_ops = ["tmul", "tadd", "tsub", "tdiv"],
+    pto.oplib.seed.support_ops = ["tmul", "tadd", "tsub", "tdiv", "tmax", "tmin"],
     pto.oplib.match.rows = -1 : i64,
     pto.oplib.match.cols = -1 : i64,
     pto.oplib.match.blayout = "any",
@@ -437,6 +441,6 @@ module {
 
 1. 本规范仅定义接口，不含实现与回归测试落地。
 2. 与现有 V1 机制关系为“仅文档先行”。
-3. 首批仅二元逐元素 OP：`tmul/tdiv/tadd/tsub`。
+3. 首批仅二元逐元素 OP：`tmul/tdiv/tadd/tsub/tmax/tmin`。
 4. 匹配主键固定为 `op + dtype + shape + layout`，shape 仅支持“精确+通配（-1）”。
 5. 第一版仅自动选择，不提供手工 override。

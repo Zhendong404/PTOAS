@@ -102,15 +102,25 @@ static llvm::cl::opt<bool> enableOpFusion(
     llvm::cl::desc("Enable OP fusion pipeline: create groups + materialize from OP-Lib + low-level loop fusion"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> disableOplibLowering(
+    "disable-oplib-lowering",
+    llvm::cl::desc("Disable PTO OP -> OP-LIB lowering (enabled by default)"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string> opLibDir(
     "op-lib-dir",
-    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP fusion"),
+    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP-LIB lowering"),
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
 static llvm::cl::opt<bool> opFusionDebug(
     "op-fusion-debug",
     llvm::cl::desc("Enable verbose debug logs for OP fusion (grouping/materialization/loop fusion)"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> dumpIRAfterOplibLowering(
+    "dump-ir-after-oplib-lowering",
+    llvm::cl::desc("Run pipeline through OP-LIB lowering stage, dump MLIR, and exit before loop fusion/codegen"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> dumpIRAfterOpFusion(
@@ -645,8 +655,15 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  if (enableOpFusion && opLibDir.empty()) {
-    llvm::errs() << "Error: --op-lib-dir is required when --enable-op-fusion is set.\n";
+  const bool enableOplibLowering = !disableOplibLowering;
+  if (enableOplibLowering && opLibDir.empty()) {
+    llvm::errs() << "Error: --op-lib-dir is required when OP-LIB lowering is enabled.\n";
+    return 1;
+  }
+
+  if (enableOpFusion && !enableOplibLowering) {
+    llvm::errs() << "Error: --enable-op-fusion requires OP-LIB lowering; "
+                    "remove --disable-oplib-lowering.\n";
     return 1;
   }
 
@@ -699,9 +716,10 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (enableOpFusion) {
+  if (enableOpFusion)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
 
+  if (enableOplibLowering) {
     pto::PTOMaterializeFusionGroupsFromOpLibOptions materializeOptions;
     materializeOptions.opLibDir = opLibDir;
     materializeOptions.debug = opFusionDebug;
@@ -712,6 +730,9 @@ int main(int argc, char **argv) {
     instantiateInlineOptions.debug = opFusionDebug;
     pm.addPass(
         pto::createPTOInstantiateAndInlineOpLibPass(instantiateInlineOptions));
+  }
+
+  if (enableOpFusion && !dumpIRAfterOplibLowering) {
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
 
@@ -723,6 +744,13 @@ int main(int argc, char **argv) {
   if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
+  }
+
+  if (dumpIRAfterOplibLowering) {
+    module->print(outputFile.os());
+    outputFile.os() << "\n";
+    outputFile.keep();
+    return 0;
   }
 
   if (dumpIRAfterOpFusion) {

@@ -10,10 +10,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-
-#include <string>
 
 namespace mlir {
 namespace pto {
@@ -26,41 +23,19 @@ using namespace mlir;
 
 namespace {
 
-static constexpr llvm::StringLiteral kOpLibAttrOp = "pto.oplib.op";
-static constexpr llvm::StringLiteral kOpLibAttrKind = "pto.oplib.kind";
-static constexpr llvm::StringLiteral kOpLibAttrInstanceOf = "pto.oplib.instance_of";
-static constexpr llvm::StringLiteral kOpLibAttrInstanceDType = "pto.oplib.instance_dtype";
-static constexpr llvm::StringLiteral kOpLibKindBinaryTemplate =
-    "binary_elementwise_template";
+static constexpr llvm::StringLiteral kOpLibAttrInstVariantId =
+    "pto.oplib.instance.variant_id";
+static constexpr llvm::StringLiteral kOpLibAttrInstOp = "pto.oplib.instance.op";
+static constexpr llvm::StringLiteral kOpLibAttrInstDType =
+    "pto.oplib.instance.dtype";
 
-static bool isTemplateFunc(func::FuncOp fn) {
-  auto kind = fn->getAttrOfType<StringAttr>(kOpLibAttrKind);
-  return kind && kind.getValue() == kOpLibKindBinaryTemplate;
+static bool isSupportedOpName(StringRef opName) {
+  return opName == "tmul" || opName == "tdiv" || opName == "tadd" ||
+         opName == "tsub" || opName == "tmax" || opName == "tmin";
 }
 
 static bool isInstanceFunc(func::FuncOp fn) {
-  return fn->hasAttr(kOpLibAttrInstanceOf);
-}
-
-static std::string dtypeToString(Type ty) {
-  if (ty.isF16())
-    return "f16";
-  if (ty.isF32())
-    return "f32";
-  std::string s;
-  llvm::raw_string_ostream os(s);
-  ty.print(os);
-  return os.str();
-}
-
-static std::string typeListKey(ArrayRef<Type> tys) {
-  std::string s;
-  llvm::raw_string_ostream os(s);
-  for (Type ty : tys) {
-    ty.print(os);
-    os << ";";
-  }
-  return os.str();
+  return fn->hasAttr(kOpLibAttrInstVariantId);
 }
 
 static Value maybeUnwrapCast(Value operand, Type expectedType) {
@@ -125,112 +100,81 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
   return success();
 }
 
-static FailureOr<func::FuncOp>
-createConcreteInstanceFromSeed(ModuleOp module, func::FuncOp seed,
-                               ArrayRef<Type> concreteInputs, StringRef opName,
-                               bool debug) {
-  if (seed.isExternal())
-    return failure();
-
-  MLIRContext *ctx = module.getContext();
-  auto seedTy = seed.getFunctionType();
-  if (seedTy.getNumInputs() != static_cast<int>(concreteInputs.size()))
-    return failure();
-
-  std::string sym = ("__pto_oplib_inst_" + opName + "__" +
-                     dtypeToString(cast<MemRefType>(concreteInputs.front()).getElementType()))
-                        .str();
-  int suffix = 0;
-  while (module.lookupSymbol<func::FuncOp>(sym))
-    sym = ("__pto_oplib_inst_" + opName + "__" +
-           dtypeToString(cast<MemRefType>(concreteInputs.front()).getElementType()) + "_" +
-           std::to_string(++suffix))
-              .str();
-
-  OpBuilder modBuilder(ctx);
-  modBuilder.setInsertionPointToStart(module.getBody());
-  auto inst = modBuilder.create<func::FuncOp>(
-      seed.getLoc(), sym, FunctionType::get(ctx, concreteInputs, {}));
-  inst.setPrivate();
-  inst->setAttr(kOpLibAttrInstanceOf, StringAttr::get(ctx, opName));
-  inst->setAttr(kOpLibAttrInstanceDType,
-                StringAttr::get(
-                    ctx, dtypeToString(cast<MemRefType>(concreteInputs.front()).getElementType())));
-
-  Block *entry = inst.addEntryBlock();
-  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(entry);
-
-  Block &seedEntry = seed.getBody().front();
-  IRMapping mapping;
-  for (unsigned i = 0; i < seedTy.getNumInputs(); ++i) {
-    Value arg = entry->getArgument(i);
-    Type dstTy = seedTy.getInput(i);
-    Value adapted = arg;
-    if (arg.getType() != dstTy) {
-      auto castTy = dyn_cast<MemRefType>(dstTy);
-      if (!castTy)
-        return failure();
-      adapted = bodyBuilder.create<memref::CastOp>(seed.getLoc(), castTy, arg);
-    }
-    mapping.map(seedEntry.getArgument(i), adapted);
-  }
-
-  for (Operation &op : seedEntry.without_terminator()) {
-    Operation *newOp = bodyBuilder.clone(op, mapping);
-    for (auto [oldRes, newRes] : llvm::zip(op.getResults(), newOp->getResults()))
-      mapping.map(oldRes, newRes);
-  }
-  bodyBuilder.create<func::ReturnOp>(seed.getLoc());
-
-  if (debug) {
-    llvm::errs() << "[op-fusion] instantiate-oplib: created @" << inst.getSymName()
-                 << " from @" << seed.getSymName() << "\n";
-  }
-
-  return inst;
-}
-
-static LogicalResult materializeExternalInstanceBody(func::FuncOp instance,
-                                                     func::FuncOp seed, bool debug) {
+static LogicalResult emitFakeBinaryBody(func::FuncOp instance) {
   if (!instance.isExternal())
     return success();
-  if (seed.isExternal())
-    return instance.emitOpError("seed template must have body");
 
-  auto instTy = instance.getFunctionType();
-  auto seedTy = seed.getFunctionType();
-  if (instTy.getNumInputs() != seedTy.getNumInputs())
-    return instance.emitOpError("instance/seed signature arity mismatch");
+  auto opAttr = instance->getAttrOfType<StringAttr>(kOpLibAttrInstOp);
+  if (!opAttr)
+    return instance.emitOpError("missing attr pto.oplib.instance.op");
+
+  StringRef opName = opAttr.getValue();
+  if (!isSupportedOpName(opName))
+    return instance.emitOpError("unsupported pto.oplib.instance.op");
+
+  FunctionType fnTy = instance.getFunctionType();
+  if (fnTy.getNumInputs() != 3 || fnTy.getNumResults() != 0)
+    return instance.emitOpError("instance signature must be 3-input and void-return");
+
+  auto src0Ty = dyn_cast<MemRefType>(fnTy.getInput(0));
+  auto src1Ty = dyn_cast<MemRefType>(fnTy.getInput(1));
+  auto dstTy = dyn_cast<MemRefType>(fnTy.getInput(2));
+  if (!src0Ty || !src1Ty || !dstTy)
+    return instance.emitOpError("instance inputs must be memref");
+  if (src0Ty.getRank() != 2 || src1Ty.getRank() != 2 || dstTy.getRank() != 2)
+    return instance.emitOpError("instance memref rank must be 2");
+  if (src0Ty.getElementType() != src1Ty.getElementType() ||
+      src0Ty.getElementType() != dstTy.getElementType())
+    return instance.emitOpError("instance input/output element type mismatch");
+
+  Type elemTy = src0Ty.getElementType();
+  if (!elemTy.isF16() && !elemTy.isF32())
+    return instance.emitOpError("only f16/f32 instance dtype is supported");
 
   Block *entry = instance.addEntryBlock();
-  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(entry);
-  Block &seedEntry = seed.getBody().front();
-  IRMapping mapping;
+  OpBuilder b = OpBuilder::atBlockBegin(entry);
+  Value src0 = entry->getArgument(0);
+  Value src1 = entry->getArgument(1);
+  Value dst = entry->getArgument(2);
 
-  for (unsigned i = 0; i < instTy.getNumInputs(); ++i) {
-    Value arg = entry->getArgument(i);
-    Type dstTy = seedTy.getInput(i);
-    Value adapted = arg;
-    if (arg.getType() != dstTy) {
-      auto castTy = dyn_cast<MemRefType>(dstTy);
-      if (!castTy)
-        return instance.emitOpError("seed input must be memref");
-      adapted = bodyBuilder.create<memref::CastOp>(instance.getLoc(), castTy, arg);
+  Value c0 = b.create<arith::ConstantIndexOp>(instance.getLoc(), 0);
+  Value c1 = b.create<arith::ConstantIndexOp>(instance.getLoc(), 1);
+  Value m = b.create<memref::DimOp>(instance.getLoc(), dst, c0);
+  Value n = b.create<memref::DimOp>(instance.getLoc(), dst, c1);
+
+  auto outer = b.create<scf::ForOp>(instance.getLoc(), c0, m, c1);
+  {
+    OpBuilder bOuter = OpBuilder::atBlockBegin(outer.getBody());
+    Value i = outer.getInductionVar();
+    auto inner = bOuter.create<scf::ForOp>(instance.getLoc(), c0, n, c1);
+
+    OpBuilder bInner = OpBuilder::atBlockBegin(inner.getBody());
+    Value j = inner.getInductionVar();
+
+    Value a = bInner.create<memref::LoadOp>(instance.getLoc(), src0,
+                                            ValueRange{i, j});
+    Value c = bInner.create<memref::LoadOp>(instance.getLoc(), src1,
+                                            ValueRange{i, j});
+
+    Value out;
+    if (opName == "tadd") {
+      out = bInner.create<arith::AddFOp>(instance.getLoc(), a, c);
+    } else if (opName == "tsub") {
+      out = bInner.create<arith::SubFOp>(instance.getLoc(), a, c);
+    } else if (opName == "tmul") {
+      out = bInner.create<arith::MulFOp>(instance.getLoc(), a, c);
+    } else if (opName == "tdiv") {
+      out = bInner.create<arith::DivFOp>(instance.getLoc(), a, c);
+    } else if (opName == "tmax") {
+      out = bInner.create<arith::MaximumFOp>(instance.getLoc(), a, c);
+    } else {
+      out = bInner.create<arith::MinimumFOp>(instance.getLoc(), a, c);
     }
-    mapping.map(seedEntry.getArgument(i), adapted);
+
+    bInner.create<memref::StoreOp>(instance.getLoc(), out, dst, ValueRange{i, j});
   }
 
-  for (Operation &op : seedEntry.without_terminator()) {
-    Operation *newOp = bodyBuilder.clone(op, mapping);
-    for (auto [oldRes, newRes] : llvm::zip(op.getResults(), newOp->getResults()))
-      mapping.map(oldRes, newRes);
-  }
-  bodyBuilder.create<func::ReturnOp>(instance.getLoc());
-
-  if (debug) {
-    llvm::errs() << "[op-fusion] instantiate-oplib: materialized external instance @"
-                 << instance.getSymName() << " from @" << seed.getSymName() << "\n";
-  }
+  b.create<func::ReturnOp>(instance.getLoc());
   return success();
 }
 
@@ -243,115 +187,69 @@ struct PTOInstantiateAndInlineOpLibPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    llvm::StringMap<func::FuncOp> seedByOp;
-    for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (!isTemplateFunc(func))
-        continue;
-      auto opAttr = func->getAttrOfType<StringAttr>(kOpLibAttrOp);
-      if (!opAttr)
-        continue;
-      if (!seedByOp.count(opAttr.getValue()))
-        seedByOp[opAttr.getValue()] = func;
-    }
-
-    llvm::StringMap<func::FuncOp> instanceByKey;
     int inlinedCalls = 0;
     int touchedFuncs = 0;
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (!func.getSymName().starts_with("__pto_fused_group_"))
+      if (func.isExternal())
+        continue;
+      if (func.getSymName().starts_with("__pto_oplib_"))
         continue;
       if (func.empty())
         continue;
 
-      SmallVector<func::CallOp, 8> calls;
+      SmallVector<func::CallOp, 16> calls;
       func.walk([&](func::CallOp call) { calls.push_back(call); });
 
       bool changedThisFunc = false;
       for (func::CallOp oldCall : calls) {
         if (!oldCall || !oldCall->getBlock())
           continue;
+
         auto calleeAttr = oldCall.getCalleeAttr();
         if (!calleeAttr)
           continue;
 
         func::FuncOp callee = module.lookupSymbol<func::FuncOp>(calleeAttr.getValue());
-        if (!callee)
+        if (!callee || !isInstanceFunc(callee))
           continue;
 
-        func::CallOp call = oldCall;
-
-        if (isTemplateFunc(callee)) {
-          auto opAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrOp);
-          if (!opAttr) {
-            callee.emitError("template missing pto.oplib.op");
+        if (callee.isExternal()) {
+          if (failed(emitFakeBinaryBody(callee))) {
             signalPassFailure();
             return;
           }
-          StringRef opName = opAttr.getValue();
-
-          SmallVector<Value, 4> concreteOperands;
-          concreteOperands.reserve(call.getNumOperands());
-          for (auto [operand, expectedTy] :
-               llvm::zip(call.getOperands(), callee.getFunctionType().getInputs()))
-            concreteOperands.push_back(maybeUnwrapCast(operand, expectedTy));
-
-          SmallVector<Type, 4> concreteTypes;
-          concreteTypes.reserve(concreteOperands.size());
-          for (Value v : concreteOperands)
-            concreteTypes.push_back(v.getType());
-
-          std::string key = (opName + "|" + typeListKey(concreteTypes)).str();
-          func::FuncOp concreteInstance;
-          auto it = instanceByKey.find(key);
-          if (it != instanceByKey.end()) {
-            concreteInstance = it->second;
-          } else {
-            auto createdOr =
-                createConcreteInstanceFromSeed(module, callee, concreteTypes, opName, debug);
-            if (failed(createdOr)) {
-              call.emitError("failed to create concrete OP-Lib instance");
-              signalPassFailure();
-              return;
-            }
-            concreteInstance = *createdOr;
-            instanceByKey[key] = concreteInstance;
+          if (debug) {
+            auto op = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp);
+            auto dtype = callee->getAttrOfType<StringAttr>(kOpLibAttrInstDType);
+            llvm::errs() << "[op-fusion] instantiate-oplib: materialized @"
+                         << callee.getSymName();
+            if (op)
+              llvm::errs() << " op=" << op.getValue();
+            if (dtype)
+              llvm::errs() << " dtype=" << dtype.getValue();
+            llvm::errs() << "\n";
           }
-
-          OpBuilder builder(call);
-          auto newCall =
-              builder.create<func::CallOp>(call.getLoc(), concreteInstance, concreteOperands);
-          call.erase();
-          call = newCall;
-          callee = concreteInstance;
-        } else if (isInstanceFunc(callee)) {
-          if (callee.isExternal()) {
-            auto opAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrInstanceOf);
-            if (!opAttr) {
-              callee.emitError("instance missing pto.oplib.instance_of");
-              signalPassFailure();
-              return;
-            }
-            auto seedIt = seedByOp.find(opAttr.getValue());
-            if (seedIt == seedByOp.end()) {
-              callee.emitError()
-                  << "missing OP-Lib seed for instance_of=" << opAttr.getValue();
-              signalPassFailure();
-              return;
-            }
-            if (failed(materializeExternalInstanceBody(callee, seedIt->second, debug))) {
-              signalPassFailure();
-              return;
-            }
-          }
-        } else {
-          continue;
         }
 
-        if (failed(inlineCall(call, callee))) {
+        func::CallOp call = oldCall;
+        SmallVector<Value, 4> concreteOperands;
+        concreteOperands.reserve(call.getNumOperands());
+        for (auto [operand, expectedTy] :
+             llvm::zip(call.getOperands(), callee.getFunctionType().getInputs())) {
+          concreteOperands.push_back(maybeUnwrapCast(operand, expectedTy));
+        }
+
+        OpBuilder builder(call);
+        auto newCall =
+            builder.create<func::CallOp>(call.getLoc(), callee, concreteOperands);
+        call.erase();
+
+        if (failed(inlineCall(newCall, callee))) {
           signalPassFailure();
           return;
         }
+
         ++inlinedCalls;
         changedThisFunc = true;
         if (debug) {
@@ -368,7 +266,7 @@ struct PTOInstantiateAndInlineOpLibPass
 
     if (debug) {
       llvm::errs() << "[op-fusion] instantiate+inline touched " << touchedFuncs
-                   << " fused function(s), inlined " << inlinedCalls << " call(s)\n";
+                   << " function(s), inlined " << inlinedCalls << " call(s)\n";
     }
   }
 };
