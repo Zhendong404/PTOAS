@@ -19,9 +19,10 @@
     1. `LoweringSyncToPipe -> PTOViewToMemref`
     2. `InferPTOLayout/PlanMemory/InsertSync`（按现有条件）
     3. 若 `op-fusion` 开启：先做 fusion group 创建
-    4. 统一执行 OP-LIB materialization（既处理 fusion 组，也处理非组单 OP）
-    5. 执行 instantiate/inlining（保证实例函数可落地）
-    6. 若 `op-fusion` 开启：保留现有 CSE/LoopFusion
+    4. 执行 `PTOLowerToOpLibCallsPass`（既处理 fusion 组，也处理非组单 OP）
+    5. 若 `op-fusion` 开启：执行 `PTOOutlineFusionGroupsPass`（仅负责 group outline）
+    6. 执行 instantiate/inlining（保证实例函数可落地）
+    7. 若 `op-fusion` 开启：保留现有 CSE/LoopFusion
   - 增加一个 IR 观测点（建议）：`--dump-ir-after-oplib-lowering`，用于新路径测试与回归。
 
 - **OP-LIB 注册/匹配/实例化框架升级**

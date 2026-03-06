@@ -99,7 +99,7 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Enable OP fusion pipeline: create groups + materialize from OP-Lib + low-level loop fusion"),
+    llvm::cl::desc("Enable OP fusion pipeline: create groups + outline grouped OP-Lib calls + low-level loop fusion"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> disableOplibLowering(
@@ -720,11 +720,16 @@ int main(int argc, char **argv) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
 
   if (enableOplibLowering) {
-    pto::PTOMaterializeFusionGroupsFromOpLibOptions materializeOptions;
-    materializeOptions.opLibDir = opLibDir;
-    materializeOptions.debug = opFusionDebug;
-    pm.addPass(
-        pto::createPTOMaterializeFusionGroupsFromOpLibPass(materializeOptions));
+    pto::PTOLowerToOpLibCallsOptions lowerToOplibOptions;
+    lowerToOplibOptions.opLibDir = opLibDir;
+    lowerToOplibOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOLowerToOpLibCallsPass(lowerToOplibOptions));
+
+    if (enableOpFusion) {
+      pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+      outlineGroupsOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+    }
 
     pto::PTOInstantiateAndInlineOpLibOptions instantiateInlineOptions;
     instantiateInlineOptions.debug = opFusionDebug;

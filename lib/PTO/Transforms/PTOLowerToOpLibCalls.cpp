@@ -32,7 +32,7 @@
 
 namespace mlir {
 namespace pto {
-#define GEN_PASS_DEF_PTOMATERIALIZEFUSIONGROUPSFROMOPLIB
+#define GEN_PASS_DEF_PTOLOWERTOOPLIBCALLS
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -96,14 +96,6 @@ static constexpr llvm::StringLiteral kDefaultCoreSlot = "binary_ewise_core";
 struct GroupInfo {
   int64_t groupId = -1;
   SmallVector<Operation *, 8> ops;
-};
-
-struct GroupInterface {
-  DenseSet<Operation *> groupSet;
-  SmallVector<Value, 8> producedInOrder;
-  DenseSet<Value> producedSet;
-  SmallVector<Value, 8> externalInputs;
-  SmallVector<Value, 8> callArgs;
 };
 
 enum class EntryRole {
@@ -227,121 +219,6 @@ static std::string sanitizeSymbolComponent(StringRef text) {
   if (out.empty())
     out = "unnamed";
   return out;
-}
-
-static Value castToMemRefTypeIfNeeded(OpBuilder &builder, Location loc, Value v,
-                                      MemRefType dstTy) {
-  if (v.getType() == dstTy)
-    return v;
-
-  auto srcTy = dyn_cast<MemRefType>(v.getType());
-  if (!srcTy)
-    return {};
-  if (srcTy.getRank() != dstTy.getRank())
-    return {};
-  if (srcTy.getElementType() != dstTy.getElementType())
-    return {};
-  if (srcTy.getMemorySpace() != dstTy.getMemorySpace())
-    return {};
-
-  return builder.create<memref::CastOp>(loc, dstTy, v);
-}
-
-static bool valueInList(ArrayRef<Value> vals, Value v) {
-  return llvm::is_contained(vals, v);
-}
-
-static void appendUniqueValue(SmallVectorImpl<Value> &vals, Value v) {
-  if (!valueInList(vals, v))
-    vals.push_back(v);
-}
-
-static void eraseDeadValueDefChain(Value v) {
-  Operation *def = v.getDefiningOp();
-  if (!def || !def->use_empty())
-    return;
-
-  if (!isa<memref::AllocOp, pto::BindTileOp, memref::CastOp,
-           memref::ReinterpretCastOp, memref::SubViewOp>(def))
-    return;
-
-  SmallVector<Value, 4> operands(def->getOperands().begin(),
-                                 def->getOperands().end());
-  def->erase();
-  for (Value operand : operands)
-    eraseDeadValueDefChain(operand);
-}
-
-static GroupInterface buildGroupInterface(GroupInfo &group) {
-  GroupInterface iface;
-  iface.groupSet.insert(group.ops.begin(), group.ops.end());
-
-  for (Operation *op : group.ops) {
-    Value dst = getBinaryOpInterface(op).dst;
-    appendUniqueValue(iface.producedInOrder, dst);
-    iface.producedSet.insert(dst);
-  }
-
-  for (Operation *op : group.ops) {
-    BinaryOpInterface ifaceOp = getBinaryOpInterface(op);
-    for (Value src : {ifaceOp.src0, ifaceOp.src1}) {
-      if (!iface.producedSet.contains(src))
-        appendUniqueValue(iface.externalInputs, src);
-    }
-  }
-
-  for (Value dst : iface.producedInOrder) {
-    bool usedOutside = false;
-    for (Operation *user : dst.getUsers()) {
-      if (!iface.groupSet.contains(user)) {
-        usedOutside = true;
-        break;
-      }
-    }
-    (void)usedOutside;
-  }
-
-  for (Value v : iface.externalInputs)
-    appendUniqueValue(iface.callArgs, v);
-  for (Value v : iface.producedInOrder)
-    appendUniqueValue(iface.callArgs, v);
-
-  return iface;
-}
-
-static std::string makeUniqueFusedName(SymbolTable &symbolTable, int64_t groupId,
-                                       int &fusedCounter) {
-  std::string fusedName = "__pto_fused_group_" + std::to_string(groupId) +
-                          "_" + std::to_string(fusedCounter++);
-  while (symbolTable.lookup(fusedName))
-    fusedName += "_x";
-  return fusedName;
-}
-
-static func::FuncOp createFusedFunc(ModuleOp module, Location loc,
-                                    StringRef name, ArrayRef<Value> callArgs,
-                                    int64_t groupId) {
-  SmallVector<Type, 8> argTypes;
-  for (Value v : callArgs)
-    argTypes.push_back(v.getType());
-
-  OpBuilder moduleBuilder(module.getContext());
-  moduleBuilder.setInsertionPointToStart(module.getBody());
-  auto fusedFunc = moduleBuilder.create<func::FuncOp>(
-      loc, name, FunctionType::get(module.getContext(), argTypes, {}));
-  fusedFunc.setPrivate();
-  fusedFunc->setAttr(kFusionGroupIdAttr,
-                     IntegerAttr::get(IntegerType::get(module.getContext(), 64),
-                                      groupId));
-  return fusedFunc;
-}
-
-static DenseMap<Value, Value> mapCallArgsToEntry(Block *entry,
-                                                 ArrayRef<Value> callArgs) {
-  DenseMap<Value, Value> valueMap;
-  for (auto [orig, arg] : llvm::zip(callArgs, entry->getArguments()))
-    valueMap[orig] = arg;
-  return valueMap;
 }
 
 static bool isAllowedDTypeName(StringRef dtypeName) {
@@ -947,62 +824,29 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   return PlannedOpLowering{op, *selectedOr, *instanceOr};
 }
 
-static FailureOr<Value> mapOrFail(DenseMap<Value, Value> &valueMap, Value key) {
-  auto it = valueMap.find(key);
-  if (it == valueMap.end())
-    return failure();
-  return it->second;
-}
-
-static LogicalResult materializePlannedOpInGroup(
-    const PlannedOpLowering &planned, DenseMap<Value, Value> &valueMap,
-    OpBuilder &bodyBuilder) {
+static LogicalResult rewriteOneGroupedOpAsCall(const PlannedOpLowering &planned) {
   Operation *op = planned.op;
   BinaryOpInterface iface = getBinaryOpInterface(op);
+  if (iface.opName.empty())
+    return op->emitOpError("unsupported grouped op during OP-Lib lowering");
 
-  FailureOr<Value> src0Or = mapOrFail(valueMap, iface.src0);
-  FailureOr<Value> src1Or = mapOrFail(valueMap, iface.src1);
-  if (failed(src0Or) || failed(src1Or))
-    return emitError(op->getLoc(), "failed to map group source values"), failure();
+  OpBuilder builder(op);
+  auto call = builder.create<func::CallOp>(
+      op->getLoc(), planned.instance, ValueRange{iface.src0, iface.src1, iface.dst});
 
-  Value mappedSrc0 = *src0Or;
-  Value mappedSrc1 = *src1Or;
+  if (auto gid = op->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr))
+    call->setAttr(kFusionGroupIdAttr, gid);
+  if (auto order = op->getAttrOfType<IntegerAttr>(kFusionOrderAttr))
+    call->setAttr(kFusionOrderAttr, order);
 
-  Value mappedDst;
-  auto dstIt = valueMap.find(iface.dst);
-  if (dstIt == valueMap.end())
-    return emitError(op->getLoc(), "group dst missing mapped value"), failure();
-  mappedDst = dstIt->second;
-
-  func::FuncOp instance = planned.instance;
-  auto instTy = instance.getFunctionType();
-  auto instSrc0Ty = dyn_cast<MemRefType>(instTy.getInput(0));
-  auto instSrc1Ty = dyn_cast<MemRefType>(instTy.getInput(1));
-  auto instDstTy = dyn_cast<MemRefType>(instTy.getInput(2));
-  if (!instSrc0Ty || !instSrc1Ty || !instDstTy)
-    return emitError(op->getLoc(), "instance signature is invalid"), failure();
-
-  Value callSrc0 =
-      castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), mappedSrc0, instSrc0Ty);
-  Value callSrc1 =
-      castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), mappedSrc1, instSrc1Ty);
-  Value callDst =
-      castToMemRefTypeIfNeeded(bodyBuilder, op->getLoc(), mappedDst, instDstTy);
-  if (!callSrc0 || !callSrc1 || !callDst)
-    return emitError(op->getLoc(), "failed to adapt operands to instance type"),
-           failure();
-
-  bodyBuilder.create<func::CallOp>(op->getLoc(), instance,
-                                   ValueRange{callSrc0, callSrc1, callDst});
-
+  op->erase();
   return success();
 }
 
-struct PTOMaterializeFusionGroupsFromOpLibPass
-    : public pto::impl::PTOMaterializeFusionGroupsFromOpLibBase<
-          PTOMaterializeFusionGroupsFromOpLibPass> {
-  using pto::impl::PTOMaterializeFusionGroupsFromOpLibBase<
-      PTOMaterializeFusionGroupsFromOpLibPass>::PTOMaterializeFusionGroupsFromOpLibBase;
+struct PTOLowerToOpLibCallsPass
+    : public pto::impl::PTOLowerToOpLibCallsBase<PTOLowerToOpLibCallsPass> {
+  using pto::impl::PTOLowerToOpLibCallsBase<
+      PTOLowerToOpLibCallsPass>::PTOLowerToOpLibCallsBase;
 
   void collectGroupsInRegion(Region &region,
                              SmallVectorImpl<GroupInfo> &groups) {
@@ -1067,9 +911,7 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
     return success();
   }
 
-  LogicalResult materializeOneGroup(ModuleOp module, SymbolTable &symbolTable,
-                                    TemplateRegistry &registry, GroupInfo &group,
-                                    int &fusedCounter) {
+  LogicalResult lowerOneGroup(TemplateRegistry &registry, GroupInfo &group) {
     if (group.ops.empty())
       return success();
 
@@ -1080,52 +922,24 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
       return success();
     }
 
-    Operation *firstOp = group.ops.front();
-    Location loc = firstOp->getLoc();
-
-    GroupInterface iface = buildGroupInterface(group);
-    if (iface.callArgs.empty()) {
-      firstOp->emitWarning()
-          << "fusion-group fallback: group has no external interface values, "
-             "keep original ops";
-      return success();
-    }
-
-    std::string fusedName =
-        makeUniqueFusedName(symbolTable, group.groupId, fusedCounter);
-    auto fusedFunc =
-        createFusedFunc(module, loc, fusedName, iface.callArgs, group.groupId);
-
-    Block *entry = fusedFunc.addEntryBlock();
-    OpBuilder bodyBuilder = OpBuilder::atBlockBegin(entry);
-    DenseMap<Value, Value> valueMap = mapCallArgsToEntry(entry, iface.callArgs);
-
     for (const PlannedOpLowering &plan : planned) {
-      if (failed(materializePlannedOpInGroup(plan, valueMap, bodyBuilder))) {
-        firstOp->emitWarning() << "fusion-group fallback: failed to materialize "
-                                  "selected OP-Lib calls, keep original group";
-        fusedFunc.erase();
+      if (failed(rewriteOneGroupedOpAsCall(plan))) {
+        group.ops.front()->emitWarning()
+            << "fusion-group fallback: failed to rewrite selected OP-Lib calls, "
+               "keep original group";
         return success();
       }
     }
 
-    bodyBuilder.create<func::ReturnOp>(loc);
-
-    OpBuilder callerBuilder(firstOp);
-    callerBuilder.create<func::CallOp>(loc, fusedFunc, iface.callArgs);
-
-    for (Operation *op : llvm::reverse(group.ops))
-      op->erase();
-
     if (debug) {
-      llvm::errs() << "[op-fusion] materialized group_id=" << group.groupId
-                   << " into @" << fusedFunc.getSymName() << "\n";
+      llvm::errs() << "[op-fusion] lowered group_id=" << group.groupId
+                   << " to OP-Lib calls (" << planned.size() << " op(s))\n";
     }
 
     return success();
   }
 
-  LogicalResult materializeSingleOps(func::FuncOp func, TemplateRegistry &registry) {
+  LogicalResult lowerSingleOps(func::FuncOp func, TemplateRegistry &registry) {
     SmallVector<Operation *, 32> toRewrite;
 
     func.walk([&](Operation *op) {
@@ -1171,7 +985,6 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
       return;
     }
 
-    int fusedCounter = 0;
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (func.isExternal())
         continue;
@@ -1186,14 +999,13 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
       }
 
       for (GroupInfo &group : groups) {
-        if (failed(
-                materializeOneGroup(module, symbolTable, registry, group, fusedCounter))) {
+        if (failed(lowerOneGroup(registry, group))) {
           signalPassFailure();
           return;
         }
       }
 
-      if (failed(materializeSingleOps(func, registry))) {
+      if (failed(lowerSingleOps(func, registry))) {
         signalPassFailure();
         return;
       }
@@ -1204,7 +1016,7 @@ struct PTOMaterializeFusionGroupsFromOpLibPass
 } // namespace
 
 std::unique_ptr<Pass>
-mlir::pto::createPTOMaterializeFusionGroupsFromOpLibPass(
-    const PTOMaterializeFusionGroupsFromOpLibOptions &options) {
-  return std::make_unique<PTOMaterializeFusionGroupsFromOpLibPass>(options);
+mlir::pto::createPTOLowerToOpLibCallsPass(
+    const PTOLowerToOpLibCallsOptions &options) {
+  return std::make_unique<PTOLowerToOpLibCallsPass>(options);
 }

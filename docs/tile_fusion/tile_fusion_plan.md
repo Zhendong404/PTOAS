@@ -23,11 +23,15 @@
    - 作用：自动分组（生成 fusion group 元数据）
    - 建议 argument：`pto-create-fusion-groups`
 
-2. `PTOMaterializeFusionGroupsFromOpLibPass`
-   - 作用：按外部 OP 库展开 fusion group
-   - 建议 argument：`pto-materialize-fusion-groups-from-oplib`
+2. `PTOLowerToOpLibCallsPass`
+   - 作用：执行 `pto op -> OP-Lib call` 的匹配、实例选择与改写
+   - 建议 argument：`pto-lower-to-oplib-calls`
 
-3. `PTOLowLevelLoopFusionPass`
+3. `PTOOutlineFusionGroupsPass`
+   - 作用：将已改写的 group call 链 outline 为 fused helper 函数
+   - 建议 argument：`pto-outline-fusion-groups`
+
+4. `PTOLowLevelLoopFusionPass`
    - 作用：低层 loop 融合
    - 建议 argument：`pto-low-level-loop-fusion`
 
@@ -111,7 +115,7 @@ V1 推荐模板签名：
 
 1. shape 使用动态 `?x?`，与具体形状解耦
 2. seed template 以 `T=f32` 交付
-3. `PTOMaterializeFusionGroupsFromOpLibPass` 按目标 dtype 自动实例化（`f16/f32`）
+3. `PTOLowerToOpLibCallsPass` 按目标 dtype 自动实例化（`f16/f32`）
 
 ---
 
@@ -125,10 +129,11 @@ V1 推荐模板签名：
 4. `PlanMemory`（`level1/level2`）
 5. `InsertSync`（按现有开关，`level1/level2`）
 6. `PTOCreateFusionGroupsPass`
-7. `PTOMaterializeFusionGroupsFromOpLibPass`
-8. `PTOInstantiateAndInlineOpLibPass -> Canonicalizer/CSE`
-9. `PTOLowLevelLoopFusionPass`
-10. `EmitPTOManual -> EmitC -> C++`
+7. `PTOLowerToOpLibCallsPass`
+8. `PTOOutlineFusionGroupsPass`（仅 `--enable-op-fusion`）
+9. `PTOInstantiateAndInlineOpLibPass -> Canonicalizer/CSE`
+10. `PTOLowLevelLoopFusionPass`
+11. `EmitPTOManual -> EmitC -> C++`
 
 说明：
 
@@ -191,7 +196,7 @@ pto.tadd ... outs(%out) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 2 : i
 %t1 = pto.alloc_tile ... {pto.fusion.role = "intermediate", pto.fusion.group_id = 0 : i64}
 ```
 
-#### 阶段 C：`PlanMemory/InsertSync` 之后 + `PTOMaterializeFusionGroupsFromOpLibPass` 之后
+#### 阶段 C：`PlanMemory/InsertSync` 之后 + `PTOLowerToOpLibCallsPass/PTOOutlineFusionGroupsPass` 之后
 
 Caller 被改写成一个 group 调用边界，中间结果不再出现在 caller 中：
 
@@ -290,14 +295,14 @@ func.func @__pto_fused_group_0(%a: memref<32x32xf32, #pto.address_space<vec>>,
 2. `pto.fusion.order`：组内顺序
 3. `pto.fusion.role`：`input` / `intermediate` / `output`（可选，调试与诊断用）
 
-### 6.2 `PTOMaterializeFusionGroupsFromOpLibPass`
+### 6.2 `PTOLowerToOpLibCallsPass` + `PTOOutlineFusionGroupsPass`
 
 核心动作：
 
-1. 扫描 group，提取外部输入和最终输出。
-2. 组内连续 OP 改写为一个 `func.call @__pto_fused_group_*`（或内部生成函数并调用）。
-3. 组内中间值仅在被调用函数体内存在，不暴露到 caller。
-4. 若 OP 库条目缺失：直接报错并终止（V1 策略）。
+1. `PTOLowerToOpLibCallsPass`：读取 OP-Lib 模板并完成匹配/选择，将组内或非组单 OP 改写为 OP-Lib `func.call`。
+2. `PTOOutlineFusionGroupsPass`：仅对带 `group_id/order` 的 call 链做 outline，生成 `@__pto_fused_group_*` 调用边界。
+3. 组内中间值由 outlined helper 管理，caller 仅保留调用边界参数。
+4. 若 OP 库条目缺失：按策略执行 warning/fallback 或报错终止。
 
 ### 6.3 `PTOLowLevelLoopFusionPass`
 

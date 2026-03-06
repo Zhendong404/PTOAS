@@ -129,15 +129,15 @@ def PTOCreateFusionGroups : Pass<"pto-create-fusion-groups", "func::FuncOp"> {
   ];
 }
 
-def PTOMaterializeFusionGroupsFromOpLib : Pass<"pto-materialize-fusion-groups-from-oplib", "ModuleOp"> {
-  let summary = "Materialize fusion groups using external OP-Lib templates";
+def PTOLowerToOpLibCalls : Pass<"pto-lower-to-oplib-calls", "ModuleOp"> {
+  let summary = "Lower PTO binary ops to OP-Lib calls";
   let description = [{
     Reads OP-Lib template functions from --op-lib-dir, validates templates,
-    and rewrites fusion groups into synthesized fused functions that call
-    OP-Lib seed/instance symbols. Actual instance body generation and inlining
-    are handled by a dedicated follow-up pass.
+    selects/matches OP-Lib entries (variant/seed), creates OP-Lib instance
+    symbols, and rewrites PTO binary elementwise ops to OP-Lib func.call.
+    Fusion groups remain as ordered call chains in this pass.
   }];
-  let constructor = "mlir::pto::createPTOMaterializeFusionGroupsFromOpLibPass()";
+  let constructor = "mlir::pto::createPTOLowerToOpLibCallsPass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
     "mlir::memref::MemRefDialect",
@@ -151,7 +151,26 @@ def PTOMaterializeFusionGroupsFromOpLib : Pass<"pto-materialize-fusion-groups-fr
            "Directory containing OP-Lib template .mlir files">,
     Option<"debug", "debug", "bool",
            /*default=*/"false",
-           "Enable verbose debug logging for OP-Lib materialization">
+           "Enable verbose debug logging for OP-Lib lowering">
+  ];
+}
+
+def PTOOutlineFusionGroups : Pass<"pto-outline-fusion-groups", "ModuleOp"> {
+  let summary = "Outline grouped OP-Lib call chains into fused helper functions";
+  let description = [{
+    Outlines contiguous call chains annotated with fusion group metadata into
+    synthesized @__pto_fused_group_* helper functions and replaces the chain
+    with a single call boundary in caller functions.
+  }];
+  let constructor = "mlir::pto::createPTOOutlineFusionGroupsPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect"
+  ];
+  let options = [
+    Option<"debug", "debug", "bool",
+           /*default=*/"false",
+           "Enable verbose debug logging for group outlining">
   ];
 }
 
