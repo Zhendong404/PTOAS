@@ -300,12 +300,12 @@ struct TemplateRegistry {
     if (fnTy.getNumInputs() != 3 || fnTy.getNumResults() != 0)
       return false;
     for (Type inTy : fnTy.getInputs()) {
-      auto memTy = dyn_cast<MemRefType>(inTy);
-      if (!memTy)
+      auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+      if (!tileTy)
         return false;
-      if (memTy.getRank() != 2)
+      if (tileTy.getRank() != 2)
         return false;
-      if (!isFloatDTypeSupported(memTy.getElementType()))
+      if (!isFloatDTypeSupported(tileTy.getElementType()))
         return false;
     }
     return true;
@@ -513,8 +513,8 @@ struct TemplateRegistry {
 
         if (!validateTemplateSignature(libFunc)) {
           libFunc.emitError("invalid OP-Lib signature; expected "
-                            "(memref<*x*xf16/f32>, memref<*x*xf16/f32>, "
-                            "memref<*x*xf16/f32>) -> () with rank-2 memref args");
+                            "(!pto.tile_buf<...>, !pto.tile_buf<...>, "
+                            "!pto.tile_buf<...>) -> () with rank-2 f16/f32 tile_buf args");
           return failure();
         }
 

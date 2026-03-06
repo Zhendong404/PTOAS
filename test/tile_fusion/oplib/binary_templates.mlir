@@ -1,8 +1,8 @@
 module {
-  func.func @__pto_oplib_variant_tmax_f32(
-      %src0: memref<?x?xf32, #pto.address_space<vec>>,
-      %src1: memref<?x?xf32, #pto.address_space<vec>>,
-      %dst: memref<?x?xf32, #pto.address_space<vec>>)
+  func.func private @__pto_oplib_variant_tmax_f32(
+      %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       attributes {
         pto.oplib.kind = "l3_binary_elementwise_template",
         pto.oplib.entry_role = "variant",
@@ -16,26 +16,12 @@ module {
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 10 : i64
-      } {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %m = memref.dim %dst, %c0 : memref<?x?xf32, #pto.address_space<vec>>
-    %n = memref.dim %dst, %c1 : memref<?x?xf32, #pto.address_space<vec>>
-    scf.for %i = %c0 to %m step %c1 {
-      scf.for %j = %c0 to %n step %c1 {
-        %a = memref.load %src0[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %b = memref.load %src1[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %v = arith.maximumf %a, %b : f32
-        memref.store %v, %dst[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
       }
-    }
-    return
-  }
 
-  func.func @__pto_oplib_variant_tadd_f32(
-      %src0: memref<?x?xf32, #pto.address_space<vec>>,
-      %src1: memref<?x?xf32, #pto.address_space<vec>>,
-      %dst: memref<?x?xf32, #pto.address_space<vec>>)
+  func.func private @__pto_oplib_variant_tadd_f32(
+      %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       attributes {
         pto.oplib.kind = "l3_binary_elementwise_template",
         pto.oplib.entry_role = "variant",
@@ -49,26 +35,12 @@ module {
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 2 : i64,
         pto.oplib.priority = 5 : i64
-      } {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %m = memref.dim %dst, %c0 : memref<?x?xf32, #pto.address_space<vec>>
-    %n = memref.dim %dst, %c1 : memref<?x?xf32, #pto.address_space<vec>>
-    scf.for %i = %c0 to %m step %c1 {
-      scf.for %j = %c0 to %n step %c1 {
-        %a = memref.load %src0[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %b = memref.load %src1[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %v = arith.addf %a, %b : f32
-        memref.store %v, %dst[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
       }
-    }
-    return
-  }
 
-  func.func @__pto_oplib_seed_vec_bin_core(
-      %src0: memref<?x?xf32, #pto.address_space<vec>>,
-      %src1: memref<?x?xf32, #pto.address_space<vec>>,
-      %dst: memref<?x?xf32, #pto.address_space<vec>>)
+  func.func private @__pto_oplib_seed_vec_bin_core(
+      %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       attributes {
         pto.oplib.kind = "l3_binary_elementwise_template",
         pto.oplib.entry_role = "seed",
@@ -84,19 +56,5 @@ module {
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
-      } {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %m = memref.dim %dst, %c0 : memref<?x?xf32, #pto.address_space<vec>>
-    %n = memref.dim %dst, %c1 : memref<?x?xf32, #pto.address_space<vec>>
-    scf.for %i = %c0 to %m step %c1 {
-      scf.for %j = %c0 to %n step %c1 {
-        %a = memref.load %src0[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %b = memref.load %src1[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
-        %v = arith.addf %a, %b {pto.oplib.core_slot = "binary_ewise_core"} : f32
-        memref.store %v, %dst[%i, %j] : memref<?x?xf32, #pto.address_space<vec>>
       }
-    }
-    return
-  }
 }
