@@ -85,32 +85,34 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 3. `func::FuncOp`（可选）：`InferPTOLayout`（当未设置 `--disable-infer-layout`）
 4. `ModuleOp`（可选）：`PlanMemory`（当 `--pto-level != level3`）
 5. `func::FuncOp`（可选）：`PTOInsertSync`（当 `--enable-insert-sync` 且 `--pto-level != level3`）
-6. `ModuleOp`：`CSE`
-7. `ModuleOp`：`EmitPTOManual`（由 `--pto-arch=a3|a5` 选择目标）
-8. `ModuleOp`：`emitc::FormExpressions`
-9. `ModuleOp`：`CSE`
-10. C++ 输出后处理（非 pass）：marker 重写与文本清理
+6. `func::FuncOp`：`PTOMemrefToTileBuf`
+7. `func::FuncOp`：`PTOCreateFusionGroupsPass`
+8. `ModuleOp`：`PTOOutlineFusionGroupsPass`
+9. `ModuleOp`：`PTOInstantiateAndLowerToLibCallPass`
+10. `ModuleOp`：`PTOInlineLibCallPass`
+11. `ModuleOp`：`PTOTileBufToMemref`
+12. `ModuleOp`：`Canonicalizer -> CSE -> PTOLowLevelLoopFusionPass -> Canonicalizer -> CSE`
+13. `ModuleOp`：`CSE -> EmitPTOManual -> emitc::FormExpressions -> CSE`
+14. C++ 输出后处理（非 pass）：marker 重写与文本清理
 
 **构建 Level 约束**
 
 - `level1/level2`（默认 `level2`）：启用 `PlanMemory`，可选启用 `InsertSync`
 - `level3`：跳过 `PlanMemory`，并忽略 `--enable-insert-sync`；要求 `alloc_tile` 显式提供 `addr`
-- OP Fusion 支持 `level1/level2/level3`，在 `level3` 中会在 `InferPTOLayout`（若开启）之后执行
+- OP-Lib 主链路默认总是执行，不再由 `--enable-op-fusion` gating（该开关保留为兼容 no-op）
+- `--op-lib-dir` 为必填，缺失直接报错
+- `dump-ir-after-oplib-lowering` 在 `PTOInstantiateAndLowerToLibCallPass` 后截断
+- `dump-ir-after-op-fusion` 在 `InlineLibCall + LoopFusion + TileBuf2Memref` 后截断
 
-**OP Fusion V1 推荐 Pipeline（设计中）**
+**OP Fusion V1 已落地约束**
 
-1. `func::FuncOp`：`LoweringSyncToPipe`
-2. `ModuleOp`：`PTOViewToMemref`
-3. `func::FuncOp`（可选）：`InferPTOLayout`
-4. `ModuleOp`：`PlanMemory`（`level1/level2`）
-5. `func::FuncOp`（可选）：`PTOInsertSync`（`level1/level2`）
-6. `func::FuncOp`：`PTOCreateFusionGroupsPass`
-7. `ModuleOp`：`PTOMaterializeFusionGroupsFromOpLibPass`（将 group 物化为调用边界）
-8. `ModuleOp`：`PTOInstantiateAndInlineOpLibPass -> Canonicalizer/CSE`
-9. `ModuleOp`：`PTOLowLevelLoopFusionPass`
-10. `ModuleOp`：`EmitPTOManual -> emitc::FormExpressions -> CSE`
+1. 固定顺序：`InsertSync -> Memref2Tilebuf -> CreateFusionGroups -> OutlineFusionGroups -> InstantiateAndLowerToLibCall -> InlineLibCall -> Tilebuf2Memref`
+2. OP-Lib 模板函数 / 实例函数 / 调用点接口必须是 `!pto.tile_buf`
+3. Lower 阶段不允许把 OP-Lib 外部签名降到 `memref`
+4. Inline 阶段允许在函数体内部临时插入 `tile_buf <-> memref` cast 以驱动低层 loop 生成
+5. `PTOLowLevelLoopFusionPass` 默认总是执行（除非在更早 dump 截断）
 
-说明：OP Fusion V1 的完整设计与约束见 `docs/tile_fusion_plan.md`。
+说明：OP Fusion 的实现与约束见 `docs/tile_fusion/tile_fusion_plan.md` 与 `docs/tile_fusion/oplib_ir_spec.md`。
 
 ## 构建系统
 
@@ -192,7 +194,8 @@ A: 检查同步分析模式（NORMALSYNC vs BLOCKSYNC），并考虑手动优化
 
 - `README.md`：详细构建和使用说明
 - `docs/PTO_IR_manual.md`：PTO IR 规范手册
-- `docs/tile_fusion_plan.md`：OP Fusion V1 设计与落地方案
+- `docs/tile_fusion/tile_fusion_plan.md`：OP Fusion V1 设计与落地方案（当前实现）
+- `docs/tile_fusion/oplib_ir_spec.md`：OP-Lib 模板接口规范（tile_buf 约束）
 - `PTO_OPS_SPEC.md`：PTO 操作规范
 - `ReleaseNotes.md`：发布说明
 
@@ -209,4 +212,4 @@ A: 检查同步分析模式（NORMALSYNC vs BLOCKSYNC），并考虑手动优化
 
 ---
 
-*最后更新：2026-03-05*
+*最后更新：2026-03-07*
