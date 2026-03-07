@@ -1,3 +1,4 @@
+#include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,7 +15,7 @@
 
 namespace mlir {
 namespace pto {
-#define GEN_PASS_DEF_PTOINSTANTIATEANDINLINEOPLIB
+#define GEN_PASS_DEF_PTOINLINELIBCALL
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -38,38 +39,51 @@ static bool isInstanceFunc(func::FuncOp fn) {
   return fn->hasAttr(kOpLibAttrInstVariantId);
 }
 
-static Value maybeUnwrapCast(Value operand, Type expectedType) {
-  auto cast = operand.getDefiningOp<memref::CastOp>();
-  if (!cast)
-    return operand;
-  if (cast.getResult().getType() != expectedType)
-    return operand;
-
-  auto srcTy = dyn_cast<MemRefType>(cast.getSource().getType());
-  auto expectedMemTy = dyn_cast<MemRefType>(expectedType);
-  if (!srcTy || !expectedMemTy)
-    return operand;
-  if (srcTy.getRank() != expectedMemTy.getRank())
-    return operand;
-  if (srcTy.getElementType() != expectedMemTy.getElementType())
-    return operand;
-  if (srcTy.getMemorySpace() != expectedMemTy.getMemorySpace())
-    return operand;
-  return cast.getSource();
+static FailureOr<MemRefType> convertTileBufToMemRefType(pto::TileBufType tileTy,
+                                                         MLIRContext *ctx) {
+  SmallVector<int64_t, 4> shape(tileTy.getShape().begin(), tileTy.getShape().end());
+  SmallVector<int64_t, 4> dynStrides(tileTy.getRank(), ShapedType::kDynamic);
+  auto layout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, dynStrides);
+  return MemRefType::get(shape, tileTy.getElementType(), layout,
+                         tileTy.getMemorySpace());
 }
 
-static void eraseDeadCasts(func::FuncOp func) {
+static Value maybeUnwrapCastToExpected(Value operand, Type expectedType) {
+  if (operand.getType() == expectedType)
+    return operand;
+
+  auto cast = operand.getDefiningOp<UnrealizedConversionCastOp>();
+  if (!cast || cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+    return operand;
+
+  if (cast.getOperand(0).getType() == expectedType)
+    return cast.getOperand(0);
+  return operand;
+}
+
+static void eraseDeadBridgeCasts(func::FuncOp func) {
   bool changed = true;
   while (changed) {
     changed = false;
-    SmallVector<memref::CastOp, 8> dead;
+
+    SmallVector<UnrealizedConversionCastOp, 8> deadUnrealized;
+    func.walk([&](UnrealizedConversionCastOp cast) {
+      if (cast->use_empty())
+        deadUnrealized.push_back(cast);
+    });
+
+    SmallVector<memref::CastOp, 8> deadMemrefCasts;
     func.walk([&](memref::CastOp cast) {
       if (cast->use_empty())
-        dead.push_back(cast);
+        deadMemrefCasts.push_back(cast);
     });
-    if (dead.empty())
+
+    if (deadUnrealized.empty() && deadMemrefCasts.empty())
       break;
-    for (memref::CastOp cast : llvm::reverse(dead))
+
+    for (UnrealizedConversionCastOp cast : llvm::reverse(deadUnrealized))
+      cast.erase();
+    for (memref::CastOp cast : llvm::reverse(deadMemrefCasts))
       cast.erase();
     changed = true;
   }
@@ -116,13 +130,13 @@ static LogicalResult emitFakeBinaryBody(func::FuncOp instance) {
   if (fnTy.getNumInputs() != 3 || fnTy.getNumResults() != 0)
     return instance.emitOpError("instance signature must be 3-input and void-return");
 
-  auto src0Ty = dyn_cast<MemRefType>(fnTy.getInput(0));
-  auto src1Ty = dyn_cast<MemRefType>(fnTy.getInput(1));
-  auto dstTy = dyn_cast<MemRefType>(fnTy.getInput(2));
+  auto src0Ty = dyn_cast<pto::TileBufType>(fnTy.getInput(0));
+  auto src1Ty = dyn_cast<pto::TileBufType>(fnTy.getInput(1));
+  auto dstTy = dyn_cast<pto::TileBufType>(fnTy.getInput(2));
   if (!src0Ty || !src1Ty || !dstTy)
-    return instance.emitOpError("instance inputs must be memref");
+    return instance.emitOpError("instance inputs must be !pto.tile_buf");
   if (src0Ty.getRank() != 2 || src1Ty.getRank() != 2 || dstTy.getRank() != 2)
-    return instance.emitOpError("instance memref rank must be 2");
+    return instance.emitOpError("instance tile_buf rank must be 2");
   if (src0Ty.getElementType() != src1Ty.getElementType() ||
       src0Ty.getElementType() != dstTy.getElementType())
     return instance.emitOpError("instance input/output element type mismatch");
@@ -131,58 +145,82 @@ static LogicalResult emitFakeBinaryBody(func::FuncOp instance) {
   if (!elemTy.isF16() && !elemTy.isF32())
     return instance.emitOpError("only f16/f32 instance dtype is supported");
 
+  FailureOr<MemRefType> src0MemTyOr =
+      convertTileBufToMemRefType(src0Ty, instance.getContext());
+  FailureOr<MemRefType> src1MemTyOr =
+      convertTileBufToMemRefType(src1Ty, instance.getContext());
+  FailureOr<MemRefType> dstMemTyOr =
+      convertTileBufToMemRefType(dstTy, instance.getContext());
+  if (failed(src0MemTyOr) || failed(src1MemTyOr) || failed(dstMemTyOr)) {
+    return instance.emitOpError(
+        "failed to derive memref bridge type from instance !pto.tile_buf signature");
+  }
+
   Block *entry = instance.addEntryBlock();
   OpBuilder b = OpBuilder::atBlockBegin(entry);
+  Location loc = instance.getLoc();
+
   Value src0 = entry->getArgument(0);
   Value src1 = entry->getArgument(1);
   Value dst = entry->getArgument(2);
 
-  Value c0 = b.create<arith::ConstantIndexOp>(instance.getLoc(), 0);
-  Value c1 = b.create<arith::ConstantIndexOp>(instance.getLoc(), 1);
-  Value m = b.create<memref::DimOp>(instance.getLoc(), dst, c0);
-  Value n = b.create<memref::DimOp>(instance.getLoc(), dst, c1);
+  // Keep public OP-Lib interface as !pto.tile_buf and bridge internally.
+  Value src0Mem = b
+                      .create<UnrealizedConversionCastOp>(
+                          loc, TypeRange{*src0MemTyOr}, ValueRange{src0})
+                      .getResult(0);
+  Value src1Mem = b
+                      .create<UnrealizedConversionCastOp>(
+                          loc, TypeRange{*src1MemTyOr}, ValueRange{src1})
+                      .getResult(0);
+  Value dstMem = b
+                     .create<UnrealizedConversionCastOp>(
+                         loc, TypeRange{*dstMemTyOr}, ValueRange{dst})
+                     .getResult(0);
 
-  auto outer = b.create<scf::ForOp>(instance.getLoc(), c0, m, c1);
+  Value c0 = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value m = b.create<memref::DimOp>(loc, dstMem, c0);
+  Value n = b.create<memref::DimOp>(loc, dstMem, c1);
+
+  auto outer = b.create<scf::ForOp>(loc, c0, m, c1);
   {
     OpBuilder bOuter = OpBuilder::atBlockBegin(outer.getBody());
     Value i = outer.getInductionVar();
-    auto inner = bOuter.create<scf::ForOp>(instance.getLoc(), c0, n, c1);
+    auto inner = bOuter.create<scf::ForOp>(loc, c0, n, c1);
 
     OpBuilder bInner = OpBuilder::atBlockBegin(inner.getBody());
     Value j = inner.getInductionVar();
 
-    Value a = bInner.create<memref::LoadOp>(instance.getLoc(), src0,
-                                            ValueRange{i, j});
-    Value c = bInner.create<memref::LoadOp>(instance.getLoc(), src1,
-                                            ValueRange{i, j});
+    Value a = bInner.create<memref::LoadOp>(loc, src0Mem, ValueRange{i, j});
+    Value c = bInner.create<memref::LoadOp>(loc, src1Mem, ValueRange{i, j});
 
     Value out;
     if (opName == "tadd") {
-      out = bInner.create<arith::AddFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::AddFOp>(loc, a, c);
     } else if (opName == "tsub") {
-      out = bInner.create<arith::SubFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::SubFOp>(loc, a, c);
     } else if (opName == "tmul") {
-      out = bInner.create<arith::MulFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::MulFOp>(loc, a, c);
     } else if (opName == "tdiv") {
-      out = bInner.create<arith::DivFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::DivFOp>(loc, a, c);
     } else if (opName == "tmax") {
-      out = bInner.create<arith::MaximumFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::MaximumFOp>(loc, a, c);
     } else {
-      out = bInner.create<arith::MinimumFOp>(instance.getLoc(), a, c);
+      out = bInner.create<arith::MinimumFOp>(loc, a, c);
     }
 
-    bInner.create<memref::StoreOp>(instance.getLoc(), out, dst, ValueRange{i, j});
+    bInner.create<memref::StoreOp>(loc, out, dstMem, ValueRange{i, j});
   }
 
-  b.create<func::ReturnOp>(instance.getLoc());
+  b.create<func::ReturnOp>(loc);
   return success();
 }
 
-struct PTOInstantiateAndInlineOpLibPass
-    : public pto::impl::PTOInstantiateAndInlineOpLibBase<
-          PTOInstantiateAndInlineOpLibPass> {
-  using pto::impl::PTOInstantiateAndInlineOpLibBase<
-      PTOInstantiateAndInlineOpLibPass>::PTOInstantiateAndInlineOpLibBase;
+struct PTOInlineLibCallPass
+    : public pto::impl::PTOInlineLibCallBase<PTOInlineLibCallPass> {
+  using pto::impl::PTOInlineLibCallBase<
+      PTOInlineLibCallPass>::PTOInlineLibCallBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -222,7 +260,7 @@ struct PTOInstantiateAndInlineOpLibPass
           if (debug) {
             auto op = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp);
             auto dtype = callee->getAttrOfType<StringAttr>(kOpLibAttrInstDType);
-            llvm::errs() << "[op-fusion] instantiate-oplib: materialized @"
+            llvm::errs() << "[op-fusion] instantiate-libcall: materialized @"
                          << callee.getSymName();
             if (op)
               llvm::errs() << " op=" << op.getValue();
@@ -237,7 +275,7 @@ struct PTOInstantiateAndInlineOpLibPass
         concreteOperands.reserve(call.getNumOperands());
         for (auto [operand, expectedTy] :
              llvm::zip(call.getOperands(), callee.getFunctionType().getInputs())) {
-          concreteOperands.push_back(maybeUnwrapCast(operand, expectedTy));
+          concreteOperands.push_back(maybeUnwrapCastToExpected(operand, expectedTy));
         }
 
         OpBuilder builder(call);
@@ -253,19 +291,19 @@ struct PTOInstantiateAndInlineOpLibPass
         ++inlinedCalls;
         changedThisFunc = true;
         if (debug) {
-          llvm::errs() << "[op-fusion] inline-oplib: inlined @" << callee.getSymName()
+          llvm::errs() << "[op-fusion] inline-libcall: inlined @" << callee.getSymName()
                        << " into @" << func.getSymName() << "\n";
         }
       }
 
       if (changedThisFunc) {
-        eraseDeadCasts(func);
+        eraseDeadBridgeCasts(func);
         ++touchedFuncs;
       }
     }
 
     if (debug) {
-      llvm::errs() << "[op-fusion] instantiate+inline touched " << touchedFuncs
+      llvm::errs() << "[op-fusion] inline-libcall touched " << touchedFuncs
                    << " function(s), inlined " << inlinedCalls << " call(s)\n";
     }
   }
@@ -274,7 +312,7 @@ struct PTOInstantiateAndInlineOpLibPass
 } // namespace
 
 std::unique_ptr<Pass>
-mlir::pto::createPTOInstantiateAndInlineOpLibPass(
-    const PTOInstantiateAndInlineOpLibOptions &options) {
-  return std::make_unique<PTOInstantiateAndInlineOpLibPass>(options);
+mlir::pto::createPTOInlineLibCallPass(
+    const PTOInlineLibCallOptions &options) {
+  return std::make_unique<PTOInlineLibCallPass>(options);
 }

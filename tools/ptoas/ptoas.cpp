@@ -99,12 +99,7 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Enable OP fusion pipeline: create groups + outline grouped OP-Lib calls + low-level loop fusion"),
-    llvm::cl::init(false));
-
-static llvm::cl::opt<bool> disableOplibLowering(
-    "disable-oplib-lowering",
-    llvm::cl::desc("Disable PTO OP -> OP-LIB lowering (enabled by default)"),
+    llvm::cl::desc("Compatibility flag (no-op): OP-Lib fusion pipeline is always enabled"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> opLibDir(
@@ -655,15 +650,8 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  const bool enableOplibLowering = !disableOplibLowering;
-  if (enableOplibLowering && opLibDir.empty()) {
-    llvm::errs() << "Error: --op-lib-dir is required when OP-LIB lowering is enabled.\n";
-    return 1;
-  }
-
-  if (enableOpFusion && !enableOplibLowering) {
-    llvm::errs() << "Error: --enable-op-fusion requires OP-LIB lowering; "
-                    "remove --disable-oplib-lowering.\n";
+  if (opLibDir.empty()) {
+    llvm::errs() << "Error: --op-lib-dir is required.\n";
     return 1;
   }
 
@@ -716,34 +704,41 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (enableOpFusion)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+  // Bridge back to tile_buf so OP fusion + OP->LibCall selection operate in
+  // tile world.
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
 
-  if (enableOplibLowering) {
-    pto::PTOLowerToOpLibCallsOptions lowerToOplibOptions;
-    lowerToOplibOptions.opLibDir = opLibDir;
-    lowerToOplibOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOLowerToOpLibCallsPass(lowerToOplibOptions));
+  // OP-Lib fusion pipeline is always enabled:
+  //   create-groups -> outline -> instantiate+lower-to-libcall
+  //   -> inline-libcall -> tilebuf2memref -> low-level-loop-fusion
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
 
-    if (enableOpFusion) {
-      pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
-      outlineGroupsOptions.debug = opFusionDebug;
-      pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
-    }
+  pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+  outlineGroupsOptions.debug = opFusionDebug;
+  pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
 
-    pto::PTOInstantiateAndInlineOpLibOptions instantiateInlineOptions;
-    instantiateInlineOptions.debug = opFusionDebug;
-    pm.addPass(
-        pto::createPTOInstantiateAndInlineOpLibPass(instantiateInlineOptions));
-  }
+  pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
+  instantiateLowerOptions.opLibDir = opLibDir;
+  instantiateLowerOptions.debug = opFusionDebug;
+  pm.addPass(
+      pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
 
-  if (enableOpFusion && !dumpIRAfterOplibLowering) {
+  if (!dumpIRAfterOplibLowering) {
+    pto::PTOInlineLibCallOptions inlineLibCallOptions;
+    inlineLibCallOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
+
+    // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
+    pm.addPass(pto::createPTOTileBufToMemrefPass());
+
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
 
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
   }
 
   if (failed(pm.run(*module))) {

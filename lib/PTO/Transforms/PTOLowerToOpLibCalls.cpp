@@ -3,7 +3,6 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -32,7 +31,7 @@
 
 namespace mlir {
 namespace pto {
-#define GEN_PASS_DEF_PTOLOWERTOOPLIBCALLS
+#define GEN_PASS_DEF_PTOINSTANTIATEANDLOWERTOLIBCALL
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -198,7 +197,7 @@ static std::string dtypeToString(Type ty) {
   return os.str();
 }
 
-static std::string memRefTypeToString(MemRefType ty) {
+static std::string typeToString(Type ty) {
   std::string s;
   llvm::raw_string_ostream os(s);
   ty.print(os);
@@ -681,11 +680,11 @@ struct TemplateRegistry {
 
   FailureOr<func::FuncOp>
   getOrCreateInstance(const SelectedVariant &selected,
-                      ArrayRef<MemRefType> concreteArgTypes, Location loc) {
+                      ArrayRef<Type> concreteArgTypes, Location loc) {
     std::string key = selected.variantId;
-    for (MemRefType ty : concreteArgTypes) {
+    for (Type ty : concreteArgTypes) {
       key += "|";
-      key += memRefTypeToString(ty);
+      key += typeToString(ty);
     }
 
     auto cached = instanceByKey.find(key);
@@ -693,8 +692,8 @@ struct TemplateRegistry {
       return cached->second;
 
     SmallVector<Type, 3> argTypes;
-    for (MemRefType memTy : concreteArgTypes)
-      argTypes.push_back(memTy);
+    for (Type ty : concreteArgTypes)
+      argTypes.push_back(ty);
 
     std::string symBase =
         "__pto_oplib_inst_" + sanitizeSymbolComponent(selected.variantId);
@@ -739,28 +738,29 @@ struct TemplateRegistry {
   }
 };
 
-static FailureOr<MatchKey> buildMatchKeyFromMemRef(MemRefType dstTy) {
+static FailureOr<MatchKey> buildMatchKeyFromTileBuf(pto::TileBufType dstTy) {
   if (dstTy.getRank() != 2)
     return failure();
 
+  ArrayRef<int64_t> shape = dstTy.getShape();
   MatchKey key;
-  key.rows = dstTy.isDynamicDim(0) ? -1 : dstTy.getDimSize(0);
-  key.cols = dstTy.isDynamicDim(1) ? -1 : dstTy.getDimSize(1);
+  key.rows = shape[0] == ShapedType::kDynamic ? -1 : shape[0];
+  key.cols = shape[1] == ShapedType::kDynamic ? -1 : shape[1];
   key.blayout = kDefaultAny.str();
   key.slayout = kDefaultAny.str();
   key.fractal = -1;
   return key;
 }
 
-static FailureOr<SmallVector<MemRefType, 3>>
-getConcreteMemRefTypes(Operation *op) {
+static FailureOr<SmallVector<pto::TileBufType, 3>>
+getConcreteTileBufTypes(Operation *op) {
   BinaryOpInterface iface = getBinaryOpInterface(op);
   if (iface.opName.empty())
     return failure();
 
-  auto src0Ty = dyn_cast<MemRefType>(iface.src0.getType());
-  auto src1Ty = dyn_cast<MemRefType>(iface.src1.getType());
-  auto dstTy = dyn_cast<MemRefType>(iface.dst.getType());
+  auto src0Ty = dyn_cast<pto::TileBufType>(iface.src0.getType());
+  auto src1Ty = dyn_cast<pto::TileBufType>(iface.src1.getType());
+  auto dstTy = dyn_cast<pto::TileBufType>(iface.dst.getType());
   if (!src0Ty || !src1Ty || !dstTy)
     return failure();
 
@@ -774,7 +774,7 @@ getConcreteMemRefTypes(Operation *op) {
   if (!isFloatDTypeSupported(src0Ty.getElementType()))
     return failure();
 
-  return SmallVector<MemRefType, 3>{src0Ty, src1Ty, dstTy};
+  return SmallVector<pto::TileBufType, 3>{src0Ty, src1Ty, dstTy};
 }
 
 static FailureOr<PlannedOpLowering>
@@ -784,19 +784,19 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   if (iface.opName.empty())
     return failure();
 
-  FailureOr<SmallVector<MemRefType, 3>> concreteTypesOr =
-      getConcreteMemRefTypes(op);
+  FailureOr<SmallVector<pto::TileBufType, 3>> concreteTypesOr =
+      getConcreteTileBufTypes(op);
   if (failed(concreteTypesOr)) {
     op->emitWarning() << warningPrefix
                       << ": unsupported operand signature for op '" << iface.opName
-                      << "' (requires rank-2 memref<f16/f32>)";
+                      << "' (requires rank-2 !pto.tile_buf<f16/f32>)";
     return failure();
   }
 
-  SmallVector<MemRefType, 3> concreteTypes = *concreteTypesOr;
+  SmallVector<pto::TileBufType, 3> concreteTypes = *concreteTypesOr;
   Type elemTy = concreteTypes.front().getElementType();
 
-  FailureOr<MatchKey> matchKeyOr = buildMatchKeyFromMemRef(concreteTypes[2]);
+  FailureOr<MatchKey> matchKeyOr = buildMatchKeyFromTileBuf(concreteTypes[2]);
   if (failed(matchKeyOr)) {
     op->emitWarning() << warningPrefix << ": unsupported shape rank for op '"
                       << iface.opName << "'";
@@ -812,8 +812,10 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
     return failure();
   }
 
+  SmallVector<Type, 3> concreteArgTypes;
+  concreteArgTypes.append(concreteTypes.begin(), concreteTypes.end());
   FailureOr<func::FuncOp> instanceOr =
-      registry.getOrCreateInstance(*selectedOr, concreteTypes, op->getLoc());
+      registry.getOrCreateInstance(*selectedOr, concreteArgTypes, op->getLoc());
   if (failed(instanceOr)) {
     op->emitWarning() << warningPrefix
                       << ": failed to instantiate OP-Lib candidate for op="
@@ -843,10 +845,11 @@ static LogicalResult rewriteOneGroupedOpAsCall(const PlannedOpLowering &planned)
   return success();
 }
 
-struct PTOLowerToOpLibCallsPass
-    : public pto::impl::PTOLowerToOpLibCallsBase<PTOLowerToOpLibCallsPass> {
-  using pto::impl::PTOLowerToOpLibCallsBase<
-      PTOLowerToOpLibCallsPass>::PTOLowerToOpLibCallsBase;
+struct PTOInstantiateAndLowerToLibCallPass
+    : public pto::impl::PTOInstantiateAndLowerToLibCallBase<
+          PTOInstantiateAndLowerToLibCallPass> {
+  using pto::impl::PTOInstantiateAndLowerToLibCallBase<
+      PTOInstantiateAndLowerToLibCallPass>::PTOInstantiateAndLowerToLibCallBase;
 
   void collectGroupsInRegion(Region &region,
                              SmallVectorImpl<GroupInfo> &groups) {
@@ -1016,7 +1019,7 @@ struct PTOLowerToOpLibCallsPass
 } // namespace
 
 std::unique_ptr<Pass>
-mlir::pto::createPTOLowerToOpLibCallsPass(
-    const PTOLowerToOpLibCallsOptions &options) {
-  return std::make_unique<PTOLowerToOpLibCallsPass>(options);
+mlir::pto::createPTOInstantiateAndLowerToLibCallPass(
+    const PTOInstantiateAndLowerToLibCallOptions &options) {
+  return std::make_unique<PTOInstantiateAndLowerToLibCallPass>(options);
 }
