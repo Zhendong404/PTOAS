@@ -73,6 +73,8 @@ std::unique_ptr<Pass> createPTOOutlineFusionGroupsPass(
     const PTOOutlineFusionGroupsOptions &options = {});
 std::unique_ptr<Pass> createPTOInlineLibCallPass(
     const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOValidateSimdIRPass();
+std::unique_ptr<Pass> createPTOLowerSimdToVectorPass();
 std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
     const PTOLowLevelLoopFusionOptions &options = {});
 // Declare register function

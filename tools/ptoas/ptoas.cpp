@@ -764,6 +764,8 @@ int main(int argc, char **argv) {
       pto::PTOInlineLibCallOptions inlineLibCallOptions;
       inlineLibCallOptions.debug = opFusionDebug;
       pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
+      pm.addPass(pto::createPTOValidateSimdIRPass());
+      pm.addPass(pto::createPTOLowerSimdToVectorPass());
 
       // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
       pm.addPass(pto::createPTOTileBufToMemrefPass());

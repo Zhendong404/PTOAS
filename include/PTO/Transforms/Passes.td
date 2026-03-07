@@ -193,6 +193,41 @@ def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {
   ];
 }
 
+def PTOValidateSimdIR : Pass<"pto-validate-simd-ir", "ModuleOp"> {
+  let summary = "Validate pto.simd bridge IR in OP-Lib templates/instances";
+  let description = [{
+    Validates structural constraints for pto.simd bridge IR, including:
+      - required pto.simd.level / pto.simd.lanes attributes
+      - non-empty function body
+      - single binary core slot in seed/templates
+      - lane consistency between mask and vector values
+      - load -> core -> store ordering
+  }];
+  let constructor = "mlir::pto::createPTOValidateSimdIRPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
+def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
+  let summary = "Lower pto.simd bridge ops to standard vector/memref/arith ops";
+  let description = [{
+    Rewrites pto.simd.predicate/load/store/load_pu/store_pu into
+    vector/memref/arith equivalents so downstream canonicalization and loop
+    fusion can proceed on standard MLIR ops.
+  }];
+  let constructor = "mlir::pto::createPTOLowerSimdToVectorPass()";
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect",
+    "mlir::vector::VectorDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary = "Fuse adjacent low-level loop nests in synthesized fused functions";
   let description = [{

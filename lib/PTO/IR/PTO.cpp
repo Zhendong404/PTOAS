@@ -3227,6 +3227,121 @@ mlir::LogicalResult mlir::pto::TXorSOp::verify() {
 
   return mlir::success();
 }
+
+static LogicalResult verifySimdMaskVector(Operation *op, Type maskTy,
+                                          int64_t &lanesOut) {
+  auto maskVec = dyn_cast<VectorType>(maskTy);
+  if (!maskVec || maskVec.isScalable())
+    return op->emitOpError("expects fixed-width vector mask type");
+  if (!maskVec.getElementType().isInteger(1))
+    return op->emitOpError("expects mask element type to be i1");
+  lanesOut = maskVec.getNumElements();
+  if (lanesOut <= 0)
+    return op->emitOpError("expects positive mask lanes");
+  return success();
+}
+
+static LogicalResult verifySimdValueVector(Operation *op, Type valueTy,
+                                           int64_t expectedLanes) {
+  auto valueVec = dyn_cast<VectorType>(valueTy);
+  if (!valueVec || valueVec.isScalable())
+    return op->emitOpError("expects fixed-width vector value type");
+  if (valueVec.getNumElements() != expectedLanes)
+    return op->emitOpError("expects value lanes to match mask lanes");
+  Type elemTy = valueVec.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return op->emitOpError("expects vector element type to be integer or float");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdPredicateOp::verify() {
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdLoadOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!memTy)
+    return emitOpError("expects src to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref source");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdStoreOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects dst to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref destination");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdLoadPUOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!memTy)
+    return emitOpError("expects src to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref source");
+
+  if (getStep() <= 0)
+    return emitOpError("expects step to be > 0");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdStorePUOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects dst to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref destination");
+
+  if (getStep() <= 0)
+    return emitOpError("expects step to be > 0");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
 //===----------------------------------------------------------------------===//
 // PTO.cpp  (add TSYNC DPS/tilebuf implementation)
 //===----------------------------------------------------------------------===//

@@ -7,6 +7,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -92,6 +94,23 @@ static constexpr llvm::StringLiteral kEntryRoleSeed = "seed";
 static constexpr llvm::StringLiteral kDefaultAny = "any";
 static constexpr llvm::StringLiteral kDefaultCoreSlot = "binary_ewise_core";
 
+static constexpr llvm::StringLiteral kSimdLevelAttr = "pto.simd.level";
+static constexpr llvm::StringLiteral kSimdLanesAttr = "pto.simd.lanes";
+static constexpr llvm::StringLiteral kSimdCoreSlotAttr = "pto.simd.core_slot";
+static constexpr llvm::StringLiteral kSimdLevelBinaryEwiseV1 =
+    "binary_ewise_v1";
+
+static constexpr llvm::StringLiteral kErrEmptyBody =
+    "E_OPLIB_EMPTY_BODY_FOR_SIMD";
+static constexpr llvm::StringLiteral kErrLanesMismatch =
+    "E_OPLIB_SIMD_LANES_MISMATCH";
+static constexpr llvm::StringLiteral kErrCoreSlot =
+    "E_OPLIB_SIMD_INVALID_CORE_SLOT";
+static constexpr llvm::StringLiteral kErrDType =
+    "E_OPLIB_SIMD_UNSUPPORTED_DTYPE";
+static constexpr llvm::StringLiteral kErrLayout =
+    "E_OPLIB_SIMD_UNSUPPORTED_LAYOUT";
+
 struct GroupInfo {
   int64_t groupId = -1;
   SmallVector<Operation *, 8> ops;
@@ -122,6 +141,8 @@ struct TemplateEntry {
   SmallVector<std::string, 8> supportDTypes;
   SmallVector<std::string, 8> supportOps;
   std::string coreSlot = kDefaultCoreSlot.str();
+  std::string simdLevel;
+  int64_t simdLanes = -1;
 
   MatchKey match;
   int64_t cost = 0;
@@ -233,6 +254,18 @@ static bool containsString(ArrayRef<std::string> values, StringRef key) {
   return llvm::any_of(values, [&](const std::string &s) { return s == key; });
 }
 
+static bool isBinaryFloatCore(Operation *op) {
+  return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
+             arith::MaximumFOp, arith::MinimumFOp>(op);
+}
+
+static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
+  auto vecTy = dyn_cast<VectorType>(ty);
+  if (!vecTy || vecTy.isScalable())
+    return failure();
+  return vecTy.getNumElements();
+}
+
 struct TemplateRegistry {
   ModuleOp module;
   SymbolTable &symbolTable;
@@ -250,6 +283,18 @@ struct TemplateRegistry {
 
   LogicalResult emitFailure(Location loc, const Twine &msg) {
     emitError(loc) << msg;
+    return failure();
+  }
+
+  LogicalResult emitFailureWithCode(Operation *anchor, StringRef code,
+                                    const Twine &msg) {
+    anchor->emitError() << code << ": " << msg;
+    return failure();
+  }
+
+  LogicalResult emitFailureWithCode(Location loc, StringRef code,
+                                    const Twine &msg) {
+    emitError(loc) << code << ": " << msg;
     return failure();
   }
 
@@ -465,6 +510,171 @@ struct TemplateRegistry {
     return success();
   }
 
+  LogicalResult parseSimdAttrs(func::FuncOp imported,
+                               std::unique_ptr<TemplateEntry> &entry) {
+    Operation *op = imported.getOperation();
+    auto levelOr = parseStringAttr(op, kSimdLevelAttr);
+    auto lanesOr = parseI64Attr(op, kSimdLanesAttr, /*allowWildcard=*/false);
+    if (failed(levelOr) || failed(lanesOr)) {
+      return emitFailureWithCode(
+          op, kErrLanesMismatch,
+          "missing required attrs: pto.simd.level / pto.simd.lanes");
+    }
+    if (*levelOr != kSimdLevelBinaryEwiseV1) {
+      return emitFailureWithCode(op, kErrCoreSlot,
+                                 Twine("unsupported pto.simd.level: ") +
+                                     *levelOr);
+    }
+    entry->simdLevel = *levelOr;
+    entry->simdLanes = *lanesOr;
+    return success();
+  }
+
+  LogicalResult validateTemplateBodyForSimd(func::FuncOp imported,
+                                            const TemplateEntry &entry) {
+    if (imported.isExternal() || imported.empty() ||
+        imported.front().without_terminator().empty()) {
+      return emitFailureWithCode(imported.getLoc(), kErrEmptyBody,
+                                 "template body must not be empty");
+    }
+
+    FunctionType fnTy = imported.getFunctionType();
+    for (Type inTy : fnTy.getInputs()) {
+      auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+      if (!tileTy) {
+        return emitFailureWithCode(imported.getLoc(), kErrEmptyBody,
+                                   "template inputs must be !pto.tile_buf");
+      }
+      Type elemTy = tileTy.getElementType();
+      if (!elemTy.isF16() && !elemTy.isF32()) {
+        return emitFailureWithCode(imported.getLoc(), kErrDType,
+                                   "SIMD template supports f16/f32 only");
+      }
+      if (tileTy.getBLayoutValueI32() != 0) {
+        return emitFailureWithCode(imported.getLoc(), kErrLayout,
+                                   "SIMD template supports row_major only");
+      }
+    }
+
+    int64_t firstLoad = std::numeric_limits<int64_t>::max();
+    int64_t firstStore = std::numeric_limits<int64_t>::max();
+    int64_t coreSeq = -1;
+    int coreCount = 0;
+
+    llvm::DenseMap<Operation *, int64_t> preorder;
+    int64_t seq = 0;
+    imported.walk([&](Operation *op) { preorder[op] = seq++; });
+
+    LogicalResult status = success();
+    imported.walk([&](Operation *op) {
+      if (failed(status))
+        return;
+
+      if (isa<pto::SimdLoadOp, pto::SimdLoadPUOp>(op))
+        firstLoad = std::min(firstLoad, preorder[op]);
+      if (isa<pto::SimdStoreOp, pto::SimdStorePUOp>(op))
+        firstStore = std::min(firstStore, preorder[op]);
+
+      if (auto pred = dyn_cast<pto::SimdPredicateOp>(op)) {
+        FailureOr<int64_t> lanes = getFixedVectorLanes(pred.getMask().getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(pred, kErrLanesMismatch,
+                                       "simd.predicate lanes mismatch with pto.simd.lanes");
+        }
+        return;
+      }
+
+      if (auto load = dyn_cast<pto::SimdLoadOp>(op)) {
+        FailureOr<int64_t> lanes = getFixedVectorLanes(load.getValue().getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(load, kErrLanesMismatch,
+                                       "simd.load lanes mismatch with pto.simd.lanes");
+        }
+        return;
+      }
+
+      if (auto loadPU = dyn_cast<pto::SimdLoadPUOp>(op)) {
+        FailureOr<int64_t> lanes =
+            getFixedVectorLanes(loadPU.getValue().getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(loadPU, kErrLanesMismatch,
+                                       "simd.load_pu lanes mismatch with pto.simd.lanes");
+        }
+        return;
+      }
+
+      if (auto store = dyn_cast<pto::SimdStoreOp>(op)) {
+        FailureOr<int64_t> lanes = getFixedVectorLanes(store.getValue().getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(store, kErrLanesMismatch,
+                                       "simd.store lanes mismatch with pto.simd.lanes");
+        }
+        return;
+      }
+
+      if (auto storePU = dyn_cast<pto::SimdStorePUOp>(op)) {
+        FailureOr<int64_t> lanes =
+            getFixedVectorLanes(storePU.getValue().getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(storePU, kErrLanesMismatch,
+                                       "simd.store_pu lanes mismatch with pto.simd.lanes");
+        }
+        return;
+      }
+
+      auto slotAttr = op->getAttrOfType<StringAttr>(kSimdCoreSlotAttr);
+      if (!slotAttr)
+        return;
+
+      if (slotAttr.getValue() != entry.coreSlot) {
+        status = emitFailureWithCode(op, kErrCoreSlot,
+                                     "core slot value mismatches seed.core_slot");
+        return;
+      }
+      if (!isBinaryFloatCore(op)) {
+        status = emitFailureWithCode(
+            op, kErrCoreSlot,
+            "core slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf");
+        return;
+      }
+      if (op->getNumResults() != 1) {
+        status = emitFailureWithCode(op, kErrCoreSlot,
+                                     "core slot op must have exactly one result");
+        return;
+      }
+      FailureOr<int64_t> lanes = getFixedVectorLanes(op->getResult(0).getType());
+      if (failed(lanes) || *lanes != entry.simdLanes) {
+        status = emitFailureWithCode(op, kErrLanesMismatch,
+                                     "core slot vector lanes mismatch with pto.simd.lanes");
+        return;
+      }
+      coreSeq = preorder[op];
+      ++coreCount;
+    });
+
+    if (failed(status))
+      return failure();
+
+    if (coreCount != 1) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template must contain exactly one core slot op");
+    }
+    if (firstLoad == std::numeric_limits<int64_t>::max()) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template must contain simd.load/simd.load_pu");
+    }
+    if (firstStore == std::numeric_limits<int64_t>::max()) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template must contain simd.store/simd.store_pu");
+    }
+    if (!(firstLoad < coreSeq && coreSeq < firstStore)) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template ordering must satisfy load -> core -> store");
+    }
+
+    return success();
+  }
+
   LogicalResult loadFromDir(StringRef opLibDir, MLIRContext *ctx, Location loc) {
     if (opLibDir.empty()) {
       return emitFailure(loc,
@@ -546,6 +756,12 @@ struct TemplateRegistry {
           imported.emitError("invalid pto.oplib.entry_role, expected variant|seed");
           return failure();
         }
+
+        if (failed(parseSimdAttrs(imported, entry)))
+          return failure();
+
+        if (failed(validateTemplateBodyForSimd(imported, *entry)))
+          return failure();
 
         if (debug) {
           llvm::errs() << "[op-fusion] imported OP-Lib entry: role="
@@ -726,6 +942,98 @@ struct TemplateRegistry {
     }
     inst->setAttr(kOpLibAttrSync,
                   BoolAttr::get(module.getContext(), selected.entry->sync));
+    if (auto levelAttr =
+            selected.entry->symbol->getAttrOfType<StringAttr>(kSimdLevelAttr)) {
+      inst->setAttr(kSimdLevelAttr, levelAttr);
+    }
+    if (auto lanesAttr =
+            selected.entry->symbol->getAttrOfType<IntegerAttr>(kSimdLanesAttr)) {
+      inst->setAttr(kSimdLanesAttr, lanesAttr);
+    }
+
+    func::FuncOp source = selected.entry->symbol;
+    if (source.isExternal() || source.empty() ||
+        source.front().without_terminator().empty()) {
+      (void)emitFailureWithCode(
+          loc, kErrEmptyBody,
+          Twine("source template has empty body: @") + source.getSymName());
+      return failure();
+    }
+    if (!source.getBody().hasOneBlock()) {
+      (void)emitFailureWithCode(
+          loc, kErrCoreSlot,
+          Twine("source template must have a single entry block: @") +
+              source.getSymName());
+      return failure();
+    }
+
+    Block &srcEntry = source.front();
+    Block *dstEntry = inst.addEntryBlock();
+    OpBuilder bodyBuilder = OpBuilder::atBlockBegin(dstEntry);
+    IRMapping mapping;
+    for (auto [srcArg, dstArg] :
+         llvm::zip(srcEntry.getArguments(), dstEntry->getArguments())) {
+      mapping.map(srcArg, dstArg);
+    }
+
+    for (Operation &op : srcEntry.without_terminator()) {
+      Operation *cloned = bodyBuilder.clone(op, mapping);
+      for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
+        mapping.map(oldRes, newRes);
+    }
+    bodyBuilder.create<func::ReturnOp>(loc);
+
+    if (selected.fromSeed) {
+      SmallVector<Operation *, 4> coreOps;
+      inst.walk([&](Operation *op) {
+        auto slotAttr = op->getAttrOfType<StringAttr>(kSimdCoreSlotAttr);
+        if (!slotAttr)
+          return;
+        if (slotAttr.getValue() == selected.coreSlot)
+          coreOps.push_back(op);
+      });
+      if (coreOps.size() != 1) {
+        (void)emitFailureWithCode(
+            loc, kErrCoreSlot,
+            Twine("seed instance expects exactly one core slot op in @") +
+                inst.getSymName());
+        return failure();
+      }
+
+      Operation *core = coreOps.front();
+      if (core->getNumOperands() != 2 || core->getNumResults() != 1) {
+        (void)emitFailureWithCode(core, kErrCoreSlot,
+                                  "core slot op must be binary op with one result");
+        return failure();
+      }
+
+      OpBuilder b(core);
+      Value lhs = core->getOperand(0);
+      Value rhs = core->getOperand(1);
+      Operation *newCore = nullptr;
+      if (selected.op == "tadd") {
+        newCore = b.create<arith::AddFOp>(core->getLoc(), lhs, rhs);
+      } else if (selected.op == "tsub") {
+        newCore = b.create<arith::SubFOp>(core->getLoc(), lhs, rhs);
+      } else if (selected.op == "tmul") {
+        newCore = b.create<arith::MulFOp>(core->getLoc(), lhs, rhs);
+      } else if (selected.op == "tdiv") {
+        newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
+      } else if (selected.op == "tmax") {
+        newCore = b.create<arith::MaximumFOp>(core->getLoc(), lhs, rhs);
+      } else if (selected.op == "tmin") {
+        newCore = b.create<arith::MinimumFOp>(core->getLoc(), lhs, rhs);
+      } else {
+        (void)emitFailureWithCode(core, kErrCoreSlot,
+                                  Twine("unsupported seed target op: ") +
+                                      selected.op);
+        return failure();
+      }
+      if (auto slotAttr = core->getAttr(kSimdCoreSlotAttr))
+        newCore->setAttr(kSimdCoreSlotAttr, slotAttr);
+      core->replaceAllUsesWith(newCore->getResults());
+      core->erase();
+    }
 
     instanceByKey[key] = inst;
 
@@ -746,8 +1054,34 @@ static FailureOr<MatchKey> buildMatchKeyFromTileBuf(pto::TileBufType dstTy) {
   MatchKey key;
   key.rows = shape[0] == ShapedType::kDynamic ? -1 : shape[0];
   key.cols = shape[1] == ShapedType::kDynamic ? -1 : shape[1];
-  key.blayout = kDefaultAny.str();
-  key.slayout = kDefaultAny.str();
+
+  switch (dstTy.getBLayoutValueI32()) {
+  case 0:
+    key.blayout = "row_major";
+    break;
+  case 1:
+    key.blayout = "col_major";
+    break;
+  default:
+    key.blayout = kDefaultAny.str();
+    break;
+  }
+
+  switch (dstTy.getSLayoutValueI32()) {
+  case 0:
+    key.slayout = "none_box";
+    break;
+  case 1:
+    key.slayout = "row_major";
+    break;
+  case 2:
+    key.slayout = "col_major";
+    break;
+  default:
+    key.slayout = kDefaultAny.str();
+    break;
+  }
+
   key.fractal = -1;
   return key;
 }

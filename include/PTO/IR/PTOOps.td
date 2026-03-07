@@ -1202,6 +1202,111 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+//===----------------------------------------------------------------------===//
+// SIMD Bridge Ops (tile -> simd lane semantics inside OP-Lib bodies)
+//===----------------------------------------------------------------------===//
+
+def SimdPredicateOp : PTO_Op<"simd.predicate", [Pure]> {
+  let summary = "Build SIMD lane predicate mask from active lane count.";
+
+  let arguments = (ins
+    Index:$active_count
+  );
+
+  let results = (outs
+    AnyVector:$mask
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $active_count attr-dict `:` type($active_count) `->` type($mask)
+  }];
+}
+
+def SimdLoadOp : PTO_Op<"simd.load"> {
+  let summary = "Masked SIMD load from a linear memref offset.";
+
+  let arguments = (ins
+    AnyMemRef:$src,
+    Index:$offset,
+    AnyVector:$mask
+  );
+
+  let results = (outs
+    AnyVector:$value
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value)
+  }];
+}
+
+def SimdStoreOp : PTO_Op<"simd.store"> {
+  let summary = "Masked SIMD store to a linear memref offset.";
+
+  let arguments = (ins
+    AnyVector:$value,
+    AnyMemRef:$dst,
+    Index:$offset,
+    AnyVector:$mask
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask)
+  }];
+}
+
+def SimdLoadPUOp : PTO_Op<"simd.load_pu"> {
+  let summary = "Masked SIMD load with post-update offset.";
+
+  let arguments = (ins
+    AnyMemRef:$src,
+    Index:$offset,
+    AnyVector:$mask,
+    I64Attr:$step
+  );
+
+  let results = (outs
+    AnyVector:$value,
+    Index:$next_offset
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value) `,` type($next_offset)
+  }];
+}
+
+def SimdStorePUOp : PTO_Op<"simd.store_pu"> {
+  let summary = "Masked SIMD store with post-update offset.";
+
+  let arguments = (ins
+    AnyVector:$value,
+    AnyMemRef:$dst,
+    Index:$offset,
+    AnyVector:$mask,
+    I64Attr:$step
+  );
+
+  let results = (outs
+    Index:$next_offset
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask) `->` type($next_offset)
+  }];
+}
+
 // High-Level Mov: 值语义
 def MovOp : PTO_Op<"mov", [
     SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile -> !pto.tile)
