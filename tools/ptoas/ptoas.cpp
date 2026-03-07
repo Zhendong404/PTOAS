@@ -35,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include <memory>
 #include <string>
 
 using namespace mlir;
@@ -176,22 +177,77 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   return false;
 }
 
+namespace {
+class FuncFilteredIRPrinterConfig final : public PassManager::IRPrinterConfig {
+public:
+  FuncFilteredIRPrinterConfig(std::string funcFilter, llvm::raw_ostream &out)
+      : IRPrinterConfig(/*printModuleScope=*/false,
+                        /*printAfterOnlyOnChange=*/false,
+                        /*printAfterOnlyOnFailure=*/false),
+        funcFilter(std::move(funcFilter)), out(out) {}
+
+  void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
+
+  void printAfterIfEnabled(Pass *, Operation *op,
+                           PrintCallbackFn printCallback) override {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (!funcOp.getSymName().contains(funcFilter))
+        return;
+      printCallback(out);
+      return;
+    }
+
+    auto moduleOp = dyn_cast<ModuleOp>(op);
+    if (!moduleOp)
+      return;
+
+    llvm::SmallVector<func::FuncOp, 4> matchedFuncs;
+    for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+      if (funcOp.getSymName().contains(funcFilter))
+        matchedFuncs.push_back(funcOp);
+    }
+    if (matchedFuncs.empty())
+      return;
+
+    std::string dumpText;
+    llvm::raw_string_ostream dumpStream(dumpText);
+    printCallback(dumpStream);
+    dumpStream.flush();
+
+    llvm::StringRef headerLine = dumpText;
+    if (size_t newlinePos = headerLine.find('\n'); newlinePos != std::string::npos)
+      headerLine = headerLine.take_front(newlinePos);
+    out << headerLine << "\n";
+
+    auto flags = getOpPrintingFlags().useLocalScope();
+    for (func::FuncOp funcOp : matchedFuncs) {
+      funcOp.print(out, flags);
+      out << "\n";
+    }
+    out << "\n";
+  }
+
+private:
+  std::string funcFilter;
+  llvm::raw_ostream &out;
+};
+} // namespace
+
 static void maybeEnablePrintIRAfterAll(PassManager &pm) {
   if (!printIRAfterAll)
     return;
   std::string funcFilter = printIRAfterAllFuncFilter;
-  bool hasFuncFilter = !funcFilter.empty();
+  if (!funcFilter.empty()) {
+    pm.enableIRPrinting(
+        std::make_unique<FuncFilteredIRPrinterConfig>(std::move(funcFilter),
+                                                      llvm::errs()));
+    return;
+  }
+
   pm.enableIRPrinting(
       [](Pass *, Operation *) { return false; },
-      [funcFilter = std::move(funcFilter)](Pass *, Operation *op) {
-        if (funcFilter.empty())
-          return true;
-        auto funcOp = dyn_cast<func::FuncOp>(op);
-        if (!funcOp)
-          return false;
-        return funcOp.getSymName().contains(funcFilter);
-      },
-      /*printModuleScope=*/!hasFuncFilter,
+      [](Pass *, Operation *) { return true; },
+      /*printModuleScope=*/true,
       /*printAfterOnlyOnChange=*/false,
       /*printAfterOnlyOnFailure=*/false);
 }

@@ -10,3 +10,4 @@
 // CHECK-DAG: pto.tmul ins(%[[A]], %[[A]] : !pto.tile_buf
 // CHECK-DAG: outs(%[[B]] : !pto.tile_buf
 // CHECK-NOT: builtin.unrealized_conversion_cast
+// CHECK: IR Dump After PTOCreateFusionGroups

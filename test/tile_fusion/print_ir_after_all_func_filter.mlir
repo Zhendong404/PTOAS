@@ -3,5 +3,6 @@
 // CHECK: IR Dump After PTOLoweringSyncToPipe
 // CHECK: func.func @flash_attention_softmax_block
 // CHECK: IR Dump After PTOCreateFusionGroups
+// CHECK: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-NOT: ('builtin.module' operation)
-// CHECK-NOT: @__pto_oplib_inst_
+// CHECK-NOT: func.func private @__pto_oplib_inst_
