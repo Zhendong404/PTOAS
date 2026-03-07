@@ -1,9 +1,12 @@
-// RUN: ptoas %S/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/oplib --op-fusion-debug --dump-ir-after-op-fusion 2>&1 | FileCheck %s
+// RUN: ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --dump-ir-after-oplib-lowering -o - | FileCheck %s
 
-// CHECK: [op-fusion] outlined group_id=0 into @__pto_fused_group_0_0
-// CHECK-DAG: [op-fusion] imported OP-Lib entry: role=variant op=tmax
-// CHECK-DAG: [op-fusion] imported OP-Lib entry: role=variant op=tadd
-// CHECK-DAG: [op-fusion] imported OP-Lib entry: role=seed seed_id=seed_vec_bin_core
-// CHECK: [op-fusion] selected variant: op=tadd dtype=f32 variant_id=v_tadd_f32_fast
-// CHECK: [op-fusion] selected variant: op=tmul dtype=f32 variant_id=__seed__seed_vec_bin_core__tmul__f32
-// CHECK: [op-fusion] inline-libcall touched 2 function(s), inlined 6 call(s)
+// CHECK-LABEL: func.func private @__pto_oplib_inst___seed__seed_vec_bin_core__tmul__f32(
+// CHECK-SAME: pto.oplib.instance.from_seed = true
+// CHECK-SAME: pto.oplib.instance.op = "tmul"
+// CHECK-LABEL: func.func private @__pto_oplib_inst_v_tadd_f32_fast(
+// CHECK-SAME: pto.oplib.instance.from_seed = false
+// CHECK-SAME: pto.oplib.instance.op = "tadd"
+// CHECK-LABEL: func.func private @__pto_fused_group_0_0(
+// CHECK-COUNT-3: call @__pto_oplib_inst_v_tadd_f32_fast(
+// CHECK-LABEL: func.func @flash_attention_softmax_block(
+// CHECK-COUNT-3: call @__pto_oplib_inst___seed__seed_vec_bin_core__tmul__f32(

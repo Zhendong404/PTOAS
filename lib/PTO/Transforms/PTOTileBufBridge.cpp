@@ -1,6 +1,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -36,6 +37,120 @@ convertMemRefToTileBufType(MemRefType memTy, MLIRContext *ctx) {
                                memTy.getMemorySpace(), validShape, cfg);
 }
 
+static bool getConstIndexLike(Value v, int64_t &out) {
+  if (!v)
+    return false;
+  if (auto c = v.getDefiningOp<arith::ConstantIndexOp>()) {
+    out = c.value();
+    return true;
+  }
+  if (auto c = v.getDefiningOp<arith::ConstantIntOp>()) {
+    out = c.value();
+    return true;
+  }
+  if (auto c = v.getDefiningOp<arith::ConstantOp>()) {
+    if (auto ia = dyn_cast<IntegerAttr>(c.getValue())) {
+      out = ia.getInt();
+      return true;
+    }
+  }
+  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+    return getConstIndexLike(cast.getIn(), out);
+  return false;
+}
+
+struct MemRefTileMetadata {
+  pto::TileBufConfigAttr config;
+  Value validRow;
+  Value validCol;
+  Value addr;
+};
+
+static bool enrichFromPointerCast(pto::PointerCastOp pc, MemRefTileMetadata &meta) {
+  if (!meta.validRow)
+    meta.validRow = pc.getValidRow();
+  if (!meta.validCol)
+    meta.validCol = pc.getValidCol();
+  if (!meta.config) {
+    if (auto cfg = pc.getConfig())
+      meta.config = *cfg;
+  }
+  if (!meta.addr && pc.getAddrs().size() == 1)
+    meta.addr = pc.getAddrs().front();
+  return true;
+}
+
+static bool collectTileMetadata(Value v, MemRefTileMetadata &meta) {
+  if (!v)
+    return false;
+  if (auto bind = v.getDefiningOp<pto::BindTileOp>()) {
+    meta.config = bind.getConfig();
+    if (!meta.validRow)
+      meta.validRow = bind.getValidRow();
+    if (!meta.validCol)
+      meta.validCol = bind.getValidCol();
+    if (auto pc = bind.getSource().getDefiningOp<pto::PointerCastOp>())
+      (void)enrichFromPointerCast(pc, meta);
+    return true;
+  }
+  if (auto pc = v.getDefiningOp<pto::PointerCastOp>())
+    return enrichFromPointerCast(pc, meta);
+  if (auto subview = v.getDefiningOp<memref::SubViewOp>())
+    return collectTileMetadata(subview.getSource(), meta);
+  if (auto recast = v.getDefiningOp<memref::ReinterpretCastOp>())
+    return collectTileMetadata(recast.getSource(), meta);
+  if (auto cast = v.getDefiningOp<memref::CastOp>())
+    return collectTileMetadata(cast.getSource(), meta);
+  return false;
+}
+
+static FailureOr<pto::TileBufType>
+buildTileTypeFromMemRefAndMetadata(MemRefType memTy, const MemRefTileMetadata &meta,
+                                   Value &dynamicVRow, Value &dynamicVCol,
+                                   MLIRContext *ctx) {
+  if (memTy.getRank() != 2)
+    return failure();
+  if (!isSupportedElemType(memTy.getElementType()))
+    return failure();
+
+  constexpr int64_t kDynamicValid = -1;
+  auto resolveValidDim = [&](int64_t shapeDim, Value v, int64_t &outStatic,
+                             Value &outDynamic) -> LogicalResult {
+    outStatic = shapeDim;
+    outDynamic = Value();
+    if (!v) {
+      if (shapeDim == ShapedType::kDynamic)
+        return failure();
+      return success();
+    }
+
+    int64_t constVal = 0;
+    if (getConstIndexLike(v, constVal)) {
+      if (constVal < 0)
+        return failure();
+      outStatic = constVal;
+      return success();
+    }
+
+    outStatic = kDynamicValid;
+    outDynamic = v;
+    return success();
+  };
+
+  SmallVector<int64_t, 2> shape(memTy.getShape().begin(), memTy.getShape().end());
+  int64_t validRow = ShapedType::kDynamic;
+  int64_t validCol = ShapedType::kDynamic;
+  if (failed(resolveValidDim(shape[0], meta.validRow, validRow, dynamicVRow)))
+    return failure();
+  if (failed(resolveValidDim(shape[1], meta.validCol, validCol, dynamicVCol)))
+    return failure();
+
+  SmallVector<int64_t, 2> validShape{validRow, validCol};
+  auto cfg = meta.config ? meta.config : pto::TileBufConfigAttr::getDefault(ctx);
+  return pto::TileBufType::get(ctx, shape, memTy.getElementType(),
+                               memTy.getMemorySpace(), validShape, cfg);
+}
+
 static FailureOr<MemRefType> convertTileBufToMemRefType(pto::TileBufType tileTy,
                                                          MLIRContext *ctx) {
   SmallVector<int64_t, 4> shape(tileTy.getShape().begin(), tileTy.getShape().end());
@@ -52,7 +167,7 @@ public:
 
   StringRef getArgument() const override { return "pto-memref-to-tilebuf"; }
   StringRef getDescription() const override {
-    return "Cast memref operands of fusible PTO ops back to tile_buf";
+    return "Recover tile_buf operands from bind_tile metadata for fusible PTO ops";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -89,21 +204,39 @@ private:
     if (!memTy)
       return;
 
-    FailureOr<pto::TileBufType> tileTyOr =
-        convertMemRefToTileBufType(memTy, &getContext());
-    if (failed(tileTyOr))
-      return;
-
     auto cached = castCache.find(operand);
-    if (cached != castCache.end() && cached->second.getType() == *tileTyOr) {
+    if (cached != castCache.end()) {
       op->setOperand(operandIndex, cached->second);
       return;
     }
 
     OpBuilder builder(op);
-    auto cast = builder.create<UnrealizedConversionCastOp>(
-        op->getLoc(), TypeRange{*tileTyOr}, ValueRange{operand});
-    Value tileVal = cast.getResult(0);
+    Value tileVal;
+
+    MemRefTileMetadata meta;
+    if (collectTileMetadata(operand, meta)) {
+      Value dynamicVRow;
+      Value dynamicVCol;
+      FailureOr<pto::TileBufType> tileTyOr = buildTileTypeFromMemRefAndMetadata(
+          memTy, meta, dynamicVRow, dynamicVCol, &getContext());
+      if (succeeded(tileTyOr)) {
+        auto alloc = builder.create<pto::AllocTileOp>(
+            op->getLoc(), *tileTyOr, meta.addr, dynamicVRow, dynamicVCol);
+        tileVal = alloc.getResult();
+      }
+    }
+
+    // Fallback: keep legacy cast behavior for non-bind_tile memref values.
+    if (!tileVal) {
+      FailureOr<pto::TileBufType> tileTyOr =
+          convertMemRefToTileBufType(memTy, &getContext());
+      if (failed(tileTyOr))
+        return;
+      auto cast = builder.create<UnrealizedConversionCastOp>(
+          op->getLoc(), TypeRange{*tileTyOr}, ValueRange{operand});
+      tileVal = cast.getResult(0);
+    }
+
     castCache[operand] = tileVal;
     op->setOperand(operandIndex, tileVal);
   }

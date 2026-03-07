@@ -118,6 +118,11 @@ static llvm::cl::opt<bool> dumpIRAfterOplibLowering(
     llvm::cl::desc("Run pipeline through OP-LIB lowering stage, dump MLIR, and exit before loop fusion/codegen"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> dumpIRAfterMemrefToTilebuf(
+    "dump-ir-after-memref-to-tilebuf",
+    llvm::cl::desc("Run pipeline through Memref2TileBuf bridge, dump MLIR, and exit before OP fusion materialization"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> dumpIRAfterOpFusion(
     "dump-ir-after-op-fusion",
     llvm::cl::desc("Run pipeline through OP fusion stage, dump MLIR, and exit before EmitC lowering"),
@@ -673,6 +678,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  unsigned dumpStopCount = static_cast<unsigned>(dumpIRAfterMemrefToTilebuf) +
+                           static_cast<unsigned>(dumpIRAfterOplibLowering) +
+                           static_cast<unsigned>(dumpIRAfterOpFusion);
+  if (dumpStopCount > 1) {
+    llvm::errs() << "Error: dump cut-point flags are mutually exclusive: "
+                 << "--dump-ir-after-memref-to-tilebuf, "
+                 << "--dump-ir-after-oplib-lowering, "
+                 << "--dump-ir-after-op-fusion.\n";
+    return 1;
+  }
+
   // [Fix] ToolOutputFile Usage
   std::error_code ec;
   llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
@@ -728,42 +744,51 @@ int main(int argc, char **argv) {
   // tile world.
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
 
-  // OP-Lib fusion pipeline is always enabled:
-  //   create-groups -> outline -> instantiate+lower-to-libcall
-  //   -> inline-libcall -> tilebuf2memref -> low-level-loop-fusion
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+  if (!dumpIRAfterMemrefToTilebuf) {
+    // OP-Lib fusion pipeline is always enabled:
+    //   create-groups -> outline -> instantiate+lower-to-libcall
+    //   -> inline-libcall -> tilebuf2memref -> low-level-loop-fusion
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
 
-  pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
-  outlineGroupsOptions.debug = opFusionDebug;
-  pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+    pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+    outlineGroupsOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
 
-  pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
-  instantiateLowerOptions.opLibDir = opLibDir;
-  instantiateLowerOptions.debug = opFusionDebug;
-  pm.addPass(
-      pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
+    pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
+    instantiateLowerOptions.opLibDir = opLibDir;
+    instantiateLowerOptions.debug = opFusionDebug;
+    pm.addPass(
+        pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
 
-  if (!dumpIRAfterOplibLowering) {
-    pto::PTOInlineLibCallOptions inlineLibCallOptions;
-    inlineLibCallOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
+    if (!dumpIRAfterOplibLowering) {
+      pto::PTOInlineLibCallOptions inlineLibCallOptions;
+      inlineLibCallOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
 
-    // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
-    pm.addPass(pto::createPTOTileBufToMemrefPass());
+      // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
+      pm.addPass(pto::createPTOTileBufToMemrefPass());
 
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
+      pm.addPass(createCanonicalizerPass());
+      pm.addPass(createCSEPass());
 
-    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
-    loopFusionOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
+      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+      loopFusionOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+      pm.addPass(createCanonicalizerPass());
+      pm.addPass(createCSEPass());
+    }
   }
 
   if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
+  }
+
+  if (dumpIRAfterMemrefToTilebuf) {
+    module->print(outputFile.os());
+    outputFile.os() << "\n";
+    outputFile.keep();
+    return 0;
   }
 
   if (dumpIRAfterOplibLowering) {
