@@ -28,6 +28,7 @@ compile_commands.json
 *.exe
 *.out
 *.app
+test/tile_fusion/Output
 
 # Debug/profiling
 *.pdb
@@ -53,6 +54,7 @@ dist/
 *.tmp
 *.swp
 *.swo
+*.script
 .cache/
 .pytest_cache/
 

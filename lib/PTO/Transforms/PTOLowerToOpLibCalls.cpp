@@ -279,6 +279,8 @@ static bool isSimdBridgeOp(Operation *op) {
 static bool isAllowedTemplateBodyOp(Operation *op) {
   if (isa<func::ReturnOp>(op))
     return true;
+  if (isa<pto::SimdVecScopeOp>(op))
+    return true;
   if (isSimdBridgeOp(op))
     return true;
 

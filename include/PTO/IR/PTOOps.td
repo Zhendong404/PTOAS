@@ -1206,6 +1206,22 @@ def BarrierOp : PTO_Op<"barrier"> {
 // SIMD Bridge Ops (tile -> simd lane semantics inside OP-Lib bodies)
 //===----------------------------------------------------------------------===//
 
+def SimdVecScopeOp : PTO_Op<"simd.vec_scope", [SingleBlock, NoTerminator]> {
+  let summary = "Annotate a region that must execute under __VEC_SCOPE__.";
+  let description = [{
+    This op is a codegen marker for A5 OP-Lib mixed IR.
+    During EmitC lowering it is converted to:
+      __VEC_SCOPE__ {
+        ...
+      }
+    The region should typically contain 1D/2D hardware loops and vector
+    arithmetic/memory instructions.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$body attr-dict";
+}
+
 def SimdPredicateOp : PTO_Op<"simd.predicate", [Pure]> {
   let summary = "Build SIMD lane predicate mask from active lane count.";
 

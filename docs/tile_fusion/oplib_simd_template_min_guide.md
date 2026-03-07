@@ -23,7 +23,7 @@
 1. 先决定模板角色：`variant` 或 `seed`。
 2. 写齐 `pto.oplib.*` 匹配元数据。
 3. 选择模板体写法：纯 vector 或 `pto.simd`。
-4. 若使用 `pto.simd.*`，再补 `pto.simd.level/lanes`。
+4. 若使用 `pto.simd.predicate/load/store/load_pu/store_pu`，再补 `pto.simd.level/lanes`。
 5. 对 `seed`，只保留一个 `pto.simd.core_slot = "binary_ewise_core"` 的核心算术 op。
 6. 用 `ptoas --op-lib-dir=...` 跑一轮导入和实例化自检。
 
@@ -90,6 +90,16 @@ func.func private @__pto_oplib_seed_vec_bin_core(
 //   pto.simd.lanes = 64 : i64
 ```
 
+补充：若只需要告诉 CodeGen 在循环外层放置 `__VEC_SCOPE__`，可使用：
+
+```mlir
+pto.simd.vec_scope {
+  scf.for %i = %c0 to %c1024 step %c64 {
+    // vector.load/store + arith.*f
+  }
+}
+```
+
 ## 7. 示例模板约束检查表（CR/自测直接打勾）
 
 | # | 检查项 | 必须规则 | 常见失败码 |
@@ -101,7 +111,7 @@ func.func private @__pto_oplib_seed_vec_bin_core(
 | 5 | IR allowlist | 仅使用约定可用 IR | `E_OPLIB_BODY_DISALLOWED_IR` |
 | 6 | 核心槽位唯一性 | 恰好一个 `pto.simd.core_slot = "binary_ewise_core"` | `E_OPLIB_SIMD_INVALID_CORE_SLOT` |
 | 7 | 核心 op 类型 | 必须是 `arith.addf/subf/mulf/divf/maximumf/minimumf` 之一 | `E_OPLIB_SIMD_INVALID_CORE_SLOT` |
-| 8 | `pto.simd` 属性（按需） | 使用 `pto.simd.*` 时，必须有 `pto.simd.level/lanes` | `E_OPLIB_SIMD_ATTR_REQUIRED` |
+| 8 | `pto.simd` 属性（按需） | 使用 `pto.simd.predicate/load/store/load_pu/store_pu` 时，必须有 `pto.simd.level/lanes` | `E_OPLIB_SIMD_ATTR_REQUIRED` |
 | 9 | lanes 一致性（按需） | `pto.simd` 相关向量宽度与 `pto.simd.lanes` 一致 | `E_OPLIB_SIMD_LANES_MISMATCH` |
 | 10 | seed 改写约束 | seed 实例化时只能改写 core slot 对应算术 | `E_OPLIB_SIMD_INVALID_CORE_SLOT` |
 | 11 | 实例函数必须有 body | 禁止 fake-body fallback | `E_OPLIB_INSTANCE_BODY_MISSING` |
@@ -136,5 +146,5 @@ ptoas <input.pto> --op-lib-dir=<your-oplib-dir> -o /tmp/out.cpp 2>&1 | \
 1. `pto.oplib.match.blayout` 写成 `row_major`，但模板匹配目标 tile 不是 `row_major`。
 2. seed 里打了多个 `pto.simd.core_slot`，实例化改写失败。
 3. 使用了 allowlist 之外的 dialect/op，导入阶段直接失败。
-4. 使用 `pto.simd.*` 但漏写 `pto.simd.level/lanes`。
+4. 使用 `pto.simd.predicate/load/store/load_pu/store_pu` 但漏写 `pto.simd.level/lanes`。
 5. 空模板体还期望走历史 fallback（V1.1 已明确禁止）。

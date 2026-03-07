@@ -1,4 +1,4 @@
-// RUN: { ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --print-ir-after-all -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-LABEL: func.func private @__pto_oplib_inst___seed__seed_vec_bin_core__tmul__f32(

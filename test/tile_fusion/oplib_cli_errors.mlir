@@ -22,6 +22,10 @@
 // RUN: cp %S/resources/bad_disallowed_ir_template.txt %t.disallowed/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.disallowed -o %t.disallowed.cpp > %t.disallowed.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-IR < %t.disallowed.log
+// RUN: rm -rf %t.bad_vec && mkdir -p %t.bad_vec
+// RUN: cp %S/resources/bad_vector_unsupported_template.txt %t.bad_vec/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vec --pto-arch=a5 -o %t.bad_vec.cpp > %t.bad_vec.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-VEC < %t.bad_vec.log
 
 // NO-DIR: Error: --op-lib-dir is required.
 // REMOVED: Unknown command line argument '--disable-oplib-lowering'
@@ -30,3 +34,4 @@
 // BAD-LANES: E_OPLIB_SIMD_LANES_MISMATCH
 // BAD-SIMD-ATTR: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-IR: E_OPLIB_BODY_DISALLOWED_IR
+// BAD-VEC: A5 OP-Lib vector lowering unsupported

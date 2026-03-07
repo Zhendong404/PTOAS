@@ -43,7 +43,7 @@
 
 1. 可直接使用 `vector/arith/scf/memref` 表达核心计算与循环。
 2. 可选使用 `pto.simd.*` 表达显式 lane/mask 语义。
-3. `pto.simd.*` 出现时，必须提供对应 `pto.simd` 属性。
+3. 仅当使用 `pto.simd.predicate/load/store/load_pu/store_pu` 时，必须提供 `pto.simd` 属性。
 
 ## 3. 模板体可用 IR 集合
 
@@ -68,17 +68,19 @@
 
 当模板需要显式 mask/predicate/post-update 语义时，可使用 `pto.simd.*`：
 
-1. `pto.simd.predicate`
-2. `pto.simd.load`
-3. `pto.simd.store`
-4. `pto.simd.load_pu`
-5. `pto.simd.store_pu`
+1. `pto.simd.vec_scope`（代码生成标注：降到 `__VEC_SCOPE__ { ... }`）
+2. `pto.simd.predicate`
+3. `pto.simd.load`
+4. `pto.simd.store`
+5. `pto.simd.load_pu`
+6. `pto.simd.store_pu`
 
-### 4.1 `pto.simd` 属性规则（仅在使用 `pto.simd.*` 时强制）
+### 4.1 `pto.simd` 属性规则（仅在使用带 lanes 语义的 `pto.simd` op 时强制）
 
 1. `pto.simd.level = "binary_ewise_v1"`
 2. `pto.simd.lanes = <i64>`
 3. `pto.simd.core_slot = "binary_ewise_core"`（标在核心 `arith.*` op 上）
+4. `pto.simd.vec_scope` 仅作为向量作用域标注，不携带 lanes 语义；可单独使用。
 
 ### 4.2 纯 vector 模板
 
@@ -113,7 +115,7 @@
 3. dtype 仅允许 `f16/f32`。
 4. layout 仅允许 `row_major`。
 5. `seed` 必须满足核心 slot 唯一性与类型合法性。
-6. 若函数体包含 `pto.simd.*`，必须满足：
+6. 若函数体包含 `pto.simd.predicate/load/store/load_pu/store_pu`，必须满足：
    1. `pto.simd.level/lanes` 存在且合法。
    2. 所有相关 vector lane 与 `pto.simd.lanes` 一致。
 

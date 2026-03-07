@@ -28,11 +28,13 @@ module {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
-    scf.for %i = %c0 to %c1024 step %c64 {
-      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %c = arith.maximumf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+    pto.simd.vec_scope {
+      scf.for %i = %c0 to %c1024 step %c64 {
+        %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %c = arith.maximumf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
+        vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      }
     }
     return
   }
@@ -66,11 +68,13 @@ module {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
-    scf.for %i = %c0 to %c1024 step %c64 {
-      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+    pto.simd.vec_scope {
+      scf.for %i = %c0 to %c1024 step %c64 {
+        %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
+        vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      }
     }
     return
   }
@@ -106,11 +110,13 @@ module {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
-    scf.for %i = %c0 to %c1024 step %c64 {
-      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
-      %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+    pto.simd.vec_scope {
+      scf.for %i = %c0 to %c1024 step %c64 {
+        %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+        %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
+        vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      }
     }
     return
   }
