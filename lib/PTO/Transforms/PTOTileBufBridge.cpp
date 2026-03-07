@@ -21,6 +21,8 @@ static bool isSupportedFusionOp(Operation *op) {
              pto::TMinOp>(op);
 }
 
+static bool isTileWorldPTOp(Operation *op) { return isa<pto::OpPipeInterface>(op); }
+
 static bool isSupportedElemType(Type ty) { return ty.isF16() || ty.isF32(); }
 
 static FailureOr<pto::TileBufType>
@@ -167,7 +169,7 @@ public:
 
   StringRef getArgument() const override { return "pto-memref-to-tilebuf"; }
   StringRef getDescription() const override {
-    return "Recover tile_buf operands from bind_tile metadata for fusible PTO ops";
+    return "Recover tile_buf operands from bind_tile metadata for tile-world PTO ops";
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -186,19 +188,22 @@ private:
         for (Region &nested : op.getRegions())
           processRegion(nested);
 
-        if (!isSupportedFusionOp(&op))
-          continue;
-        if (op.getNumOperands() < 3)
+        const bool isFusionOp = isSupportedFusionOp(&op);
+        if (!isTileWorldPTOp(&op) && !isFusionOp)
           continue;
 
-        for (unsigned i = 0; i < 3; ++i)
-          rewriteOperandToTileBuf(&op, i, castCache);
+        for (unsigned i = 0, e = op.getNumOperands(); i < e; ++i) {
+          // Keep legacy fallback cast only for OP-Lib V1 fusible binary ops.
+          bool allowLegacyFallback = isFusionOp && i < 3;
+          rewriteOperandToTileBuf(&op, i, castCache, allowLegacyFallback);
+        }
       }
     }
   }
 
   void rewriteOperandToTileBuf(Operation *op, unsigned operandIndex,
-                               CastCache &castCache) {
+                               CastCache &castCache,
+                               bool allowLegacyFallback) {
     Value operand = op->getOperand(operandIndex);
     auto memTy = dyn_cast<MemRefType>(operand.getType());
     if (!memTy)
@@ -225,6 +230,9 @@ private:
         tileVal = alloc.getResult();
       }
     }
+
+    if (!tileVal && !allowLegacyFallback)
+      return;
 
     // Fallback: keep legacy cast behavior for non-bind_tile memref values.
     if (!tileVal) {
