@@ -123,6 +123,11 @@ static llvm::cl::opt<bool> dumpIRAfterOpFusion(
     llvm::cl::desc("Run pipeline through OP fusion stage, dump MLIR, and exit before EmitC lowering"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> printIRAfterAll(
+    "print-ir-after-all",
+    llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -172,6 +177,17 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
     return true;
   }
   return false;
+}
+
+static void maybeEnablePrintIRAfterAll(PassManager &pm) {
+  if (!printIRAfterAll)
+    return;
+  pm.enableIRPrinting(
+      [](Pass *, Operation *) { return false; },
+      [](Pass *, Operation *) { return true; },
+      /*printModuleScope=*/true,
+      /*printAfterOnlyOnChange=*/false,
+      /*printAfterOnlyOnFailure=*/false);
 }
 
 // --------------------------------------------------------------------------
@@ -579,6 +595,8 @@ int main(int argc, char **argv) {
   // Be tolerant: ptobc decode may materialize ops from dialects that aren't
   // explicitly registered/loaded in this tool yet.
   context.allowUnregisteredDialects(true);
+  if (printIRAfterAll)
+    context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
@@ -665,6 +683,7 @@ int main(int argc, char **argv) {
 
   // Stage 1: front-end lowering to memref-level IR.
   PassManager preCodegenPm(&context);
+  maybeEnablePrintIRAfterAll(preCodegenPm);
 
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
@@ -680,6 +699,7 @@ int main(int argc, char **argv) {
 
   // Stage 2: remaining optimization + codegen pipeline.
   PassManager pm(&context);
+  maybeEnablePrintIRAfterAll(pm);
 
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
@@ -765,6 +785,7 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
   PassManager codegenPm(&context);
+  maybeEnablePrintIRAfterAll(codegenPm);
   codegenPm.addPass(createCSEPass());
   std::string arch = ptoTargetArch;
   for (char &c : arch)
