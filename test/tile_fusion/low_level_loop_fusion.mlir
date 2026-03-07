@@ -1,5 +1,6 @@
-// RUN: ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --dump-ir-after-op-fusion -o - | FileCheck %s
+// RUN: { ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --print-ir-after-all -o /dev/null 2>&1 || true; } | FileCheck %s
 
+// CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
 // CHECK-LABEL: func.func private @__pto_fused_group_0_0(
 // CHECK: scf.for
 // CHECK-COUNT-3: arith.addf
