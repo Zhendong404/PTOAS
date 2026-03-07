@@ -86,12 +86,12 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 4. `ModuleOp`（可选）：`PlanMemory`（当 `--pto-level != level3`）
 5. `func::FuncOp`（可选）：`PTOInsertSync`（当 `--enable-insert-sync` 且 `--pto-level != level3`）
 6. `func::FuncOp`：`PTOMemrefToTileBuf`
-7. `func::FuncOp`：`PTOCreateFusionGroupsPass`
-8. `ModuleOp`：`PTOOutlineFusionGroupsPass`
+7. `func::FuncOp`（可选）：`PTOCreateFusionGroupsPass`（当启用 `--enable-op-fusion`）
+8. `ModuleOp`（可选）：`PTOOutlineFusionGroupsPass`（当启用 `--enable-op-fusion`）
 9. `ModuleOp`：`PTOInstantiateAndLowerToLibCallPass`
 10. `ModuleOp`：`PTOInlineLibCallPass`
 11. `ModuleOp`：`PTOTileBufToMemref`
-12. `ModuleOp`：`Canonicalizer -> CSE -> PTOLowLevelLoopFusionPass -> Canonicalizer -> CSE`
+12. `ModuleOp`：`Canonicalizer -> CSE -> PTOLowLevelLoopFusionPass(当启用 --enable-op-fusion) -> Canonicalizer -> CSE`
 13. `ModuleOp`：`CSE -> EmitPTOManual -> emitc::FormExpressions -> CSE`
 14. C++ 输出后处理（非 pass）：marker 重写与文本清理
 
@@ -99,7 +99,7 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 
 - `level1/level2`（默认 `level2`）：启用 `PlanMemory`，可选启用 `InsertSync`
 - `level3`：跳过 `PlanMemory`，并忽略 `--enable-insert-sync`；要求 `alloc_tile` 显式提供 `addr`
-- OP-Lib 主链路默认总是执行，不再由 `--enable-op-fusion` gating（该开关保留为兼容 no-op）
+- OP-Lib 实例化/降级/内联主链路默认执行；`PTOCreateFusionGroupsPass`、`PTOOutlineFusionGroupsPass`、`PTOLowLevelLoopFusionPass` 由 `--enable-op-fusion` 控制
 - `--op-lib-dir` 为必填，缺失直接报错
 - `dump-ir-after-oplib-lowering` 在 `PTOInstantiateAndLowerToLibCallPass` 后截断
 - `dump-ir-after-op-fusion` 在 `InlineLibCall + LoopFusion + TileBuf2Memref` 后截断
@@ -110,7 +110,7 @@ InsertSync 是自动同步插入的核心框架，分析数据依赖并在必要
 2. OP-Lib 模板函数 / 实例函数 / 调用点接口必须是 `!pto.tile_buf`
 3. Lower 阶段不允许把 OP-Lib 外部签名降到 `memref`
 4. Inline 阶段允许在函数体内部临时插入 `tile_buf <-> memref` cast 以驱动低层 loop 生成
-5. `PTOLowLevelLoopFusionPass` 默认总是执行（除非在更早 dump 截断）
+5. `PTOLowLevelLoopFusionPass` 由 `--enable-op-fusion` 控制（且会受更早 dump 截断影响）
 
 说明：OP Fusion 的实现与约束见 `docs/tile_fusion/tile_fusion_plan.md` 与 `docs/tile_fusion/oplib_ir_spec.md`。
 

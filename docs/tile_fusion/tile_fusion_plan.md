@@ -114,7 +114,7 @@
 ## 5. CLI 语义（当前）
 
 1. `--op-lib-dir`：必填，缺失直接报错。
-2. `--enable-op-fusion`：兼容开关，当前为 no-op（主链路总是执行）。
+2. `--enable-op-fusion`：控制 `PTOCreateFusionGroupsPass`、`PTOOutlineFusionGroupsPass`、`PTOLowLevelLoopFusionPass` 三个 pass（默认关闭）。
 3. `--op-fusion-debug`：输出 group/outline/lower/inline/loop-fusion 调试日志。
 4. `--disable-oplib-lowering`：已移除，不再支持。
 
@@ -124,7 +124,7 @@
 
 1. `level1/level2`：执行 `PlanMemory`，可选 `InsertSync`。
 2. `level3`：跳过 `PlanMemory`，忽略 `--enable-insert-sync`（保持现状），并要求 `alloc_tile` 显式 `addr`。
-3. OP-Lib 主链路在三个 level 均执行。
+3. OP-Lib 实例化/降级/内联主链路在三个 level 均执行；group/outline/loop-fusion 由 `--enable-op-fusion` 控制。
 
 ---
 

@@ -101,7 +101,7 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Compatibility flag (no-op): OP-Lib fusion pipeline is always enabled"),
+    llvm::cl::desc("Enable OP fusion passes (create-groups/outline/low-level-loop-fusion)"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> opLibDir(
@@ -798,14 +798,13 @@ int main(int argc, char **argv) {
   // tile world.
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
 
-  // OP-Lib fusion pipeline is always enabled:
-  //   create-groups -> outline -> instantiate+lower-to-libcall
-  //   -> inline-libcall -> tilebuf2memref -> low-level-loop-fusion
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+  if (enableOpFusion) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
 
-  pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
-  outlineGroupsOptions.debug = opFusionDebug;
-  pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+    pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+    outlineGroupsOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+  }
 
   pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
   instantiateLowerOptions.opLibDir = opLibDir;
@@ -824,9 +823,11 @@ int main(int argc, char **argv) {
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
 
-  pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
-  loopFusionOptions.debug = opFusionDebug;
-  pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+  if (enableOpFusion) {
+    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+    loopFusionOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+  }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
 
