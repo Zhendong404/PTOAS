@@ -110,6 +110,10 @@ static constexpr llvm::StringLiteral kErrDType =
     "E_OPLIB_SIMD_UNSUPPORTED_DTYPE";
 static constexpr llvm::StringLiteral kErrLayout =
     "E_OPLIB_SIMD_UNSUPPORTED_LAYOUT";
+static constexpr llvm::StringLiteral kErrBodyDisallowedIR =
+    "E_OPLIB_BODY_DISALLOWED_IR";
+static constexpr llvm::StringLiteral kErrSimdAttrRequired =
+    "E_OPLIB_SIMD_ATTR_REQUIRED";
 
 struct GroupInfo {
   int64_t groupId = -1;
@@ -143,6 +147,7 @@ struct TemplateEntry {
   std::string coreSlot = kDefaultCoreSlot.str();
   std::string simdLevel;
   int64_t simdLanes = -1;
+  bool hasSimdBridgeOps = false;
 
   MatchKey match;
   int64_t cost = 0;
@@ -264,6 +269,22 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
   if (!vecTy || vecTy.isScalable())
     return failure();
   return vecTy.getNumElements();
+}
+
+static bool isSimdBridgeOp(Operation *op) {
+  return isa<pto::SimdPredicateOp, pto::SimdLoadOp, pto::SimdStoreOp,
+             pto::SimdLoadPUOp, pto::SimdStorePUOp>(op);
+}
+
+static bool isAllowedTemplateBodyOp(Operation *op) {
+  if (isa<func::ReturnOp>(op))
+    return true;
+  if (isSimdBridgeOp(op))
+    return true;
+
+  StringRef ns = op->getName().getDialectNamespace();
+  return ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf" ||
+         ns == "builtin";
 }
 
 struct TemplateRegistry {
@@ -511,8 +532,23 @@ struct TemplateRegistry {
   }
 
   LogicalResult parseSimdAttrs(func::FuncOp imported,
-                               std::unique_ptr<TemplateEntry> &entry) {
+                               std::unique_ptr<TemplateEntry> &entry,
+                               bool hasSimdOps) {
     Operation *op = imported.getOperation();
+    auto levelAttr = op->getAttrOfType<StringAttr>(kSimdLevelAttr);
+    auto lanesAttr = op->getAttrOfType<IntegerAttr>(kSimdLanesAttr);
+    bool hasLevelAttr = static_cast<bool>(levelAttr);
+    bool hasLanesAttr = static_cast<bool>(lanesAttr);
+
+    if (!hasSimdOps && !hasLevelAttr && !hasLanesAttr)
+      return success();
+
+    if (!hasLevelAttr || !hasLanesAttr) {
+      return emitFailureWithCode(
+          op, kErrSimdAttrRequired,
+          "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+    }
+
     auto levelOr = parseStringAttr(op, kSimdLevelAttr);
     auto lanesOr = parseI64Attr(op, kSimdLanesAttr, /*allowWildcard=*/false);
     if (failed(levelOr) || failed(lanesOr)) {
@@ -527,11 +563,12 @@ struct TemplateRegistry {
     }
     entry->simdLevel = *levelOr;
     entry->simdLanes = *lanesOr;
+    entry->hasSimdBridgeOps = hasSimdOps;
     return success();
   }
 
-  LogicalResult validateTemplateBodyForSimd(func::FuncOp imported,
-                                            const TemplateEntry &entry) {
+  LogicalResult validateTemplateBody(func::FuncOp imported,
+                                     const TemplateEntry &entry) {
     if (imported.isExternal() || imported.empty() ||
         imported.front().without_terminator().empty()) {
       return emitFailureWithCode(imported.getLoc(), kErrEmptyBody,
@@ -570,12 +607,27 @@ struct TemplateRegistry {
       if (failed(status))
         return;
 
+      if (op == imported.getOperation())
+        return;
+      if (!isAllowedTemplateBodyOp(op)) {
+        status = emitFailureWithCode(
+            op, kErrBodyDisallowedIR,
+            Twine("unsupported template body op: ") + op->getName().getStringRef());
+        return;
+      }
+
       if (isa<pto::SimdLoadOp, pto::SimdLoadPUOp>(op))
         firstLoad = std::min(firstLoad, preorder[op]);
       if (isa<pto::SimdStoreOp, pto::SimdStorePUOp>(op))
         firstStore = std::min(firstStore, preorder[op]);
 
       if (auto pred = dyn_cast<pto::SimdPredicateOp>(op)) {
+        if (entry.simdLanes <= 0) {
+          status = emitFailureWithCode(
+              pred, kErrSimdAttrRequired,
+              "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+          return;
+        }
         FailureOr<int64_t> lanes = getFixedVectorLanes(pred.getMask().getType());
         if (failed(lanes) || *lanes != entry.simdLanes) {
           status = emitFailureWithCode(pred, kErrLanesMismatch,
@@ -585,6 +637,12 @@ struct TemplateRegistry {
       }
 
       if (auto load = dyn_cast<pto::SimdLoadOp>(op)) {
+        if (entry.simdLanes <= 0) {
+          status = emitFailureWithCode(
+              load, kErrSimdAttrRequired,
+              "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+          return;
+        }
         FailureOr<int64_t> lanes = getFixedVectorLanes(load.getValue().getType());
         if (failed(lanes) || *lanes != entry.simdLanes) {
           status = emitFailureWithCode(load, kErrLanesMismatch,
@@ -594,6 +652,12 @@ struct TemplateRegistry {
       }
 
       if (auto loadPU = dyn_cast<pto::SimdLoadPUOp>(op)) {
+        if (entry.simdLanes <= 0) {
+          status = emitFailureWithCode(
+              loadPU, kErrSimdAttrRequired,
+              "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+          return;
+        }
         FailureOr<int64_t> lanes =
             getFixedVectorLanes(loadPU.getValue().getType());
         if (failed(lanes) || *lanes != entry.simdLanes) {
@@ -604,6 +668,12 @@ struct TemplateRegistry {
       }
 
       if (auto store = dyn_cast<pto::SimdStoreOp>(op)) {
+        if (entry.simdLanes <= 0) {
+          status = emitFailureWithCode(
+              store, kErrSimdAttrRequired,
+              "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+          return;
+        }
         FailureOr<int64_t> lanes = getFixedVectorLanes(store.getValue().getType());
         if (failed(lanes) || *lanes != entry.simdLanes) {
           status = emitFailureWithCode(store, kErrLanesMismatch,
@@ -613,6 +683,12 @@ struct TemplateRegistry {
       }
 
       if (auto storePU = dyn_cast<pto::SimdStorePUOp>(op)) {
+        if (entry.simdLanes <= 0) {
+          status = emitFailureWithCode(
+              storePU, kErrSimdAttrRequired,
+              "using pto.simd.* requires attrs: pto.simd.level / pto.simd.lanes");
+          return;
+        }
         FailureOr<int64_t> lanes =
             getFixedVectorLanes(storePU.getValue().getType());
         if (failed(lanes) || *lanes != entry.simdLanes) {
@@ -642,11 +718,13 @@ struct TemplateRegistry {
                                      "core slot op must have exactly one result");
         return;
       }
-      FailureOr<int64_t> lanes = getFixedVectorLanes(op->getResult(0).getType());
-      if (failed(lanes) || *lanes != entry.simdLanes) {
-        status = emitFailureWithCode(op, kErrLanesMismatch,
-                                     "core slot vector lanes mismatch with pto.simd.lanes");
-        return;
+      if (entry.simdLanes > 0) {
+        FailureOr<int64_t> lanes = getFixedVectorLanes(op->getResult(0).getType());
+        if (failed(lanes) || *lanes != entry.simdLanes) {
+          status = emitFailureWithCode(op, kErrLanesMismatch,
+                                       "core slot vector lanes mismatch with pto.simd.lanes");
+          return;
+        }
       }
       coreSeq = preorder[op];
       ++coreCount;
@@ -655,19 +733,27 @@ struct TemplateRegistry {
     if (failed(status))
       return failure();
 
-    if (coreCount != 1) {
+    if (entry.role == EntryRole::Seed && coreCount != 1) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
-                                 "template must contain exactly one core slot op");
+                                 "seed template must contain exactly one core slot op");
     }
-    if (firstLoad == std::numeric_limits<int64_t>::max()) {
+    if (entry.hasSimdBridgeOps && coreCount != 1) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template using pto.simd.* must contain exactly one core slot op");
+    }
+    if (coreCount > 1) {
+      return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
+                                 "template must not contain multiple core slot ops");
+    }
+    if (entry.hasSimdBridgeOps && firstLoad == std::numeric_limits<int64_t>::max()) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template must contain simd.load/simd.load_pu");
     }
-    if (firstStore == std::numeric_limits<int64_t>::max()) {
+    if (entry.hasSimdBridgeOps && firstStore == std::numeric_limits<int64_t>::max()) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template must contain simd.store/simd.store_pu");
     }
-    if (!(firstLoad < coreSeq && coreSeq < firstStore)) {
+    if (entry.hasSimdBridgeOps && !(firstLoad < coreSeq && coreSeq < firstStore)) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template ordering must satisfy load -> core -> store");
     }
@@ -757,10 +843,16 @@ struct TemplateRegistry {
           return failure();
         }
 
-        if (failed(parseSimdAttrs(imported, entry)))
+        bool hasSimdOps = false;
+        imported.walk([&](Operation *bodyOp) {
+          if (isSimdBridgeOp(bodyOp))
+            hasSimdOps = true;
+        });
+
+        if (failed(parseSimdAttrs(imported, entry, hasSimdOps)))
           return failure();
 
-        if (failed(validateTemplateBodyForSimd(imported, *entry)))
+        if (failed(validateTemplateBody(imported, *entry)))
           return failure();
 
         if (debug) {

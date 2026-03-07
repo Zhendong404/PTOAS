@@ -1,6 +1,6 @@
-# Level-3 OP-Lib IR 接口规范（V1：`pto.simd.*`）
+# Level-3 OP-Lib IR 接口规范（V1.1：Mixed Body IR）
 
-- 状态：Draft v1.0
+- 状态：Draft v1.1
 - 生效范围：PTOAS OP-Lib Binary Element-Wise 主链路
 - 目标读者：PTOAS OP Fusion 维护者、OP-Lib 开发者
 
@@ -8,14 +8,15 @@
 
 ### 1.1 目标
 
-本文定义 Level-3 OP-Lib 在 Binary Element-Wise 场景的细粒度 IR 规范，目标如下：
+本文定义 Level-3 OP-Lib 在 Binary Element-Wise 场景的模板体 IR 规范，目标如下：
 
 1. 保持 OP-Lib 对外 ABI 不变：模板/实例/调用点均为 `!pto.tile_buf`。
-2. 在模板函数体内引入 `pto.simd.*` 语义，显式表达 tile 到 SIMD/lane 级桥接。
-3. 复用 `vector/arith/scf/memref`，避免重复定义计算语义。
+2. 将 `pto.simd`、`vector`、`arith` 统一纳入 OP-Lib 开发者可写 IR 集合。
+3. 不再要求主链路必须执行 `pto.simd -> vector` 专用 lowering。
 4. 保持 `variant/seed` 选择机制与 `pto.oplib.*` 元数据兼容。
+5. 为后续 EmitC/CCEC 路径保留更直接的代码生成空间。
 
-### 1.2 V1 范围
+### 1.2 V1.1 范围
 
 1. OP：`tadd/tsub/tmul/tdiv/tmax/tmin`
 2. dtype：`f16/f32`
@@ -36,60 +37,66 @@
 6. `pto.oplib.cost` / `pto.oplib.priority`
 7. `pto.oplib.seed.*`
 
-### 2.2 新增（函数体语义层）
+### 2.2 扩展（函数体语义层）
 
-模板函数体必须使用 `pto.simd.*` 与标准 `arith/vector/scf` 组合表达核心逻辑。
+模板函数体采用 Mixed Body IR：
 
-新增函数属性：
+1. 可直接使用 `vector/arith/scf/memref` 表达核心计算与循环。
+2. 可选使用 `pto.simd.*` 表达显式 lane/mask 语义。
+3. `pto.simd.*` 出现时，必须提供对应 `pto.simd` 属性。
+
+## 3. 模板体可用 IR 集合
+
+### 3.1 必选约束
+
+1. 入口签名固定：`(!pto.tile_buf, !pto.tile_buf, !pto.tile_buf) -> ()`。
+2. 模板体不能为空。
+3. 不允许落到集合外 dialect/op（避免不可控语义漂移）。
+
+### 3.2 允许的 IR（V1.1）
+
+1. `arith.*`
+2. `vector.*`
+3. `memref.*`
+4. `scf.*`
+5. `builtin.unrealized_conversion_cast`（仅用于 `tile_buf <-> memref` 桥接）
+6. `pto.simd.*`（可选）
+
+说明：`pto` 其他高层 tile 计算 op（如 `pto.tadd/pto.tmul`）不应再次出现在 OP-Lib 模板体内。
+
+## 4. `pto.simd.*` 语义（可选层）
+
+当模板需要显式 mask/predicate/post-update 语义时，可使用 `pto.simd.*`：
+
+1. `pto.simd.predicate`
+2. `pto.simd.load`
+3. `pto.simd.store`
+4. `pto.simd.load_pu`
+5. `pto.simd.store_pu`
+
+### 4.1 `pto.simd` 属性规则（仅在使用 `pto.simd.*` 时强制）
 
 1. `pto.simd.level = "binary_ewise_v1"`
 2. `pto.simd.lanes = <i64>`
+3. `pto.simd.core_slot = "binary_ewise_core"`（标在核心 `arith.*` op 上）
 
-新增核心槽位属性（标在核心算术 op 上）：
+### 4.2 纯 vector 模板
 
-1. `pto.simd.core_slot = "binary_ewise_core"`
+纯 `vector/arith` 模板允许不写 `pto.simd.level/lanes`，但仍必须满足 V1.1 的 dtype/layout/seed 规则。
 
-## 3. `pto.simd.*` 原语（V1）
+## 5. Seed 与 Core Slot 规则
 
-### 3.1 SIMD 谓词
-
-```mlir
-%mask = pto.simd.predicate %active : index -> vector<64xi1>
-```
-
-语义：生成 lane 掩码，`lane < active` 为 true。
-
-### 3.2 SIMD 加载/存储
-
-```mlir
-%v = pto.simd.load %src, %off, %mask
-     : memref<1024xf32, ...>, index, vector<64xi1> -> vector<64xf32>
-
-pto.simd.store %v, %dst, %off, %mask
-  : vector<64xf32>, memref<1024xf32, ...>, index, vector<64xi1>
-```
-
-语义：按 mask 执行 lane 级读写。
-
-### 3.3 带 post-update 的加载/存储
-
-```mlir
-%v, %next = pto.simd.load_pu %src, %off, %mask {step = 64 : i64}
-            : memref<1024xf32, ...>, index, vector<64xi1>
-              -> vector<64xf32>, index
-
-%next2 = pto.simd.store_pu %v, %dst, %off, %mask {step = 64 : i64}
-         : vector<64xf32>, memref<1024xf32, ...>, index, vector<64xi1>
-           -> index
-```
-
-语义：读/写后返回更新后的 offset。
-
-## 4. Seed 与 Core Slot 规则
-
-1. `seed` 函数体必须且仅有一个 `pto.simd.core_slot = "binary_ewise_core"` 的核心算术 op。
-2. 实例化时仅改写该 core op，其他访存/循环骨架保持不变。
-3. 映射关系：
+1. `seed` 函数体必须且仅有一个核心 slot op。
+2. 核心 slot 默认标记为 `pto.simd.core_slot = "binary_ewise_core"`。
+3. 核心 slot op 必须是以下之一：
+   1. `arith.addf`
+   2. `arith.subf`
+   3. `arith.mulf`
+   4. `arith.divf`
+   5. `arith.maximumf`
+   6. `arith.minimumf`
+4. 实例化时仅改写核心 slot op，访存/循环骨架保持不变。
+5. 映射关系：
    1. `tadd -> arith.addf`
    2. `tsub -> arith.subf`
    3. `tmul -> arith.mulf`
@@ -97,16 +104,20 @@ pto.simd.store %v, %dst, %off, %mask
    5. `tmax -> arith.maximumf`
    6. `tmin -> arith.minimumf`
 
-## 5. 校验规则（硬失败）
+## 6. 校验规则（硬失败）
 
-### 5.1 模板导入校验
+### 6.1 模板导入校验
 
-1. 必须提供 `pto.simd.level` 与 `pto.simd.lanes`。
-2. 函数体不能为空（不允许空模板体）。
-3. 必须包含且仅包含一个核心 slot op。
-4. 必须满足 `load -> core -> store` 顺序。
+1. 签名必须符合 OP-Lib ABI。
+2. 函数体必须非空（不允许空模板体 fallback）。
+3. dtype 仅允许 `f16/f32`。
+4. layout 仅允许 `row_major`。
+5. `seed` 必须满足核心 slot 唯一性与类型合法性。
+6. 若函数体包含 `pto.simd.*`，必须满足：
+   1. `pto.simd.level/lanes` 存在且合法。
+   2. 所有相关 vector lane 与 `pto.simd.lanes` 一致。
 
-### 5.2 错误码
+### 6.2 错误码
 
 1. `E_OPLIB_EMPTY_BODY_FOR_SIMD`
 2. `E_OPLIB_SIMD_LANES_MISMATCH`
@@ -114,57 +125,36 @@ pto.simd.store %v, %dst, %off, %mask
 4. `E_OPLIB_SIMD_UNSUPPORTED_DTYPE`
 5. `E_OPLIB_SIMD_UNSUPPORTED_LAYOUT`
 6. `E_OPLIB_INSTANCE_BODY_MISSING`
+7. `E_OPLIB_BODY_DISALLOWED_IR`
+8. `E_OPLIB_SIMD_ATTR_REQUIRED`
 
-## 6. Pass 行为约束（V1）
+## 7. Pass 行为约束（V1.1）
 
 1. `PTOInstantiateAndLowerToLibCallPass`：
-   1. 导入模板时执行 SIMD 属性与函数体校验。
+   1. 导入模板时执行 Mixed Body IR 校验。
    2. 创建实例时克隆模板体（不再创建空 body 再回填）。
    3. Seed 实例执行 core slot 算术改写。
 2. `PTOInlineLibCallPass`：
    1. 不再允许 fake body fallback。
    2. 实例函数若无函数体，直接 `E_OPLIB_INSTANCE_BODY_MISSING`。
 3. `PTOValidateSimdIRPass`：
-   1. 统一校验 `pto.simd.*` 结构合法性。
-4. `PTOLowerSimdToVectorPass`：
-   1. 将 `pto.simd.*` 降到 `vector/memref/arith`。
+   1. 仅对包含 `pto.simd.*` 的函数执行结构合法性校验。
+4. 主链路不再依赖 `PTOLowerSimdToVectorPass` 作为必经步骤。
 
-## 7. 模板编写建议
+## 8. 最小示例（两种写法）
 
-1. 统一以 `tile_buf` 入参，在函数体内部桥接到 `memref`。
-2. SIMD 处理建议使用线性 offset（例如把 2D memref reinterpret 为 1D）。
-3. 核心算术统一使用 `arith.*` 的 vector 形式，避免自定义计算 op。
-4. `variant` 和 `seed` 都建议显式写出 `pto.simd.level` / `pto.simd.lanes`。
-
-## 8. 最小示例（seed 骨架）
+### 8.1 纯 vector 写法（无 `pto.simd.*`）
 
 ```mlir
-func.func private @__pto_oplib_seed_vec_bin_core(
-  %src0: !pto.tile_buf<...>,
-  %src1: !pto.tile_buf<...>,
-  %dst:  !pto.tile_buf<...>
-) attributes {
-  pto.oplib.kind = "l3_binary_elementwise_template",
-  pto.oplib.entry_role = "seed",
-  pto.oplib.seed_id = "seed_vec_bin_core",
-  pto.oplib.seed_dtype = "f32",
-  pto.oplib.seed.support_dtypes = ["f16", "f32"],
-  pto.oplib.seed.support_ops = ["tadd", "tsub", "tmul", "tdiv", "tmax", "tmin"],
-  pto.oplib.seed.core_slot = "binary_ewise_core",
-  pto.oplib.match.rows = -1 : i64,
-  pto.oplib.match.cols = -1 : i64,
-  pto.oplib.match.blayout = "row_major",
-  pto.oplib.match.slayout = "any",
-  pto.oplib.match.fractal = -1 : i64,
-  pto.oplib.cost = 10 : i64,
-  pto.oplib.priority = 0 : i64,
-  pto.simd.level = "binary_ewise_v1",
-  pto.simd.lanes = 64 : i64
-} {
-  // load -> core(slot) -> store
-  // core op should carry: { pto.simd.core_slot = "binary_ewise_core" }
-  return
-}
+// scf.for + vector.load/store + arith.addf
+// 适合直接走向 EmitC/CCEC 可控映射路径
+```
+
+### 8.2 `pto.simd` 写法（显式 mask 语义）
+
+```mlir
+// pto.simd.predicate/load/store + arith.addf(core_slot)
+// 适合需要表达 lane mask / 尾块语义的模板
 ```
 
 ## 9. 开发者指南

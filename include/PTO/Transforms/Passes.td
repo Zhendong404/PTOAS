@@ -194,9 +194,10 @@ def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {
 }
 
 def PTOValidateSimdIR : Pass<"pto-validate-simd-ir", "ModuleOp"> {
-  let summary = "Validate pto.simd bridge IR in OP-Lib templates/instances";
+  let summary = "Validate functions that use pto.simd bridge IR";
   let description = [{
-    Validates structural constraints for pto.simd bridge IR, including:
+    Validates structural constraints for functions that contain pto.simd ops,
+    including:
       - required pto.simd.level / pto.simd.lanes attributes
       - non-empty function body
       - single binary core slot in seed/templates

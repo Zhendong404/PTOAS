@@ -41,6 +41,8 @@ static constexpr llvm::StringLiteral kErrDType =
     "E_OPLIB_SIMD_UNSUPPORTED_DTYPE";
 static constexpr llvm::StringLiteral kErrLayout =
     "E_OPLIB_SIMD_UNSUPPORTED_LAYOUT";
+static constexpr llvm::StringLiteral kErrSimdAttrRequired =
+    "E_OPLIB_SIMD_ATTR_REQUIRED";
 
 static bool isBinaryFloatCore(Operation *op) {
   return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
@@ -52,6 +54,19 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
   if (!vecTy || vecTy.isScalable())
     return failure();
   return vecTy.getNumElements();
+}
+
+static bool hasSimdBridgeOps(func::FuncOp func) {
+  bool found = false;
+  func.walk([&](Operation *op) {
+    if (isa<pto::SimdPredicateOp, pto::SimdLoadOp, pto::SimdStoreOp,
+            pto::SimdLoadPUOp, pto::SimdStorePUOp>(op)) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
 }
 
 static LogicalResult emitCodeError(Operation *op, StringRef code,
@@ -240,9 +255,16 @@ struct PTOValidateSimdIRPass
     ModuleOp module = getOperation();
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      auto levelAttr = func->getAttrOfType<StringAttr>(kSimdLevelAttr);
-      if (!levelAttr)
+      if (!hasSimdBridgeOps(func))
         continue;
+
+      auto levelAttr = func->getAttrOfType<StringAttr>(kSimdLevelAttr);
+      if (!levelAttr) {
+        func.emitError() << kErrSimdAttrRequired
+                         << ": using pto.simd.* requires attr pto.simd.level";
+        signalPassFailure();
+        return;
+      }
 
       if (levelAttr.getValue() != kSimdLevelBinaryEwiseV1) {
         func.emitError() << kErrCoreSlot
@@ -254,8 +276,8 @@ struct PTOValidateSimdIRPass
 
       auto lanesAttr = func->getAttrOfType<IntegerAttr>(kSimdLanesAttr);
       if (!lanesAttr || lanesAttr.getInt() <= 0) {
-        func.emitError() << kErrLanesMismatch
-                         << ": missing or invalid pto.simd.lanes";
+        func.emitError() << kErrSimdAttrRequired
+                         << ": using pto.simd.* requires positive pto.simd.lanes";
         signalPassFailure();
         return;
       }

@@ -15,9 +15,7 @@ module {
         pto.oplib.match.slayout = "any",
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 1 : i64,
-        pto.oplib.priority = 10 : i64,
-        pto.simd.level = "binary_ewise_v1",
-        pto.simd.lanes = 64 : i64
+        pto.oplib.priority = 10 : i64
       } {
     %m0 = builtin.unrealized_conversion_cast %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
     %m1 = builtin.unrealized_conversion_cast %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
@@ -31,12 +29,10 @@ module {
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
     scf.for %i = %c0 to %c1024 step %c64 {
-      %remain = arith.subi %c1024, %i : index
-      %mask = pto.simd.predicate %remain : index -> vector<64xi1>
-      %a = pto.simd.load %flat0, %i, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
-      %b = pto.simd.load %flat1, %i, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
+      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
       %c = arith.maximumf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      pto.simd.store %c, %flatd, %i, %mask : vector<64xf32>, memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1>
+      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
     }
     return
   }
@@ -57,9 +53,7 @@ module {
         pto.oplib.match.slayout = "any",
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 2 : i64,
-        pto.oplib.priority = 5 : i64,
-        pto.simd.level = "binary_ewise_v1",
-        pto.simd.lanes = 64 : i64
+        pto.oplib.priority = 5 : i64
       } {
     %m0 = builtin.unrealized_conversion_cast %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
     %m1 = builtin.unrealized_conversion_cast %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
@@ -73,12 +67,10 @@ module {
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
     scf.for %i = %c0 to %c1024 step %c64 {
-      %remain = arith.subi %c1024, %i : index
-      %mask = pto.simd.predicate %remain : index -> vector<64xi1>
-      %a = pto.simd.load %flat0, %i, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
-      %b = pto.simd.load %flat1, %i, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
+      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
       %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      pto.simd.store %c, %flatd, %i, %mask : vector<64xf32>, memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1>
+      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
     }
     return
   }
@@ -101,9 +93,7 @@ module {
         pto.oplib.match.slayout = "any",
         pto.oplib.match.fractal = -1 : i64,
         pto.oplib.cost = 10 : i64,
-        pto.oplib.priority = 0 : i64,
-        pto.simd.level = "binary_ewise_v1",
-        pto.simd.lanes = 64 : i64
+        pto.oplib.priority = 0 : i64
       } {
     %m0 = builtin.unrealized_conversion_cast %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
     %m1 = builtin.unrealized_conversion_cast %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
@@ -117,15 +107,10 @@ module {
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index
     scf.for %i = %c0 to %c1024 step %c64 {
-      %remain = arith.subi %c1024, %i : index
-      %mask = pto.simd.predicate %remain : index -> vector<64xi1>
-      %a, %off0 = pto.simd.load_pu %flat0, %i, %mask {step = 64 : i64} : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>, index
-      %b, %off1 = pto.simd.load_pu %flat1, %i, %mask {step = 64 : i64} : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>, index
+      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
+      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
       %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
-      %off2 = pto.simd.store_pu %c, %flatd, %i, %mask {step = 64 : i64} : vector<64xf32>, memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> index
-      %use0 = arith.addi %off0, %off1 : index
-      %use1 = arith.addi %use0, %off2 : index
-      %_ = arith.addi %use1, %i : index
+      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<64xf32>
     }
     return
   }

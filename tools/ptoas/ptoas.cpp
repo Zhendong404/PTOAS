@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include <cctype>
 #include <cstring>
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -631,6 +632,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
+  registry.insert<mlir::vector::VectorDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
   //mlir::registerAllDialects(registry);
@@ -666,6 +668,7 @@ int main(int argc, char **argv) {
   context.getOrLoadDialect<arith::ArithDialect>();
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
+  context.getOrLoadDialect<vector::VectorDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
 
   OwningOpRef<ModuleOp> module;
@@ -809,12 +812,11 @@ int main(int argc, char **argv) {
   instantiateLowerOptions.debug = opFusionDebug;
   pm.addPass(
       pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
+  pm.addPass(pto::createPTOValidateSimdIRPass());
 
   pto::PTOInlineLibCallOptions inlineLibCallOptions;
   inlineLibCallOptions.debug = opFusionDebug;
   pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
-  pm.addPass(pto::createPTOValidateSimdIRPass());
-  pm.addPass(pto::createPTOLowerSimdToVectorPass());
 
   // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
   pm.addPass(pto::createPTOTileBufToMemrefPass());
