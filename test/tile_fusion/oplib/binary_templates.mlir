@@ -17,20 +17,20 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 10 : i64
       } {
-    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
-    %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %rows = memref.dim %m0, %c0 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %total = arith.muli %rows, %cols : index
 
-    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
 
     %zero = arith.constant dense<0.0> : vector<64xf32>
     pto.simd.vec_scope {
@@ -66,20 +66,20 @@ module {
         pto.oplib.cost = 2 : i64,
         pto.oplib.priority = 5 : i64
       } {
-    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
-    %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %rows = memref.dim %m0, %c0 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %total = arith.muli %rows, %cols : index
 
-    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
 
     %zero = arith.constant dense<0.0> : vector<64xf32>
     pto.simd.vec_scope {
@@ -117,20 +117,20 @@ module {
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
-    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
-    %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %rows = memref.dim %m0, %c0 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %total = arith.muli %rows, %cols : index
 
-    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
 
     %zero = arith.constant dense<0.0> : vector<64xf32>
     pto.simd.vec_scope {
@@ -168,20 +168,20 @@ module {
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
-    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f16, rows=64, cols=64, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c128 = arith.constant 128 : index
-    %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-    %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+    %rows = memref.dim %m0, %c0 : memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>
     %total = arith.muli %rows, %cols : index
 
-    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<?x?xf16, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [%total], strides: [1] : memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [%total], strides: [1] : memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %flatd = memref.reinterpret_cast %md to offset: [0], sizes: [%total], strides: [1] : memref<64x64xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>> to memref<?xf16, strided<[1], offset: ?>, #pto.address_space<vec>>
 
     %zero = arith.constant dense<0.0> : vector<128xf16>
     pto.simd.vec_scope {

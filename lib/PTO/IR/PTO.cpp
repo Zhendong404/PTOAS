@@ -12,6 +12,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -3254,6 +3255,121 @@ static LogicalResult verifySimdValueVector(Operation *op, Type valueTy,
   return success();
 }
 
+static LogicalResult
+computeExpectedTileBufMemrefStrides(TileBufType tileTy,
+                                    SmallVectorImpl<int64_t> &expectedStrides) {
+  if (tileTy.getRank() != 2)
+    return failure();
+
+  ArrayRef<int64_t> shape = tileTy.getShape();
+  if (shape.size() != 2)
+    return failure();
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return failure();
+
+  auto cfg = tileTy.getConfigAttr();
+  if (!cfg)
+    cfg = TileBufConfigAttr::getDefault(tileTy.getContext());
+
+  auto getElemBytes = [](Type elemTy) -> int64_t {
+    if (auto ft = elemTy.dyn_cast<FloatType>()) {
+      if (ft.isF16() || ft.isBF16())
+        return 2;
+      if (ft.isF32())
+        return 4;
+      if (ft.isF64())
+        return 8;
+    } else if (auto it = elemTy.dyn_cast<IntegerType>()) {
+      int64_t bytes = it.getWidth() / 8;
+      return bytes > 0 ? bytes : 1;
+    }
+    return -1;
+  };
+
+  auto readBLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<BLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+
+  auto readSLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<SLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+
+  int64_t innerRows = 1, innerCols = 1;
+  bool boxed = false;
+  int32_t bl = 0, sl = 0;
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize()))
+    fr = static_cast<int32_t>(attr.getInt());
+
+  boxed = (sl != 0);
+  if (boxed) {
+    int64_t elemBytes = getElemBytes(tileTy.getElementType());
+    if (elemBytes <= 0)
+      return failure();
+    if (fr == 1024) {
+      innerRows = 16;
+      innerCols = 16;
+    } else if (fr == 32) {
+      innerRows = 16;
+      innerCols = 2;
+    } else if (fr == 512) {
+      if (sl == 1) {
+        innerRows = 16;
+        innerCols = 32 / elemBytes;
+      } else if (sl == 2) {
+        innerRows = 32 / elemBytes;
+        innerCols = 16;
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+  }
+
+  expectedStrides.clear();
+  if (!boxed) {
+    if (bl == 1) {
+      expectedStrides.push_back(1);
+      expectedStrides.push_back(shape[0]);
+    } else {
+      expectedStrides.push_back(shape[1]);
+      expectedStrides.push_back(1);
+    }
+    return success();
+  }
+
+  if (bl == 1) {
+    if (sl != 1)
+      return failure();
+    expectedStrides.push_back(innerCols);
+    expectedStrides.push_back(shape[0]);
+    return success();
+  }
+
+  expectedStrides.push_back(shape[1]);
+  expectedStrides.push_back(innerRows);
+  return success();
+}
+
 mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
   auto tileTy = dyn_cast<TileBufType>(getSrc().getType());
   if (!tileTy)
@@ -3269,6 +3385,47 @@ mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
 
   if (memTy.getMemorySpace() != tileTy.getMemorySpace()) {
     return emitOpError("expects memref memory space to match tile_buf memory space");
+  }
+
+  if (memTy.getRank() != tileTy.getRank()) {
+    return emitOpError("expects memref rank to match tile_buf rank");
+  }
+
+  ArrayRef<int64_t> tileShape = tileTy.getShape();
+  ArrayRef<int64_t> memShape = memTy.getShape();
+  if (tileShape.size() != memShape.size()) {
+    return emitOpError("expects memref shape rank to match tile_buf shape rank");
+  }
+  for (unsigned i = 0; i < tileShape.size(); ++i) {
+    if (memShape[i] != tileShape[i]) {
+      return emitOpError()
+             << "expects memref shape to match tile_buf shape; got dim " << i
+             << " = " << memShape[i] << ", expected " << tileShape[i];
+    }
+  }
+
+  SmallVector<int64_t, 4> expectedStrides;
+  if (failed(computeExpectedTileBufMemrefStrides(tileTy, expectedStrides))) {
+    return emitOpError("cannot infer expected strides from tile_buf layout");
+  }
+
+  SmallVector<int64_t, 4> memStrides;
+  int64_t memOffset = ShapedType::kDynamic;
+  if (failed(getStridesAndOffset(memTy, memStrides, memOffset))) {
+    return emitOpError("expects memref to use strided layout");
+  }
+  if (memOffset != 0) {
+    return emitOpError("expects memref offset to be 0");
+  }
+  if (memStrides.size() != expectedStrides.size()) {
+    return emitOpError("expects memref stride rank to match tile_buf rank");
+  }
+  for (unsigned i = 0; i < expectedStrides.size(); ++i) {
+    if (memStrides[i] != expectedStrides[i]) {
+      return emitOpError() << "expects memref strides to match tile_buf layout; got "
+                           << memStrides[i] << " at dim " << i << ", expected "
+                           << expectedStrides[i];
+    }
   }
 
   return success();

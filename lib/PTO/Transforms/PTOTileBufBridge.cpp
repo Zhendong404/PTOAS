@@ -25,6 +25,122 @@ static bool isTileWorldPTOp(Operation *op) { return isa<pto::OpPipeInterface>(op
 
 static bool isSupportedElemType(Type ty) { return ty.isF16() || ty.isF32(); }
 
+static int64_t getElemBytes(Type elemTy) {
+  if (auto ft = dyn_cast<FloatType>(elemTy)) {
+    if (ft.isF16() || ft.isBF16())
+      return 2;
+    if (ft.isF32())
+      return 4;
+    if (ft.isF64())
+      return 8;
+  }
+  if (auto it = dyn_cast<IntegerType>(elemTy)) {
+    int64_t bytes = it.getWidth() / 8;
+    return bytes > 0 ? bytes : 1;
+  }
+  return -1;
+}
+
+static bool readBLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<pto::BLayoutAttr>(attr)) {
+    out = static_cast<int32_t>(a.getValue());
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = static_cast<int32_t>(a.getInt());
+    return true;
+  }
+  return false;
+}
+
+static bool readSLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<pto::SLayoutAttr>(attr)) {
+    out = static_cast<int32_t>(a.getValue());
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = static_cast<int32_t>(a.getInt());
+    return true;
+  }
+  return false;
+}
+
+static bool inferTileBufStaticStrides(pto::TileBufType tileTy,
+                                      SmallVectorImpl<int64_t> &strides) {
+  if (tileTy.getRank() != 2)
+    return false;
+
+  ArrayRef<int64_t> shape = tileTy.getShape();
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return false;
+
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  int32_t bl = 0; // row_major
+  int32_t sl = 0; // none_box
+  int32_t fr = 512;
+  auto cfg = tileTy.getConfigAttr();
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize()))
+    fr = static_cast<int32_t>(attr.getInt());
+
+  int64_t innerRows = 1;
+  int64_t innerCols = 1;
+  if (sl != 0) {
+    int64_t elemBytes = getElemBytes(tileTy.getElementType());
+    if (elemBytes <= 0)
+      return false;
+    if (fr == 1024) {
+      innerRows = 16;
+      innerCols = 16;
+    } else if (fr == 32) {
+      innerRows = 16;
+      innerCols = 2;
+    } else if (fr == 512) {
+      if (sl == 1) {
+        innerRows = 16;
+        innerCols = 32 / elemBytes;
+      } else if (sl == 2) {
+        innerRows = 32 / elemBytes;
+        innerCols = 16;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  if (sl == 0) {
+    if (bl == 1) {
+      strides.clear();
+      strides.push_back(1);
+      strides.push_back(rows);
+    } else {
+      strides.clear();
+      strides.push_back(cols);
+      strides.push_back(1);
+    }
+    return true;
+  }
+
+  if (bl == 1) {
+    if (sl != 1)
+      return false;
+    strides.clear();
+    strides.push_back(innerCols);
+    strides.push_back(rows);
+    return true;
+  }
+
+  strides.clear();
+  strides.push_back(cols);
+  strides.push_back(innerRows);
+  return true;
+}
+
 static FailureOr<pto::TileBufType>
 convertMemRefToTileBufType(MemRefType memTy, MLIRContext *ctx) {
   if (memTy.getRank() != 2)
@@ -156,8 +272,9 @@ buildTileTypeFromMemRefAndMetadata(MemRefType memTy, const MemRefTileMetadata &m
 static FailureOr<MemRefType> convertTileBufToMemRefType(pto::TileBufType tileTy,
                                                          MLIRContext *ctx) {
   SmallVector<int64_t, 4> shape(tileTy.getShape().begin(), tileTy.getShape().end());
-  SmallVector<int64_t, 4> dynStrides(tileTy.getRank(), ShapedType::kDynamic);
-  auto layout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, dynStrides);
+  SmallVector<int64_t, 4> strides(tileTy.getRank(), ShapedType::kDynamic);
+  (void)inferTileBufStaticStrides(tileTy, strides);
+  auto layout = StridedLayoutAttr::get(ctx, /*offset=*/0, strides);
   return MemRefType::get(shape, tileTy.getElementType(), layout,
                          tileTy.getMemorySpace());
 }

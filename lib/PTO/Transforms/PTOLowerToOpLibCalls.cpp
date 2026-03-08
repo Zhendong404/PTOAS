@@ -214,6 +214,120 @@ static bool hasFusionGroupAttrs(Operation *op) {
 
 static bool isFloatDTypeSupported(Type ty) { return ty.isF16() || ty.isF32(); }
 
+static int64_t getElemBytes(Type elemTy) {
+  if (auto ft = dyn_cast<FloatType>(elemTy)) {
+    if (ft.isF16() || ft.isBF16())
+      return 2;
+    if (ft.isF32())
+      return 4;
+    if (ft.isF64())
+      return 8;
+  }
+  if (auto it = dyn_cast<IntegerType>(elemTy)) {
+    int64_t bytes = it.getWidth() / 8;
+    return bytes > 0 ? bytes : 1;
+  }
+  return -1;
+}
+
+static bool readBLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<pto::BLayoutAttr>(attr)) {
+    out = static_cast<int32_t>(a.getValue());
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = static_cast<int32_t>(a.getInt());
+    return true;
+  }
+  return false;
+}
+
+static bool readSLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<pto::SLayoutAttr>(attr)) {
+    out = static_cast<int32_t>(a.getValue());
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = static_cast<int32_t>(a.getInt());
+    return true;
+  }
+  return false;
+}
+
+static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
+                                                        MLIRContext *ctx) {
+  if (tileTy.getRank() != 2)
+    return failure();
+
+  ArrayRef<int64_t> shape = tileTy.getShape();
+  if (shape.size() != 2)
+    return failure();
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return failure();
+
+  auto cfg = tileTy.getConfigAttr();
+  if (!cfg)
+    cfg = pto::TileBufConfigAttr::getDefault(ctx);
+
+  int32_t bl = 0; // row_major
+  int32_t sl = 0; // none_box
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize()))
+    fr = static_cast<int32_t>(attr.getInt());
+
+  int64_t innerRows = 1;
+  int64_t innerCols = 1;
+  if (sl != 0) {
+    int64_t elemBytes = getElemBytes(tileTy.getElementType());
+    if (elemBytes <= 0)
+      return failure();
+    if (fr == 1024) {
+      innerRows = 16;
+      innerCols = 16;
+    } else if (fr == 32) {
+      innerRows = 16;
+      innerCols = 2;
+    } else if (fr == 512) {
+      if (sl == 1) {
+        innerRows = 16;
+        innerCols = 32 / elemBytes;
+      } else if (sl == 2) {
+        innerRows = 32 / elemBytes;
+        innerCols = 16;
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+  }
+
+  SmallVector<int64_t, 2> strides;
+  if (sl == 0) {
+    if (bl == 1) {
+      strides.push_back(1);
+      strides.push_back(shape[0]);
+    } else {
+      strides.push_back(shape[1]);
+      strides.push_back(1);
+    }
+  } else if (bl == 1) {
+    if (sl != 1)
+      return failure();
+    strides.push_back(innerCols);
+    strides.push_back(shape[0]);
+  } else {
+    strides.push_back(shape[1]);
+    strides.push_back(innerRows);
+  }
+
+  auto layout = StridedLayoutAttr::get(ctx, /*offset=*/0, strides);
+  return MemRefType::get(shape, tileTy.getElementType(), layout,
+                         tileTy.getMemorySpace());
+}
+
 static std::string dtypeToString(Type ty) {
   if (ty.isF16())
     return "f16";
@@ -1083,6 +1197,32 @@ struct TemplateRegistry {
     }
 
     for (Operation &op : srcEntry.without_terminator()) {
+      if (auto bridge = dyn_cast<pto::SimdTileToMemrefOp>(&op)) {
+        Value mappedSrc = mapping.lookupOrNull(bridge.getSrc());
+        auto mappedTileTy = dyn_cast<pto::TileBufType>(mappedSrc.getType());
+        if (!mappedSrc || !mappedTileTy) {
+          (void)emitFailureWithCode(
+              loc, kErrCoreSlot,
+              Twine("failed to remap simd.tile_to_memref source in instance @") +
+                  inst.getSymName());
+          return failure();
+        }
+        FailureOr<MemRefType> inferredTyOr =
+            inferSimdBridgeMemRefType(mappedTileTy, module.getContext());
+        if (failed(inferredTyOr)) {
+          (void)emitFailureWithCode(
+              loc, kErrLayout,
+              Twine("failed to infer simd.tile_to_memref memref type for instance @") +
+                  inst.getSymName());
+          return failure();
+        }
+
+        auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
+            bridge.getLoc(), *inferredTyOr, mappedSrc);
+        mapping.map(bridge.getDst(), newBridge.getDst());
+        continue;
+      }
+
       Operation *cloned = bodyBuilder.clone(op, mapping);
       for (auto [oldRes, newRes] : llvm::zip(op.getResults(), cloned->getResults()))
         mapping.map(oldRes, newRes);
