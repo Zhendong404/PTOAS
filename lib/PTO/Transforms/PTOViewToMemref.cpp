@@ -435,6 +435,24 @@ struct PTOViewToMemrefPass
     for (auto func : mod.getOps<func::FuncOp>()) {
       if (func.isExternal()) continue;
 
+      // Consume pto.simd.tile_to_memref early in View2Memref so the bridge
+      // op never leaks into later pipeline stages.
+      SmallVector<mlir::pto::SimdTileToMemrefOp, 8> simdTileBridges;
+      func.walk([&](mlir::pto::SimdTileToMemrefOp op) {
+        simdTileBridges.push_back(op);
+      });
+      for (auto op : simdTileBridges) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Type dstTy = op.getDst().getType();
+        if (auto converted = convertPTOTypeToMemRef(op.getSrc().getType());
+            isa<MemRefType>(converted))
+          dstTy = converted;
+        auto bridge = rewriter.create<UnrealizedConversionCastOp>(
+            op.getLoc(), TypeRange{dstTy}, ValueRange{op.getSrc()});
+        rewriter.replaceOp(op, bridge.getResults());
+      }
+
       Block &entry = func.front();
       auto fnTy = func.getFunctionType();
 

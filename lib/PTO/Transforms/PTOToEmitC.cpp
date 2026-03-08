@@ -144,6 +144,9 @@ public:
       if (type.getRank() == 1 && type.getNumElements() == 4 &&
           type.getElementType().isInteger(16))
         return emitc::OpaqueType::get(Ctx, "pto::MrgSortExecutedNumList");
+      if (type.getRank() == 1 && !type.isScalable() &&
+          type.getElementType().isInteger(1))
+        return emitc::OpaqueType::get(Ctx, "MaskReg");
       if (type.getRank() == 1 && !type.isScalable()) {
         if (type.getElementType().isF32())
           return emitc::OpaqueType::get(Ctx, "RegTensor<float>");
@@ -1808,6 +1811,27 @@ static FailureOr<llvm::StringRef> getA5VectorElemToken(Operation *op,
   return failure();
 }
 
+static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
+                                                      VectorType maskTy,
+                                                      llvm::StringRef usage) {
+  if (maskTy.getRank() != 1 || maskTy.isScalable() ||
+      !maskTy.getElementType().isInteger(1)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                    << " requires fixed 1-D vector<i1> mask, got " << maskTy;
+    return failure();
+  }
+
+  int64_t lanes = maskTy.getNumElements();
+  if (lanes == 64)
+    return llvm::StringRef("float");
+  if (lanes == 128)
+    return llvm::StringRef("half");
+
+  op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                  << " mask lanes " << lanes << " (expect 64 or 128)";
+  return failure();
+}
+
 static FailureOr<Value> buildA5Predicate(ConversionPatternRewriter &rewriter,
                                          Location loc, Operation *op,
                                          VectorType vecTy,
@@ -1825,6 +1849,25 @@ static FailureOr<Value> buildA5Predicate(ConversionPatternRewriter &rewriter,
   auto pred = rewriter.create<emitc::CallOpaqueOp>(
       loc, TypeRange{maskTy}, "CreatePredicate", ValueRange{}, args,
       templateArgs);
+  return pred.getResult(0);
+}
+
+static FailureOr<Value>
+buildA5PredicateFromActiveCount(ConversionPatternRewriter &rewriter, Location loc,
+                                Operation *op, VectorType maskTy,
+                                Value activeCount,
+                                llvm::StringRef usageName) {
+  auto elemTokOr = getA5MaskElemToken(op, maskTy, usageName);
+  if (failed(elemTokOr))
+    return failure();
+
+  auto *ctx = rewriter.getContext();
+  auto maskRegTy = emitc::OpaqueType::get(ctx, "MaskReg");
+  auto templateArgs =
+      rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, *elemTokOr)});
+  auto pred = rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{maskRegTy}, "CreatePredicate", ValueRange{activeCount},
+      ArrayAttr{}, templateArgs);
   return pred.getResult(0);
 }
 
@@ -1887,6 +1930,77 @@ struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
   }
 };
 
+struct OplibVectorCreateMaskToEmitC
+    : public OpConversionPattern<vector::CreateMaskOp> {
+  using OpConversionPattern<vector::CreateMaskOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::CreateMaskOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto maskTy = dyn_cast<VectorType>(op.getType());
+    if (!maskTy)
+      return failure();
+
+    if (op.getOperands().size() != 1) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.create_mask "
+             "expects one active_count operand";
+      return failure();
+    }
+
+    auto predOr = buildA5PredicateFromActiveCount(
+        rewriter, op.getLoc(), op.getOperation(), maskTy,
+        adaptor.getOperands().front(), "vector.create_mask");
+    if (failed(predOr))
+      return failure();
+
+    rewriter.replaceOp(op, *predOr);
+    return success();
+  }
+};
+
+struct OplibVectorMaskedLoadToEmitC
+    : public OpConversionPattern<vector::MaskedLoadOp> {
+  using OpConversionPattern<vector::MaskedLoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::MaskedLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, "vector.maskedload")))
+      return failure();
+
+    if (adaptor.getIndices().size() != 1) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.maskedload "
+             "expects exactly one linear index";
+      return failure();
+    }
+
+    // A5 vld has no predicate operand. Keep an unmasked load and forward mask
+    // semantics to masked users (arith/store) in dedicated lowering patterns.
+    Type regTy = getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, "NORM")});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
+                                         ValueRange{regVar.getResult(),
+                                                    adaptor.getBase(),
+                                                    adaptor.getIndices().front()},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
 struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
   using OpConversionPattern<vector::StoreOp>::OpConversionPattern;
 
@@ -1929,9 +2043,87 @@ struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
   }
 };
 
+struct OplibVectorMaskedStoreToEmitC
+    : public OpConversionPattern<vector::MaskedStoreOp> {
+  using OpConversionPattern<vector::MaskedStoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::MaskedStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getValueToStore().getType());
+    if (!vecTy)
+      return failure();
+    auto elemTokOr = getA5VectorElemToken(op, vecTy, "vector.maskedstore");
+    if (failed(elemTokOr))
+      return failure();
+
+    if (adaptor.getIndices().size() != 1) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: vector.maskedstore "
+                        "expects exactly one linear index";
+      return failure();
+    }
+
+    auto *ctx = rewriter.getContext();
+    std::string distExpr = std::string(
+        "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
+                           std::string(*elemTokOr) + ", DistVST::DIST_NORM>())>()";
+    Value mask = peelUnrealized(adaptor.getMask());
+    if (isa<VectorType>(mask.getType())) {
+      auto predOr = buildA5Predicate(rewriter, op.getLoc(), op, vecTy,
+                                     "vector.maskedstore");
+      if (failed(predOr))
+        return failure();
+      mask = *predOr;
+    }
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, distExpr),
+         rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vsts",
+                                         ValueRange{adaptor.getValueToStore(),
+                                                    adaptor.getBase(),
+                                                    adaptor.getIndices().front(),
+                                                    mask},
+                                         args, ArrayAttr{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 template <typename ArithOp>
 struct OplibVectorBinaryArithToEmitC : public OpConversionPattern<ArithOp> {
   using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  static Value tryRemapMaskFromMaskedLoadUse(ArithOp op,
+                                             ConversionPatternRewriter &rewriter) {
+    auto extractMask = [&](Value v) -> Value {
+      if (auto maskedLoad = v.getDefiningOp<vector::MaskedLoadOp>())
+        return maskedLoad.getMask();
+      return Value();
+    };
+
+    Value lhsMask = extractMask(op.getLhs());
+    Value rhsMask = extractMask(op.getRhs());
+    Value selectedMask;
+    if (lhsMask && rhsMask) {
+      if (lhsMask != rhsMask)
+        return Value();
+      selectedMask = lhsMask;
+    } else {
+      selectedMask = lhsMask ? lhsMask : rhsMask;
+    }
+
+    if (!selectedMask)
+      return Value();
+
+    Value remapped = rewriter.getRemappedValue(selectedMask);
+    if (!remapped)
+      return Value();
+    remapped = peelUnrealized(remapped);
+    if (isa<VectorType>(remapped.getType()))
+      return Value();
+    return remapped;
+  }
 
   LogicalResult
   matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
@@ -1946,11 +2138,15 @@ struct OplibVectorBinaryArithToEmitC : public OpConversionPattern<ArithOp> {
     if (!regTy)
       return failure();
 
-    auto predOr =
-        buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
-                         op->getName().getStringRef());
-    if (failed(predOr))
-      return failure();
+    Value pred = tryRemapMaskFromMaskedLoadUse(op, rewriter);
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
 
     auto *ctx = rewriter.getContext();
     auto regVar = rewriter.create<emitc::VariableOp>(
@@ -1962,7 +2158,7 @@ struct OplibVectorBinaryArithToEmitC : public OpConversionPattern<ArithOp> {
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, getA5VectorBinaryCallee<ArithOp>(),
         ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),
-                   *predOr},
+                   pred},
         args, ArrayAttr{});
     rewriter.replaceOp(op, regVar.getResult());
     return success();
@@ -2181,6 +2377,49 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    // Use the original attribute as fallback and always cast null-safely.
 	    Attribute valueAttr = adaptor.getValue();
 	    if (!valueAttr) valueAttr = op.getValue();
+
+	    if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(valueAttr)) {
+	      if (isa<VectorType>(op.getType())) {
+	        auto opaqueTy = dyn_cast<emitc::OpaqueType>(newType);
+	        if (!opaqueTy)
+	          return failure();
+
+	        auto buildFloatLiteral = [](FloatAttr floatAttr) {
+	          SmallString<32> valStr;
+	          floatAttr.getValue().toString(valStr);
+	          llvm::StringRef s(valStr);
+	          const bool hasFloatMarker =
+	              s.contains('.') || s.contains('e') || s.contains('E') ||
+	              s.contains('p') || s.contains('P') || s.starts_with("0x") ||
+	              s.starts_with("0X") || s.starts_with("nan") ||
+	              s.starts_with("-nan") || s.starts_with("inf") ||
+	              s.starts_with("-inf");
+	          if (!hasFloatMarker)
+	            valStr.append(".0");
+	          if (!floatAttr.getType().isF64())
+	            valStr.append("f");
+	          return valStr.str().str();
+	        };
+
+	        std::string expr;
+	        if (denseAttr.isSplat()) {
+	          if (auto splatFloat = dyn_cast<FloatAttr>(denseAttr.getSplatValue<Attribute>())) {
+	            expr = (opaqueTy.getValue() + "(" + buildFloatLiteral(splatFloat) + ")").str();
+	          } else if (auto splatInt =
+	                         dyn_cast<IntegerAttr>(denseAttr.getSplatValue<Attribute>())) {
+	            expr = (opaqueTy.getValue() + "(" +
+	                    std::to_string(splatInt.getValue().getSExtValue()) + ")")
+	                       .str();
+	          }
+	        }
+	        if (expr.empty())
+	          expr = (opaqueTy.getValue() + "{}").str();
+
+	        auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), expr);
+	        rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
+	        return success();
+	      }
+	    }
 
 		    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
 		      SmallString<32> valStr;
@@ -7546,7 +7785,9 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMaxUIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinSIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinUIToEmitC>(typeConverter, ctx);
-  patterns.add<OplibVectorLoadToEmitC, OplibVectorStoreToEmitC,
+  patterns.add<OplibVectorCreateMaskToEmitC, OplibVectorLoadToEmitC,
+               OplibVectorMaskedLoadToEmitC, OplibVectorStoreToEmitC,
+               OplibVectorMaskedStoreToEmitC,
                OplibVectorBinaryArithToEmitC<arith::AddFOp>,
                OplibVectorBinaryArithToEmitC<arith::SubFOp>,
                OplibVectorBinaryArithToEmitC<arith::MulFOp>,
@@ -7771,11 +8012,58 @@ struct EmitPTOManualPass
           return WalkResult::advance();
         }
 
+        if (auto vmload = dyn_cast<vector::MaskedLoadOp>(op)) {
+          if (failed(validateA5OplibVectorType(vmload.getOperation(),
+                                               vmload.getVectorType(),
+                                               "vector.maskedload"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          auto maskTy = dyn_cast<VectorType>(vmload.getMask().getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(vmload.getOperation(), maskTy,
+                                        "vector.maskedload"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
         if (auto vstore = dyn_cast<vector::StoreOp>(op)) {
           auto vecTy = dyn_cast<VectorType>(vstore.getValueToStore().getType());
           if (!vecTy ||
               failed(validateA5OplibVectorType(vstore.getOperation(), vecTy,
                                                "vector.store"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op)) {
+          auto vecTy =
+              dyn_cast<VectorType>(vmstore.getValueToStore().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(vmstore.getOperation(), vecTy,
+                                               "vector.maskedstore"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          auto maskTy = dyn_cast<VectorType>(vmstore.getMask().getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(vmstore.getOperation(), maskTy,
+                                        "vector.maskedstore"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmask = dyn_cast<vector::CreateMaskOp>(op)) {
+          auto maskTy = dyn_cast<VectorType>(cmask.getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(cmask.getOperation(), maskTy,
+                                        "vector.create_mask"))) {
             hasUnsupportedA5Vector = true;
             return WalkResult::interrupt();
           }

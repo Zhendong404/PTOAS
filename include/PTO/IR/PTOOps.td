@@ -1222,6 +1222,30 @@ def SimdVecScopeOp : PTO_Op<"simd.vec_scope", [SingleBlock, NoTerminator]> {
   let assemblyFormat = "$body attr-dict";
 }
 
+def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
+  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
+  let description = [{
+    This op is the canonical bridge for OP-Lib templates to expose a memref
+    view from tile_buf inputs while keeping external ABI as !pto.tile_buf.
+    It is expected to be consumed before backend codegen (e.g. by
+    PTOViewToMemref / PTOTileBufToMemref).
+  }];
+
+  let arguments = (ins
+    TileBufType:$src
+  );
+
+  let results = (outs
+    AnyMemRef:$dst
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `to` type($dst)
+  }];
+}
+
 def SimdPredicateOp : PTO_Op<"simd.predicate", [Pure]> {
   let summary = "Build SIMD lane predicate mask from active lane count.";
 

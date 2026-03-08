@@ -9,7 +9,7 @@
 1. 对外 ABI 不变：函数签名必须是 `(!pto.tile_buf, !pto.tile_buf, !pto.tile_buf) -> ()`。
 2. 模板函数体必须非空，禁止空 body 回退。
 3. V1.1 只支持 `f16/f32 + row_major`。
-4. 函数体只能使用 allowlist IR：`arith/vector/memref/scf`、`builtin.unrealized_conversion_cast`、`pto.simd`（可选）。
+4. 函数体只能使用 allowlist IR：`arith/vector/memref(受限，不含load/store)/scf`、`pto.simd.tile_to_memref`、`pto.simd`（可选）。
 
 ## 2. 你现在有两种合法写法
 
@@ -59,9 +59,9 @@ func.func private @__pto_oplib_seed_vec_bin_core(
       pto.oplib.cost = 10 : i64,
       pto.oplib.priority = 0 : i64
     } {
-  %m0 = builtin.unrealized_conversion_cast %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-  %m1 = builtin.unrealized_conversion_cast %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
-  %md = builtin.unrealized_conversion_cast %dst  : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+  %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+  %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+  %md = pto.simd.tile_to_memref %dst  : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
 
   %flat0 = memref.reinterpret_cast %m0 to offset: [0], sizes: [1024], strides: [1] : memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
   %flat1 = memref.reinterpret_cast %m1 to offset: [0], sizes: [1024], strides: [1] : memref<32x32xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
@@ -147,4 +147,5 @@ ptoas <input.pto> --op-lib-dir=<your-oplib-dir> -o /tmp/out.cpp 2>&1 | \
 2. seed 里打了多个 `pto.simd.core_slot`，实例化改写失败。
 3. 使用了 allowlist 之外的 dialect/op，导入阶段直接失败。
 4. 使用 `pto.simd.predicate/load/store/load_pu/store_pu` 但漏写 `pto.simd.level/lanes`。
-5. 空模板体还期望走历史 fallback（V1.1 已明确禁止）。
+5. 模板体继续使用 `builtin.unrealized_conversion_cast`（V1.2 起不再接受）。
+6. 空模板体还期望走历史 fallback（V1.1 已明确禁止）。

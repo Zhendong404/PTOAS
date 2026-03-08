@@ -266,11 +266,19 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (failed(lowerSimdTileToMemrefOps(module))) {
+      signalPassFailure();
+      return;
+    }
     if (failed(rewriteFunctionSignatures(module))) {
       signalPassFailure();
       return;
     }
     if (failed(rewriteCallsAndReturns(module))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(lowerSimdTileToMemrefOps(module))) {
       signalPassFailure();
       return;
     }
@@ -339,9 +347,14 @@ private:
     if (!toMem)
       return failure();
 
-    // Use UnrealizedConversionCast as a bridge for both tile_buf->memref and
-    // memref->memref signature adaptation at call boundaries.
-    if (!isa<pto::TileBufType, MemRefType>(operand.getType()))
+    if (isa<pto::TileBufType>(operand.getType())) {
+      auto cast =
+          builder.create<pto::SimdTileToMemrefOp>(loc, toMem, operand);
+      return cast.getDst();
+    }
+
+    // Keep memref->memref signature adaptation permissive.
+    if (!isa<MemRefType>(operand.getType()))
       return failure();
 
     auto cast = builder.create<UnrealizedConversionCastOp>(
@@ -452,6 +465,48 @@ private:
             return failure();
           continue;
         }
+      }
+    }
+    return success();
+  }
+
+  LogicalResult lowerSimdTileToMemrefOps(ModuleOp module) {
+    for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+      if (func.isExternal())
+        continue;
+
+      SmallVector<pto::SimdTileToMemrefOp, 16> bridgeOps;
+      func.walk([&](pto::SimdTileToMemrefOp op) { bridgeOps.push_back(op); });
+
+      for (pto::SimdTileToMemrefOp op : bridgeOps) {
+        if (!op || !op->getBlock())
+          continue;
+
+        OpBuilder builder(op);
+        Value src = op->getOperand(0);
+        Value dst = op->getResult(0);
+        Type dstTy = dst.getType();
+        Type loweredTy = dstTy;
+
+        // Prefer a shape-specialized memref when source is tile_buf so
+        // downstream memref.dim can fold for static tile shapes.
+        if (auto tileTy = dyn_cast<pto::TileBufType>(src.getType())) {
+          FailureOr<MemRefType> inferredTyOr =
+              convertTileBufToMemRefType(tileTy, &getContext());
+          if (succeeded(inferredTyOr))
+            loweredTy = *inferredTyOr;
+        }
+
+        if (src.getType() == loweredTy) {
+          dst.replaceAllUsesWith(src);
+          op.erase();
+          continue;
+        }
+
+        auto cast = builder.create<UnrealizedConversionCastOp>(
+            op.getLoc(), TypeRange{loweredTy}, ValueRange{src});
+        dst.replaceAllUsesWith(cast.getResult(0));
+        op.erase();
       }
     }
     return success();

@@ -17,9 +17,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
-    %m0 = builtin.unrealized_conversion_cast %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %m1 = builtin.unrealized_conversion_cast %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
-    %md = builtin.unrealized_conversion_cast %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>
     %c0 = arith.constant 0 : index
     %mask = pto.simd.predicate %c0 : index -> vector<64xi1>
     %a = pto.simd.load %m0, %c0, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>

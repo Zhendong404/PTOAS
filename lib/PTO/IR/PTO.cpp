@@ -3254,6 +3254,26 @@ static LogicalResult verifySimdValueVector(Operation *op, Type valueTy,
   return success();
 }
 
+mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
+  auto tileTy = dyn_cast<TileBufType>(getSrc().getType());
+  if (!tileTy)
+    return emitOpError("expects src to be !pto.tile_buf");
+
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects result to be memref");
+
+  if (memTy.getElementType() != tileTy.getElementType()) {
+    return emitOpError("expects memref element type to match tile_buf element type");
+  }
+
+  if (memTy.getMemorySpace() != tileTy.getMemorySpace()) {
+    return emitOpError("expects memref memory space to match tile_buf memory space");
+  }
+
+  return success();
+}
+
 mlir::LogicalResult mlir::pto::SimdPredicateOp::verify() {
   int64_t lanes = -1;
   if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))

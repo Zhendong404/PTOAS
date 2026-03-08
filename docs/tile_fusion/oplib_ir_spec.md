@@ -57,9 +57,9 @@
 
 1. `arith.*`
 2. `vector.*`
-3. `memref.*`
+3. `memref.*`（受限；不允许 `memref.load/store`）
 4. `scf.*`
-5. `builtin.unrealized_conversion_cast`（仅用于 `tile_buf <-> memref` 桥接）
+5. `pto.simd.tile_to_memref`（用于 `tile_buf -> memref` 桥接）
 6. `pto.simd.*`（可选）
 
 说明：`pto` 其他高层 tile 计算 op（如 `pto.tadd/pto.tmul`）不应再次出现在 OP-Lib 模板体内。
@@ -142,6 +142,8 @@
 3. `PTOValidateSimdIRPass`：
    1. 仅对包含 `pto.simd.*` 的函数执行结构合法性校验。
 4. 主链路不再依赖 `PTOLowerSimdToVectorPass` 作为必经步骤。
+5. 模板导入阶段禁止 `builtin.unrealized_conversion_cast`；使用该 legacy
+   桥接会报 `E_OPLIB_BODY_DISALLOWED_IR`。
 
 ## 8. 最小示例（两种写法）
 

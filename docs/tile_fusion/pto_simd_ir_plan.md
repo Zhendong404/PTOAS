@@ -13,7 +13,7 @@
    2. `vector.*`
    3. `memref.*`
    4. `scf.*`
-   5. `builtin.unrealized_conversion_cast`（仅桥接 `tile_buf <-> memref`）
+   5. `pto.simd.tile_to_memref`（桥接 `tile_buf -> memref`）
    6. `pto.simd.*`（可选）
 2. `pto.simd.*` 属性规则改为“按需强制”：
    1. 当且仅当模板体使用 `pto.simd.*` 时，必须提供：

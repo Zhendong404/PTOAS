@@ -3,9 +3,11 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -281,12 +283,22 @@ static bool isAllowedTemplateBodyOp(Operation *op) {
     return true;
   if (isa<pto::SimdVecScopeOp>(op))
     return true;
+  if (isa<pto::SimdTileToMemrefOp>(op))
+    return true;
   if (isSimdBridgeOp(op))
     return true;
 
+  // V1.2 strict mode: reject legacy bridge in OP-Lib templates.
+  if (isa<UnrealizedConversionCastOp>(op))
+    return false;
+
+  // OP-Lib template bodies must use vector memory ops, not scalar memref
+  // load/store.
+  if (isa<memref::LoadOp, memref::StoreOp>(op))
+    return false;
+
   StringRef ns = op->getName().getDialectNamespace();
-  return ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf" ||
-         ns == "builtin";
+  return ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf";
 }
 
 struct TemplateRegistry {

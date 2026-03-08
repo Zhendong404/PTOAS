@@ -11,11 +11,15 @@
 // BIN6-DAG: vdiv(
 // BIN6-DAG: vmax(
 // BIN6-DAG: vmin(
+// BIN6-DAG: CreatePredicate<float>(
 // BIN6: __VEC_SCOPE__ {
+// BIN6-NOT: vlds_mask(
 // BIN6-NOT: PTOAS__OPLIB_
 
 // SOFTMAX: vlds(
 // SOFTMAX: vsts(
 // SOFTMAX: vadd(
+// SOFTMAX: CreatePredicate<float>(
 // SOFTMAX: __VEC_SCOPE__ {
+// SOFTMAX-NOT: vlds_mask(
 // SOFTMAX-NOT: PTOAS__OPLIB_
