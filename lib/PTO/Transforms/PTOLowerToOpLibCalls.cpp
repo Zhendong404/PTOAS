@@ -259,11 +259,21 @@ static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
   if (tileTy.getRank() != 2)
     return failure();
 
-  ArrayRef<int64_t> shape = tileTy.getShape();
-  if (shape.size() != 2)
+  ArrayRef<int64_t> physicalShape = tileTy.getShape();
+  if (physicalShape.size() != 2)
     return failure();
-  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+  if (physicalShape[0] == ShapedType::kDynamic ||
+      physicalShape[1] == ShapedType::kDynamic)
     return failure();
+
+  SmallVector<int64_t, 2> memShape(physicalShape.begin(), physicalShape.end());
+  ArrayRef<int64_t> validShape = tileTy.getValidShape();
+  if (validShape.size() == memShape.size()) {
+    for (unsigned i = 0; i < validShape.size(); ++i) {
+      memShape[i] =
+          validShape[i] < 0 ? ShapedType::kDynamic : validShape[i];
+    }
+  }
 
   auto cfg = tileTy.getConfigAttr();
   if (!cfg)
@@ -308,23 +318,23 @@ static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
   if (sl == 0) {
     if (bl == 1) {
       strides.push_back(1);
-      strides.push_back(shape[0]);
+      strides.push_back(physicalShape[0]);
     } else {
-      strides.push_back(shape[1]);
+      strides.push_back(physicalShape[1]);
       strides.push_back(1);
     }
   } else if (bl == 1) {
     if (sl != 1)
       return failure();
     strides.push_back(innerCols);
-    strides.push_back(shape[0]);
+    strides.push_back(physicalShape[0]);
   } else {
-    strides.push_back(shape[1]);
+    strides.push_back(physicalShape[1]);
     strides.push_back(innerRows);
   }
 
   auto layout = StridedLayoutAttr::get(ctx, /*offset=*/0, strides);
-  return MemRefType::get(shape, tileTy.getElementType(), layout,
+  return MemRefType::get(memShape, tileTy.getElementType(), layout,
                          tileTy.getMemorySpace());
 }
 

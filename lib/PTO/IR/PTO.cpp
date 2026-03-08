@@ -3392,15 +3392,36 @@ mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
   }
 
   ArrayRef<int64_t> tileShape = tileTy.getShape();
+  ArrayRef<int64_t> validShape = tileTy.getValidShape();
   ArrayRef<int64_t> memShape = memTy.getShape();
   if (tileShape.size() != memShape.size()) {
     return emitOpError("expects memref shape rank to match tile_buf shape rank");
   }
-  for (unsigned i = 0; i < tileShape.size(); ++i) {
-    if (memShape[i] != tileShape[i]) {
-      return emitOpError()
-             << "expects memref shape to match tile_buf shape; got dim " << i
-             << " = " << memShape[i] << ", expected " << tileShape[i];
+
+  if (validShape.size() != memShape.size()) {
+    return emitOpError(
+        "expects tile_buf valid shape rank to match memref shape rank");
+  }
+
+  for (unsigned i = 0; i < validShape.size(); ++i) {
+    int64_t expect = validShape[i];
+    if (expect < 0) {
+      // For dynamic valid dims ('?'), accept either:
+      // 1) dynamic memref dim, or
+      // 2) physical static tile dim (legacy OP-Lib templates).
+      if (memShape[i] >= 0 && memShape[i] != tileShape[i]) {
+        return emitOpError()
+               << "expects memref dim " << i
+               << " to be dynamic or match physical tile dim "
+               << tileShape[i] << " because tile_buf valid dim is ?";
+      }
+      continue;
+    }
+
+    if (memShape[i] != expect) {
+      return emitOpError() << "expects memref dim " << i
+                           << " to match tile_buf valid dim; got " << memShape[i]
+                           << ", expected " << expect;
     }
   }
 

@@ -272,10 +272,19 @@ buildTileTypeFromMemRefAndMetadata(MemRefType memTy, const MemRefTileMetadata &m
 static FailureOr<MemRefType> convertTileBufToMemRefType(pto::TileBufType tileTy,
                                                          MLIRContext *ctx) {
   SmallVector<int64_t, 4> shape(tileTy.getShape().begin(), tileTy.getShape().end());
+  SmallVector<int64_t, 4> memShape(shape.begin(), shape.end());
+  ArrayRef<int64_t> validShape = tileTy.getValidShape();
+  if (validShape.size() == memShape.size()) {
+    for (unsigned i = 0; i < validShape.size(); ++i) {
+      memShape[i] =
+          validShape[i] < 0 ? ShapedType::kDynamic : validShape[i];
+    }
+  }
+
   SmallVector<int64_t, 4> strides(tileTy.getRank(), ShapedType::kDynamic);
   (void)inferTileBufStaticStrides(tileTy, strides);
   auto layout = StridedLayoutAttr::get(ctx, /*offset=*/0, strides);
-  return MemRefType::get(shape, tileTy.getElementType(), layout,
+  return MemRefType::get(memShape, tileTy.getElementType(), layout,
                          tileTy.getMemorySpace());
 }
 
@@ -605,8 +614,9 @@ private:
         Type dstTy = dst.getType();
         Type loweredTy = dstTy;
 
-        // Prefer a shape-specialized memref when source is tile_buf so
-        // downstream memref.dim can fold for static tile shapes.
+        // Prefer a valid-shape-specialized memref when source is tile_buf so
+        // static valid dims can still fold while dynamic valid dims remain
+        // dynamic.
         if (auto tileTy = dyn_cast<pto::TileBufType>(src.getType())) {
           FailureOr<MemRefType> inferredTyOr =
               convertTileBufToMemRefType(tileTy, &getContext());
