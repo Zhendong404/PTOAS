@@ -1,26 +1,26 @@
-// RUN: ! ptoas %S/softmax_chain.pto -o %t.no_dir.cpp > %t.no_dir.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --pto-arch=a5 -o %t.no_dir.cpp > %t.no_dir.log 2>&1
 // RUN: FileCheck %s --check-prefix=NO-DIR < %t.no_dir.log
-// RUN: ! ptoas %S/softmax_chain.pto --enable-op-fusion --disable-oplib-lowering --op-lib-dir=%S/oplib -o %t.dep.cpp > %t.dep.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --enable-op-fusion --disable-oplib-lowering --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.dep.cpp > %t.dep.log 2>&1
 // RUN: FileCheck %s --check-prefix=REMOVED < %t.dep.log
 // RUN: rm -rf %t.empty && mkdir -p %t.empty
 // RUN: cp %S/resources/bad_empty_simd_template.txt %t.empty/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.empty -o %t.empty.cpp > %t.empty.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.empty --pto-arch=a5 -o %t.empty.cpp > %t.empty.log 2>&1
 // RUN: FileCheck %s --check-prefix=EMPTY-SIMD < %t.empty.log
 // RUN: rm -rf %t.core && mkdir -p %t.core
 // RUN: cp %S/resources/bad_simd_core_slot_template.txt %t.core/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.core -o %t.core.cpp > %t.core.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.core --pto-arch=a5 -o %t.core.cpp > %t.core.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-CORE < %t.core.log
 // RUN: rm -rf %t.lanes && mkdir -p %t.lanes
 // RUN: cp %S/resources/bad_simd_lanes_template.txt %t.lanes/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.lanes -o %t.lanes.cpp > %t.lanes.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.lanes --pto-arch=a5 -o %t.lanes.cpp > %t.lanes.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-LANES < %t.lanes.log
 // RUN: rm -rf %t.simd_attr && mkdir -p %t.simd_attr
 // RUN: cp %S/resources/bad_simd_missing_attrs_template.txt %t.simd_attr/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.simd_attr -o %t.simd_attr.cpp > %t.simd_attr.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.simd_attr --pto-arch=a5 -o %t.simd_attr.cpp > %t.simd_attr.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-SIMD-ATTR < %t.simd_attr.log
 // RUN: rm -rf %t.disallowed && mkdir -p %t.disallowed
 // RUN: cp %S/resources/bad_disallowed_ir_template.txt %t.disallowed/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.disallowed -o %t.disallowed.cpp > %t.disallowed.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.disallowed --pto-arch=a5 -o %t.disallowed.cpp > %t.disallowed.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-IR < %t.disallowed.log
 // RUN: rm -rf %t.bad_vec && mkdir -p %t.bad_vec
 // RUN: cp %S/resources/bad_vector_unsupported_template.txt %t.bad_vec/bad.mlir
@@ -28,7 +28,7 @@
 // RUN: FileCheck %s --check-prefix=BAD-VEC < %t.bad_vec.log
 // RUN: rm -rf %t.legacy && mkdir -p %t.legacy
 // RUN: cp %S/resources/bad_legacy_unrealized_cast_template.txt %t.legacy/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.legacy -o %t.legacy.cpp > %t.legacy.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.legacy --pto-arch=a5 -o %t.legacy.cpp > %t.legacy.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-LEGACY-CAST < %t.legacy.log
 // RUN: rm -rf %t.missing_knobs && mkdir -p %t.missing_knobs
 // RUN: cp %S/resources/bad_vector_missing_knobs_template.txt %t.missing_knobs/bad.mlir

@@ -1,4 +1,4 @@
-// RUN: { ptoas %S/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/oplib --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+// RUN: { ptoas %S/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/oplib --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
 // CHECK-LABEL: func.func private @__pto_fused_group_0_0(

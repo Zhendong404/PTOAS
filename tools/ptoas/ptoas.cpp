@@ -101,12 +101,12 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Enable OP fusion passes (create-groups/outline/low-level-loop-fusion)"),
+    llvm::cl::desc("Enable OP fusion passes (A5 only: create-groups/outline/low-level-loop-fusion)"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> opLibDir(
     "op-lib-dir",
-    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP-LIB lowering"),
+    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP-LIB lowering (A5 only)"),
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
@@ -155,6 +155,11 @@ enum class PTOBuildLevel {
   Level3,
 };
 
+enum class PTOTargetArch {
+  A3,
+  A5,
+};
+
 static PTOBuildLevel defaultBuildLevel() {
   return PTOBuildLevel::Level2;
 }
@@ -173,6 +178,21 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   }
   if (s == "level3") {
     out = PTOBuildLevel::Level3;
+    return true;
+  }
+  return false;
+}
+
+static bool parseTargetArch(llvm::StringRef archStr, PTOTargetArch &out) {
+  std::string s = archStr.str();
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "a3") {
+    out = PTOTargetArch::A3;
+    return true;
+  }
+  if (s == "a5") {
+    out = PTOTargetArch::A5;
     return true;
   }
   return false;
@@ -710,6 +730,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  PTOTargetArch effectiveArch = PTOTargetArch::A3;
+  if (!parseTargetArch(ptoTargetArch, effectiveArch)) {
+    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
+                 << "'. Expected 'a3' or 'a5'.\n";
+    return 1;
+  }
+  const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
+
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
@@ -733,9 +761,14 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  if (opLibDir.empty()) {
+  if (enableA5OplibPipeline && opLibDir.empty()) {
     llvm::errs() << "Error: --op-lib-dir is required.\n";
     return 1;
+  }
+
+  if (!enableA5OplibPipeline && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                    "--pto-arch!=a5.\n";
   }
 
   if (!printIRAfterAll && !printIRAfterAllFuncFilter.empty()) {
@@ -794,39 +827,42 @@ int main(int argc, char **argv) {
     }
   }
 
-  // Bridge back to tile_buf so OP fusion + OP->LibCall selection operate in
-  // tile world.
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
+  if (enableA5OplibPipeline) {
+    // Bridge back to tile_buf so OP fusion + OP->LibCall selection operate in
+    // tile world.
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
 
-  if (enableOpFusion) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCreateFusionGroupsPass());
+    if (enableOpFusion) {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOCreateFusionGroupsPass());
 
-    pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
-    outlineGroupsOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
-  }
+      pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+      outlineGroupsOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+    }
 
-  pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
-  instantiateLowerOptions.opLibDir = opLibDir;
-  instantiateLowerOptions.debug = opFusionDebug;
-  pm.addPass(
-      pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
-  pm.addPass(pto::createPTOValidateSimdIRPass());
+    pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
+    instantiateLowerOptions.opLibDir = opLibDir;
+    instantiateLowerOptions.debug = opFusionDebug;
+    pm.addPass(
+        pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
+    pm.addPass(pto::createPTOValidateSimdIRPass());
 
-  pto::PTOInlineLibCallOptions inlineLibCallOptions;
-  inlineLibCallOptions.debug = opFusionDebug;
-  pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
+    pto::PTOInlineLibCallOptions inlineLibCallOptions;
+    inlineLibCallOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
 
-  // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
-  pm.addPass(pto::createPTOTileBufToMemrefPass());
+    // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
+    pm.addPass(pto::createPTOTileBufToMemrefPass());
 
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
 
-  if (enableOpFusion) {
-    pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
-    loopFusionOptions.debug = opFusionDebug;
-    pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    if (enableOpFusion) {
+      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+      loopFusionOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    }
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
@@ -843,17 +879,10 @@ int main(int argc, char **argv) {
   PassManager codegenPm(&context);
   maybeEnablePrintIRAfterAll(codegenPm);
   codegenPm.addPass(createCSEPass());
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch == "a3") {
+  if (effectiveArch == PTOTargetArch::A3) {
     codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else if (arch == "a5") {
-    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
   } else {
-    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
-                 << "'. Expected 'a3' or 'a5'.\n";
-    return 1;
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
   }
   codegenPm.addPass(emitc::createFormExpressionsPass());
   codegenPm.addPass(mlir::createCSEPass());
