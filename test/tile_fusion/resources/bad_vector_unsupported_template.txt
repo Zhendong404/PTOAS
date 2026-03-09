@@ -29,10 +29,10 @@ module {
     %c1024 = arith.constant 1024 : index
     %c16 = arith.constant 16 : index
     scf.for %i = %c0 to %c1024 step %c16 {
-      %a = vector.load %flat0[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
-      %b = vector.load %flat1[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
-      %c = arith.addf %a, %b : vector<16xf32>
-      vector.store %c, %flatd[%i] : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
+      %a = vector.load %flat0[%i] {pto.simd.vld_dist = "NORM"} : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
+      %b = vector.load %flat1[%i] {pto.simd.vld_dist = "NORM"} : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
+      %c = arith.addf %a, %b {pto.simd.exec_mode = "MODE_ZEROING"} : vector<16xf32>
+      vector.store %c, %flatd[%i] {pto.simd.vst_dist = "DIST_NORM"} : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, vector<16xf32>
     }
     return
   }

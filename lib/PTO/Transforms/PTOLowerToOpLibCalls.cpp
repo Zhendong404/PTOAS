@@ -5,6 +5,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -101,6 +102,9 @@ static constexpr llvm::StringLiteral kSimdLanesAttr = "pto.simd.lanes";
 static constexpr llvm::StringLiteral kSimdCoreSlotAttr = "pto.simd.core_slot";
 static constexpr llvm::StringLiteral kSimdLevelBinaryEwiseV1 =
     "binary_ewise_v1";
+static constexpr llvm::StringLiteral kSimdVldDistAttr = "pto.simd.vld_dist";
+static constexpr llvm::StringLiteral kSimdVstDistAttr = "pto.simd.vst_dist";
+static constexpr llvm::StringLiteral kSimdExecModeAttr = "pto.simd.exec_mode";
 
 static constexpr llvm::StringLiteral kErrEmptyBody =
     "E_OPLIB_EMPTY_BODY_FOR_SIMD";
@@ -388,6 +392,14 @@ static bool containsString(ArrayRef<std::string> values, StringRef key) {
 static bool isBinaryFloatCore(Operation *op) {
   return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
              arith::MaximumFOp, arith::MinimumFOp>(op);
+}
+
+static bool isVectorFloatBinaryArith(Operation *op) {
+  if (!isBinaryFloatCore(op))
+    return false;
+  if (op->getNumResults() != 1)
+    return false;
+  return isa<VectorType>(op->getResult(0).getType());
 }
 
 static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
@@ -735,12 +747,45 @@ struct TemplateRegistry {
     int64_t firstStore = std::numeric_limits<int64_t>::max();
     int64_t coreSeq = -1;
     int coreCount = 0;
+    std::string inferredVldDist;
+    std::string inferredVstDist;
 
     llvm::DenseMap<Operation *, int64_t> preorder;
     int64_t seq = 0;
     imported.walk([&](Operation *op) { preorder[op] = seq++; });
 
     LogicalResult status = success();
+    auto requireNonEmptyTokenAttr = [&](Operation *targetOp, StringRef attrName,
+                                        StringRef usage,
+                                        StringRef requiredPrefix) -> bool {
+      auto tokenAttr = targetOp->getAttrOfType<StringAttr>(attrName);
+      if (!tokenAttr) {
+        status = emitFailureWithCode(
+            targetOp, kErrSimdAttrRequired,
+            Twine(usage) + " requires string attr '" + attrName + "'");
+        return false;
+      }
+
+      StringRef token = tokenAttr.getValue();
+      if (token.empty()) {
+        status = emitFailureWithCode(
+            targetOp, kErrSimdAttrRequired,
+            Twine(usage) + " attr '" + attrName + "' must be non-empty");
+        return false;
+      }
+
+      if (!requiredPrefix.empty() && !token.starts_with(requiredPrefix)) {
+        status = emitFailureWithCode(
+            targetOp, kErrSimdAttrRequired,
+            Twine(usage) + " attr '" + attrName +
+                "' must start with '" + requiredPrefix + "', got '" + token +
+                "'");
+        return false;
+      }
+
+      return true;
+    };
+
     imported.walk([&](Operation *op) {
       if (failed(status))
         return;
@@ -752,6 +797,35 @@ struct TemplateRegistry {
             op, kErrBodyDisallowedIR,
             Twine("unsupported template body op: ") + op->getName().getStringRef());
         return;
+      }
+
+      if (isa<vector::LoadOp, vector::MaskedLoadOp>(op)) {
+        if (!requireNonEmptyTokenAttr(op, kSimdVldDistAttr, "vector load",
+                                      /*requiredPrefix=*/""))
+          return;
+        if (inferredVldDist.empty()) {
+          auto vld = op->getAttrOfType<StringAttr>(kSimdVldDistAttr);
+          if (vld)
+            inferredVldDist = vld.getValue().str();
+        }
+      }
+
+      if (isa<vector::StoreOp, vector::MaskedStoreOp>(op)) {
+        if (!requireNonEmptyTokenAttr(op, kSimdVstDistAttr, "vector store",
+                                      /*requiredPrefix=*/"DIST_"))
+          return;
+        if (inferredVstDist.empty()) {
+          auto vst = op->getAttrOfType<StringAttr>(kSimdVstDistAttr);
+          if (vst)
+            inferredVstDist = vst.getValue().str();
+        }
+      }
+
+      if (isVectorFloatBinaryArith(op)) {
+        if (!requireNonEmptyTokenAttr(op, kSimdExecModeAttr,
+                                      "vector float binary arith op",
+                                      /*requiredPrefix=*/"MODE_"))
+          return;
       }
 
       if (isa<pto::SimdLoadOp, pto::SimdLoadPUOp>(op))
@@ -870,6 +944,25 @@ struct TemplateRegistry {
 
     if (failed(status))
       return failure();
+
+    // Canonicalization may rewrite vector.maskedload/store to vector.load/store
+    // and drop op attrs. Keep function-local fallback tokens on vector float
+    // arithmetic ops so EmitC lowering can still recover vld/vst tokens.
+    if (!inferredVldDist.empty() || !inferredVstDist.empty()) {
+      auto *ctx = imported.getContext();
+      imported.walk([&](Operation *op) {
+        if (!isVectorFloatBinaryArith(op))
+          return;
+        if (!inferredVldDist.empty() && !op->getAttr(kSimdVldDistAttr)) {
+          op->setAttr(kSimdVldDistAttr,
+                      StringAttr::get(ctx, inferredVldDist));
+        }
+        if (!inferredVstDist.empty() && !op->getAttr(kSimdVstDistAttr)) {
+          op->setAttr(kSimdVstDistAttr,
+                      StringAttr::get(ctx, inferredVstDist));
+        }
+      });
+    }
 
     if (entry.role == EntryRole::Seed && coreCount != 1) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
@@ -1285,8 +1378,7 @@ struct TemplateRegistry {
                                       selected.op);
         return failure();
       }
-      if (auto slotAttr = core->getAttr(kSimdCoreSlotAttr))
-        newCore->setAttr(kSimdCoreSlotAttr, slotAttr);
+      newCore->setAttrs(core->getAttrs());
       core->replaceAllUsesWith(newCore->getResults());
       core->erase();
     }

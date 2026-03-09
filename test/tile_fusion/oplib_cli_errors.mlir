@@ -30,6 +30,26 @@
 // RUN: cp %S/resources/bad_legacy_unrealized_cast_template.txt %t.legacy/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.legacy -o %t.legacy.cpp > %t.legacy.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-LEGACY-CAST < %t.legacy.log
+// RUN: rm -rf %t.missing_knobs && mkdir -p %t.missing_knobs
+// RUN: cp %S/resources/bad_vector_missing_knobs_template.txt %t.missing_knobs/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.missing_knobs --pto-arch=a5 -o %t.missing_knobs.cpp > %t.missing_knobs.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-MISSING-KNOBS < %t.missing_knobs.log
+// RUN: rm -rf %t.bad_prefix && mkdir -p %t.bad_prefix
+// RUN: cp %S/resources/bad_vector_bad_prefix_template.txt %t.bad_prefix/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_prefix --pto-arch=a5 -o %t.bad_prefix.cpp > %t.bad_prefix.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-PREFIX < %t.bad_prefix.log
+// RUN: rm -rf %t.missing_vld && mkdir -p %t.missing_vld
+// RUN: cp %S/resources/bad_vector_missing_vld_template.txt %t.missing_vld/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.missing_vld --pto-arch=a5 -o %t.missing_vld.cpp > %t.missing_vld.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-MISSING-VLD < %t.missing_vld.log
+// RUN: rm -rf %t.missing_vst && mkdir -p %t.missing_vst
+// RUN: cp %S/resources/bad_vector_missing_vst_template.txt %t.missing_vst/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.missing_vst --pto-arch=a5 -o %t.missing_vst.cpp > %t.missing_vst.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-MISSING-VST < %t.missing_vst.log
+// RUN: rm -rf %t.bad_vst_prefix && mkdir -p %t.bad_vst_prefix
+// RUN: cp %S/resources/bad_vector_bad_vst_prefix_template.txt %t.bad_vst_prefix/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vst_prefix --pto-arch=a5 -o %t.bad_vst_prefix.cpp > %t.bad_vst_prefix.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-VST-PREFIX < %t.bad_vst_prefix.log
 
 // NO-DIR: Error: --op-lib-dir is required.
 // REMOVED: Unknown command line argument '--disable-oplib-lowering'
@@ -40,3 +60,13 @@
 // BAD-IR: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-VEC: A5 OP-Lib vector lowering unsupported
 // BAD-LEGACY-CAST: E_OPLIB_BODY_DISALLOWED_IR
+// BAD-MISSING-KNOBS: E_OPLIB_SIMD_ATTR_REQUIRED
+// BAD-MISSING-KNOBS: pto.simd.exec_mode
+// BAD-PREFIX: E_OPLIB_SIMD_ATTR_REQUIRED
+// BAD-PREFIX: must start with 'MODE_'
+// BAD-MISSING-VLD: E_OPLIB_SIMD_ATTR_REQUIRED
+// BAD-MISSING-VLD: pto.simd.vld_dist
+// BAD-MISSING-VST: E_OPLIB_SIMD_ATTR_REQUIRED
+// BAD-MISSING-VST: pto.simd.vst_dist
+// BAD-VST-PREFIX: E_OPLIB_SIMD_ATTR_REQUIRED
+// BAD-VST-PREFIX: must start with 'DIST_'

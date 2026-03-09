@@ -27,7 +27,7 @@ module {
     %mask = pto.simd.predicate %c0 : index -> vector<64xi1>
     %a = pto.simd.load %flat0, %c0, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
     %b = pto.simd.load %flat1, %c0, %mask : memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1> -> vector<64xf32>
-    %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf32>
+    %c = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
     pto.simd.store %c, %flatd, %c0, %mask : vector<64xf32>, memref<1024xf32, strided<[1], offset: ?>, #pto.address_space<vec>>, index, vector<64xi1>
     return
   }

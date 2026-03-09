@@ -2,6 +2,13 @@
 // RUN: FileCheck %s --check-prefix=BIN6 < %t.bin6.cpp
 // RUN: ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.softmax.cpp
 // RUN: FileCheck %s --check-prefix=SOFTMAX < %t.softmax.cpp
+// RUN: rm -rf %t.attr && mkdir -p %t.attr
+// RUN: cp %S/oplib/binary_templates.mlir %t.attr/binary_templates.mlir
+// RUN: sed -i 's/pto.simd.vld_dist = \"NORM\"/pto.simd.vld_dist = \"NORM_USER_TOKEN\"/g' %t.attr/binary_templates.mlir
+// RUN: sed -i 's/pto.simd.vst_dist = \"DIST_NORM\"/pto.simd.vst_dist = \"DIST_USER_TOKEN\"/g' %t.attr/binary_templates.mlir
+// RUN: sed -i 's/pto.simd.exec_mode = \"MODE_ZEROING\"/pto.simd.exec_mode = \"MODE_USER_TOKEN\"/g' %t.attr/binary_templates.mlir
+// RUN: ptoas %S/binary_max_min_chain.pto --op-lib-dir=%t.attr --pto-arch=a5 -o %t.attr.cpp
+// RUN: FileCheck %s --check-prefix=ATTR < %t.attr.cpp
 
 // BIN6-DAG: vlds(
 // BIN6-DAG: vsts(
@@ -23,3 +30,7 @@
 // SOFTMAX-DAG: __VEC_SCOPE__ {
 // SOFTMAX-NOT: vlds_mask(
 // SOFTMAX-NOT: PTOAS__OPLIB_
+
+// ATTR: NORM_USER_TOKEN
+// ATTR: DistVST::DIST_USER_TOKEN
+// ATTR: MODE_USER_TOKEN

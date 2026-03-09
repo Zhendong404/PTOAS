@@ -35,10 +35,10 @@ module {
           %lt = arith.cmpi slt, %remain, %c32 : index
           %active = arith.select %lt, %remain, %c32 : index
           %mask = vector.create_mask %active : vector<32xi1>
-          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %d = arith.maximumf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<32xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %d : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
+          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %d = arith.maximumf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
+          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
         }
       }
     }
@@ -81,10 +81,10 @@ module {
           %lt = arith.cmpi slt, %remain, %c32 : index
           %active = arith.select %lt, %remain, %c32 : index
           %mask = vector.create_mask %active : vector<32xi1>
-          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<32xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %d : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
+          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
+          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
         }
       }
     }
@@ -129,10 +129,10 @@ module {
           %lt = arith.cmpi slt, %remain, %c32 : index
           %active = arith.select %lt, %remain, %c32 : index
           %mask = vector.create_mask %active : vector<32xi1>
-          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<32xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %d : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
+          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
+          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
         }
       }
     }
@@ -177,10 +177,10 @@ module {
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
-          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core"} : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %d : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16>
+          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
+          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
+          %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf16>
+          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf16, strided<[64, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16>
         }
       }
     }

@@ -1941,6 +1941,48 @@ getA5LinearizedIndex(ConversionPatternRewriter &rewriter, Operation *op,
   return linear;
 }
 
+static constexpr llvm::StringLiteral kA5SimdVldDistAttr = "pto.simd.vld_dist";
+static constexpr llvm::StringLiteral kA5SimdVstDistAttr = "pto.simd.vst_dist";
+static constexpr llvm::StringLiteral kA5SimdExecModeAttr = "pto.simd.exec_mode";
+
+static FailureOr<llvm::StringRef>
+getRequiredA5OplibTokenAttr(Operation *op, llvm::StringRef attrName,
+                            llvm::StringRef usageName,
+                            llvm::StringRef requiredPrefix = "") {
+  auto tokenAttr = op->getAttrOfType<StringAttr>(attrName);
+  llvm::StringRef token;
+  if (tokenAttr) {
+    token = tokenAttr.getValue();
+  } else if (Block *block = op->getBlock()) {
+    // Canonicalization can rewrite vector.maskedload/store to vector.load/store
+    // and drop attrs. Recover from sibling ops in the same block when possible.
+    for (Operation &sibling : *block) {
+      auto siblingAttr = sibling.getAttrOfType<StringAttr>(attrName);
+      if (!siblingAttr)
+        continue;
+      token = siblingAttr.getValue();
+      if (!token.empty())
+        break;
+    }
+  }
+
+  if (token.empty()) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " requires string attr '" << attrName
+                    << "' (or a block-local fallback token)";
+    return failure();
+  }
+
+  if (!requiredPrefix.empty() && !token.starts_with(requiredPrefix)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " attr '" << attrName << "' must start with '"
+                    << requiredPrefix << "', got '" << token << "'";
+    return failure();
+  }
+
+  return token;
+}
+
 // CreatePredicate<T> expects a mutable uint32_t lvalue argument.
 // Materialize one explicitly to avoid binding rvalues (e.g. conditional expr).
 static Value materializeA5PredicateScalarLValue(
@@ -2043,11 +2085,17 @@ struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
       return failure();
 
     auto *ctx = rewriter.getContext();
+    auto vldDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVldDistAttr,
+                                                 "vector.load");
+    if (failed(vldDistOr))
+      return failure();
     auto regVar = rewriter.create<emitc::VariableOp>(
         op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
-         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, "NORM")});
+         rewriter.getIndexAttr(2),
+         emitc::OpaqueAttr::get(ctx, *vldDistOr)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
                                          ValueRange{regVar.getResult(),
                                                     adaptor.getBase(),
@@ -2114,11 +2162,17 @@ struct OplibVectorMaskedLoadToEmitC
       return failure();
 
     auto *ctx = rewriter.getContext();
+    auto vldDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVldDistAttr,
+                                                 "vector.maskedload");
+    if (failed(vldDistOr))
+      return failure();
     auto regVar = rewriter.create<emitc::VariableOp>(
         op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
-         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, "NORM")});
+         rewriter.getIndexAttr(2),
+         emitc::OpaqueAttr::get(ctx, *vldDistOr)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
                                          ValueRange{regVar.getResult(),
                                                     adaptor.getBase(),
@@ -2154,9 +2208,15 @@ struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
       return failure();
 
     auto *ctx = rewriter.getContext();
+    auto vstDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVstDistAttr,
+                                                 "vector.store", "DIST_");
+    if (failed(vstDistOr))
+      return failure();
     std::string distExpr = std::string(
         "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
-                           std::string(*elemTokOr) + ", DistVST::DIST_NORM>())>()";
+                           std::string(*elemTokOr) + ", DistVST::" +
+                           std::string(*vstDistOr) + ">())>()";
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
          rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, distExpr),
@@ -2194,9 +2254,16 @@ struct OplibVectorMaskedStoreToEmitC
       return failure();
 
     auto *ctx = rewriter.getContext();
+    auto vstDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVstDistAttr,
+                                                 "vector.maskedstore",
+                                                 "DIST_");
+    if (failed(vstDistOr))
+      return failure();
     std::string distExpr = std::string(
         "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
-                           std::string(*elemTokOr) + ", DistVST::DIST_NORM>())>()";
+                           std::string(*elemTokOr) + ", DistVST::" +
+                           std::string(*vstDistOr) + ">())>()";
     Value mask = peelUnrealized(adaptor.getMask());
     if (isa<VectorType>(mask.getType())) {
       auto predOr = buildA5Predicate(rewriter, op.getLoc(), op, vecTy,
@@ -2279,12 +2346,17 @@ struct OplibVectorBinaryArithToEmitC : public OpConversionPattern<ArithOp> {
     }
 
     auto *ctx = rewriter.getContext();
+    auto execModeOr = getRequiredA5OplibTokenAttr(
+        op.getOperation(), kA5SimdExecModeAttr, op->getName().getStringRef(),
+        "MODE_");
+    if (failed(execModeOr))
+      return failure();
     auto regVar = rewriter.create<emitc::VariableOp>(
         op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
          rewriter.getIndexAttr(2), rewriter.getIndexAttr(3),
-         emitc::OpaqueAttr::get(ctx, "MODE_ZEROING")});
+         emitc::OpaqueAttr::get(ctx, *execModeOr)});
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, getA5VectorBinaryCallee<ArithOp>(),
         ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),

@@ -69,11 +69,11 @@
 当模板需要显式 mask/predicate/post-update 语义时，可使用 `pto.simd.*`：
 
 1. `pto.simd.vec_scope`（代码生成标注：降到 `__VEC_SCOPE__ { ... }`）
-2. `pto.simd.predicate`
-3. `pto.simd.load`
-4. `pto.simd.store`
-5. `pto.simd.load_pu`
-6. `pto.simd.store_pu`
+2. (not supported in first version)`pto.simd.predicate`
+3. (not supported in first version)`pto.simd.load`
+4. (not supported in first version)`pto.simd.store`
+5. (not supported in first version)`pto.simd.load_pu`
+6. (not supported in first version)`pto.simd.store_pu`
 
 ### 4.1 `pto.simd` 属性规则（仅在使用带 lanes 语义的 `pto.simd` op 时强制）
 
@@ -85,6 +85,26 @@
 ### 4.2 纯 vector 模板
 
 纯 `vector/arith` 模板允许不写 `pto.simd.level/lanes`，但仍必须满足 V1.1 的 dtype/layout/seed 规则。
+
+### 4.3 A5 向量参数属性（纯 vector 路径必填）
+
+对于 A5 OP-Lib vector lowering，以下属性必须由模板开发者显式提供（逐 op）：
+
+1. `vector.load` / `vector.maskedload`：
+   1. `pto.simd.vld_dist = "<TOKEN>"`
+   2. 要求：非空字符串（推荐使用 `NORM`）。
+2. `vector.store` / `vector.maskedstore`：
+   1. `pto.simd.vst_dist = "<TOKEN>"`
+   2. 要求：非空且以 `DIST_` 开头（如 `DIST_NORM`）。
+3. `arith.addf/subf/mulf/divf/maximumf/minimumf`（向量类型结果）：
+   1. `pto.simd.exec_mode = "<TOKEN>"`
+   2. 要求：非空且以 `MODE_` 开头（如 `MODE_ZEROING`）。
+
+EmitC 映射关系：
+
+1. `vld_dist` -> `vlds(..., <vld_dist>)`
+2. `vst_dist` -> `GetDistVst<T, DistVST::<vst_dist>>()`
+3. `exec_mode` -> `vadd/vmul/...(..., <exec_mode>)`
 
 ## 5. Seed 与 Core Slot 规则
 
@@ -118,6 +138,10 @@
 6. 若函数体包含 `pto.simd.predicate/load/store/load_pu/store_pu`，必须满足：
    1. `pto.simd.level/lanes` 存在且合法。
    2. 所有相关 vector lane 与 `pto.simd.lanes` 一致。
+7. 若函数体包含 A5 vector 路径 op，必须满足：
+   1. `vector.load/vector.maskedload` 携带 `pto.simd.vld_dist`（非空）。
+   2. `vector.store/vector.maskedstore` 携带 `pto.simd.vst_dist`（非空且 `DIST_` 前缀）。
+   3. 向量 `arith.addf/subf/mulf/divf/maximumf/minimumf` 携带 `pto.simd.exec_mode`（非空且 `MODE_` 前缀）。
 
 ### 6.2 错误码
 
