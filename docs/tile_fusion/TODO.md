@@ -4,7 +4,9 @@
 4. 自动识别vec_scope,避免oplib开发者手动插入
 5. vec_scope缩进不太美观
 6. for循环没有使用size_t
-7. oplib的row/col是静态的
-8. oplib只有1D版本
-9. oplib里没有实现tile_buf to memref的转换
-10. pto.simd里为tile_buf -> memref的转换定义一个IR（当前是unrealized_conversion_cast），Tilebuf2Memref/View2Memref转换时处理掉
+(x) 7. oplib的row/col是静态的
+(x) 8. oplib只有1D版本
+(x) 9. oplib里没有实现tile_buf to memref的转换
+(x) 10. pto.simd里为tile_buf -> memref的转换定义一个IR（当前是unrealized_conversion_cast），Tilebuf2Memref/View2Memref转换时处理掉
+(x) 11. 只对A5使用新的oplib codegen路线
+12. 重构plan memory和insert sync到TileBuf world
