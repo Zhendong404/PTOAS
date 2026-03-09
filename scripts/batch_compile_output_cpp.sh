@@ -208,12 +208,14 @@ trap 'rm -f "${STATUS_FILE}"' EXIT
 
 compile_one() {
   local src="$1"
-  local rel_path asm_path log_path
+  local rel_path asm_path log_path src_base src_stem work_dir generated_file
   local -a cmd=()
 
   rel_path="${src#"${SRC_ROOT}/"}"
   asm_path="${BUILD_ROOT}/${rel_path%.cpp}.S"
   log_path="${LOG_DIR}/${rel_path%.cpp}.log"
+  src_base="$(basename -- "${src}")"
+  src_stem="${src_base%.cpp}"
 
   mkdir -p "$(dirname -- "${asm_path}")" "$(dirname -- "${log_path}")" || {
     echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
@@ -231,12 +233,52 @@ compile_one() {
   for inc in "${INCLUDE_DIRS[@]}"; do
     cmd+=("-I${inc}")
   done
-  cmd+=("-S" "${src}" "-o" "${asm_path}")
+  cmd+=("-S" "${src}")
 
   echo "[BUILD] ${rel_path}"
-  if "${cmd[@]}" >"${log_path}" 2>&1; then
+  work_dir="$(mktemp -d "${BUILD_ROOT}/tmp_compile.XXXXXX")" || {
+    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    return 0
+  }
+
+  if ! (cd "${work_dir}" && "${cmd[@]}") >"${log_path}" 2>&1; then
+    rm -rf -- "${work_dir}"
+    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    return 0
+  fi
+
+  generated_file=""
+  # bisheng with -S may emit <stem>.o by default; keep this as top priority.
+  if [[ -f "${work_dir}/${src_stem}.o" ]]; then
+    generated_file="${work_dir}/${src_stem}.o"
+  elif [[ -f "${work_dir}/${src_stem}.S" ]]; then
+    generated_file="${work_dir}/${src_stem}.S"
+  elif [[ -f "${work_dir}/${src_stem}.s" ]]; then
+    generated_file="${work_dir}/${src_stem}.s"
+  else
+    generated_file="$(find "${work_dir}" -maxdepth 1 -type f \( -name "*.o" -o -name "*.S" -o -name "*.s" \) | head -n 1)"
+  fi
+
+  if [[ -z "${generated_file}" || ! -f "${generated_file}" ]]; then
+    {
+      echo
+      echo "[ERROR] 编译成功但未找到输出文件，期望类型: .o/.S/.s"
+      echo "[ERROR] 临时目录: ${work_dir}"
+    } >>"${log_path}"
+    rm -rf -- "${work_dir}"
+    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    return 0
+  fi
+
+  if mv -f -- "${generated_file}" "${asm_path}"; then
+    rm -rf -- "${work_dir}"
     echo -e "OK\t${rel_path}" >>"${STATUS_FILE}"
   else
+    {
+      echo
+      echo "[ERROR] 输出重命名失败: ${generated_file} -> ${asm_path}"
+    } >>"${log_path}"
+    rm -rf -- "${work_dir}"
     echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
   fi
 }
