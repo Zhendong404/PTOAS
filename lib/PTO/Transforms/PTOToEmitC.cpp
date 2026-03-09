@@ -2135,6 +2135,49 @@ struct OplibVectorCreateMaskToEmitC
   }
 };
 
+struct OplibVectorConstantMaskToEmitC
+    : public OpConversionPattern<vector::ConstantMaskOp> {
+  using OpConversionPattern<vector::ConstantMaskOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::ConstantMaskOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto maskTy = dyn_cast<VectorType>(op.getType());
+    if (!maskTy)
+      return failure();
+
+    ArrayAttr dimSizes = op.getMaskDimSizes();
+    if (dimSizes.size() != 1) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.constant_mask "
+             "expects one dimension";
+      return failure();
+    }
+
+    auto dimAttr = dyn_cast<IntegerAttr>(dimSizes[0]);
+    if (!dimAttr) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.constant_mask "
+             "dimension must be integer";
+      return failure();
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+    Value activeCount =
+        makeEmitCIntConstant(rewriter, op.getLoc(), u32Ty, dimAttr.getInt());
+    auto predOr = buildA5PredicateFromActiveCount(
+        rewriter, op.getLoc(), op.getOperation(), maskTy, activeCount,
+        "vector.constant_mask");
+    if (failed(predOr))
+      return failure();
+
+    rewriter.replaceOp(op, *predOr);
+    return success();
+  }
+};
+
 struct OplibVectorMaskedLoadToEmitC
     : public OpConversionPattern<vector::MaskedLoadOp> {
   using OpConversionPattern<vector::MaskedLoadOp>::OpConversionPattern;
@@ -2455,6 +2498,30 @@ struct ArithCastOPToEmitC : public OpConversionPattern<arith::IndexCastOp> {
     if (!newTy)
       return failure();
     rewriter.replaceOpWithNewOp<emitc::CastOp>(op, newTy, adaptor.getIn());
+    return success();
+  }
+};
+
+struct MemRefCastToEmitC : public OpConversionPattern<memref::CastOp> {
+  using OpConversionPattern<memref::CastOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(memref::CastOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type dstTy = getTypeConverter()->convertType(op.getType());
+    if (!dstTy)
+      return failure();
+
+    Value src = adaptor.getSource();
+    if (src.getType() == dstTy) {
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    if (!emitc::isSupportedEmitCType(src.getType()) ||
+        !emitc::isSupportedEmitCType(dstTy))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<emitc::CastOp>(op, dstTy, src);
     return success();
   }
 };
@@ -5060,49 +5127,102 @@ struct MemRefDimToEmitC : public OpConversionPattern<memref::DimOp> {
   static Value tryResolveFromTileBridge(memref::DimOp op, int64_t dimIdx,
                                         Type outTy,
                                         ConversionPatternRewriter &rewriter) {
-    auto cast = op.getSource().getDefiningOp<UnrealizedConversionCastOp>();
-    if (!cast || cast->getNumOperands() != 1)
-      return Value();
+    auto getRuntimeValidDimFromEmitCTile = [&](Value maybePtr) -> Value {
+      if (!maybePtr)
+        return Value();
+      auto ptrDef = maybePtr.getDefiningOp<emitc::CallOpaqueOp>();
+      if (!ptrDef || ptrDef.getCallee() != "PTOAS__TILE_DATA" ||
+          ptrDef->getNumOperands() != 1)
+        return Value();
+      Value tileObj = ptrDef->getOperand(0);
+      auto tileTy = dyn_cast<emitc::OpaqueType>(tileObj.getType());
+      if (!tileTy || !tileTy.getValue().starts_with("Tile<"))
+        return Value();
 
-    Value tile = cast->getOperand(0);
-    auto tileTy = dyn_cast<pto::TileBufType>(tile.getType());
-    if (!tileTy)
-      return Value();
+      auto *ctx = rewriter.getContext();
+      llvm::StringRef callee =
+          (dimIdx == 0) ? "PTOAS__TILE_GET_VALID_ROW"
+                        : "PTOAS__TILE_GET_VALID_COL";
+      auto dimI32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+      Value dimI32 = rewriter
+                         .create<emitc::CallOpaqueOp>(
+                             op.getLoc(), TypeRange{dimI32Ty}, callee,
+                             ArrayAttr{}, ArrayAttr{}, ValueRange{tileObj})
+                         .getResult(0);
+      if (dimI32.getType() == outTy)
+        return dimI32;
+      return rewriter.create<emitc::CastOp>(op.getLoc(), outTy, dimI32)
+          .getResult();
+    };
 
-    auto resolveDynamicFromProducer = [&](Value tileVal, int64_t dim) -> Value {
-      if (auto alloc = tileVal.getDefiningOp<pto::AllocTileOp>()) {
-        Value v = (dim == 0) ? alloc.getValidRow() : alloc.getValidCol();
+    std::function<Value(Value)> resolveFromMemrefValue = [&](Value memVal) -> Value {
+      auto cast = memVal.getDefiningOp<UnrealizedConversionCastOp>();
+      if (!cast || cast->getNumOperands() != 1)
+        return Value();
+
+      Value input = cast->getOperand(0);
+      if (Value dyn = getRuntimeValidDimFromEmitCTile(input))
+        return dyn;
+
+      // Handle bridge-introduced memref producers that still carry valid-shape
+      // metadata (dynamic row/col) on PTO ops.
+      if (auto pc = input.getDefiningOp<pto::PointerCastOp>()) {
+        Value v = (dimIdx == 0) ? pc.getValidRow() : pc.getValidCol();
         if (v)
           return materializeDimValue(v, outTy, op.getLoc(), rewriter);
       }
-      if (auto bind = tileVal.getDefiningOp<pto::BindTileOp>()) {
-        Value v = (dim == 0) ? bind.getValidRow() : bind.getValidCol();
+      if (auto bind = input.getDefiningOp<pto::BindTileOp>()) {
+        Value v = (dimIdx == 0) ? bind.getValidRow() : bind.getValidCol();
         if (v)
           return materializeDimValue(v, outTy, op.getLoc(), rewriter);
       }
-      if (auto pc = tileVal.getDefiningOp<pto::PointerCastOp>()) {
-        Value v = (dim == 0) ? pc.getValidRow() : pc.getValidCol();
-        if (v)
-          return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+
+      // Follow memref->memref bridge chains.
+      if (isa<MemRefType>(input.getType()))
+        if (Value fromUpstream = resolveFromMemrefValue(input))
+          return fromUpstream;
+
+      auto tileTy = dyn_cast<pto::TileBufType>(input.getType());
+      if (!tileTy)
+        return Value();
+
+      auto resolveDynamicFromProducer = [&](Value tileVal, int64_t dim) -> Value {
+        if (auto alloc = tileVal.getDefiningOp<pto::AllocTileOp>()) {
+          Value v = (dim == 0) ? alloc.getValidRow() : alloc.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        if (auto bind = tileVal.getDefiningOp<pto::BindTileOp>()) {
+          Value v = (dim == 0) ? bind.getValidRow() : bind.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        if (auto pc = tileVal.getDefiningOp<pto::PointerCastOp>()) {
+          Value v = (dim == 0) ? pc.getValidRow() : pc.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        return Value();
+      };
+
+      if (Value dyn = resolveDynamicFromProducer(input, dimIdx))
+        return dyn;
+
+      ArrayRef<int64_t> validShape = tileTy.getValidShape();
+      if (validShape.size() >= 2 && validShape[dimIdx] >= 0) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), outTy,
+                                    validShape[dimIdx]);
       }
+
+      ArrayRef<int64_t> shape = tileTy.getShape();
+      if (shape.size() >= 2 && shape[dimIdx] >= 0) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), outTy, shape[dimIdx]);
+      }
+
       return Value();
     };
 
-    if (Value dyn = resolveDynamicFromProducer(tile, dimIdx))
-      return dyn;
-
-    ArrayRef<int64_t> validShape = tileTy.getValidShape();
-    if (validShape.size() >= 2 && validShape[dimIdx] >= 0) {
-      return makeEmitCIntConstant(rewriter, op.getLoc(), outTy,
-                                  validShape[dimIdx]);
-    }
-
-    ArrayRef<int64_t> shape = tileTy.getShape();
-    if (shape.size() >= 2 && shape[dimIdx] >= 0) {
-      return makeEmitCIntConstant(rewriter, op.getLoc(), outTy, shape[dimIdx]);
-    }
-
-    return Value();
+    return resolveFromMemrefValue(op.getSource());
   }
 
   LogicalResult matchAndRewrite(memref::DimOp op, OpAdaptor adaptor,
@@ -8102,7 +8222,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMaxUIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinSIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinUIToEmitC>(typeConverter, ctx);
-  patterns.add<OplibVectorCreateMaskToEmitC, OplibVectorLoadToEmitC,
+  patterns.add<OplibVectorCreateMaskToEmitC, OplibVectorConstantMaskToEmitC,
+               OplibVectorLoadToEmitC,
                OplibVectorMaskedLoadToEmitC, OplibVectorStoreToEmitC,
                OplibVectorMaskedStoreToEmitC,
                OplibVectorBinaryArithToEmitC<arith::AddFOp>,
@@ -8158,6 +8279,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
+  patterns.add<MemRefCastToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
   patterns.add<PTOSyncSetToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<PTOSyncWaitToEmitC>(typeConverter, ctx, targetArch);
@@ -8697,6 +8819,19 @@ struct EmitPTOManualPass
         }
       }
 
+      // Bridge cleanup (deferred):
+      // pointer-like -> memref bridge may transiently remain, and in some
+      // cases is only consumed by other unrealized casts that become dead
+      // later in this cleanup stage. Defer instead of failing early.
+      if (isEmitCPtrLikeTy(inTy) && isa<MemRefType>(outTy)) {
+        bool onlyUsedByUnrealized =
+            llvm::all_of(output.getUsers(), [](Operation *user) {
+              return isa<UnrealizedConversionCastOp>(user);
+            });
+        if (onlyUsedByUnrealized)
+          return;
+      }
+
       if (emitc::isSupportedEmitCType(inTy) && emitc::isSupportedEmitCType(outTy)) {
         OpBuilder builder(cast);
         auto c = builder.create<emitc::CastOp>(cast.getLoc(), outTy, input);
@@ -8713,6 +8848,34 @@ struct EmitPTOManualPass
     for (Operation *op : opsToErase)
       if (op && op->getBlock())
         op->erase();
+
+    // Fixed-point prune for dead/identity unrealized casts that may become
+    // removable after the first cleanup wave.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<UnrealizedConversionCastOp, 16> deadOrIdentity;
+      mop.walk([&](UnrealizedConversionCastOp cast) {
+        if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+          return;
+        Value in = cast.getOperand(0);
+        Value out = cast.getResult(0);
+        if (out.use_empty()) {
+          deadOrIdentity.push_back(cast);
+          return;
+        }
+        if (in.getType() == out.getType()) {
+          out.replaceAllUsesWith(in);
+          deadOrIdentity.push_back(cast);
+        }
+      });
+      for (UnrealizedConversionCastOp cast : deadOrIdentity) {
+        if (cast && cast->getBlock()) {
+          cast.erase();
+          changed = true;
+        }
+      }
+    }
 
     if (castCleanupFailed)
       return signalPassFailure();

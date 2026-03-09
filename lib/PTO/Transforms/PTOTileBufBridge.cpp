@@ -7,6 +7,8 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -408,6 +410,14 @@ public:
       signalPassFailure();
       return;
     }
+    if (failed(lowerResidualAllocTileOps(module))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(ensureNoResidualAllocTileOps(module))) {
+      signalPassFailure();
+      return;
+    }
   }
 
 private:
@@ -423,6 +433,13 @@ private:
 
   LogicalResult rewriteFunctionSignatures(ModuleOp module) {
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+      const bool isOplibFunc =
+          func->hasAttr("pto.oplib.kind") ||
+          func->hasAttr("pto.oplib.entry_role") ||
+          func->hasAttr("pto.oplib.instance.variant_id");
+      if (isOplibFunc)
+        continue;
+
       FunctionType fnTy = func.getFunctionType();
       SmallVector<Type, 8> newInputs;
       SmallVector<Type, 4> newResults;
@@ -637,6 +654,133 @@ private:
       }
     }
     return success();
+  }
+
+  LogicalResult lowerResidualAllocTileOps(ModuleOp module) {
+    for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+      if (func.isExternal())
+        continue;
+
+      int64_t nextSyntheticAddr = 0;
+      SmallVector<pto::AllocTileOp, 16> allocOps;
+      func.walk([&](pto::AllocTileOp op) { allocOps.push_back(op); });
+
+      for (pto::AllocTileOp op : allocOps) {
+        if (!op || !op->getBlock())
+          continue;
+
+        auto tileTy = dyn_cast<pto::TileBufType>(op.getResult().getType());
+        if (!tileTy)
+          continue;
+
+        // If there are no users there is nothing to rewrite.
+        if (op.getResult().use_empty()) {
+          op.erase();
+          continue;
+        }
+
+        // Use the physical tile shape for residual alloc lowering.
+        // Valid dims are kept in pointer_cast/bind metadata and should not
+        // shrink memref rank/shape here, otherwise shape-based verifiers
+        // (e.g. tcolmin src/dst same-shape) may fail and force fallback casts.
+        SmallVector<int64_t, 4> memShape(tileTy.getShape().begin(),
+                                         tileTy.getShape().end());
+        SmallVector<int64_t, 4> strides(tileTy.getRank(),
+                                        ShapedType::kDynamic);
+        (void)inferTileBufStaticStrides(tileTy, strides);
+        auto layout = StridedLayoutAttr::get(&getContext(), /*offset=*/0, strides);
+        MemRefType memTy = MemRefType::get(memShape, tileTy.getElementType(),
+                                           layout, tileTy.getMemorySpace());
+
+        OpBuilder builder(op);
+        Value memValue;
+        Value addr = op.getAddr();
+        if (!addr) {
+          // Materialize a synthetic static address for bridge-introduced
+          // alloc_tile so downstream EmitC can lower through pointer_cast path.
+          int64_t elemBytes = getElemBytes(tileTy.getElementType());
+          if (elemBytes <= 0)
+            continue;
+          int64_t tileBytes = elemBytes;
+          for (int64_t d : memTy.getShape()) {
+            if (d == ShapedType::kDynamic || d <= 0) {
+              tileBytes = -1;
+              break;
+            }
+            tileBytes *= d;
+          }
+          if (tileBytes <= 0)
+            continue;
+          addr = builder.create<arith::ConstantIntOp>(
+              op.getLoc(), nextSyntheticAddr, /*width=*/64);
+          nextSyntheticAddr += tileBytes;
+        }
+
+        auto config = tileTy.getConfigAttr();
+        if (!config)
+          config = pto::TileBufConfigAttr::getDefault(&getContext());
+        auto pc = builder.create<pto::PointerCastOp>(
+            op.getLoc(), memTy, ValueRange{addr}, op.getValidRow(),
+            op.getValidCol(), config);
+        memValue = pc.getResult();
+
+        if (!memValue)
+          continue;
+
+        SmallVector<OpOperand *, 8> uses;
+        for (OpOperand &use : op.getResult().getUses())
+          uses.push_back(&use);
+
+        for (OpOperand *use : uses) {
+          Operation *owner = use->getOwner();
+          auto cast = dyn_cast<UnrealizedConversionCastOp>(owner);
+          if (cast && cast.getNumOperands() == 1 && cast.getNumResults() == 1) {
+            Value castResult = cast.getResult(0);
+            if (castResult.getType() == memValue.getType()) {
+              castResult.replaceAllUsesWith(memValue);
+            } else {
+              OpBuilder castBuilder(cast);
+              auto recast = castBuilder.create<UnrealizedConversionCastOp>(
+                  cast.getLoc(), TypeRange{castResult.getType()},
+                  ValueRange{memValue});
+              castResult.replaceAllUsesWith(recast.getResult(0));
+            }
+            cast.erase();
+            continue;
+          }
+
+          Value oldValue = use->get();
+          use->set(memValue);
+          bool ownerValid = true;
+          {
+            ScopedDiagnosticHandler diagHandler(
+                &getContext(), [&](Diagnostic &) { return success(); });
+            ownerValid = succeeded(verify(owner));
+          }
+          if (!ownerValid) {
+            use->set(oldValue);
+            OpBuilder fallbackBuilder(owner);
+            auto backCast = fallbackBuilder.create<UnrealizedConversionCastOp>(
+                owner->getLoc(), TypeRange{oldValue.getType()},
+                ValueRange{memValue});
+            use->set(backCast.getResult(0));
+          }
+        }
+
+        if (op.getResult().use_empty())
+          op.erase();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult ensureNoResidualAllocTileOps(ModuleOp module) {
+    bool hasResidual = false;
+    module.walk([&](pto::AllocTileOp op) {
+      hasResidual = true;
+      op.emitError("residual pto.alloc_tile remains after pto-tilebuf-to-memref");
+    });
+    return success(!hasResidual);
   }
 };
 

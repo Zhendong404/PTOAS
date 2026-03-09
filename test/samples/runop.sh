@@ -2,6 +2,8 @@
 set -uo pipefail   # 注意：去掉 -e，避免失败直接退出整个脚本
 
 BASE_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+REPO_DIR="$(cd -- "${BASE_DIR}/../.." && pwd)"
+WORKSPACE_DIR="$(cd -- "${REPO_DIR}/.." && pwd)"
 
 # Allow overriding tool/python explicitly:
 #   PTOAS_BIN=/path/to/ptoas PYTHON_BIN=/path/to/python ./runop.sh all
@@ -13,6 +15,8 @@ PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 PTO_PTO_DIRS="${PTO_PTO_DIRS:-InjectSync}"
 ENABLE_BC=0
+RUNTIME_ENV_STATUS=0
+RUNTIME_ENV_MSG=""
 
 usage() {
   cat <<EOF
@@ -48,6 +52,62 @@ lcfirst() {
   local first="${s:0:1}"
   local rest="${s:1}"
   printf '%s%s\n' "$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')" "$rest"
+}
+
+prepend_path_if_exists() {
+  local var_name="$1"
+  local value="$2"
+  local current="${!var_name:-}"
+  [[ -n "${value}" ]] || return 0
+  [[ -e "${value}" ]] || return 0
+  if [[ ":${current}:" == *":${value}:"* ]]; then
+    return 0
+  fi
+  if [[ -z "${current}" ]]; then
+    printf -v "${var_name}" '%s' "${value}"
+  else
+    printf -v "${var_name}" '%s:%s' "${value}" "${current}"
+  fi
+  export "${var_name}"
+}
+
+ensure_runtime_env_once() {
+  local python="$1"
+
+  # 1=already ready, 2=already failed
+  if [[ "${RUNTIME_ENV_STATUS}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "${RUNTIME_ENV_STATUS}" == "2" ]]; then
+    return 1
+  fi
+
+  if "$python" -c "import mlir.ir" >/dev/null 2>&1; then
+    RUNTIME_ENV_STATUS=1
+    return 0
+  fi
+
+  local llvm_build_dir="${LLVM_BUILD_DIR:-${WORKSPACE_DIR}/llvm-project/build-shared}"
+  local mlir_python_root="${MLIR_PYTHON_ROOT:-${llvm_build_dir}/tools/mlir/python_packages/mlir_core}"
+  local pto_python_root="${PTO_PYTHON_ROOT:-${REPO_DIR}/install}"
+  local pto_python_build_root="${PTO_PYTHON_BUILD_ROOT:-${REPO_DIR}/build/python}"
+
+  prepend_path_if_exists PYTHONPATH "${mlir_python_root}"
+  prepend_path_if_exists PYTHONPATH "${pto_python_root}"
+  prepend_path_if_exists PYTHONPATH "${pto_python_build_root}"
+
+  prepend_path_if_exists LD_LIBRARY_PATH "${llvm_build_dir}/lib"
+  prepend_path_if_exists LD_LIBRARY_PATH "${REPO_DIR}/install/lib"
+  prepend_path_if_exists LD_LIBRARY_PATH "${REPO_DIR}/build/lib"
+
+  if "$python" -c "import mlir.ir" >/dev/null 2>&1; then
+    RUNTIME_ENV_STATUS=1
+    return 0
+  fi
+
+  RUNTIME_ENV_STATUS=2
+  RUNTIME_ENV_MSG="python cannot import mlir.ir (tried auto-bootstrap from ${mlir_python_root}, ${pto_python_root}, ${pto_python_build_root})"
+  return 1
 }
 
 resolve_ptoas_bin() {
@@ -148,6 +208,10 @@ process_one_dir() {
   fi
   if [[ -z "$python" || ! -x "$python" ]]; then
     echo -e "${A}\tFAIL\tMissing python: PYTHON_BIN (python/python3 not found)"
+    return 0
+  fi
+  if ! ensure_runtime_env_once "$python"; then
+    echo -e "${A}\tFAIL\t${RUNTIME_ENV_MSG}; please source scripts/ptoas_env.sh or export PYTHONPATH"
     return 0
   fi
   if [[ $use_ptobc_roundtrip -eq 1 ]] && [[ -z "$ptobc" || ! -x "$ptobc" ]]; then
