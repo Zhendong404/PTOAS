@@ -191,7 +191,7 @@ prepare_repos() {
 
   if [[ ! -d "${LLVM_SOURCE_DIR}" ]]; then
     log "LLVM 源码目录不存在，开始 clone"
-    run_cmd git clone "${LLVM_REPO_URL}" "${LLVM_SOURCE_DIR}"
+    run_cmd git clone --depth=1 --branch "${LLVM_BRANCH}" --single-branch "${LLVM_REPO_URL}" "${LLVM_SOURCE_DIR}"
   else
     log "LLVM 源码目录已存在，跳过 clone: ${LLVM_SOURCE_DIR}"
   fi
