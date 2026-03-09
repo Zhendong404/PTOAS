@@ -15,12 +15,12 @@
 
 1. `LoweringSyncToPipe -> PTOViewToMemref`
 2. `InferPTOLayout/PlanMemory/InsertSync`（按现有 level 规则）
-3. `PTOMemrefToTileBuf`
+3. `legacy memref-to-tile_buf bridge pass`
 4. `PTOCreateFusionGroupsPass`（当启用 `--enable-op-fusion`）
 5. `PTOOutlineFusionGroupsPass`（当启用 `--enable-op-fusion`）
 6. `PTOInstantiateAndLowerToLibCallPass`
 7. `PTOInlineLibCallPass`
-8. `PTOTileBufToMemref`
+8. `legacy tile_buf-to-memref bridge pass`
 9. `Canonicalizer/CSE -> PTOLowLevelLoopFusionPass(当启用 --enable-op-fusion) -> Canonicalizer/CSE`
 
 ### 2. 已移除或变更的旧语义

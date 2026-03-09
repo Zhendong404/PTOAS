@@ -1,7 +1,7 @@
 ### PTOAS OP-Lib Pipeline 全量重构（按你指定顺序）
 
 **Summary**
-- 目标是把主链路重构为你指定的核心顺序：`InsertSync -> Memref2Tilebuf -> createFusionGroups -> OutlineFusionGroups -> InstantiateAndLowerToLibCall -> InlineLibCall -> Tilebuf2Memref`。
+- 目标是把主链路重构为你指定的核心顺序：`InsertSync -> Memref2Tilebuf -> createFusionGroups -> OutlineFusionGroups -> InstantiateAndLowerToLibCall -> InlineLibCall -> legacy tile_buf-to-memref bridge stage`。
 - 采用“顺序优先 + 完全替换”策略：删除旧组合语义。OP-Lib 实例化/降级/内联主链路默认执行，`CreateFusionGroups/Outline/LowLevelLoopFusion` 由 `--enable-op-fusion` 控制。
 - 保持 `level3` 的 InsertSync 现状不变（仍按当前规则忽略），`--op-lib-dir` 继续强制必传，单 OP 仍走 Lower+Inline（无匹配时 warning 回退）。
 
@@ -30,11 +30,11 @@
 - `PTOInlineLibCallPass` 只做两件事：实例体 materialize + call inline。
 - 对外部 instance 函数生成 low-level loop body（沿用现有 fake body 机制与 op->arith 映射）。
 - 在普通函数与 fused helper 内联所有 instance call，并清理死 cast/死调用。
-- `PTOTileBufToMemrefPass` 移到 Inline 之后执行，作为该段尾部转换。
-- 在 Inline 与 Tilebuf2Memref 之间固定插入 `Canonicalizer + CSE`，然后执行 `PTOLowLevelLoopFusionPass`（由 `--enable-op-fusion` 控制），再做一轮 `Canonicalizer + CSE`。
+- 删除 `legacy tile_buf-to-memref bridge pass`，OP-Lib 主链路统一工作在 memref world。
+- 在 Inline 与 legacy tile_buf-to-memref bridge stage 之间固定插入 `Canonicalizer + CSE`，然后执行 `PTOLowLevelLoopFusionPass`（由 `--enable-op-fusion` 控制），再做一轮 `Canonicalizer + CSE`。
 - `ptoas` 入口逻辑同步更新：
 - `enable-op-fusion` 分支编排调整为仅控制 `Create/Outline/LowLevelLoopFusion` 三个 pass。
-- 重排 dump 时机：`dump-ir-after-oplib-lowering` 在 InstantiateAndLower 后截断；`dump-ir-after-op-fusion` 在 Inline+LoopFusion+Tilebuf2Memref 后截断。
+- 重排 dump 时机：`dump-ir-after-oplib-lowering` 在 InstantiateAndLower 后截断；`dump-ir-after-op-fusion` 在 Inline+LoopFusion+legacy tile_buf-to-memref bridge stage 后截断。
 - Pass 注册与构建系统同步：
 - 更新 Passes.td/Passes.h 的 pass 定义与 constructor。
 - 替换 transforms 库中的旧源码编译单元为新 pass 文件。

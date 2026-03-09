@@ -29,12 +29,12 @@
 1. `InferPTOLayout`（可选）
 2. `PlanMemory`（仅 `level1/level2`）
 3. `PTOInsertSync`（可选；`level3` 忽略）
-4. `PTOMemrefToTileBuf`
+4. `legacy memref-to-tile_buf bridge pass`
 5. `PTOCreateFusionGroupsPass`
 6. `PTOOutlineFusionGroupsPass`
 7. `PTOInstantiateAndLowerToLibCallPass`
 8. `PTOInlineLibCallPass`
-9. `PTOTileBufToMemref`
+9. `legacy tile_buf-to-memref bridge pass`
 10. `Canonicalizer -> CSE`
 11. `PTOLowLevelLoopFusionPass`
 12. `Canonicalizer -> CSE`
@@ -50,7 +50,7 @@
 ### 2.4 Dump 截断点
 
 1. `--dump-ir-after-oplib-lowering`：在 `PTOInstantiateAndLowerToLibCallPass` 后直接输出并退出。
-2. `--dump-ir-after-op-fusion`：在 `Inline + TileBuf2Memref + LoopFusion` 后输出并退出。
+2. `--dump-ir-after-op-fusion`：在 `Inline + legacy tile_buf-to-memref bridge stage + LoopFusion` 后输出并退出。
 
 ---
 
@@ -81,7 +81,7 @@
 2. 清理死 cast / 冗余调用边界。
 3. 允许在函数体内部引入局部 `unrealized_conversion_cast(tile_buf <-> memref)`，但函数对外签名不变。
 
-### 3.5 `PTOTileBufToMemref` 与 `PTOLowLevelLoopFusionPass`
+### 3.5 `legacy tile_buf-to-memref bridge pass` 与 `PTOLowLevelLoopFusionPass`
 
 1. 在 inline 之后统一收口到 memref。
 2. 低层 loop 融合默认执行（除非在更早 dump 截断）。
