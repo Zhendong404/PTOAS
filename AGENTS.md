@@ -179,6 +179,8 @@ python3 test/npu_validation/scripts/generate_testcase.py \
   --soc-version Ascend910B1
 ```
 
+注意：沙箱内无法并行执行lit用例，请采用-j 1单线程执行
+
 ## 常见问题
 
 **Q: 构建时出现 LLVM 版本错误？**
