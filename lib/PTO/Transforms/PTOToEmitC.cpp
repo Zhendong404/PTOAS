@@ -2258,7 +2258,7 @@ struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
       return failure();
     std::string distExpr = std::string(
         "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
-                           std::string(*elemTokOr) + ", DistVST::" +
+                           std::string(*elemTokOr) + ", pto::DistVST::" +
                            std::string(*vstDistOr) + ">())>()";
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
@@ -2305,7 +2305,7 @@ struct OplibVectorMaskedStoreToEmitC
       return failure();
     std::string distExpr = std::string(
         "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
-                           std::string(*elemTokOr) + ", DistVST::" +
+                           std::string(*elemTokOr) + ", pto::DistVST::" +
                            std::string(*vstDistOr) + ">())>()";
     Value mask = peelUnrealized(adaptor.getMask());
     if (isa<VectorType>(mask.getType())) {
