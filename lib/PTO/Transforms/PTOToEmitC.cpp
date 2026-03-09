@@ -8752,16 +8752,45 @@ struct EmitPTOManualPass
       }
     }
 
-    // --- Step B: 修复 Loop 归纳变量 (IV) ---
-    // 此时 emitc.for 的 operand 已经是 int32 了，我们检查 IV 是否匹配，不匹配则修正
+    // --- Step B: Normalize loop induction variable type ---
+    // Keep IV type aligned with loop bounds by default. On A5, force uint16_t
+    // loop IV/bounds/step so OP-Lib loops always map to hardware-loop patterns.
     mop.walk([&](emitc::ForOp forOp) {
-       Type boundTy = forOp.getLowerBound().getType(); 
-       BlockArgument iv = forOp.getBody()->getArgument(0); 
-       
-       if (iv.getType() != boundTy) {
-         iv.setType(boundTy); // 强制将 IV 类型 (index) 修改为与边界一致 (int32)
-       }
+      Type boundTy = forOp.getLowerBound().getType();
+      Type targetTy = boundTy;
+      if (targetArch == PTOArch::A5) {
+        targetTy = emitc::OpaqueType::get(mop.getContext(), "uint16_t");
+        OpBuilder b(forOp);
+        auto castToTarget = [&](Value v) -> Value {
+          // Prefer casting from the original source value instead of an
+          // intermediate index-typed cast result (which prints as size_t in C++).
+          if (auto idxCast = v.getDefiningOp<emitc::CastOp>()) {
+            if (isa<IndexType>(idxCast.getResult().getType()))
+              v = idxCast.getSource();
+          }
+          if (v.getType() == targetTy)
+            return v;
+          return b.create<emitc::CastOp>(forOp.getLoc(), targetTy, v)
+              .getResult();
+        };
+        forOp.setLowerBound(castToTarget(forOp.getLowerBound()));
+        forOp.setUpperBound(castToTarget(forOp.getUpperBound()));
+        forOp.setStep(castToTarget(forOp.getStep()));
+      }
+
+      BlockArgument iv = forOp.getBody()->getArgument(0);
+      if (iv.getType() != targetTy)
+        iv.setType(targetTy);
     });
+
+    // Remove dead casts left behind by loop bound/type rewrites.
+    SmallVector<emitc::CastOp> deadCasts;
+    mop.walk([&](emitc::CastOp castOp) {
+      if (castOp.getResult().use_empty())
+        deadCasts.push_back(castOp);
+    });
+    for (emitc::CastOp castOp : deadCasts)
+      castOp.erase();
     
     // --- Step C: 消除冗余 Tile 变量 (Dead Code Elimination) [新增] ---
     // 逻辑：如果一个 emitc.variable 没有被读取（use_empty），
