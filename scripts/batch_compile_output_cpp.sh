@@ -167,6 +167,7 @@ if [[ ${ENABLE_DEFAULT_ARGS} -eq 1 ]]; then
     "-xcce"
     "-fenable-matrix"
     "--cce-aicore-enable-tl"
+    "--cce-aicore-only"
     "-fPIC"
     "-Xhost-start"
     "-Xhost-end"

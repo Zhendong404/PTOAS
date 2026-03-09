@@ -31,6 +31,8 @@ export PTO_INSTALL_DIR="${PTO_INSTALL_DIR:-${PTO_SOURCE_DIR}/install}"
 export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core}"
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
+export PTOAS_FLAGS="--pto-arch=a5 --op-lib-dir=$PTO_SOURCE_DIR/test/tile_fusion/oplib"
+export PTOAS_OUT_DIR=$PTO_SOURCE_DIR/output
 
 _ptoas_prepend_path() {
   local var_name="$1"
