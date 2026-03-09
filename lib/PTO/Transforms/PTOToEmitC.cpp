@@ -1941,6 +1941,19 @@ getA5LinearizedIndex(ConversionPatternRewriter &rewriter, Operation *op,
   return linear;
 }
 
+// CreatePredicate<T> expects a mutable uint32_t lvalue argument.
+// Materialize one explicitly to avoid binding rvalues (e.g. conditional expr).
+static Value materializeA5PredicateScalarLValue(
+    ConversionPatternRewriter &rewriter, Location loc, Value scalar) {
+  auto *ctx = rewriter.getContext();
+  auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+  Value scalarU32 = emitCCast(rewriter, loc, u32Ty, scalar);
+  auto scalarVar = rewriter.create<emitc::VariableOp>(
+      loc, u32Ty, emitc::OpaqueAttr::get(ctx, "0"));
+  rewriter.create<emitc::AssignOp>(loc, scalarVar.getResult(), scalarU32);
+  return scalarVar.getResult();
+}
+
 static FailureOr<Value> buildA5Predicate(ConversionPatternRewriter &rewriter,
                                          Location loc, Operation *op,
                                          VectorType vecTy,
@@ -1951,13 +1964,16 @@ static FailureOr<Value> buildA5Predicate(ConversionPatternRewriter &rewriter,
 
   int64_t lanes = vecTy.getNumElements();
   auto *ctx = rewriter.getContext();
+  auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+  Value laneCount = makeEmitCIntConstant(rewriter, loc, u32Ty, lanes);
+  Value laneCountLValue =
+      materializeA5PredicateScalarLValue(rewriter, loc, laneCount);
   auto maskTy = emitc::OpaqueType::get(ctx, "MaskReg");
-  auto args = rewriter.getArrayAttr({rewriter.getI32IntegerAttr(lanes)});
   auto templateArgs =
       rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, *elemTokOr)});
   auto pred = rewriter.create<emitc::CallOpaqueOp>(
-      loc, TypeRange{maskTy}, "CreatePredicate", ValueRange{}, args,
-      templateArgs);
+      loc, TypeRange{maskTy}, "CreatePredicate", ValueRange{laneCountLValue},
+      ArrayAttr{}, templateArgs);
   return pred.getResult(0);
 }
 
@@ -1971,12 +1987,14 @@ buildA5PredicateFromActiveCount(ConversionPatternRewriter &rewriter, Location lo
     return failure();
 
   auto *ctx = rewriter.getContext();
+  Value activeCountLValue =
+      materializeA5PredicateScalarLValue(rewriter, loc, activeCount);
   auto maskRegTy = emitc::OpaqueType::get(ctx, "MaskReg");
   auto templateArgs =
       rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, *elemTokOr)});
   auto pred = rewriter.create<emitc::CallOpaqueOp>(
-      loc, TypeRange{maskRegTy}, "CreatePredicate", ValueRange{activeCount},
-      ArrayAttr{}, templateArgs);
+      loc, TypeRange{maskRegTy}, "CreatePredicate",
+      ValueRange{activeCountLValue}, ArrayAttr{}, templateArgs);
   return pred.getResult(0);
 }
 
