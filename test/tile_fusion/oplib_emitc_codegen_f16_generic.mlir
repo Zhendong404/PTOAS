@@ -3,9 +3,9 @@
 
 // CHECK-DAG: __global__ AICORE void binary_chain_f16_64x64(
 // CHECK-DAG: __global__ AICORE void binary_chain_f32_48x48(
+// CHECK-DAG: TADD(
+// CHECK-DAG: TMIN(
 // CHECK-DAG: vadd(
-// CHECK-DAG: vmin(
-// CHECK-DAG: CreatePredicate<half>(
 // CHECK: uint32_t [[ACTIVE_COUNT:v[0-9]+]] = 0;
 // CHECK-NEXT: [[ACTIVE_COUNT]] = (uint32_t) ([[TAIL_COUNT:v[0-9]+]] < [[VEC_WIDTH:v[0-9]+]] ? [[TAIL_COUNT]] : [[VEC_WIDTH]]);
 // CHECK-NEXT: MaskReg [[PRED:v[0-9]+]] = CreatePredicate<float>([[ACTIVE_COUNT]]);
