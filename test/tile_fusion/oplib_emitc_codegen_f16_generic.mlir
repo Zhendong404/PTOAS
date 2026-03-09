@@ -7,6 +7,6 @@
 // CHECK-DAG: TMIN(
 // CHECK-DAG: vadd(
 // CHECK: uint32_t [[ACTIVE_COUNT:v[0-9]+]] = 0;
-// CHECK-NEXT: [[ACTIVE_COUNT]] = (uint32_t) ([[TAIL_COUNT:v[0-9]+]] < [[VEC_WIDTH:v[0-9]+]] ? [[TAIL_COUNT]] : [[VEC_WIDTH]]);
-// CHECK-NEXT: MaskReg [[PRED:v[0-9]+]] = CreatePredicate<float>([[ACTIVE_COUNT]]);
+// CHECK: [[ACTIVE_COUNT]] = [[TAIL_COUNT:v[0-9]+]];
+// CHECK: MaskReg [[PRED:v[0-9]+]] = CreatePredicate<float>([[ACTIVE_COUNT]]);
 // CHECK-NOT: PTOAS__OPLIB_

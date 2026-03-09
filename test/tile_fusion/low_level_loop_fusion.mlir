@@ -3,7 +3,8 @@
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
 // CHECK-LABEL: func.func private @__pto_fused_group_0_0(
 // CHECK: scf.for
-// CHECK-COUNT-3: arith.addf
+// CHECK-COUNT-3: arith.mulf
+// CHECK: arith.addf
 // CHECK-NOT: call @__pto_oplib_inst_v_tadd_f32_fast(
 // CHECK-NOT: pto.simd.load
 // CHECK-NOT: pto.simd.store

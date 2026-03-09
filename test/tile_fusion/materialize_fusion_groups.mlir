@@ -7,7 +7,10 @@
 // CHECK-LABEL: func.func private @__pto_oplib_inst___seed__seed_vec_bin_core__tadd__f32(
 // CHECK-SAME: pto.oplib.instance.from_seed = true
 // CHECK-SAME: pto.oplib.instance.op = "tadd"
-// CHECK-LABEL: func.func private @__pto_fused_group_0_0(
+// CHECK-LABEL: func.func private @__pto_fused_group_1_1(
 // CHECK-COUNT-3: call @__pto_oplib_inst___seed__seed_vec_bin_core__tadd__f32(
-// CHECK-LABEL: func.func @flash_attention_softmax_block(
+// CHECK-LABEL: func.func private @__pto_fused_group_0_0(
 // CHECK-COUNT-3: call @__pto_oplib_inst___seed__seed_vec_bin_core__tmul__f32(
+// CHECK-LABEL: func.func @flash_attention_softmax_block(
+// CHECK: call @__pto_fused_group_0_0(
+// CHECK: call @__pto_fused_group_1_1(
