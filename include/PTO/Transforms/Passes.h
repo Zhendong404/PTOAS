@@ -62,11 +62,11 @@ std::unique_ptr<Pass> createPTOInsertCVMovPass();
 std::unique_ptr<Pass> createPTOConvertToDPSPass();
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
-std::unique_ptr<Pass> createPTOMemrefToTileBufPass();
-std::unique_ptr<Pass> createPTOTileBufToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
 std::unique_ptr<Pass> createPTOCreateFusionGroupsPass();
+LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
+                                      bool debug = false);
 std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
     const PTOInstantiateAndLowerToLibCallOptions &options = {});
 std::unique_ptr<Pass> createPTOOutlineFusionGroupsPass(

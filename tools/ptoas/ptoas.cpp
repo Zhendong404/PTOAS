@@ -791,6 +791,13 @@ int main(int argc, char **argv) {
   }
 
   // Stage 1: front-end lowering to memref-level IR.
+  if (enableA5OplibPipeline) {
+    if (failed(pto::importPTOOpLibTemplates(*module, opLibDir, opFusionDebug))) {
+      llvm::errs() << "Error: Failed to import OP-Lib templates.\n";
+      return 1;
+    }
+  }
+
   PassManager preCodegenPm(&context);
   maybeEnablePrintIRAfterAll(preCodegenPm);
 
@@ -798,6 +805,9 @@ int main(int argc, char **argv) {
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
   preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+  if (enableA5OplibPipeline) {
+    preCodegenPm.addPass(pto::createPTOValidateSimdIRPass());
+  }
 
   preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
 
@@ -834,10 +844,6 @@ int main(int argc, char **argv) {
   }
 
   if (enableA5OplibPipeline) {
-    // Bridge back to tile_buf so OP fusion + OP->LibCall selection operate in
-    // tile world.
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMemrefToTileBufPass());
-
     if (enableOpFusion) {
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createPTOCreateFusionGroupsPass());
@@ -852,14 +858,10 @@ int main(int argc, char **argv) {
     instantiateLowerOptions.debug = opFusionDebug;
     pm.addPass(
         pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
-    pm.addPass(pto::createPTOValidateSimdIRPass());
 
     pto::PTOInlineLibCallOptions inlineLibCallOptions;
     inlineLibCallOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
-
-    // Bridge to memref after inlining to keep OP-Lib interfaces tile_buf.
-    pm.addPass(pto::createPTOTileBufToMemrefPass());
 
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());

@@ -258,6 +258,92 @@ static bool readSLayoutI32(Attribute attr, int32_t &out) {
   return false;
 }
 
+struct ValueTileMetadata {
+  pto::TileBufConfigAttr config;
+};
+
+static void collectValueTileMetadata(Value v, ValueTileMetadata &meta) {
+  if (!v || meta.config)
+    return;
+
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return;
+
+  if (auto bind = dyn_cast<pto::BindTileOp>(def)) {
+    meta.config = bind.getConfig();
+    collectValueTileMetadata(bind.getSource(), meta);
+    return;
+  }
+
+  if (auto pc = dyn_cast<pto::PointerCastOp>(def)) {
+    if (auto cfg = pc.getConfig())
+      meta.config = *cfg;
+    return;
+  }
+
+  if (auto subview = dyn_cast<memref::SubViewOp>(def)) {
+    collectValueTileMetadata(subview.getSource(), meta);
+    return;
+  }
+
+  if (auto recast = dyn_cast<memref::ReinterpretCastOp>(def)) {
+    collectValueTileMetadata(recast.getSource(), meta);
+    return;
+  }
+
+  if (auto cast = dyn_cast<memref::CastOp>(def)) {
+    collectValueTileMetadata(cast.getSource(), meta);
+    return;
+  }
+
+  if (auto cast = dyn_cast<UnrealizedConversionCastOp>(def)) {
+    if (cast->getNumOperands() == 1)
+      collectValueTileMetadata(cast.getOperand(0), meta);
+    return;
+  }
+}
+
+static pto::TileBufConfigAttr lookupTileConfigForValue(Value v, MLIRContext *ctx) {
+  ValueTileMetadata meta;
+  collectValueTileMetadata(v, meta);
+  if (meta.config)
+    return meta.config;
+  return pto::TileBufConfigAttr::getDefault(ctx);
+}
+
+static std::string toBLayoutName(int32_t bLayout) {
+  switch (bLayout) {
+  case 0:
+    return "row_major";
+  case 1:
+    return "col_major";
+  default:
+    return kDefaultAny.str();
+  }
+}
+
+static std::string toSLayoutName(int32_t sLayout) {
+  switch (sLayout) {
+  case 0:
+    return "none_box";
+  case 1:
+    return "row_major";
+  case 2:
+    return "col_major";
+  default:
+    return kDefaultAny.str();
+  }
+}
+
+static int64_t getFractalOrWildcard(pto::TileBufConfigAttr cfg) {
+  if (!cfg)
+    return -1;
+  if (auto fractalAttr = dyn_cast<IntegerAttr>(cfg.getSFractalSize()))
+    return fractalAttr.getInt();
+  return -1;
+}
+
 static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
                                                         MLIRContext *ctx) {
   if (tileTy.getRank() != 2)
@@ -992,6 +1078,80 @@ struct TemplateRegistry {
     return success();
   }
 
+  LogicalResult registerImportedEntry(func::FuncOp imported, StringRef sourceTag,
+                                      bool validateBody) {
+    auto roleAttr = imported->getAttrOfType<StringAttr>(kOpLibAttrEntryRole);
+    if (!roleAttr) {
+      imported.emitError("missing required attr: pto.oplib.entry_role");
+      return failure();
+    }
+
+    auto entry = std::make_unique<TemplateEntry>();
+    entry->symbol = imported;
+
+    if (failed(parseCommonAttrs(imported, entry)))
+      return failure();
+
+    if (roleAttr.getValue() == kEntryRoleVariant) {
+      if (failed(parseVariantAttrs(imported, entry)))
+        return failure();
+    } else if (roleAttr.getValue() == kEntryRoleSeed) {
+      if (failed(parseSeedAttrs(imported, entry)))
+        return failure();
+    } else {
+      imported.emitError("invalid pto.oplib.entry_role, expected variant|seed");
+      return failure();
+    }
+
+    bool hasSimdOps = false;
+    imported.walk([&](Operation *bodyOp) {
+      if (isSimdBridgeOp(bodyOp))
+        hasSimdOps = true;
+    });
+
+    if (failed(parseSimdAttrs(imported, entry, hasSimdOps)))
+      return failure();
+
+    if (validateBody && failed(validateTemplateBody(imported, *entry)))
+      return failure();
+
+    if (debug) {
+      llvm::errs() << "[op-fusion] imported OP-Lib entry: role="
+                   << (entry->role == EntryRole::Variant ? "variant" : "seed");
+      if (entry->role == EntryRole::Variant) {
+        llvm::errs() << " op=" << entry->op
+                     << " variant_id=" << entry->variantId;
+      } else {
+        llvm::errs() << " seed_id=" << entry->seedId;
+      }
+      llvm::errs() << " symbol=@" << imported.getSymName();
+      if (!sourceTag.empty())
+        llvm::errs() << " source=" << sourceTag;
+      llvm::errs() << "\n";
+    }
+
+    entries.push_back(std::move(entry));
+    return success();
+  }
+
+  LogicalResult loadFromModuleEntries(Location loc, int &importedCount) {
+    importedCount = 0;
+    for (func::FuncOp fn : module.getOps<func::FuncOp>()) {
+      auto kindAttr = fn->getAttrOfType<StringAttr>(kOpLibAttrKind);
+      if (!kindAttr || kindAttr.getValue() != kOpLibKindL3BinaryTemplate)
+        continue;
+      if (failed(registerImportedEntry(fn, "module", /*validateBody=*/false)))
+        return failure();
+      ++importedCount;
+    }
+
+    if (importedCount > 0)
+      return success();
+
+    (void)loc;
+    return success();
+  }
+
   LogicalResult loadFromDir(StringRef opLibDir, MLIRContext *ctx, Location loc) {
     if (opLibDir.empty()) {
       return emitFailure(loc,
@@ -1044,62 +1204,14 @@ struct TemplateRegistry {
           return failure();
         }
 
-        auto roleAttr = libFunc->getAttrOfType<StringAttr>(kOpLibAttrEntryRole);
-        if (!roleAttr) {
-          libFunc.emitError("missing required attr: pto.oplib.entry_role");
-          return failure();
-        }
-
         FailureOr<func::FuncOp> importedOr = cloneIntoModule(libFunc);
         if (failed(importedOr)) {
           libFunc.emitError("failed to import template function into module");
           return failure();
         }
         func::FuncOp imported = *importedOr;
-
-        auto entry = std::make_unique<TemplateEntry>();
-        entry->symbol = imported;
-
-        if (failed(parseCommonAttrs(imported, entry)))
+        if (failed(registerImportedEntry(imported, path, /*validateBody=*/true)))
           return failure();
-
-        if (roleAttr.getValue() == kEntryRoleVariant) {
-          if (failed(parseVariantAttrs(imported, entry)))
-            return failure();
-        } else if (roleAttr.getValue() == kEntryRoleSeed) {
-          if (failed(parseSeedAttrs(imported, entry)))
-            return failure();
-        } else {
-          imported.emitError("invalid pto.oplib.entry_role, expected variant|seed");
-          return failure();
-        }
-
-        bool hasSimdOps = false;
-        imported.walk([&](Operation *bodyOp) {
-          if (isSimdBridgeOp(bodyOp))
-            hasSimdOps = true;
-        });
-
-        if (failed(parseSimdAttrs(imported, entry, hasSimdOps)))
-          return failure();
-
-        if (failed(validateTemplateBody(imported, *entry)))
-          return failure();
-
-        if (debug) {
-          llvm::errs() << "[op-fusion] imported OP-Lib entry: role="
-                       << (entry->role == EntryRole::Variant ? "variant" : "seed");
-          if (entry->role == EntryRole::Variant) {
-            llvm::errs() << " op=" << entry->op
-                         << " variant_id=" << entry->variantId;
-          } else {
-            llvm::errs() << " seed_id=" << entry->seedId;
-          }
-          llvm::errs() << " symbol=@" << imported.getSymName() << " file=" << path
-                       << "\n";
-        }
-
-        entries.push_back(std::move(entry));
         ++importedCount;
       }
     }
@@ -1302,27 +1414,80 @@ struct TemplateRegistry {
     for (Operation &op : srcEntry.without_terminator()) {
       if (auto bridge = dyn_cast<pto::SimdTileToMemrefOp>(&op)) {
         Value mappedSrc = mapping.lookupOrNull(bridge.getSrc());
-        auto mappedTileTy = dyn_cast<pto::TileBufType>(mappedSrc.getType());
-        if (!mappedSrc || !mappedTileTy) {
+        if (!mappedSrc) {
           (void)emitFailureWithCode(
               loc, kErrCoreSlot,
               Twine("failed to remap simd.tile_to_memref source in instance @") +
                   inst.getSymName());
           return failure();
         }
-        FailureOr<MemRefType> inferredTyOr =
-            inferSimdBridgeMemRefType(mappedTileTy, module.getContext());
-        if (failed(inferredTyOr)) {
+
+        if (auto mappedTileTy = dyn_cast<pto::TileBufType>(mappedSrc.getType())) {
+          FailureOr<MemRefType> inferredTyOr =
+              inferSimdBridgeMemRefType(mappedTileTy, module.getContext());
+          if (failed(inferredTyOr)) {
+            (void)emitFailureWithCode(
+                loc, kErrLayout,
+                Twine("failed to infer simd.tile_to_memref memref type for instance @") +
+                    inst.getSymName());
+            return failure();
+          }
+
+          auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
+              bridge.getLoc(), *inferredTyOr, mappedSrc);
+          mapping.map(bridge.getDst(), newBridge.getDst());
+          continue;
+        }
+
+        auto mappedMemTy = dyn_cast<MemRefType>(mappedSrc.getType());
+        auto dstMemTy = dyn_cast<MemRefType>(bridge.getDst().getType());
+        if (!mappedMemTy || !dstMemTy) {
           (void)emitFailureWithCode(
               loc, kErrLayout,
-              Twine("failed to infer simd.tile_to_memref memref type for instance @") +
+              Twine("unsupported simd.tile_to_memref remap in instance @") +
                   inst.getSymName());
           return failure();
         }
 
-        auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
-            bridge.getLoc(), *inferredTyOr, mappedSrc);
-        mapping.map(bridge.getDst(), newBridge.getDst());
+        if (mappedMemTy.getRank() != dstMemTy.getRank() ||
+            mappedMemTy.getElementType() != dstMemTy.getElementType()) {
+          (void)emitFailureWithCode(
+              loc, kErrLayout,
+              Twine("incompatible memref remap for simd.tile_to_memref in instance @") +
+                  inst.getSymName());
+          return failure();
+        }
+
+        // In memref-world lowering, the concrete instance signature may differ from
+        // the seed bridge destination shape. Reuse the mapped concrete memref
+        // directly to avoid leaving unresolved unrealized_conversion_cast ops.
+        mapping.map(bridge.getDst(), mappedSrc);
+        continue;
+      }
+
+      if (auto cast = dyn_cast<UnrealizedConversionCastOp>(&op)) {
+        if (cast->getNumOperands() != 1 || cast->getNumResults() != 1) {
+          (void)emitFailureWithCode(
+              loc, kErrLayout,
+              Twine("unsupported unrealized_conversion_cast in instance source @") +
+                  source.getSymName());
+          return failure();
+        }
+
+        Value mappedSrc = mapping.lookupOrNull(cast.getOperand(0));
+        if (!mappedSrc) {
+          (void)emitFailureWithCode(
+              loc, kErrLayout,
+              Twine("failed to remap unrealized_conversion_cast source in instance @") +
+                  inst.getSymName());
+          return failure();
+        }
+
+        // Source templates may contain transient conversion casts introduced by
+        // earlier legalization. Treat them as transparent while cloning
+        // instance bodies so concrete memref signatures do not reintroduce
+        // unresolved cast chains.
+        mapping.map(cast.getResult(0), mappedSrc);
         continue;
       }
 
@@ -1402,61 +1567,88 @@ static FailureOr<MatchKey> buildMatchKeyFromTileBuf(pto::TileBufType dstTy) {
   MatchKey key;
   key.rows = shape[0] == ShapedType::kDynamic ? -1 : shape[0];
   key.cols = shape[1] == ShapedType::kDynamic ? -1 : shape[1];
-
-  switch (dstTy.getBLayoutValueI32()) {
-  case 0:
-    key.blayout = "row_major";
-    break;
-  case 1:
-    key.blayout = "col_major";
-    break;
-  default:
-    key.blayout = kDefaultAny.str();
-    break;
-  }
-
-  switch (dstTy.getSLayoutValueI32()) {
-  case 0:
-    key.slayout = "none_box";
-    break;
-  case 1:
-    key.slayout = "row_major";
-    break;
-  case 2:
-    key.slayout = "col_major";
-    break;
-  default:
-    key.slayout = kDefaultAny.str();
-    break;
-  }
-
-  key.fractal = -1;
+  auto cfg = dstTy.getConfigAttr();
+  if (!cfg)
+    cfg = pto::TileBufConfigAttr::getDefault(dstTy.getContext());
+  key.blayout = toBLayoutName(dstTy.getBLayoutValueI32());
+  key.slayout = toSLayoutName(dstTy.getSLayoutValueI32());
+  key.fractal = getFractalOrWildcard(cfg);
   return key;
 }
 
-static FailureOr<SmallVector<pto::TileBufType, 3>>
-getConcreteTileBufTypes(Operation *op) {
+static FailureOr<MatchKey> buildMatchKeyFromMemRef(MemRefType dstTy, Value dst) {
+  if (dstTy.getRank() != 2)
+    return failure();
+
+  ArrayRef<int64_t> shape = dstTy.getShape();
+  MatchKey key;
+  key.rows = shape[0] == ShapedType::kDynamic ? -1 : shape[0];
+  key.cols = shape[1] == ShapedType::kDynamic ? -1 : shape[1];
+
+  auto cfg = lookupTileConfigForValue(dst, dstTy.getContext());
+  int32_t bl = 0;
+  int32_t sl = 0;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  key.blayout = toBLayoutName(bl);
+  key.slayout = toSLayoutName(sl);
+  key.fractal = getFractalOrWildcard(cfg);
+  return key;
+}
+
+struct ConcreteOperandInfo {
+  SmallVector<Type, 3> argTypes;
+  Type elemTy;
+  MatchKey matchKey;
+};
+
+static FailureOr<ConcreteOperandInfo> getConcreteOperandInfo(Operation *op) {
   BinaryOpInterface iface = getBinaryOpInterface(op);
   if (iface.opName.empty())
     return failure();
 
-  auto src0Ty = dyn_cast<pto::TileBufType>(iface.src0.getType());
-  auto src1Ty = dyn_cast<pto::TileBufType>(iface.src1.getType());
-  auto dstTy = dyn_cast<pto::TileBufType>(iface.dst.getType());
-  if (!src0Ty || !src1Ty || !dstTy)
+  auto inferElemTy = [](Type ty) -> FailureOr<Type> {
+    if (auto memTy = dyn_cast<MemRefType>(ty)) {
+      if (memTy.getRank() != 2)
+        return failure();
+      return memTy.getElementType();
+    }
+    if (auto tileTy = dyn_cast<pto::TileBufType>(ty)) {
+      if (tileTy.getRank() != 2)
+        return failure();
+      return tileTy.getElementType();
+    }
+    return failure();
+  };
+
+  FailureOr<Type> src0ElemOr = inferElemTy(iface.src0.getType());
+  FailureOr<Type> src1ElemOr = inferElemTy(iface.src1.getType());
+  FailureOr<Type> dstElemOr = inferElemTy(iface.dst.getType());
+  if (failed(src0ElemOr) || failed(src1ElemOr) || failed(dstElemOr))
     return failure();
 
-  if (src0Ty.getRank() != 2 || src1Ty.getRank() != 2 || dstTy.getRank() != 2)
+  Type elemTy = *src0ElemOr;
+  if (elemTy != *src1ElemOr || elemTy != *dstElemOr)
+    return failure();
+  if (!isFloatDTypeSupported(elemTy))
     return failure();
 
-  if (src0Ty.getElementType() != src1Ty.getElementType() ||
-      src0Ty.getElementType() != dstTy.getElementType())
+  FailureOr<MatchKey> keyOr = failure();
+  if (auto dstTileTy = dyn_cast<pto::TileBufType>(iface.dst.getType())) {
+    keyOr = buildMatchKeyFromTileBuf(dstTileTy);
+  } else if (auto dstMemTy = dyn_cast<MemRefType>(iface.dst.getType())) {
+    keyOr = buildMatchKeyFromMemRef(dstMemTy, iface.dst);
+  } else {
+    return failure();
+  }
+  if (failed(keyOr))
     return failure();
 
-  if (!isFloatDTypeSupported(src0Ty.getElementType()))
-    return failure();
-
-  return SmallVector<pto::TileBufType, 3>{src0Ty, src1Ty, dstTy};
+  ConcreteOperandInfo info;
+  info.argTypes = {iface.src0.getType(), iface.src1.getType(), iface.dst.getType()};
+  info.elemTy = elemTy;
+  info.matchKey = *keyOr;
+  return info;
 }
 
 static FailureOr<PlannedOpLowering>
@@ -1466,38 +1658,28 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   if (iface.opName.empty())
     return failure();
 
-  FailureOr<SmallVector<pto::TileBufType, 3>> concreteTypesOr =
-      getConcreteTileBufTypes(op);
-  if (failed(concreteTypesOr)) {
+  FailureOr<ConcreteOperandInfo> concreteInfoOr = getConcreteOperandInfo(op);
+  if (failed(concreteInfoOr)) {
     op->emitWarning() << warningPrefix
                       << ": unsupported operand signature for op '" << iface.opName
-                      << "' (requires rank-2 !pto.tile_buf<f16/f32>)";
+                      << "' (requires rank-2 memref/tile_buf<f16/f32>)";
     return failure();
   }
 
-  SmallVector<pto::TileBufType, 3> concreteTypes = *concreteTypesOr;
-  Type elemTy = concreteTypes.front().getElementType();
-
-  FailureOr<MatchKey> matchKeyOr = buildMatchKeyFromTileBuf(concreteTypes[2]);
-  if (failed(matchKeyOr)) {
-    op->emitWarning() << warningPrefix << ": unsupported shape rank for op '"
-                      << iface.opName << "'";
-    return failure();
-  }
-
-  std::string dtype = dtypeToString(elemTy);
+  const ConcreteOperandInfo &concreteInfo = *concreteInfoOr;
+  std::string dtype = dtypeToString(concreteInfo.elemTy);
   FailureOr<SelectedVariant> selectedOr =
-      registry.selectVariantFor(iface.opName, dtype, *matchKeyOr, op->getLoc());
+      registry.selectVariantFor(iface.opName, dtype, concreteInfo.matchKey,
+                                op->getLoc());
   if (failed(selectedOr)) {
     op->emitWarning() << warningPrefix << ": no OP-Lib candidate for op="
                       << iface.opName << " dtype=" << dtype;
     return failure();
   }
 
-  SmallVector<Type, 3> concreteArgTypes;
-  concreteArgTypes.append(concreteTypes.begin(), concreteTypes.end());
   FailureOr<func::FuncOp> instanceOr =
-      registry.getOrCreateInstance(*selectedOr, concreteArgTypes, op->getLoc());
+      registry.getOrCreateInstance(*selectedOr, concreteInfo.argTypes,
+                                   op->getLoc());
   if (failed(instanceOr)) {
     op->emitWarning() << warningPrefix
                       << ": failed to instantiate OP-Lib candidate for op="
@@ -1665,13 +1847,25 @@ struct PTOInstantiateAndLowerToLibCallPass
     SymbolTable symbolTable(module);
 
     TemplateRegistry registry{module, symbolTable, debug};
-    if (failed(registry.loadFromDir(opLibDir, ctx, module.getLoc()))) {
+    int importedFromModule = 0;
+    if (failed(registry.loadFromModuleEntries(module.getLoc(), importedFromModule))) {
       signalPassFailure();
       return;
+    }
+    if (importedFromModule == 0) {
+      if (failed(registry.loadFromDir(opLibDir, ctx, module.getLoc()))) {
+        signalPassFailure();
+        return;
+      }
+    } else if (debug) {
+      llvm::errs() << "[op-fusion] using " << importedFromModule
+                   << " pre-imported OP-Lib entries from module\n";
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (func.isExternal())
+        continue;
+      if (func->hasAttr(kOpLibAttrKind) || func->hasAttr(kOpLibAttrInstVariantId))
         continue;
       if (func.getSymName().starts_with("__pto_oplib_"))
         continue;
@@ -1704,4 +1898,12 @@ std::unique_ptr<Pass>
 mlir::pto::createPTOInstantiateAndLowerToLibCallPass(
     const PTOInstantiateAndLowerToLibCallOptions &options) {
   return std::make_unique<PTOInstantiateAndLowerToLibCallPass>(options);
+}
+
+LogicalResult mlir::pto::importPTOOpLibTemplates(ModuleOp module,
+                                                 StringRef opLibDir,
+                                                 bool debug) {
+  SymbolTable symbolTable(module);
+  TemplateRegistry registry{module, symbolTable, debug};
+  return registry.loadFromDir(opLibDir, module.getContext(), module.getLoc());
 }

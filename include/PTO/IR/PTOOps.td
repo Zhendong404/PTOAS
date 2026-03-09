@@ -1228,7 +1228,7 @@ def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
     This op is the canonical bridge for OP-Lib templates to expose a memref
     view from tile_buf inputs while keeping external ABI as !pto.tile_buf.
     It is expected to be consumed before backend codegen (e.g. by
-    PTOViewToMemref / PTOTileBufToMemref).
+    PTOViewToMemref).
   }];
 
   let arguments = (ins

@@ -26,7 +26,6 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/SyncEventIdAllocation.cpp
   InsertSync/SyncCodegen.cpp
   LoweringSyncToPipe.cpp
-  PTOTileBufBridge.cpp
   PTOCreateFusionGroups.cpp
   PTOLowerToOpLibCalls.cpp
   PTOOutlineFusionGroups.cpp

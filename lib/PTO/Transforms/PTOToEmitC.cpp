@@ -45,6 +45,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -8706,21 +8707,34 @@ struct EmitPTOManualPass
           return ot.getValue().starts_with("Tile<");
         return false;
       };
-      auto rewriteMemrefBridgeUses = [&](Value memVal, Value tileInput) -> bool {
+      std::function<bool(Value, Value)> rewriteMemrefBridgeUses =
+          [&](Value memVal, Value tileInput) -> bool {
         for (OpOperand &memUse : llvm::make_early_inc_range(memVal.getUses())) {
           Operation *memUser = memUse.getOwner();
           if (auto toPtr = dyn_cast<UnrealizedConversionCastOp>(memUser)) {
             if (toPtr->getNumOperands() != 1 || toPtr->getNumResults() != 1 ||
-                !isEmitCPtrLikeTy(toPtr.getResult(0).getType()))
+                toPtr.getOperand(0) != memVal)
               return false;
-            OpBuilder builder(toPtr);
-            Type ptrTy = toPtr.getResult(0).getType();
-            auto ptr = builder.create<emitc::CallOpaqueOp>(
-                toPtr.getLoc(), ptrTy, "PTOAS__TILE_DATA",
-                ArrayAttr{}, ArrayAttr{}, ValueRange{tileInput});
-            toPtr.getResult(0).replaceAllUsesWith(ptr.getResult(0));
-            markErase(toPtr.getOperation());
-            continue;
+
+            Type toTy = toPtr.getResult(0).getType();
+            if (isEmitCPtrLikeTy(toTy)) {
+              OpBuilder builder(toPtr);
+              auto ptr = builder.create<emitc::CallOpaqueOp>(
+                  toPtr.getLoc(), toTy, "PTOAS__TILE_DATA", ArrayAttr{},
+                  ArrayAttr{}, ValueRange{tileInput});
+              toPtr.getResult(0).replaceAllUsesWith(ptr.getResult(0));
+              markErase(toPtr.getOperation());
+              continue;
+            }
+
+            if (isa<MemRefType>(toTy)) {
+              if (!rewriteMemrefBridgeUses(toPtr.getResult(0), tileInput))
+                return false;
+              markErase(toPtr.getOperation());
+              continue;
+            }
+
+            return false;
           }
 
           auto rc = dyn_cast<emitc::CallOpaqueOp>(memUser);
@@ -8740,8 +8754,8 @@ struct EmitPTOManualPass
 
           OpBuilder builder(rc);
           auto rawPtr = builder.create<emitc::CallOpaqueOp>(
-              rc.getLoc(), rawPtrTy, "PTOAS__TILE_DATA",
-              ArrayAttr{}, ArrayAttr{}, ValueRange{tileInput});
+              rc.getLoc(), rawPtrTy, "PTOAS__TILE_DATA", ArrayAttr{},
+              ArrayAttr{}, ValueRange{tileInput});
           auto templateArgs = builder.getArrayAttr(
               {emitc::OpaqueAttr::get(ctx, outOpaque.getValue())});
           auto newRc = builder.create<emitc::CallOpaqueOp>(
@@ -8773,6 +8787,15 @@ struct EmitPTOManualPass
         output.replaceAllUsesWith(ptr.getResult(0));
         markErase(cast.getOperation());
         return;
+      }
+
+      // Bridge cleanup: emitc Tile -> memref[...], potentially followed by
+      // memref->memref/ptr unrealized casts.
+      if (isEmitCTileOpaqueTy(inTy) && isa<MemRefType>(outTy)) {
+        if (rewriteMemrefBridgeUses(output, input)) {
+          markErase(cast.getOperation());
+          return;
+        }
       }
 
       // Bridge cleanup:

@@ -48,6 +48,11 @@ struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSy
   void runOnOperation() override {
     llvm::errs() << "\n// === [PTOInsertSync] Start === //\n";
     func::FuncOp func = getOperation();
+    if (func->hasAttr("pto.oplib.kind") ||
+        func->hasAttr("pto.oplib.instance.variant_id") ||
+        func.getSymName().starts_with("__pto_oplib_")) {
+      return;
+    }
 
     // If the function already contains explicit synchronization ops (either
     // low-level pipe flags or the higher-level record/wait events), do not run
