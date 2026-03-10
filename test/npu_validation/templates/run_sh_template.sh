@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RUN_MODE="@RUN_MODE@"
-SOC_VERSION="@SOC_VERSION@"
+RUN_MODE="${RUN_MODE:-@RUN_MODE@}"
+SOC_VERSION="${SOC_VERSION:-@SOC_VERSION@}"
 GOLDEN_MODE="${GOLDEN_MODE:-npu}"  # sim|npu|skip
 BUILD_DIR="${BUILD_DIR:-build}"
+STAGE="${STAGE:-all}"  # all|build|run
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "${ROOT_DIR}"
-python3 "${ROOT_DIR}/golden.py"
 
 # Best-effort resolve PTO_ISA_ROOT for generated CMakeLists.txt.
 if [[ -z "${PTO_ISA_ROOT:-}" ]]; then
@@ -39,6 +39,31 @@ if [[ -z "${ASCEND_HOME_PATH:-}" && -f "/usr/local/Ascend/ascend-toolkit/latest/
   set -e
 fi
 
+# -----------------------------------------------------------------------------
+# Build / Run split (optional)
+# -----------------------------------------------------------------------------
+case "${STAGE}" in
+  all|build|run) ;;
+  *)
+    echo "[ERROR] Unknown STAGE=${STAGE} (expected: all|build|run)" >&2
+    exit 2
+    ;;
+esac
+
+do_build() {
+  mkdir -p "${ROOT_DIR}/${BUILD_DIR}"
+  cd "${ROOT_DIR}/${BUILD_DIR}"
+  ENABLE_SIM_GOLDEN="OFF"
+  [[ "${GOLDEN_MODE}" == "sim" ]] && ENABLE_SIM_GOLDEN="ON"
+  if [[ -n "${PTO_ISA_ROOT:-}" ]]; then
+    cmake -DSOC_VERSION="${SIM_SOC_VERSION:-${SOC_VERSION}}" -DENABLE_SIM_GOLDEN="${ENABLE_SIM_GOLDEN}" -DPTO_ISA_ROOT="${PTO_ISA_ROOT}" ..
+  else
+    cmake -DSOC_VERSION="${SIM_SOC_VERSION:-${SOC_VERSION}}" -DENABLE_SIM_GOLDEN="${ENABLE_SIM_GOLDEN}" ..
+  fi
+  make -j
+  cd "${ROOT_DIR}"
+}
+
 # Improve runtime linking robustness.
 if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
   export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
@@ -64,17 +89,6 @@ if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
   done
 fi
 
-mkdir -p "${ROOT_DIR}/${BUILD_DIR}"
-cd "${ROOT_DIR}/${BUILD_DIR}"
-ENABLE_SIM_GOLDEN="OFF"
-[[ "${GOLDEN_MODE}" == "sim" ]] && ENABLE_SIM_GOLDEN="ON"
-if [[ -n "${PTO_ISA_ROOT:-}" ]]; then
-  cmake -DSOC_VERSION="${SIM_SOC_VERSION:-${SOC_VERSION}}" -DENABLE_SIM_GOLDEN="${ENABLE_SIM_GOLDEN}" -DPTO_ISA_ROOT="${PTO_ISA_ROOT}" ..
-else
-  cmake -DSOC_VERSION="${SIM_SOC_VERSION:-${SOC_VERSION}}" -DENABLE_SIM_GOLDEN="${ENABLE_SIM_GOLDEN}" ..
-fi
-make -j
-
 cd "${ROOT_DIR}"
 
 copy_outputs_as_golden() {
@@ -93,8 +107,27 @@ copy_outputs_as_golden() {
   done
 }
 
+if [[ "${STAGE}" == "all" || "${STAGE}" == "build" ]]; then
+  do_build
+fi
+
+if [[ "${STAGE}" == "build" ]]; then
+  echo "[INFO] STAGE=build: build completed"
+  exit 0
+fi
+
+# For STAGE=run: avoid rebuilding if artifacts already exist, but still be able
+# to run as a standalone script.
+if [[ "${STAGE}" == "run" ]]; then
+  if [[ ! -x "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@" && ! -x "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@_sim" ]]; then
+    echo "[WARN] Missing build artifacts under ${BUILD_DIR}; building first"
+    do_build
+  fi
+fi
+
 case "${GOLDEN_MODE}" in
   sim)
+    python3 "${ROOT_DIR}/golden.py"
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH_SIM}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@_sim"
     copy_outputs_as_golden
     if [[ "${RUN_MODE}" == "npu" ]]; then

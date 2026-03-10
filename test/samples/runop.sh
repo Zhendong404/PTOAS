@@ -14,6 +14,11 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 PTO_PTO_DIRS="${PTO_PTO_DIRS:-InjectSync}"
+PTOAS_GEN_NPU_VALIDATION="${PTOAS_GEN_NPU_VALIDATION:-0}"
+NPU_VALIDATION_RUN_MODE="${NPU_VALIDATION_RUN_MODE:-npu}"          # sim|npu
+NPU_VALIDATION_SOC_VERSION="${NPU_VALIDATION_SOC_VERSION:-Ascend910B1}"
+NPU_VALIDATION_OUTPUT_ROOT="${NPU_VALIDATION_OUTPUT_ROOT:-}"      # optional: passed to generate_testcase.py --output-root
+NPU_VALIDATION_AICORE_ARCH="${NPU_VALIDATION_AICORE_ARCH:-}"      # optional: passed to generate_testcase.py --aicore-arch
 ENABLE_BC=0
 RUNTIME_ENV_STATUS=0
 RUNTIME_ENV_MSG=""
@@ -33,9 +38,15 @@ Env:
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: InjectSync)
+  PTOAS_GEN_NPU_VALIDATION  # 1 to auto-generate NPU validation testcases for each generated .cpp (default: 0)
+  NPU_VALIDATION_RUN_MODE   # sim|npu passed to generate_testcase.py (default: npu)
+  NPU_VALIDATION_SOC_VERSION  # e.g. Ascend910B1 (default: Ascend910B1)
+  NPU_VALIDATION_OUTPUT_ROOT  # optional output root for generated testcases
+  NPU_VALIDATION_AICORE_ARCH  # optional override passed to bisheng (e.g. dav-c310-vec)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
+  --gen-npu-validation  # generate NPU validation testcases + write \${PTOAS_OUT_DIR}/run_all_npu_validation.sh
 EOF
   exit 1
 }
@@ -162,6 +173,149 @@ resolve_ptobc_bin() {
   [[ -n "$cand" && -x "$cand" ]] && { echo "$cand"; return 0; }
 
   echo ""
+  return 1
+}
+
+write_npu_validation_runner() {
+  local out_dir="$1"
+  local runner="${out_dir}/run_all_npu_validation.sh"
+  cat >"${runner}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${LOG_DIR:-${ROOT_DIR}/npu_validation_logs}"
+STAGE="${STAGE:-all}"   # all|build|run
+
+usage() {
+  cat <<USAGE
+Usage:
+  $0 [--list] [--build|--run|--all]
+
+Env:
+  STAGE=all|build|run   # default: all
+  LOG_DIR=/path         # default: \${ROOT_DIR}/npu_validation_logs
+
+Notes:
+  - Discovers run.sh under: \${ROOT_DIR}/*/npu_validation/**/run.sh
+  - Separate build/run:
+      STAGE=build $0
+      STAGE=run   $0
+USAGE
+  exit 1
+}
+
+want_list=0
+for a in "$@"; do
+  case "$a" in
+    --list) want_list=1 ;;
+    --build) STAGE="build" ;;
+    --run) STAGE="run" ;;
+    --all) STAGE="all" ;;
+    -h|--help) usage ;;
+    *) echo "[ERROR] Unknown arg: $a" >&2; usage ;;
+  esac
+done
+
+case "${STAGE}" in
+  all|build|run) ;;
+  *) echo "[ERROR] Unknown STAGE=${STAGE} (expected: all|build|run)" >&2; exit 2 ;;
+esac
+
+mkdir -p "${LOG_DIR}"
+summary_tsv="${LOG_DIR}/summary.tsv"
+printf "case\tstage\tstatus\texit_code\telapsed_s\tlog\n" >"${summary_tsv}"
+
+mapfile -t RUNS < <(
+  find "${ROOT_DIR}" -type f -name run.sh \
+    \\( -path "*/npu_validation/run.sh" -o -path "*/npu_validation/*/run.sh" \\) \
+    -print | sort
+)
+
+if [[ ${#RUNS[@]} -eq 0 ]]; then
+  echo "[WARN] No npu_validation run.sh found under ${ROOT_DIR}"
+  exit 0
+fi
+
+if [[ "${want_list}" == "1" ]]; then
+  printf "%s\n" "${RUNS[@]}"
+  exit 0
+fi
+
+ok=0
+fail=0
+
+for run_sh in "${RUNS[@]}"; do
+  case_dir="$(cd -- "$(dirname -- "${run_sh}")" && pwd)"
+
+  # Layout A (new generator): <root>/<Sample>/npu_validation/<testcase>/run.sh
+  # Layout B (legacy/custom): <root>/<Sample>/npu_validation/run.sh
+  case_name=""
+  sample_name=""
+  if [[ "$(basename "${case_dir}")" == "npu_validation" ]]; then
+    sample_name="$(basename "$(dirname "${case_dir}")")"
+    case_name="default"
+  else
+    npu_dir="$(dirname "${case_dir}")"
+    if [[ "$(basename "${npu_dir}")" == "npu_validation" ]]; then
+      sample_name="$(basename "$(dirname "${npu_dir}")")"
+      case_name="$(basename "${case_dir}")"
+    else
+      sample_name="$(basename "$(dirname "${case_dir}")")"
+      case_name="$(basename "${case_dir}")"
+    fi
+  fi
+
+  case_id="${sample_name}/${case_name}"
+  log_path="${LOG_DIR}/${sample_name}__${case_name}.log"
+
+  start_ts="$(date +%s)"
+  set +e
+  (cd "${case_dir}" && STAGE="${STAGE}" bash ./run.sh) >"${log_path}" 2>&1
+  rc=$?
+  set -e
+  end_ts="$(date +%s)"
+  elapsed="$(( end_ts - start_ts ))"
+
+  if [[ $rc -eq 0 ]]; then
+    echo -e "${case_id}\tOK\t${log_path}"
+    printf "%s\t%s\tOK\t%d\t%d\t%s\n" "${case_id}" "${STAGE}" "${rc}" "${elapsed}" "${log_path}" >>"${summary_tsv}"
+    ok=$((ok+1))
+  else
+    echo -e "${case_id}\tFAIL(rc=${rc})\t${log_path}"
+    printf "%s\t%s\tFAIL\t%d\t%d\t%s\n" "${case_id}" "${STAGE}" "${rc}" "${elapsed}" "${log_path}" >>"${summary_tsv}"
+    fail=$((fail+1))
+  fi
+done
+
+echo "========== SUMMARY =========="
+echo "OK=${ok}  FAIL=${fail}"
+echo "summary: ${summary_tsv}"
+exit $([[ $fail -eq 0 ]] && echo 0 || echo 1)
+EOF
+  chmod +x "${runner}"
+}
+
+gen_npu_validation_for_cpp() {
+  local python="$1"
+  local cpp="$2"
+  local script="${REPO_DIR}/test/npu_validation/scripts/generate_testcase.py"
+  local cpp_dir
+  cpp_dir="$(cd -- "$(dirname -- "$cpp")" && pwd)"
+  local stem
+  stem="$(basename "$cpp" .cpp)"
+  local log_path="${cpp_dir}/npu_validation_gen_${stem}.log"
+  local -a cmd=("$python" "$script" --input "$cpp" --run-mode "${NPU_VALIDATION_RUN_MODE}" --soc-version "${NPU_VALIDATION_SOC_VERSION}")
+  if [[ -n "${NPU_VALIDATION_OUTPUT_ROOT}" ]]; then
+    cmd+=(--output-root "${NPU_VALIDATION_OUTPUT_ROOT}")
+  fi
+  if [[ -n "${NPU_VALIDATION_AICORE_ARCH}" ]]; then
+    cmd+=(--aicore-arch "${NPU_VALIDATION_AICORE_ARCH}")
+  fi
+  if "${cmd[@]}" >"${log_path}" 2>&1; then
+    rm -f "${log_path}"
+    return 0
+  fi
   return 1
 }
 
@@ -367,7 +521,18 @@ process_one_dir() {
       fi
     fi
 
-    echo -e "${A}(${base}.py)\tOK\tgenerated: $(basename "$cpp")"
+    local extra_msg=""
+    if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
+      if gen_npu_validation_for_cpp "$python" "$cpp"; then
+        extra_msg="; npu_validation: OK"
+      else
+        echo -e "${A}(${base}.py)\tFAIL\tnpu_validation generation failed: $(basename "$cpp")"
+        overall=1
+        continue
+      fi
+    fi
+
+    echo -e "${A}(${base}.py)\tOK\tgenerated: $(basename "$cpp")${extra_msg}"
   done
 
   # Run .pto files only for allowed dirs (default: InjectSync) to avoid legacy IR.
@@ -423,7 +588,18 @@ process_one_dir() {
         fi
       fi
 
-      echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
+      local extra_msg=""
+      if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
+        if gen_npu_validation_for_cpp "$python" "$cpp"; then
+          extra_msg="; npu_validation: OK"
+        else
+          echo -e "${A}(${base}.pto)\tFAIL\tnpu_validation generation failed: $(basename "$cpp")"
+          overall=1
+          continue
+        fi
+      fi
+
+      echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")${extra_msg}"
     done
   fi
 
@@ -440,6 +616,10 @@ run_all() {
   fi
 
   echo "PTOAS_OUT_DIR=${out_dir}"
+  if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
+    write_npu_validation_runner "${out_dir}"
+    echo "NPU validation runner: ${out_dir}/run_all_npu_validation.sh"
+  fi
 
   tmp="$(mktemp -t ptoas.runop.XXXXXX)"
   for d in "${BASE_DIR}"/*/; do
@@ -471,6 +651,7 @@ positional_args=()
 for arg in "$@"; do
   case "$arg" in
     --enablebc) ENABLE_BC=1 ;;
+    --gen-npu-validation) PTOAS_GEN_NPU_VALIDATION=1 ;;
     -h|--help) usage ;;
     *) positional_args+=("$arg") ;;
   esac
@@ -493,6 +674,10 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   fi
   echo "PTOAS_OUT_DIR=${out_dir}"
   echo "========== SUMMARY =========="
+  if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
+    write_npu_validation_runner "${out_dir}"
+    echo "NPU validation runner: ${out_dir}/run_all_npu_validation.sh"
+  fi
   process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
 else
   usage

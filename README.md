@@ -260,6 +260,17 @@ python3 test/npu_validation/scripts/generate_testcase.py \
 test/samples/Abs/npu_validation/run.sh
 ```
 
+也可以使用 `test/samples/runop.sh` 批量生成上板用例（可选）：
+
+```bash
+# 生成 output/<Sample>/*.cpp 并为每份 cpp 生成 output/<Sample>/npu_validation/<testcase>/
+PTOAS_OUT_DIR=output test/samples/runop.sh --gen-npu-validation all
+
+# 在 output/ 下生成聚合脚本，用于批量 build / run 并汇总结果
+STAGE=build output/run_all_npu_validation.sh
+STAGE=run   output/run_all_npu_validation.sh
+```
+
 说明：
 - `npu_validation/` 下会生成 `abs_kernel.cpp / main.cpp / golden.py / compare.py / run.sh / CMakeLists.txt`
 - `golden.py` 默认生成随机输入，输出默认全零（只保证输入/输出数量、shape、datatype 与 kernel 参数一致）
