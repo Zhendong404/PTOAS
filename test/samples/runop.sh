@@ -219,6 +219,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/npu_validation_logs}"
 STAGE="${STAGE:-all}"   # all|build|run
+BUILD_JOBS="${BUILD_JOBS:-}"
 
 usage() {
   cat <<USAGE
@@ -228,6 +229,7 @@ Usage:
 Env:
   STAGE=all|build|run   # default: all
   LOG_DIR=/path         # default: \${ROOT_DIR}/npu_validation_logs
+  BUILD_JOBS=N          # build parallelism (default: nproc)
 
 Notes:
   - Discovers run.sh under: \${ROOT_DIR}/*/npu_validation/**/run.sh
@@ -255,6 +257,14 @@ case "${STAGE}" in
   *) echo "[ERROR] Unknown STAGE=${STAGE} (expected: all|build|run)" >&2; exit 2 ;;
 esac
 
+if [[ -z "${BUILD_JOBS}" ]]; then
+  if command -v nproc >/dev/null 2>&1; then
+    BUILD_JOBS="$(nproc)"
+  else
+    BUILD_JOBS="4"
+  fi
+fi
+
 mkdir -p "${LOG_DIR}"
 summary_tsv="${LOG_DIR}/summary.tsv"
 printf "case\tstage\tstatus\texit_code\telapsed_s\tlog\n" >"${summary_tsv}"
@@ -277,6 +287,22 @@ fi
 
 ok=0
 fail=0
+
+if [[ "${STAGE}" == "all" || "${STAGE}" == "build" ]]; then
+  echo "[INFO] build parallelism: ${BUILD_JOBS}"
+  printf "%s\0" "${RUNS[@]}" | xargs -0 -n 1 -P "${BUILD_JOBS}" -I {} bash -c 'cd "$(dirname "$1")" && STAGE="build" bash ./run.sh' _ {}
+  build_rc=$?
+  if [[ "${STAGE}" == "build" ]]; then
+    echo "========== SUMMARY =========="
+    echo "OK=0  FAIL=0"
+    echo "summary: ${summary_tsv}"
+    exit $build_rc
+  fi
+  if [[ $build_rc -ne 0 ]]; then
+    echo "[ERROR] build failed"
+    exit $build_rc
+  fi
+fi
 
 for run_sh in "${RUNS[@]}"; do
   case_dir="$(cd -- "$(dirname -- "${run_sh}")" && pwd)"
