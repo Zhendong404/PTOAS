@@ -259,9 +259,9 @@ mkdir -p "${LOG_DIR}"
 summary_tsv="${LOG_DIR}/summary.tsv"
 printf "case\tstage\tstatus\texit_code\telapsed_s\tlog\n" >"${summary_tsv}"
 
-mapfile -t RUNS < <(
+  mapfile -t RUNS < <(
   find "${ROOT_DIR}" -type f -name run.sh \
-    \\( -path "*/npu_validation/run.sh" -o -path "*/npu_validation/*/run.sh" \\) \
+    \( -path "*/npu_validation/run.sh" -o -path "*/npu_validation/*/run.sh" \) \
     -print | sort
 )
 
