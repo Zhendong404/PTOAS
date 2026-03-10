@@ -19,15 +19,15 @@ module {
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
-    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c32 = arith.constant 32 : index
-    %rows = memref.dim %m0, %c0 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %cols = memref.dim %m0, %c1 : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
 
     %zero = arith.constant dense<0.0> : vector<32xf32>
     pto.simd.vec_scope {
@@ -37,10 +37,10 @@ module {
           %lt = arith.cmpi slt, %remain, %c32 : index
           %active = arith.select %lt, %remain, %c32 : index
           %mask = vector.create_mask %active : vector<32xi1>
-          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+          %b = vector.maskedload %m1[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
           %d = arith.addf %a, %b {pto.simd.core_slot = "binary_ewise_core", pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<32x32xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
+          vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
         }
       }
     }

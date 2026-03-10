@@ -435,24 +435,6 @@ struct PTOViewToMemrefPass
     for (auto func : mod.getOps<func::FuncOp>()) {
       if (func.isExternal()) continue;
 
-      // Consume pto.simd.tile_to_memref early in View2Memref so the bridge
-      // op never leaks into later pipeline stages.
-      SmallVector<mlir::pto::SimdTileToMemrefOp, 8> simdTileBridges;
-      func.walk([&](mlir::pto::SimdTileToMemrefOp op) {
-        simdTileBridges.push_back(op);
-      });
-      for (auto op : simdTileBridges) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        Type dstTy = op.getDst().getType();
-        if (auto converted = convertPTOTypeToMemRef(op.getSrc().getType());
-            isa<MemRefType>(converted))
-          dstTy = converted;
-        auto bridge = rewriter.create<UnrealizedConversionCastOp>(
-            op.getLoc(), TypeRange{dstTy}, ValueRange{op.getSrc()});
-        rewriter.replaceOp(op, bridge.getResults());
-      }
-
       Block &entry = func.front();
       auto fnTy = func.getFunctionType();
 
@@ -572,6 +554,22 @@ struct PTOViewToMemrefPass
             configAttr);
 
         rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.75: drop pto.simd.tile_to_memref after tile_buf lowering.
+      // The bridge becomes redundant once tile_buf is converted to memref.
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::SimdTileToMemrefOp, 8> simdTileBridges;
+      func.walk([&](mlir::pto::SimdTileToMemrefOp op) {
+        simdTileBridges.push_back(op);
+      });
+      for (auto op : simdTileBridges) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        // Avoid typed accessor here; operands may already be memref after
+        // signature/tile_buf lowering.
+        rewriter.replaceOp(op, op->getOperand(0));
       }
 
       // ------------------------------------------------------------------
