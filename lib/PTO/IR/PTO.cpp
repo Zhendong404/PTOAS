@@ -2525,17 +2525,21 @@ mlir::LogicalResult mlir::pto::TPartMinOp::verify() {
 mlir::LogicalResult mlir::pto::TPReluOp::verify() {
   Type t0 = getSrc0().getType();
   Type t1 = getSrc1().getType();
+  Type tt = getTmp().getType();
   Type td = getDst().getType();
-  if (!isPTOShapedLike(t0) || !isPTOShapedLike(t1) || !isPTOShapedLike(td))
-    return emitOpError("expects src0/src1/dst to be memref/tensor/tile_buf/tile_view types");
-  Type e0 = getElemTy(t0), e1 = getElemTy(t1), ed = getElemTy(td);
-  if (!e0 || !e1 || !ed)
+  if (!isPTOShapedLike(t0) || !isPTOShapedLike(t1) || !isPTOShapedLike(tt) ||
+      !isPTOShapedLike(td))
+    return emitOpError(
+        "expects src0/src1/tmp/dst to be memref/tensor/tile_buf/tile_view types");
+  Type e0 = getElemTy(t0), e1 = getElemTy(t1), et = getElemTy(tt), ed = getElemTy(td);
+  if (!e0 || !e1 || !et || !ed)
     return emitOpError("failed to get element type for operands");
-  if (e0 != e1 || e0 != ed)
-    return emitOpError("expects src0/src1/dst to have the same element type");
-  auto s0 = getShapeVec(t0), s1 = getShapeVec(t1), sd = getShapeVec(td);
-  if (s0 != s1 || s0 != sd)
-    return emitOpError("expects src0/src1/dst to have the same shape");
+  if (e0 != e1 || e0 != et || e0 != ed)
+    return emitOpError("expects src0/src1/tmp/dst to have the same element type");
+  auto s0 = getShapeVec(t0), s1 = getShapeVec(t1), st = getShapeVec(tt),
+       sd = getShapeVec(td);
+  if (s0 != s1 || s0 != st || s0 != sd)
+    return emitOpError("expects src0/src1/tmp/dst to have the same shape");
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
@@ -4287,7 +4291,14 @@ PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TPReluOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+// TPRELU: Read(src0, src1) -> Write(tmp, dst)
+void TPReluOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 PTO_DEFINE_UNARY_EFFECTS(TRecipOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())

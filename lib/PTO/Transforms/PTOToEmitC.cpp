@@ -5385,11 +5385,11 @@ struct PTOPreluToEmitC : public OpConversionPattern<pto::TPReluOp> {
 
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value tmp  = peelUnrealized(adaptor.getTmp());
     Value dst  = peelUnrealized(adaptor.getDst());
 
-    // pto-isa TPRELU requires a tmp tile argument. Current NPU implementation
-    // does not use tmp, so we safely pass dst as tmp for compatibility.
-    SmallVector<Value, 4> operands{dst, src0, src1, dst};
+    // C++ interface: TPRELU(dst, src0, src1, tmp) — last parameter is tmp.
+    SmallVector<Value, 4> operands{dst, src0, src1, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TPRELU",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},

@@ -2636,9 +2636,14 @@ def TPReluOp: PTO_TOp<"tprelu", [
 ]> {
   let summary = "TPRELU: Elementwise PReLU (parametric ReLU) with a per-element slope tile.";
 
+  let description = [{
+    DPS form:
+      tile buf:  pto.tprelu ins(%src0, %src1, %tmp) outs(%dst)
+  }];
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -2647,7 +2652,7 @@ def TPReluOp: PTO_TOp<"tprelu", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `ins` `(` $src0 `,` $src1 `,` $tmp `:` qualified(type($src0)) `,` qualified(type($src1)) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
