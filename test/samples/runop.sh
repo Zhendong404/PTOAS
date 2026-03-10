@@ -22,6 +22,7 @@ NPU_VALIDATION_AICORE_ARCH="${NPU_VALIDATION_AICORE_ARCH:-}"      # optional: pa
 ENABLE_BC=0
 RUNTIME_ENV_STATUS=0
 RUNTIME_ENV_MSG=""
+RUNTIME_ENV_PRINTED_BOOTSTRAP=0
 
 usage() {
   cat <<EOF
@@ -49,6 +50,34 @@ Flags:
   --gen-npu-validation  # generate NPU validation testcases + write \${PTOAS_OUT_DIR}/run_all_npu_validation.sh
 EOF
   exit 1
+}
+
+print_env_vars() {
+  local title="$1"
+  echo "========== ${title} =========="
+  printf "%-28s %s\n" "BASE_DIR" "${BASE_DIR}"
+  printf "%-28s %s\n" "REPO_DIR" "${REPO_DIR}"
+  printf "%-28s %s\n" "WORKSPACE_DIR" "${WORKSPACE_DIR}"
+  printf "%-28s %s\n" "PTOAS_BIN" "${PTOAS_BIN}"
+  printf "%-28s %s\n" "PTOBC_BIN" "${PTOBC_BIN}"
+  printf "%-28s %s\n" "PYTHON_BIN" "${PYTHON_BIN}"
+  printf "%-28s %s\n" "PTOAS_OUT_DIR" "${PTOAS_OUT_DIR}"
+  printf "%-28s %s\n" "PTOAS_ENABLE_INSERT_SYNC" "${PTOAS_ENABLE_INSERT_SYNC}"
+  printf "%-28s %s\n" "PTOAS_FLAGS" "${PTOAS_FLAGS}"
+  printf "%-28s %s\n" "PTO_PTO_DIRS" "${PTO_PTO_DIRS}"
+  printf "%-28s %s\n" "PTOAS_GEN_NPU_VALIDATION" "${PTOAS_GEN_NPU_VALIDATION}"
+  printf "%-28s %s\n" "NPU_VALIDATION_RUN_MODE" "${NPU_VALIDATION_RUN_MODE}"
+  printf "%-28s %s\n" "NPU_VALIDATION_SOC_VERSION" "${NPU_VALIDATION_SOC_VERSION}"
+  printf "%-28s %s\n" "NPU_VALIDATION_OUTPUT_ROOT" "${NPU_VALIDATION_OUTPUT_ROOT}"
+  printf "%-28s %s\n" "NPU_VALIDATION_AICORE_ARCH" "${NPU_VALIDATION_AICORE_ARCH}"
+  printf "%-28s %s\n" "ENABLE_BC" "${ENABLE_BC}"
+  printf "%-28s %s\n" "LLVM_BUILD_DIR" "${LLVM_BUILD_DIR:-}"
+  printf "%-28s %s\n" "MLIR_PYTHON_ROOT" "${MLIR_PYTHON_ROOT:-}"
+  printf "%-28s %s\n" "PTO_PYTHON_ROOT" "${PTO_PYTHON_ROOT:-}"
+  printf "%-28s %s\n" "PTO_PYTHON_BUILD_ROOT" "${PTO_PYTHON_BUILD_ROOT:-}"
+  printf "%-28s %s\n" "PYTHONPATH" "${PYTHONPATH:-}"
+  printf "%-28s %s\n" "LD_LIBRARY_PATH" "${LD_LIBRARY_PATH:-}"
+  echo "=============================="
 }
 
 ucfirst() {
@@ -113,6 +142,10 @@ ensure_runtime_env_once() {
 
   if "$python" -c "import mlir.ir" >/dev/null 2>&1; then
     RUNTIME_ENV_STATUS=1
+    if [[ "${RUNTIME_ENV_PRINTED_BOOTSTRAP}" == "0" ]]; then
+      RUNTIME_ENV_PRINTED_BOOTSTRAP=1
+      print_env_vars "Runtime Env (after auto-bootstrap)"
+    fi
     return 0
   fi
 
@@ -615,7 +648,6 @@ run_all() {
     mkdir -p "${out_dir}"
   fi
 
-  echo "PTOAS_OUT_DIR=${out_dir}"
   if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
     write_npu_validation_runner "${out_dir}"
     echo "NPU validation runner: ${out_dir}/run_all_npu_validation.sh"
@@ -662,6 +694,8 @@ if [[ "${ENABLE_BC}" == "1" ]] && [[ $# -eq 0 ]]; then
   set -- all
 fi
 
+print_env_vars "Runtime Env (effective)"
+
 if [[ $# -eq 1 && "$1" == "all" ]]; then
   run_all
 elif [[ $# -eq 2 && "$1" == "-t" ]]; then
@@ -672,7 +706,7 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   else
     mkdir -p "${out_dir}"
   fi
-  echo "PTOAS_OUT_DIR=${out_dir}"
+  echo ""
   echo "========== SUMMARY =========="
   if [[ "${PTOAS_GEN_NPU_VALIDATION}" == "1" ]]; then
     write_npu_validation_runner "${out_dir}"
