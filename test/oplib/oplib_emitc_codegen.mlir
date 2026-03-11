@@ -1,9 +1,9 @@
-// RUN: ptoas %S/binary_max_min_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.bin6.cpp
+// RUN: ptoas %S/binary_max_min_chain.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.bin6.cpp
 // RUN: FileCheck %s --check-prefix=BIN6 < %t.bin6.cpp
-// RUN: ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.softmax.cpp
+// RUN: ptoas %S/softmax_chain.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.softmax.cpp
 // RUN: FileCheck %s --check-prefix=SOFTMAX < %t.softmax.cpp
 // RUN: rm -rf %t.attr && mkdir -p %t.attr
-// RUN: cp %S/oplib/binary_templates.mlir %t.attr/binary_templates.mlir
+// RUN: cp %S/../../oplib/level3/binary_templates.mlir %t.attr/binary_templates.mlir
 // RUN: sed -i 's/pto.simd.vld_dist = \"NORM\"/pto.simd.vld_dist = \"NORM_USER_TOKEN\"/g' %t.attr/binary_templates.mlir
 // RUN: sed -i 's/pto.simd.vst_dist = \"DIST_NORM\"/pto.simd.vst_dist = \"DIST_USER_TOKEN\"/g' %t.attr/binary_templates.mlir
 // RUN: sed -i 's/pto.simd.exec_mode = \"MODE_ZEROING\"/pto.simd.exec_mode = \"MODE_USER_TOKEN\"/g' %t.attr/binary_templates.mlir

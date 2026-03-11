@@ -11,7 +11,6 @@ config.excludes = [
     "CMakeLists.txt",
     "README.md",
     "lit.cfg.py",
-    "oplib",
 ]
 
 config.test_source_root = os.path.dirname(__file__)

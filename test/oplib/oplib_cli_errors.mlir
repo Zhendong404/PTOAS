@@ -1,6 +1,6 @@
 // RUN: ! ptoas %S/softmax_chain.pto --pto-arch=a5 -o %t.no_dir.cpp > %t.no_dir.log 2>&1
 // RUN: FileCheck %s --check-prefix=NO-DIR < %t.no_dir.log
-// RUN: ! ptoas %S/softmax_chain.pto --enable-op-fusion --disable-oplib-lowering --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.dep.cpp > %t.dep.log 2>&1
+// RUN: ! ptoas %S/softmax_chain.pto --enable-op-fusion --disable-oplib-lowering --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.dep.cpp > %t.dep.log 2>&1
 // RUN: FileCheck %s --check-prefix=REMOVED < %t.dep.log
 // RUN: rm -rf %t.empty && mkdir -p %t.empty
 // RUN: cp %S/resources/bad_empty_simd_template.txt %t.empty/bad.mlir
@@ -50,6 +50,34 @@
 // RUN: cp %S/resources/bad_vector_bad_vst_prefix_template.txt %t.bad_vst_prefix/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vst_prefix --pto-arch=a5 -o %t.bad_vst_prefix.cpp > %t.bad_vst_prefix.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-VST-PREFIX < %t.bad_vst_prefix.log
+// RUN: rm -rf %t.bad_sig && mkdir -p %t.bad_sig
+// RUN: cp %S/resources/bad_family_signature_template.txt %t.bad_sig/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_sig --pto-arch=a5 -o %t.bad_sig.cpp > %t.bad_sig.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-SIG < %t.bad_sig.log
+// RUN: rm -rf %t.bad_arg_match && mkdir -p %t.bad_arg_match
+// RUN: cp %S/resources/bad_missing_arg_match_template.txt %t.bad_arg_match/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_arg_match --pto-arch=a5 -o %t.bad_arg_match.cpp > %t.bad_arg_match.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-ARG-MATCH < %t.bad_arg_match.log
+// RUN: rm -rf %t.bad_scalar_pos && mkdir -p %t.bad_scalar_pos
+// RUN: cp %S/resources/bad_invalid_scalar_pos_template.txt %t.bad_scalar_pos/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_scalar_pos --pto-arch=a5 -o %t.bad_scalar_pos.cpp > %t.bad_scalar_pos.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-SCALAR-POS < %t.bad_scalar_pos.log
+// RUN: rm -rf %t.bad_cmp_mode && mkdir -p %t.bad_cmp_mode
+// RUN: cp %S/resources/bad_missing_cmp_mode_template.txt %t.bad_cmp_mode/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_cmp_mode --pto-arch=a5 -o %t.bad_cmp_mode.cpp > %t.bad_cmp_mode.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-CMP-MODE < %t.bad_cmp_mode.log
+// RUN: rm -rf %t.bad_is_binary && mkdir -p %t.bad_is_binary
+// RUN: cp %S/resources/bad_missing_is_binary_template.txt %t.bad_is_binary/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_is_binary --pto-arch=a5 -o %t.bad_is_binary.cpp > %t.bad_is_binary.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-IS-BINARY < %t.bad_is_binary.log
+// RUN: rm -rf %t.bad_math && mkdir -p %t.bad_math
+// RUN: cp %S/resources/bad_disallowed_math_template.txt %t.bad_math/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_math --pto-arch=a5 -o %t.bad_math.cpp > %t.bad_math.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-MATH < %t.bad_math.log
+// RUN: rm -rf %t.bad_vec_int && mkdir -p %t.bad_vec_int
+// RUN: cp %S/resources/bad_vector_int_unsupported_template.txt %t.bad_vec_int/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vec_int --pto-arch=a5 -o %t.bad_vec_int.cpp > %t.bad_vec_int.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-VEC-INT < %t.bad_vec_int.log
 
 // NO-DIR: Error: --op-lib-dir is required.
 // REMOVED: Unknown command line argument '--disable-oplib-lowering'
@@ -70,3 +98,11 @@
 // BAD-MISSING-VST: pto.simd.vst_dist
 // BAD-VST-PREFIX: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-VST-PREFIX: must start with 'DIST_'
+// BAD-SIG: invalid OP-Lib signature for kind=l3_float_unary_template
+// BAD-ARG-MATCH: missing or invalid arg1 match attrs
+// BAD-SCALAR-POS: invalid pto.oplib.match.scalar_pos
+// BAD-CMP-MODE: missing required attr: pto.oplib.match.cmp_mode
+// BAD-IS-BINARY: missing required attr: pto.oplib.match.is_binary
+// BAD-MATH: E_OPLIB_BODY_DISALLOWED_IR
+// BAD-MATH: math.sin
+// BAD-VEC-INT: A5 OP-Lib vector lowering unsupported

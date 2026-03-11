@@ -1,4 +1,4 @@
-// RUN: ptoas %S/generic_shape_dtype_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 -o %t.generic.cpp
+// RUN: ptoas %S/generic_shape_dtype_chain.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.generic.cpp
 // RUN: FileCheck %s < %t.generic.cpp
 
 // CHECK-DAG: __global__ AICORE void binary_chain_f16_64x64(

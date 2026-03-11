@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -185,6 +186,16 @@ public:
           return emitc::OpaqueType::get(Ctx, "RegTensor<float>");
         if (type.getElementType().isF16())
           return emitc::OpaqueType::get(Ctx, "RegTensor<half>");
+        if (auto intTy = dyn_cast<IntegerType>(type.getElementType())) {
+          if (intTy.isSignlessInteger(8))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int8_t>");
+          if (intTy.isSignlessInteger(16))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int16_t>");
+          if (intTy.isSignlessInteger(32))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int32_t>");
+          if (intTy.isSignlessInteger(64))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int64_t>");
+        }
       }
       return Type{};
     });
@@ -1809,39 +1820,55 @@ static LogicalResult validateA5OplibVectorType(Operation *op, VectorType vecTy,
   }
 
   int64_t lanes = vecTy.getNumElements();
-  if (vecTy.getElementType().isF32()) {
-    if (lanes != 32 && lanes != 64) {
-      op->emitError() << "A5 OP-Lib vector lowering unsupported: f32 lanes "
-                      << lanes << " (expect 32 or 64)";
-      return mlir::failure();
-    }
-    return mlir::success();
+  Type elemTy = vecTy.getElementType();
+  if (elemTy.isInteger(1)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " does not treat vector<i1> as data vector";
+    return mlir::failure();
   }
 
-  if (vecTy.getElementType().isF16()) {
-    if (lanes != 64 && lanes != 128) {
-      op->emitError() << "A5 OP-Lib vector lowering unsupported: f16 lanes "
-                      << lanes << " (expect 64 or 128)";
-      return mlir::failure();
-    }
+  auto emitLaneError = [&](unsigned bitWidth) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << elemTy
+                    << " lanes " << lanes
+                    << " (expect total width 1024 or 2048 bits)";
+    return mlir::failure();
+  };
+
+  if (elemTy.isF16() || elemTy.isF32() || isa<IntegerType>(elemTy)) {
+    unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
+    int64_t totalBits = static_cast<int64_t>(bitWidth) * lanes;
+    if (totalBits != 1024 && totalBits != 2048)
+      return emitLaneError(bitWidth);
     return mlir::success();
   }
 
   op->emitError() << "A5 OP-Lib vector lowering unsupported: element type "
-                  << vecTy.getElementType();
+                  << elemTy;
   return mlir::failure();
 }
 
+static FailureOr<llvm::StringRef> getA5VectorElemTokenUnchecked(Type elemTy) {
+  if (elemTy.isF32())
+    return llvm::StringRef("float");
+  if (elemTy.isF16())
+    return llvm::StringRef("half");
+  if (elemTy.isInteger(8))
+    return llvm::StringRef("int8_t");
+  if (elemTy.isInteger(16))
+    return llvm::StringRef("int16_t");
+  if (elemTy.isInteger(32))
+    return llvm::StringRef("int32_t");
+  if (elemTy.isInteger(64))
+    return llvm::StringRef("int64_t");
+  return failure();
+}
+
 static FailureOr<llvm::StringRef> getA5VectorElemToken(Operation *op,
-                                                        VectorType vecTy,
-                                                        llvm::StringRef usage) {
+                                                       VectorType vecTy,
+                                                       llvm::StringRef usage) {
   if (failed(validateA5OplibVectorType(op, vecTy, usage)))
     return failure();
-  if (vecTy.getElementType().isF32())
-    return llvm::StringRef("float");
-  if (vecTy.getElementType().isF16())
-    return llvm::StringRef("half");
-  return failure();
+  return getA5VectorElemTokenUnchecked(vecTy.getElementType());
 }
 
 static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
@@ -1861,11 +1888,7 @@ static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
     return llvm::StringRef("half");
 
   auto inferElemFromVecTy = [](VectorType vecTy) -> FailureOr<llvm::StringRef> {
-    if (vecTy.getElementType().isF32())
-      return llvm::StringRef("float");
-    if (vecTy.getElementType().isF16())
-      return llvm::StringRef("half");
-    return failure();
+    return getA5VectorElemTokenUnchecked(vecTy.getElementType());
   };
 
   if (lanes == 64) {
@@ -2092,6 +2115,386 @@ template <> llvm::StringRef getA5VectorBinaryCallee<arith::MaximumFOp>() {
 template <> llvm::StringRef getA5VectorBinaryCallee<arith::MinimumFOp>() {
   return "vmin";
 }
+
+template <typename ArithOp> static llvm::StringRef getA5VectorUnaryCallee();
+
+template <> llvm::StringRef getA5VectorUnaryCallee<arith::NegFOp>() {
+  return "vneg";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::AbsFOp>() {
+  return "vabs";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::ExpOp>() {
+  return "vexp";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::LogOp>() {
+  return "vlog";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::SqrtOp>() {
+  return "vsqrt";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::RsqrtOp>() {
+  return "vrsqrt";
+}
+
+template <typename ArithOp> static llvm::StringRef getA5VectorIntBinaryCallee();
+
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::AndIOp>() {
+  return "vand";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::OrIOp>() {
+  return "vor";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::XOrIOp>() {
+  return "vxor";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShLIOp>() {
+  return "vshl";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRUIOp>() {
+  return "vshru";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRSIOp>() {
+  return "vshrs";
+}
+
+template <typename OpTy>
+static Value tryRemapMaskFromUnaryMaskedLoadUse(OpTy op,
+                                                ConversionPatternRewriter &rewriter) {
+  if (auto maskedLoad = op.getOperand().template getDefiningOp<vector::MaskedLoadOp>()) {
+    Value remapped = rewriter.getRemappedValue(maskedLoad.getMask());
+    if (!remapped)
+      return Value();
+    remapped = peelUnrealized(remapped);
+    if (isa<VectorType>(remapped.getType()))
+      return Value();
+    return remapped;
+  }
+  return Value();
+}
+
+static FailureOr<llvm::StringRef>
+getA5CmpPredicateToken(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::eq:
+    return llvm::StringRef("EQ");
+  case arith::CmpIPredicate::ne:
+    return llvm::StringRef("NE");
+  case arith::CmpIPredicate::slt:
+    return llvm::StringRef("LT");
+  case arith::CmpIPredicate::sle:
+    return llvm::StringRef("LE");
+  case arith::CmpIPredicate::sgt:
+    return llvm::StringRef("GT");
+  case arith::CmpIPredicate::sge:
+    return llvm::StringRef("GE");
+  case arith::CmpIPredicate::ult:
+    return llvm::StringRef("ULT");
+  case arith::CmpIPredicate::ule:
+    return llvm::StringRef("ULE");
+  case arith::CmpIPredicate::ugt:
+    return llvm::StringRef("UGT");
+  case arith::CmpIPredicate::uge:
+    return llvm::StringRef("UGE");
+  }
+  return failure();
+}
+
+static FailureOr<llvm::StringRef>
+getA5CmpPredicateToken(arith::CmpFPredicate pred) {
+  switch (pred) {
+  case arith::CmpFPredicate::OEQ:
+  case arith::CmpFPredicate::UEQ:
+    return llvm::StringRef("EQ");
+  case arith::CmpFPredicate::ONE:
+  case arith::CmpFPredicate::UNE:
+    return llvm::StringRef("NE");
+  case arith::CmpFPredicate::OLT:
+  case arith::CmpFPredicate::ULT:
+    return llvm::StringRef("LT");
+  case arith::CmpFPredicate::OLE:
+  case arith::CmpFPredicate::ULE:
+    return llvm::StringRef("LE");
+  case arith::CmpFPredicate::OGT:
+  case arith::CmpFPredicate::UGT:
+    return llvm::StringRef("GT");
+  case arith::CmpFPredicate::OGE:
+  case arith::CmpFPredicate::UGE:
+    return llvm::StringRef("GE");
+  default:
+    return failure();
+  }
+}
+
+static FailureOr<llvm::StringRef>
+getA5ReductionCallee(vector::CombiningKind kind, Type elemTy) {
+  switch (kind) {
+  case vector::CombiningKind::ADD:
+    return llvm::StringRef("vreduce_add");
+  case vector::CombiningKind::MAXIMUMF:
+  case vector::CombiningKind::MAXSI:
+  case vector::CombiningKind::MAXUI:
+    return llvm::StringRef("vreduce_max");
+  case vector::CombiningKind::MINIMUMF:
+  case vector::CombiningKind::MINSI:
+  case vector::CombiningKind::MINUI:
+    return llvm::StringRef("vreduce_min");
+  default:
+    return failure();
+  }
+}
+
+template <typename ArithOp>
+struct OplibVectorUnaryToEmitC : public OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    Value pred = tryRemapMaskFromUnaryMaskedLoadUse(op, rewriter);
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
+
+    auto execModeOr = getRequiredA5OplibTokenAttr(
+        op.getOperation(), kA5SimdExecModeAttr, op->getName().getStringRef(),
+        "MODE_");
+    if (failed(execModeOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *execModeOr)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, getA5VectorUnaryCallee<ArithOp>(),
+        ValueRange{regVar.getResult(), adaptor.getOperand(), pred}, args,
+        ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+template <typename ArithOp>
+struct OplibVectorIntBinaryToEmitC : public OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto predOr =
+        buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                         op->getName().getStringRef());
+    if (failed(predOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, getA5VectorIntBinaryCallee<ArithOp>(),
+        ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),
+                   *predOr},
+        args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorNotToEmitC : public OpConversionPattern<arith::XOrIOp> {
+  using OpConversionPattern<arith::XOrIOp>::OpConversionPattern;
+  LogicalResult matchAndRewrite(arith::XOrIOp, OpAdaptor,
+                                ConversionPatternRewriter &) const override {
+    return failure();
+  }
+};
+
+struct OplibVectorCmpIToEmitC : public OpConversionPattern<arith::CmpIOp> {
+  using OpConversionPattern<arith::CmpIOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(arith::CmpIOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto resultTy = dyn_cast<VectorType>(op.getType());
+    if (!resultTy)
+      return failure();
+
+    auto lhsTy = dyn_cast<VectorType>(op.getLhs().getType());
+    auto rhsTy = dyn_cast<VectorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, lhsTy, "arith.cmpi")) ||
+        failed(validateA5OplibVectorType(op, rhsTy, "arith.cmpi")))
+      return failure();
+
+    auto predTokOr = getA5CmpPredicateToken(op.getPredicate());
+    if (failed(predTokOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: predicate "
+                     << stringifyCmpIPredicate(op.getPredicate());
+      return failure();
+    }
+
+    Type maskTy = this->getTypeConverter()->convertType(op.getType());
+    if (!maskTy)
+      return failure();
+    auto *ctx = rewriter.getContext();
+    auto maskVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+                                         ValueRange{maskVar.getResult(),
+                                                    adaptor.getLhs(),
+                                                    adaptor.getRhs()},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, maskVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorCmpFToEmitC : public OpConversionPattern<arith::CmpFOp> {
+  using OpConversionPattern<arith::CmpFOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(arith::CmpFOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto resultTy = dyn_cast<VectorType>(op.getType());
+    if (!resultTy)
+      return failure();
+
+    auto lhsTy = dyn_cast<VectorType>(op.getLhs().getType());
+    auto rhsTy = dyn_cast<VectorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, lhsTy, "arith.cmpf")) ||
+        failed(validateA5OplibVectorType(op, rhsTy, "arith.cmpf")))
+      return failure();
+
+    auto predTokOr = getA5CmpPredicateToken(op.getPredicate());
+    if (failed(predTokOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: predicate "
+                     << stringifyCmpFPredicate(op.getPredicate());
+      return failure();
+    }
+
+    Type maskTy = this->getTypeConverter()->convertType(op.getType());
+    if (!maskTy)
+      return failure();
+    auto *ctx = rewriter.getContext();
+    auto maskVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+                                         ValueRange{maskVar.getResult(),
+                                                    adaptor.getLhs(),
+                                                    adaptor.getRhs()},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, maskVar.getResult());
+    return success();
+  }
+};
+
+template <typename SelectOpTy>
+struct OplibVectorSelectToEmitC : public OpConversionPattern<SelectOpTy> {
+  using OpConversionPattern<SelectOpTy>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(SelectOpTy op, typename SelectOpTy::Adaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Value cond = peelUnrealized(adaptor.getCondition());
+    if (isa<VectorType>(cond.getType()))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "vsel",
+        ValueRange{regVar.getResult(), adaptor.getTrueValue(),
+                   adaptor.getFalseValue(), cond},
+        args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorReductionToEmitC
+    : public OpConversionPattern<vector::ReductionOp> {
+  using OpConversionPattern<vector::ReductionOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(vector::ReductionOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getVector().getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, "vector.reduction")))
+      return failure();
+
+    auto calleeOr = getA5ReductionCallee(op.getKind(), vecTy.getElementType());
+    if (failed(calleeOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: reduction kind "
+                     << stringifyCombiningKind(op.getKind());
+      return failure();
+    }
+
+    Type dstTy = this->getTypeConverter()->convertType(op.getType());
+    if (!dstTy)
+      return failure();
+
+    SmallVector<Value, 2> operands{adaptor.getVector()};
+    if (adaptor.getAcc())
+      operands.push_back(adaptor.getAcc());
+
+    auto call = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{dstTy}, *calleeOr, operands, ArrayAttr{},
+        ArrayAttr{});
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
 
 struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
   using OpConversionPattern<vector::LoadOp>::OpConversionPattern;
@@ -8324,7 +8727,22 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                OplibVectorBinaryArithToEmitC<arith::MulFOp>,
                OplibVectorBinaryArithToEmitC<arith::DivFOp>,
                OplibVectorBinaryArithToEmitC<arith::MaximumFOp>,
-               OplibVectorBinaryArithToEmitC<arith::MinimumFOp>>(
+               OplibVectorBinaryArithToEmitC<arith::MinimumFOp>,
+               OplibVectorUnaryToEmitC<arith::NegFOp>,
+               OplibVectorUnaryToEmitC<math::AbsFOp>,
+               OplibVectorUnaryToEmitC<math::ExpOp>,
+               OplibVectorUnaryToEmitC<math::LogOp>,
+               OplibVectorUnaryToEmitC<math::SqrtOp>,
+               OplibVectorUnaryToEmitC<math::RsqrtOp>,
+               OplibVectorCmpFToEmitC, OplibVectorCmpIToEmitC,
+               OplibVectorSelectToEmitC<arith::SelectOp>,
+               OplibVectorReductionToEmitC,
+               OplibVectorIntBinaryToEmitC<arith::AndIOp>,
+               OplibVectorIntBinaryToEmitC<arith::OrIOp>,
+               OplibVectorIntBinaryToEmitC<arith::XOrIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShLIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShRUIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShRSIOp>>(
       typeConverter, ctx);
   patterns.add<ArithNegFToEmitC>(typeConverter, ctx);
   patterns.add<ArithSimpleBinaryToEmitC<arith::AddFOp, emitc::AddOp>>(
@@ -8604,6 +9022,72 @@ struct EmitPTOManualPass
           return WalkResult::advance();
         }
 
+        if (auto negf = dyn_cast<arith::NegFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(negf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(negf.getOperation(), vecTy,
+                                               "arith.negf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto absf = dyn_cast<math::AbsFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(absf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(absf.getOperation(), vecTy,
+                                               "math.absf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto exp = dyn_cast<math::ExpOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(exp.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(exp.getOperation(), vecTy,
+                                               "math.exp"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto log = dyn_cast<math::LogOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(log.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(log.getOperation(), vecTy,
+                                               "math.log"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto sqrt = dyn_cast<math::SqrtOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(sqrt.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(sqrt.getOperation(), vecTy,
+                                               "math.sqrt"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto rsqrt = dyn_cast<math::RsqrtOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(rsqrt.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(rsqrt.getOperation(), vecTy,
+                                               "math.rsqrt"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
         if (auto addf = dyn_cast<arith::AddFOp>(op)) {
           if (auto vecTy = dyn_cast<VectorType>(addf.getType());
               vecTy &&
@@ -8664,6 +9148,131 @@ struct EmitPTOManualPass
               vecTy &&
               failed(validateA5OplibVectorType(minf.getOperation(), vecTy,
                                                "arith.minimumf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmpf = dyn_cast<arith::CmpFOp>(op)) {
+          auto lhsTy = dyn_cast<VectorType>(cmpf.getLhs().getType());
+          auto rhsTy = dyn_cast<VectorType>(cmpf.getRhs().getType());
+          if ((lhsTy || rhsTy) &&
+              (!lhsTy || !rhsTy ||
+               failed(validateA5OplibVectorType(cmpf.getOperation(), lhsTy,
+                                                "arith.cmpf")) ||
+               failed(validateA5OplibVectorType(cmpf.getOperation(), rhsTy,
+                                                "arith.cmpf")))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmpi = dyn_cast<arith::CmpIOp>(op)) {
+          auto lhsTy = dyn_cast<VectorType>(cmpi.getLhs().getType());
+          auto rhsTy = dyn_cast<VectorType>(cmpi.getRhs().getType());
+          if ((lhsTy || rhsTy) &&
+              (!lhsTy || !rhsTy ||
+               failed(validateA5OplibVectorType(cmpi.getOperation(), lhsTy,
+                                                "arith.cmpi")) ||
+               failed(validateA5OplibVectorType(cmpi.getOperation(), rhsTy,
+                                                "arith.cmpi")))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(sel.getType()); vecTy) {
+            if (failed(validateA5OplibVectorType(sel.getOperation(), vecTy,
+                                                 "arith.select"))) {
+              hasUnsupportedA5Vector = true;
+              return WalkResult::interrupt();
+            }
+            auto condTy = dyn_cast<VectorType>(sel.getCondition().getType());
+            if (condTy &&
+                failed(getA5MaskElemToken(sel.getOperation(), condTy,
+                                          "arith.select"))) {
+              hasUnsupportedA5Vector = true;
+              return WalkResult::interrupt();
+            }
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto red = dyn_cast<vector::ReductionOp>(op)) {
+          auto vecTy = dyn_cast<VectorType>(red.getVector().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(red.getOperation(), vecTy,
+                                               "vector.reduction"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto andi = dyn_cast<arith::AndIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(andi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(andi.getOperation(), vecTy,
+                                               "arith.andi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto ori = dyn_cast<arith::OrIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(ori.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(ori.getOperation(), vecTy,
+                                               "arith.ori"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto xori = dyn_cast<arith::XOrIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(xori.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(xori.getOperation(), vecTy,
+                                               "arith.xori"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shli = dyn_cast<arith::ShLIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shli.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shli.getOperation(), vecTy,
+                                               "arith.shli"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shrui = dyn_cast<arith::ShRUIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shrui.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shrui.getOperation(), vecTy,
+                                               "arith.shrui"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shrsi = dyn_cast<arith::ShRSIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shrsi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shrsi.getOperation(), vecTy,
+                                               "arith.shrsi"))) {
             hasUnsupportedA5Vector = true;
             return WalkResult::interrupt();
           }

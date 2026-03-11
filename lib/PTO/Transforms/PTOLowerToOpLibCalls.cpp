@@ -3,6 +3,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -19,6 +20,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
@@ -29,6 +31,7 @@
 #include <algorithm>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -61,6 +64,12 @@ static constexpr llvm::StringLiteral kOpLibAttrMatchSLayout =
     "pto.oplib.match.slayout";
 static constexpr llvm::StringLiteral kOpLibAttrMatchFractal =
     "pto.oplib.match.fractal";
+static constexpr llvm::StringLiteral kOpLibAttrMatchScalarPos =
+    "pto.oplib.match.scalar_pos";
+static constexpr llvm::StringLiteral kOpLibAttrMatchCmpMode =
+    "pto.oplib.match.cmp_mode";
+static constexpr llvm::StringLiteral kOpLibAttrMatchIsBinary =
+    "pto.oplib.match.is_binary";
 static constexpr llvm::StringLiteral kOpLibAttrCost = "pto.oplib.cost";
 static constexpr llvm::StringLiteral kOpLibAttrPriority = "pto.oplib.priority";
 static constexpr llvm::StringLiteral kOpLibAttrSync = "pto.oplib.sync";
@@ -76,6 +85,8 @@ static constexpr llvm::StringLiteral kOpLibAttrSeedCoreSlot =
 
 static constexpr llvm::StringLiteral kOpLibAttrInstVariantId =
     "pto.oplib.instance.variant_id";
+static constexpr llvm::StringLiteral kOpLibAttrInstKind =
+    "pto.oplib.instance.kind";
 static constexpr llvm::StringLiteral kOpLibAttrInstOp = "pto.oplib.instance.op";
 static constexpr llvm::StringLiteral kOpLibAttrInstDType =
     "pto.oplib.instance.dtype";
@@ -131,6 +142,11 @@ enum class EntryRole {
   Seed,
 };
 
+enum class TemplateArgRole {
+  Tile,
+  Scalar,
+};
+
 struct MatchKey {
   int64_t rows = -1;
   int64_t cols = -1;
@@ -141,6 +157,7 @@ struct MatchKey {
 
 struct TemplateEntry {
   func::FuncOp symbol;
+  std::string kind;
   EntryRole role = EntryRole::Variant;
   std::string op;
   std::string variantId;
@@ -155,7 +172,11 @@ struct TemplateEntry {
   int64_t simdLanes = -1;
   bool hasSimdBridgeOps = false;
 
-  MatchKey match;
+  SmallVector<TemplateArgRole, 4> argRoles;
+  SmallVector<std::optional<MatchKey>, 4> argMatches;
+  std::optional<int64_t> scalarPos;
+  std::optional<std::string> cmpMode;
+  std::optional<bool> isBinary;
   int64_t cost = 0;
   int64_t priority = 0;
   bool sync = false;
@@ -163,12 +184,14 @@ struct TemplateEntry {
 
 struct SelectedVariant {
   TemplateEntry *entry = nullptr;
+  std::string kind;
   std::string variantId;
   std::string op;
   std::string dtype;
   bool fromSeed = false;
   std::string seedId;
   std::string coreSlot;
+  SmallVector<std::string, 4> instanceKeyAttrs;
   int64_t cost = 0;
   int64_t priority = 0;
 };
@@ -176,7 +199,20 @@ struct SelectedVariant {
 struct PlannedOpLowering {
   Operation *op = nullptr;
   SelectedVariant selected;
+  SmallVector<Value, 4> operands;
   func::FuncOp instance;
+};
+
+struct MatchRequest {
+  std::string kind;
+  std::string op;
+  std::string dtype;
+  SmallVector<Type, 4> argTypes;
+  SmallVector<Value, 4> operands;
+  SmallVector<std::optional<MatchKey>, 4> argMatches;
+  std::optional<int64_t> scalarPos;
+  std::optional<std::string> cmpMode;
+  std::optional<bool> isBinary;
 };
 
 struct BinaryOpInterface {
@@ -216,7 +252,27 @@ static bool hasFusionGroupAttrs(Operation *op) {
   return op->hasAttr(kFusionGroupIdAttr) && op->hasAttr(kFusionOrderAttr);
 }
 
-static bool isFloatDTypeSupported(Type ty) { return ty.isF16() || ty.isF32(); }
+static bool isOplibScalarType(Type ty) {
+  return isa<FloatType, IntegerType, IndexType>(ty);
+}
+
+static bool isOplibTileElementType(Type ty) {
+  return isa<FloatType, IntegerType>(ty);
+}
+
+static bool isOplibTileLikeType(Type ty, bool allowLoweredMemRefAbi) {
+  if (auto tileTy = dyn_cast<pto::TileBufType>(ty)) {
+    return tileTy.getRank() == 2 &&
+           isOplibTileElementType(tileTy.getElementType());
+  }
+  if (!allowLoweredMemRefAbi)
+    return false;
+  if (auto memTy = dyn_cast<MemRefType>(ty)) {
+    return memTy.getRank() == 2 &&
+           isOplibTileElementType(memTy.getElementType());
+  }
+  return false;
+}
 
 static int64_t getElemBytes(Type elemTy) {
   if (auto ft = dyn_cast<FloatType>(elemTy)) {
@@ -463,7 +519,7 @@ static std::string sanitizeSymbolComponent(StringRef text) {
 }
 
 static bool isAllowedDTypeName(StringRef dtypeName) {
-  return dtypeName == "f16" || dtypeName == "f32";
+  return !dtypeName.empty();
 }
 
 static bool isAllowedLayoutName(StringRef layoutName) {
@@ -473,6 +529,92 @@ static bool isAllowedLayoutName(StringRef layoutName) {
 
 static bool containsString(ArrayRef<std::string> values, StringRef key) {
   return llvm::any_of(values, [&](const std::string &s) { return s == key; });
+}
+
+static FailureOr<SmallVector<TemplateArgRole, 4>>
+getTemplateArgRolesForKind(StringRef kind) {
+  auto build = [&](std::initializer_list<TemplateArgRole> roles)
+      -> FailureOr<SmallVector<TemplateArgRole, 4>> {
+    return SmallVector<TemplateArgRole, 4>(roles);
+  };
+
+  if (kind == kOpLibKindL3BinaryTemplate)
+    return build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                  TemplateArgRole::Tile});
+
+  return llvm::StringSwitch<FailureOr<SmallVector<TemplateArgRole, 4>>>(kind)
+      .Case("l3_float_binary_elementwise_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_float_partial_binary_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_float_binary_special_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_float_tile_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile}))
+      .Case("l3_float_ternary_tile_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_float_ternary_tile_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_float_unary_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_float_unary_math_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_float_unary_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile}))
+      .Case("l3_reduce_row_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_reduce_col_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_reduce_colsum_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_broadcast_row_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_broadcast_col_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_broadcast_row_binary_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_scalar_expand_template",
+            build({TemplateArgRole::Scalar, TemplateArgRole::Tile}))
+      .Case("l3_cmp_tile_tile_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_cmp_tile_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile}))
+      .Case("l3_select_mask_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Case("l3_select_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Scalar, TemplateArgRole::Tile}))
+      .Case("l3_int_binary_elementwise_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_int_tile_scalar_elementwise_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile}))
+      .Case("l3_int_unary_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
+      .Default(failure());
+}
+
+static bool kindRequiresCmpMode(StringRef kind) {
+  return kind == "l3_cmp_tile_tile_template" ||
+         kind == "l3_cmp_tile_scalar_template";
+}
+
+static bool kindRequiresIsBinary(StringRef kind) {
+  return kind == "l3_reduce_colsum_template";
 }
 
 static bool isBinaryFloatCore(Operation *op) {
@@ -520,7 +662,11 @@ static bool isAllowedTemplateBodyOp(Operation *op) {
     return false;
 
   StringRef ns = op->getName().getDialectNamespace();
-  return ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf";
+  if (ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf")
+    return true;
+  if (isa<math::ExpOp, math::LogOp, math::SqrtOp, math::RsqrtOp>(op))
+    return true;
+  return false;
 }
 
 struct TemplateRegistry {
@@ -596,17 +742,30 @@ struct TemplateRegistry {
     return out;
   }
 
-  bool validateTemplateSignature(func::FuncOp fn) {
-    FunctionType fnTy = fn.getFunctionType();
-    if (fnTy.getNumInputs() != 3 || fnTy.getNumResults() != 0)
+  static std::string getArgMatchAttrName(unsigned argIndex, StringRef suffix) {
+    return (Twine("pto.oplib.match.arg") + Twine(argIndex) + "." + suffix).str();
+  }
+
+  bool validateTemplateSignature(func::FuncOp fn, StringRef kind,
+                                 SmallVectorImpl<TemplateArgRole> &argRoles,
+                                 bool allowLoweredMemRefAbi = false) {
+    FailureOr<SmallVector<TemplateArgRole, 4>> rolesOr =
+        getTemplateArgRolesForKind(kind);
+    if (failed(rolesOr))
       return false;
-    for (Type inTy : fnTy.getInputs()) {
-      auto tileTy = dyn_cast<pto::TileBufType>(inTy);
-      if (!tileTy)
-        return false;
-      if (tileTy.getRank() != 2)
-        return false;
-      if (!isFloatDTypeSupported(tileTy.getElementType()))
+
+    argRoles.assign(rolesOr->begin(), rolesOr->end());
+    FunctionType fnTy = fn.getFunctionType();
+    if (fnTy.getNumInputs() != argRoles.size() || fnTy.getNumResults() != 0)
+      return false;
+
+    for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
+      if (role == TemplateArgRole::Tile) {
+        if (!isOplibTileLikeType(inTy, allowLoweredMemRefAbi))
+          return false;
+        continue;
+      }
+      if (!isOplibScalarType(inTy))
         return false;
     }
     return true;
@@ -634,26 +793,90 @@ struct TemplateRegistry {
   LogicalResult parseCommonAttrs(func::FuncOp imported,
                                  std::unique_ptr<TemplateEntry> &entry) {
     Operation *op = imported.getOperation();
+    if (entry->kind == kOpLibKindL3BinaryTemplate) {
+      auto rowsOr =
+          parseI64Attr(op, kOpLibAttrMatchRows, /*allowWildcard=*/true);
+      auto colsOr =
+          parseI64Attr(op, kOpLibAttrMatchCols, /*allowWildcard=*/true);
+      auto fractalOr =
+          parseI64Attr(op, kOpLibAttrMatchFractal, /*allowWildcard=*/true);
+      if (failed(rowsOr) || failed(colsOr) || failed(fractalOr)) {
+        imported.emitError("missing or invalid match rows/cols/fractal attrs");
+        return failure();
+      }
 
-    auto rowsOr = parseI64Attr(op, kOpLibAttrMatchRows, /*allowWildcard=*/true);
-    auto colsOr = parseI64Attr(op, kOpLibAttrMatchCols, /*allowWildcard=*/true);
-    auto fractalOr =
-        parseI64Attr(op, kOpLibAttrMatchFractal, /*allowWildcard=*/true);
-    if (failed(rowsOr) || failed(colsOr) || failed(fractalOr)) {
-      imported.emitError("missing or invalid match rows/cols/fractal attrs");
-      return failure();
-    }
+      auto blayoutOr = parseStringAttr(op, kOpLibAttrMatchBLayout);
+      auto slayoutOr = parseStringAttr(op, kOpLibAttrMatchSLayout);
+      if (failed(blayoutOr) || failed(slayoutOr)) {
+        imported.emitError("missing match layout attrs: pto.oplib.match.blayout / "
+                           "pto.oplib.match.slayout");
+        return failure();
+      }
+      if (!isAllowedLayoutName(*blayoutOr) || !isAllowedLayoutName(*slayoutOr)) {
+        imported.emitError("invalid layout value in match.blayout/match.slayout");
+        return failure();
+      }
 
-    auto blayoutOr = parseStringAttr(op, kOpLibAttrMatchBLayout);
-    auto slayoutOr = parseStringAttr(op, kOpLibAttrMatchSLayout);
-    if (failed(blayoutOr) || failed(slayoutOr)) {
-      imported.emitError("missing match layout attrs: pto.oplib.match.blayout / "
-                         "pto.oplib.match.slayout");
-      return failure();
-    }
-    if (!isAllowedLayoutName(*blayoutOr) || !isAllowedLayoutName(*slayoutOr)) {
-      imported.emitError("invalid layout value in match.blayout/match.slayout");
-      return failure();
+      MatchKey legacyMatch;
+      legacyMatch.rows = *rowsOr;
+      legacyMatch.cols = *colsOr;
+      legacyMatch.fractal = *fractalOr;
+      legacyMatch.blayout = *blayoutOr;
+      legacyMatch.slayout = *slayoutOr;
+      entry->argMatches.resize(entry->argRoles.size());
+      for (unsigned i = 0; i < entry->argRoles.size(); ++i) {
+        if (entry->argRoles[i] == TemplateArgRole::Tile)
+          entry->argMatches[i] = legacyMatch;
+      }
+    } else {
+      entry->argMatches.resize(entry->argRoles.size());
+      for (unsigned i = 0; i < entry->argRoles.size(); ++i) {
+        if (entry->argRoles[i] != TemplateArgRole::Tile) {
+          bool hasUnexpectedAttr = op->hasAttr(getArgMatchAttrName(i, "rows")) ||
+                                   op->hasAttr(getArgMatchAttrName(i, "cols")) ||
+                                   op->hasAttr(getArgMatchAttrName(i, "blayout")) ||
+                                   op->hasAttr(getArgMatchAttrName(i, "slayout")) ||
+                                   op->hasAttr(getArgMatchAttrName(i, "fractal"));
+          if (hasUnexpectedAttr) {
+            imported.emitError() << "arg" << i
+                                 << " is scalar in kind=" << entry->kind
+                                 << ", but carries tile match attrs";
+            return failure();
+          }
+          continue;
+        }
+
+        auto rowsOr =
+            parseI64Attr(op, getArgMatchAttrName(i, "rows"),
+                         /*allowWildcard=*/true);
+        auto colsOr =
+            parseI64Attr(op, getArgMatchAttrName(i, "cols"),
+                         /*allowWildcard=*/true);
+        auto fractalOr =
+            parseI64Attr(op, getArgMatchAttrName(i, "fractal"),
+                         /*allowWildcard=*/true);
+        auto blayoutOr = parseStringAttr(op, getArgMatchAttrName(i, "blayout"));
+        auto slayoutOr = parseStringAttr(op, getArgMatchAttrName(i, "slayout"));
+        if (failed(rowsOr) || failed(colsOr) || failed(fractalOr) ||
+            failed(blayoutOr) || failed(slayoutOr)) {
+          imported.emitError() << "missing or invalid arg" << i
+                               << " match attrs: rows/cols/blayout/slayout/fractal";
+          return failure();
+        }
+        if (!isAllowedLayoutName(*blayoutOr) || !isAllowedLayoutName(*slayoutOr)) {
+          imported.emitError() << "invalid layout value in arg" << i
+                               << ".blayout/.slayout";
+          return failure();
+        }
+
+        MatchKey argMatch;
+        argMatch.rows = *rowsOr;
+        argMatch.cols = *colsOr;
+        argMatch.fractal = *fractalOr;
+        argMatch.blayout = *blayoutOr;
+        argMatch.slayout = *slayoutOr;
+        entry->argMatches[i] = argMatch;
+      }
     }
 
     auto costAttr = op->getAttrOfType<IntegerAttr>(kOpLibAttrCost);
@@ -664,16 +887,40 @@ struct TemplateRegistry {
       return failure();
     }
 
-    entry->match.rows = *rowsOr;
-    entry->match.cols = *colsOr;
-    entry->match.fractal = *fractalOr;
-    entry->match.blayout = *blayoutOr;
-    entry->match.slayout = *slayoutOr;
     entry->cost = costAttr.getInt();
     entry->priority = priorityAttr.getInt();
 
     if (auto syncAttr = op->getAttrOfType<BoolAttr>(kOpLibAttrSync))
       entry->sync = syncAttr.getValue();
+
+    if (auto scalarPosAttr =
+            op->getAttrOfType<IntegerAttr>(kOpLibAttrMatchScalarPos)) {
+      int64_t scalarPos = scalarPosAttr.getInt();
+      if (scalarPos < 0 || scalarPos >= static_cast<int64_t>(entry->argRoles.size()) ||
+          entry->argRoles[scalarPos] != TemplateArgRole::Scalar) {
+        imported.emitError("invalid pto.oplib.match.scalar_pos");
+        return failure();
+      }
+      entry->scalarPos = scalarPos;
+    }
+
+    if (auto cmpModeAttr = op->getAttrOfType<StringAttr>(kOpLibAttrMatchCmpMode)) {
+      if (cmpModeAttr.getValue().empty()) {
+        imported.emitError("invalid empty pto.oplib.match.cmp_mode");
+        return failure();
+      }
+      entry->cmpMode = cmpModeAttr.getValue().str();
+    } else if (kindRequiresCmpMode(entry->kind)) {
+      imported.emitError("missing required attr: pto.oplib.match.cmp_mode");
+      return failure();
+    }
+
+    if (auto isBinaryAttr = op->getAttrOfType<BoolAttr>(kOpLibAttrMatchIsBinary)) {
+      entry->isBinary = isBinaryAttr.getValue();
+    } else if (kindRequiresIsBinary(entry->kind)) {
+      imported.emitError("missing required attr: pto.oplib.match.is_binary");
+      return failure();
+    }
 
     return success();
   }
@@ -691,16 +938,12 @@ struct TemplateRegistry {
       return failure();
     }
 
-    if (!isSupportedOpName(*opOr)) {
-      imported.emitError() << "unsupported variant op: " << *opOr;
-      return failure();
-    }
     if (!isAllowedDTypeName(*dtypeOr)) {
       imported.emitError() << "unsupported variant dtype: " << *dtypeOr;
       return failure();
     }
 
-    std::string uniqueKey = *opOr + "|" + *variantIdOr;
+    std::string uniqueKey = entry->kind + "|" + *opOr + "|" + *variantIdOr;
     if (!variantIds.insert(uniqueKey).second) {
       imported.emitError() << "duplicate variant_id under op=" << *opOr
                            << ": " << *variantIdOr;
@@ -731,8 +974,10 @@ struct TemplateRegistry {
       return failure();
     }
 
-    if (!seedIds.insert(*seedIdOr).second) {
-      imported.emitError() << "duplicate seed_id: " << *seedIdOr;
+    std::string uniqueSeedKey = entry->kind + "|" + *seedIdOr;
+    if (!seedIds.insert(uniqueSeedKey).second) {
+      imported.emitError() << "duplicate seed_id under kind=" << entry->kind
+                           << ": " << *seedIdOr;
       return failure();
     }
 
@@ -744,13 +989,6 @@ struct TemplateRegistry {
     for (const std::string &dtype : *supportDTypesOr) {
       if (!isAllowedDTypeName(dtype)) {
         imported.emitError() << "unsupported support_dtypes item: " << dtype;
-        return failure();
-      }
-    }
-
-    for (const std::string &opName : *supportOpsOr) {
-      if (!isSupportedOpName(opName)) {
-        imported.emitError() << "unsupported support_ops item: " << opName;
         return failure();
       }
     }
@@ -819,9 +1057,9 @@ struct TemplateRegistry {
                                    "template inputs must be !pto.tile_buf");
       }
       Type elemTy = tileTy.getElementType();
-      if (!elemTy.isF16() && !elemTy.isF32()) {
+      if (!isOplibTileElementType(elemTy)) {
         return emitFailureWithCode(imported.getLoc(), kErrDType,
-                                   "SIMD template supports f16/f32 only");
+                                   "SIMD template supports float/integer tile inputs only");
       }
       if (tileTy.getBLayoutValueI32() != 0) {
         return emitFailureWithCode(imported.getLoc(), kErrLayout,
@@ -1079,7 +1317,14 @@ struct TemplateRegistry {
   }
 
   LogicalResult registerImportedEntry(func::FuncOp imported, StringRef sourceTag,
-                                      bool validateBody) {
+                                      bool validateBody,
+                                      bool allowLoweredMemRefAbi = false) {
+    auto kindAttr = imported->getAttrOfType<StringAttr>(kOpLibAttrKind);
+    if (!kindAttr) {
+      imported.emitError("missing required attr: pto.oplib.kind");
+      return failure();
+    }
+
     auto roleAttr = imported->getAttrOfType<StringAttr>(kOpLibAttrEntryRole);
     if (!roleAttr) {
       imported.emitError("missing required attr: pto.oplib.entry_role");
@@ -1088,6 +1333,14 @@ struct TemplateRegistry {
 
     auto entry = std::make_unique<TemplateEntry>();
     entry->symbol = imported;
+    entry->kind = kindAttr.getValue().str();
+
+    if (!validateTemplateSignature(imported, entry->kind, entry->argRoles,
+                                   allowLoweredMemRefAbi)) {
+      imported.emitError()
+          << "invalid OP-Lib signature for kind=" << entry->kind;
+      return failure();
+    }
 
     if (failed(parseCommonAttrs(imported, entry)))
       return failure();
@@ -1138,9 +1391,14 @@ struct TemplateRegistry {
     importedCount = 0;
     for (func::FuncOp fn : module.getOps<func::FuncOp>()) {
       auto kindAttr = fn->getAttrOfType<StringAttr>(kOpLibAttrKind);
-      if (!kindAttr || kindAttr.getValue() != kOpLibKindL3BinaryTemplate)
+      if (!kindAttr)
         continue;
-      if (failed(registerImportedEntry(fn, "module", /*validateBody=*/false)))
+      if (failed(getTemplateArgRolesForKind(kindAttr.getValue()))) {
+        fn.emitError() << "unsupported pto.oplib.kind: " << kindAttr.getValue();
+        return failure();
+      }
+      if (failed(registerImportedEntry(fn, "module", /*validateBody=*/false,
+                                       /*allowLoweredMemRefAbi=*/true)))
         return failure();
       ++importedCount;
     }
@@ -1194,13 +1452,18 @@ struct TemplateRegistry {
 
       for (func::FuncOp libFunc : libModule->getOps<func::FuncOp>()) {
         auto kindAttr = libFunc->getAttrOfType<StringAttr>(kOpLibAttrKind);
-        if (!kindAttr || kindAttr.getValue() != kOpLibKindL3BinaryTemplate)
+        if (!kindAttr)
           continue;
-
-        if (!validateTemplateSignature(libFunc)) {
-          libFunc.emitError("invalid OP-Lib signature; expected "
-                            "(!pto.tile_buf<...>, !pto.tile_buf<...>, "
-                            "!pto.tile_buf<...>) -> () with rank-2 f16/f32 tile_buf args");
+        SmallVector<TemplateArgRole, 4> argRoles;
+        if (failed(getTemplateArgRolesForKind(kindAttr.getValue()))) {
+          libFunc.emitError() << "unsupported pto.oplib.kind: "
+                              << kindAttr.getValue();
+          return failure();
+        }
+        if (!validateTemplateSignature(libFunc, kindAttr.getValue(), argRoles,
+                                       /*allowLoweredMemRefAbi=*/false)) {
+          libFunc.emitError()
+              << "invalid OP-Lib signature for kind=" << kindAttr.getValue();
           return failure();
         }
 
@@ -1210,7 +1473,8 @@ struct TemplateRegistry {
           return failure();
         }
         func::FuncOp imported = *importedOr;
-        if (failed(registerImportedEntry(imported, path, /*validateBody=*/true)))
+        if (failed(registerImportedEntry(imported, path, /*validateBody=*/true,
+                                         /*allowLoweredMemRefAbi=*/false)))
           return failure();
         ++importedCount;
       }
@@ -1236,73 +1500,114 @@ struct TemplateRegistry {
     return pattern == target;
   }
 
-  static bool matchCommon(const TemplateEntry &entry, const MatchKey &target) {
-    if (!matchDim(entry.match.rows, target.rows))
+  static bool matchCommon(const TemplateEntry &entry, const MatchRequest &target) {
+    if (entry.kind != target.kind)
       return false;
-    if (!matchDim(entry.match.cols, target.cols))
+    if (entry.argRoles.size() != target.argTypes.size() ||
+        entry.argMatches.size() != target.argTypes.size())
       return false;
-    if (!matchDim(entry.match.fractal, target.fractal))
+
+    for (unsigned i = 0; i < entry.argRoles.size(); ++i) {
+      if (entry.argRoles[i] == TemplateArgRole::Scalar)
+        continue;
+      if (!entry.argMatches[i] || !target.argMatches[i])
+        return false;
+      const MatchKey &pattern = *entry.argMatches[i];
+      const MatchKey &request = *target.argMatches[i];
+      if (!matchDim(pattern.rows, request.rows))
+        return false;
+      if (!matchDim(pattern.cols, request.cols))
+        return false;
+      if (!matchDim(pattern.fractal, request.fractal))
+        return false;
+      if (!matchLayout(pattern.blayout, request.blayout))
+        return false;
+      if (!matchLayout(pattern.slayout, request.slayout))
+        return false;
+    }
+
+    if (entry.scalarPos &&
+        (!target.scalarPos || *entry.scalarPos != *target.scalarPos))
       return false;
-    if (!matchLayout(entry.match.blayout, target.blayout))
+    if (entry.cmpMode && (!target.cmpMode || *entry.cmpMode != *target.cmpMode))
       return false;
-    if (!matchLayout(entry.match.slayout, target.slayout))
+    if (entry.isBinary &&
+        (!target.isBinary || *entry.isBinary != *target.isBinary))
       return false;
     return true;
   }
 
-  FailureOr<SelectedVariant> selectVariantFor(StringRef targetOp,
-                                              StringRef targetDType,
-                                              const MatchKey &targetMatch,
+  FailureOr<SelectedVariant> selectVariantFor(const MatchRequest &request,
                                               Location loc) {
     SmallVector<SelectedVariant, 16> candidates;
     for (std::unique_ptr<TemplateEntry> &entryPtr : entries) {
       TemplateEntry &entry = *entryPtr;
-      if (!matchCommon(entry, targetMatch))
+      if (!matchCommon(entry, request))
         continue;
 
       if (entry.role == EntryRole::Variant) {
-        if (entry.op != targetOp)
+        if (entry.op != request.op)
           continue;
-        if (entry.matchDType != targetDType)
+        if (entry.matchDType != request.dtype)
           continue;
 
-        candidates.push_back(SelectedVariant{
-            &entry,
-            entry.variantId,
-            entry.op,
-            entry.matchDType,
-            /*fromSeed=*/false,
-            /*seedId=*/"",
-            entry.coreSlot,
-            entry.cost,
-            entry.priority,
-        });
+        SelectedVariant selected;
+        selected.entry = &entry;
+        selected.kind = entry.kind;
+        selected.variantId = entry.variantId;
+        selected.op = entry.op;
+        selected.dtype = entry.matchDType;
+        selected.fromSeed = false;
+        selected.coreSlot = entry.coreSlot;
+        selected.cost = entry.cost;
+        selected.priority = entry.priority;
+        if (request.scalarPos)
+          selected.instanceKeyAttrs.push_back("scalar_pos=" +
+                                             std::to_string(*request.scalarPos));
+        if (request.cmpMode)
+          selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
+        if (request.isBinary)
+          selected.instanceKeyAttrs.push_back("is_binary=" +
+                                             std::string(*request.isBinary ? "true"
+                                                                           : "false"));
+        candidates.push_back(std::move(selected));
         continue;
       }
 
-      if (!containsString(entry.supportOps, targetOp))
+      if (!containsString(entry.supportOps, request.op))
         continue;
-      if (!containsString(entry.supportDTypes, targetDType))
+      if (!containsString(entry.supportDTypes, request.dtype))
         continue;
 
-      std::string variantId = "__seed__" + entry.seedId + "__" +
-                              targetOp.str() + "__" + targetDType.str();
-      candidates.push_back(SelectedVariant{
-          &entry,
-          variantId,
-          targetOp.str(),
-          targetDType.str(),
-          /*fromSeed=*/true,
-          entry.seedId,
-          entry.coreSlot,
-          entry.cost,
-          entry.priority,
-      });
+      std::string variantId =
+          "__seed__" + entry.seedId + "__" + request.op + "__" + request.dtype;
+      SelectedVariant selected;
+      selected.entry = &entry;
+      selected.kind = entry.kind;
+      selected.variantId = variantId;
+      selected.op = request.op;
+      selected.dtype = request.dtype;
+      selected.fromSeed = true;
+      selected.seedId = entry.seedId;
+      selected.coreSlot = entry.coreSlot;
+      selected.cost = entry.cost;
+      selected.priority = entry.priority;
+      if (request.scalarPos)
+        selected.instanceKeyAttrs.push_back("scalar_pos=" +
+                                           std::to_string(*request.scalarPos));
+      if (request.cmpMode)
+        selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
+      if (request.isBinary)
+        selected.instanceKeyAttrs.push_back("is_binary=" +
+                                           std::string(*request.isBinary ? "true"
+                                                                         : "false"));
+      candidates.push_back(std::move(selected));
     }
 
     if (candidates.empty()) {
-      (void)emitFailure(loc, Twine("no matching OP-Lib entry for op=") + targetOp +
-                                 " dtype=" + targetDType);
+      (void)emitFailure(loc, Twine("no matching OP-Lib entry for kind=") +
+                                 request.kind + " op=" + request.op +
+                                 " dtype=" + request.dtype);
       return failure();
     }
 
@@ -1317,7 +1622,8 @@ struct TemplateRegistry {
 
     if (debug) {
       const SelectedVariant &best = candidates.front();
-      llvm::errs() << "[op-fusion] selected variant: op=" << best.op
+      llvm::errs() << "[op-fusion] selected variant: kind=" << best.kind
+                   << " op=" << best.op
                    << " dtype=" << best.dtype
                    << " variant_id=" << best.variantId
                    << " cost=" << best.cost
@@ -1333,6 +1639,10 @@ struct TemplateRegistry {
   getOrCreateInstance(const SelectedVariant &selected,
                       ArrayRef<Type> concreteArgTypes, Location loc) {
     std::string key = selected.variantId;
+    for (const std::string &piece : selected.instanceKeyAttrs) {
+      key += "|";
+      key += piece;
+    }
     for (Type ty : concreteArgTypes) {
       key += "|";
       key += typeToString(ty);
@@ -1358,6 +1668,8 @@ struct TemplateRegistry {
     auto inst = modBuilder.create<func::FuncOp>(
         loc, sym, FunctionType::get(module.getContext(), argTypes, {}));
     inst.setPrivate();
+    inst->setAttr(kOpLibAttrInstKind,
+                  StringAttr::get(module.getContext(), selected.kind));
     inst->setAttr(kOpLibAttrInstVariantId,
                   StringAttr::get(module.getContext(), selected.variantId));
     inst->setAttr(kOpLibAttrInstOp,
@@ -1598,59 +1910,51 @@ static FailureOr<MatchKey> buildMatchKeyFromMemRef(MemRefType dstTy, Value dst) 
   return key;
 }
 
-struct ConcreteOperandInfo {
-  SmallVector<Type, 3> argTypes;
-  Type elemTy;
-  MatchKey matchKey;
-};
+static FailureOr<std::pair<Type, MatchKey>>
+getTileOperandInfo(Value operand) {
+  Type ty = operand.getType();
+  if (auto tileTy = dyn_cast<pto::TileBufType>(ty)) {
+    if (tileTy.getRank() != 2 || !isOplibTileElementType(tileTy.getElementType()))
+      return failure();
+    FailureOr<MatchKey> keyOr = buildMatchKeyFromTileBuf(tileTy);
+    if (failed(keyOr))
+      return failure();
+    return std::make_pair(tileTy.getElementType(), *keyOr);
+  }
+  if (auto memTy = dyn_cast<MemRefType>(ty)) {
+    if (memTy.getRank() != 2 || !isOplibTileElementType(memTy.getElementType()))
+      return failure();
+    FailureOr<MatchKey> keyOr = buildMatchKeyFromMemRef(memTy, operand);
+    if (failed(keyOr))
+      return failure();
+    return std::make_pair(memTy.getElementType(), *keyOr);
+  }
+  return failure();
+}
 
-static FailureOr<ConcreteOperandInfo> getConcreteOperandInfo(Operation *op) {
+static FailureOr<MatchRequest> buildBinaryMatchRequest(Operation *op) {
   BinaryOpInterface iface = getBinaryOpInterface(op);
   if (iface.opName.empty())
     return failure();
 
-  auto inferElemTy = [](Type ty) -> FailureOr<Type> {
-    if (auto memTy = dyn_cast<MemRefType>(ty)) {
-      if (memTy.getRank() != 2)
-        return failure();
-      return memTy.getElementType();
-    }
-    if (auto tileTy = dyn_cast<pto::TileBufType>(ty)) {
-      if (tileTy.getRank() != 2)
-        return failure();
-      return tileTy.getElementType();
-    }
-    return failure();
-  };
-
-  FailureOr<Type> src0ElemOr = inferElemTy(iface.src0.getType());
-  FailureOr<Type> src1ElemOr = inferElemTy(iface.src1.getType());
-  FailureOr<Type> dstElemOr = inferElemTy(iface.dst.getType());
-  if (failed(src0ElemOr) || failed(src1ElemOr) || failed(dstElemOr))
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(iface.src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(iface.src1);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(iface.dst);
+  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(dstInfoOr))
     return failure();
 
-  Type elemTy = *src0ElemOr;
-  if (elemTy != *src1ElemOr || elemTy != *dstElemOr)
-    return failure();
-  if (!isFloatDTypeSupported(elemTy))
+  Type elemTy = src0InfoOr->first;
+  if (elemTy != src1InfoOr->first || elemTy != dstInfoOr->first)
     return failure();
 
-  FailureOr<MatchKey> keyOr = failure();
-  if (auto dstTileTy = dyn_cast<pto::TileBufType>(iface.dst.getType())) {
-    keyOr = buildMatchKeyFromTileBuf(dstTileTy);
-  } else if (auto dstMemTy = dyn_cast<MemRefType>(iface.dst.getType())) {
-    keyOr = buildMatchKeyFromMemRef(dstMemTy, iface.dst);
-  } else {
-    return failure();
-  }
-  if (failed(keyOr))
-    return failure();
-
-  ConcreteOperandInfo info;
-  info.argTypes = {iface.src0.getType(), iface.src1.getType(), iface.dst.getType()};
-  info.elemTy = elemTy;
-  info.matchKey = *keyOr;
-  return info;
+  MatchRequest request;
+  request.kind = kOpLibKindL3BinaryTemplate.str();
+  request.op = iface.opName.str();
+  request.dtype = dtypeToString(elemTy);
+  request.argTypes = {iface.src0.getType(), iface.src1.getType(), iface.dst.getType()};
+  request.operands = {iface.src0, iface.src1, iface.dst};
+  request.argMatches = {src0InfoOr->second, src1InfoOr->second, dstInfoOr->second};
+  return request;
 }
 
 static FailureOr<PlannedOpLowering>
@@ -1660,47 +1964,48 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   if (iface.opName.empty())
     return failure();
 
-  FailureOr<ConcreteOperandInfo> concreteInfoOr = getConcreteOperandInfo(op);
-  if (failed(concreteInfoOr)) {
+  FailureOr<MatchRequest> requestOr = buildBinaryMatchRequest(op);
+  if (failed(requestOr)) {
     op->emitWarning() << warningPrefix
                       << ": unsupported operand signature for op '" << iface.opName
-                      << "' (requires rank-2 memref/tile_buf<f16/f32>)";
+                      << "' (requires rank-2 memref/tile_buf operands)";
     return failure();
   }
 
-  const ConcreteOperandInfo &concreteInfo = *concreteInfoOr;
-  std::string dtype = dtypeToString(concreteInfo.elemTy);
+  const MatchRequest &request = *requestOr;
   FailureOr<SelectedVariant> selectedOr =
-      registry.selectVariantFor(iface.opName, dtype, concreteInfo.matchKey,
-                                op->getLoc());
+      registry.selectVariantFor(request, op->getLoc());
   if (failed(selectedOr)) {
     op->emitWarning() << warningPrefix << ": no OP-Lib candidate for op="
-                      << iface.opName << " dtype=" << dtype;
+                      << iface.opName << " dtype=" << request.dtype;
     return failure();
   }
 
   FailureOr<func::FuncOp> instanceOr =
-      registry.getOrCreateInstance(*selectedOr, concreteInfo.argTypes,
-                                   op->getLoc());
+      registry.getOrCreateInstance(*selectedOr, request.argTypes, op->getLoc());
   if (failed(instanceOr)) {
     op->emitWarning() << warningPrefix
                       << ": failed to instantiate OP-Lib candidate for op="
-                      << iface.opName << " dtype=" << dtype;
+                      << iface.opName << " dtype=" << request.dtype;
     return failure();
   }
 
-  return PlannedOpLowering{op, *selectedOr, *instanceOr};
+  PlannedOpLowering planned;
+  planned.op = op;
+  planned.selected = *selectedOr;
+  planned.operands.assign(request.operands.begin(), request.operands.end());
+  planned.instance = *instanceOr;
+  return planned;
 }
 
 static LogicalResult rewriteOneGroupedOpAsCall(const PlannedOpLowering &planned) {
   Operation *op = planned.op;
-  BinaryOpInterface iface = getBinaryOpInterface(op);
-  if (iface.opName.empty())
+  if (getBinaryOpInterface(op).opName.empty())
     return op->emitOpError("unsupported grouped op during OP-Lib lowering");
 
   OpBuilder builder(op);
-  auto call = builder.create<func::CallOp>(
-      op->getLoc(), planned.instance, ValueRange{iface.src0, iface.src1, iface.dst});
+  auto call =
+      builder.create<func::CallOp>(op->getLoc(), planned.instance, planned.operands);
 
   if (auto gid = op->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr))
     call->setAttr(kFusionGroupIdAttr, gid);
@@ -1828,14 +2133,14 @@ struct PTOInstantiateAndLowerToLibCallPass
       if (failed(plannedOr))
         continue;
 
-      BinaryOpInterface iface = getBinaryOpInterface(op);
       OpBuilder builder(op);
       builder.create<func::CallOp>(op->getLoc(), plannedOr->instance,
-                                   ValueRange{iface.src0, iface.src1, iface.dst});
+                                   plannedOr->operands);
       op->erase();
 
       if (debug) {
-        llvm::errs() << "[op-fusion] materialized single op=" << iface.opName
+        llvm::errs() << "[op-fusion] materialized single op="
+                     << plannedOr->selected.op
                      << " in @" << func.getSymName() << "\n";
       }
     }
