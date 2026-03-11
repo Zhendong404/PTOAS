@@ -213,39 +213,18 @@ struct MatchRequest {
   std::optional<int64_t> scalarPos;
   std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
-};
-
-struct BinaryOpInterface {
-  Value src0;
-  Value src1;
-  Value dst;
-  StringRef opName;
+  std::optional<std::string> requiredVariantId;
 };
 
 static bool isSupportedFusionOp(Operation *op) {
   return isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-             pto::TMinOp>(op);
-}
-
-static BinaryOpInterface getBinaryOpInterface(Operation *op) {
-  if (auto mul = dyn_cast<pto::TMulOp>(op))
-    return {mul.getSrc0(), mul.getSrc1(), mul.getDst(), "tmul"};
-  if (auto div = dyn_cast<pto::TDivOp>(op))
-    return {div.getSrc0(), div.getSrc1(), div.getDst(), "tdiv"};
-  if (auto add = dyn_cast<pto::TAddOp>(op))
-    return {add.getSrc0(), add.getSrc1(), add.getDst(), "tadd"};
-  if (auto sub = dyn_cast<pto::TSubOp>(op))
-    return {sub.getSrc0(), sub.getSrc1(), sub.getDst(), "tsub"};
-  if (auto max = dyn_cast<pto::TMaxOp>(op))
-    return {max.getSrc0(), max.getSrc1(), max.getDst(), "tmax"};
-  if (auto min = dyn_cast<pto::TMinOp>(op))
-    return {min.getSrc0(), min.getSrc1(), min.getDst(), "tmin"};
-  return {{}, {}, {}, ""};
-}
-
-static bool isSupportedOpName(StringRef opName) {
-  return opName == "tmul" || opName == "tdiv" || opName == "tadd" ||
-         opName == "tsub" || opName == "tmax" || opName == "tmin";
+             pto::TMinOp, pto::TRemOp, pto::TPartAddOp, pto::TPartMaxOp,
+             pto::TPartMinOp, pto::TPReluOp, pto::TAddSOp, pto::TSubSOp,
+             pto::TMulSOp, pto::TDivSOp, pto::TMaxSOp, pto::TMinSOp,
+             pto::TRemSOp, pto::TAddCOp, pto::TSubCOp, pto::TAddSCOp,
+             pto::TSubSCOp, pto::TAbsOp, pto::TNegOp, pto::TExpOp,
+             pto::TLogOp, pto::TSqrtOp, pto::TRsqrtOp, pto::TRecipOp,
+             pto::TReluOp, pto::TLReluOp>(op);
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -529,6 +508,18 @@ static bool isAllowedLayoutName(StringRef layoutName) {
 
 static bool containsString(ArrayRef<std::string> values, StringRef key) {
   return llvm::any_of(values, [&](const std::string &s) { return s == key; });
+}
+
+static bool canUseSeedRewriteFor(StringRef kind, StringRef op) {
+  if (kind == "l3_float_binary_elementwise_template")
+    return op == "tadd" || op == "tsub" || op == "tmul" || op == "tdiv" ||
+           op == "tmax" || op == "tmin";
+  if (kind == "l3_float_partial_binary_template")
+    return op == "tpartadd" || op == "tpartmax" || op == "tpartmin";
+  if (kind == "l3_float_tile_scalar_template")
+    return op == "tadds" || op == "tsubs" || op == "tmuls" || op == "tmaxs" ||
+           op == "tmins";
+  return false;
 }
 
 static FailureOr<SmallVector<TemplateArgRole, 4>>
@@ -1050,11 +1041,19 @@ struct TemplateRegistry {
     }
 
     FunctionType fnTy = imported.getFunctionType();
-    for (Type inTy : fnTy.getInputs()) {
+    for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), entry.argRoles)) {
+      if (role == TemplateArgRole::Scalar) {
+        if (!isOplibScalarType(inTy)) {
+          return emitFailureWithCode(imported.getLoc(), kErrDType,
+                                     "template scalar inputs must use builtin scalar types");
+        }
+        continue;
+      }
+
       auto tileTy = dyn_cast<pto::TileBufType>(inTy);
       if (!tileTy) {
         return emitFailureWithCode(imported.getLoc(), kErrEmptyBody,
-                                   "template inputs must be !pto.tile_buf");
+                                   "template tile inputs must be !pto.tile_buf");
       }
       Type elemTy = tileTy.getElementType();
       if (!isOplibTileElementType(elemTy)) {
@@ -1073,6 +1072,7 @@ struct TemplateRegistry {
     int coreCount = 0;
     std::string inferredVldDist;
     std::string inferredVstDist;
+    std::string inferredExecMode;
 
     llvm::DenseMap<Operation *, int64_t> preorder;
     int64_t seq = 0;
@@ -1150,6 +1150,11 @@ struct TemplateRegistry {
                                       "vector float binary arith op",
                                       /*requiredPrefix=*/"MODE_"))
           return;
+        if (inferredExecMode.empty()) {
+          auto execMode = op->getAttrOfType<StringAttr>(kSimdExecModeAttr);
+          if (execMode)
+            inferredExecMode = execMode.getValue().str();
+        }
       }
 
       if (isa<pto::SimdLoadOp, pto::SimdLoadPUOp>(op))
@@ -1270,13 +1275,25 @@ struct TemplateRegistry {
       return failure();
 
     // Canonicalization may rewrite vector.maskedload/store to vector.load/store
-    // and drop op attrs. Keep function-local fallback tokens on vector float
-    // arithmetic ops so EmitC lowering can still recover vld/vst tokens.
-    if (!inferredVldDist.empty() || !inferredVstDist.empty()) {
+    // and drop op attrs. Keep function-local and enclosing-op fallback tokens
+    // on imported OP-Lib regions so EmitC lowering can still recover vld/vst
+    // tokens from ancestors after later rewrites.
+    if (!inferredVldDist.empty() || !inferredVstDist.empty() ||
+        !inferredExecMode.empty()) {
       auto *ctx = imported.getContext();
+      if (!inferredVldDist.empty() && !imported->getAttr(kSimdVldDistAttr)) {
+        imported->setAttr(kSimdVldDistAttr,
+                          StringAttr::get(ctx, inferredVldDist));
+      }
+      if (!inferredVstDist.empty() && !imported->getAttr(kSimdVstDistAttr)) {
+        imported->setAttr(kSimdVstDistAttr,
+                          StringAttr::get(ctx, inferredVstDist));
+      }
+      if (!inferredExecMode.empty() && !imported->getAttr(kSimdExecModeAttr)) {
+        imported->setAttr(kSimdExecModeAttr,
+                          StringAttr::get(ctx, inferredExecMode));
+      }
       imported.walk([&](Operation *op) {
-        if (!isVectorFloatBinaryArith(op))
-          return;
         if (!inferredVldDist.empty() && !op->getAttr(kSimdVldDistAttr)) {
           op->setAttr(kSimdVldDistAttr,
                       StringAttr::get(ctx, inferredVldDist));
@@ -1284,6 +1301,10 @@ struct TemplateRegistry {
         if (!inferredVstDist.empty() && !op->getAttr(kSimdVstDistAttr)) {
           op->setAttr(kSimdVstDistAttr,
                       StringAttr::get(ctx, inferredVstDist));
+        }
+        if (!inferredExecMode.empty() && !op->getAttr(kSimdExecModeAttr)) {
+          op->setAttr(kSimdExecModeAttr,
+                      StringAttr::get(ctx, inferredExecMode));
         }
       });
     }
@@ -1550,6 +1571,9 @@ struct TemplateRegistry {
           continue;
         if (entry.matchDType != request.dtype)
           continue;
+        if (request.requiredVariantId &&
+            entry.variantId != *request.requiredVariantId)
+          continue;
 
         SelectedVariant selected;
         selected.entry = &entry;
@@ -1574,6 +1598,10 @@ struct TemplateRegistry {
         continue;
       }
 
+      if (request.requiredVariantId)
+        continue;
+      if (!canUseSeedRewriteFor(entry.kind, request.op))
+        continue;
       if (!containsString(entry.supportOps, request.op))
         continue;
       if (!containsString(entry.supportDTypes, request.dtype))
@@ -1638,7 +1666,11 @@ struct TemplateRegistry {
   FailureOr<func::FuncOp>
   getOrCreateInstance(const SelectedVariant &selected,
                       ArrayRef<Type> concreteArgTypes, Location loc) {
-    std::string key = selected.variantId;
+    std::string key = selected.kind;
+    key += "|";
+    key += selected.op;
+    key += "|";
+    key += selected.variantId;
     for (const std::string &piece : selected.instanceKeyAttrs) {
       key += "|";
       key += piece;
@@ -1656,8 +1688,10 @@ struct TemplateRegistry {
     for (Type ty : concreteArgTypes)
       argTypes.push_back(ty);
 
-    std::string symBase =
-        "__pto_oplib_inst_" + sanitizeSymbolComponent(selected.variantId);
+    std::string symBase = "__pto_oplib_inst_" +
+                          sanitizeSymbolComponent(selected.kind) + "_" +
+                          sanitizeSymbolComponent(selected.op) + "_" +
+                          sanitizeSymbolComponent(selected.variantId);
     std::string sym = symBase;
     int suffix = 0;
     while (symbolTable.lookup(sym))
@@ -1696,6 +1730,18 @@ struct TemplateRegistry {
     if (auto lanesAttr =
             selected.entry->symbol->getAttrOfType<IntegerAttr>(kSimdLanesAttr)) {
       inst->setAttr(kSimdLanesAttr, lanesAttr);
+    }
+    if (auto vldAttr =
+            selected.entry->symbol->getAttrOfType<StringAttr>(kSimdVldDistAttr)) {
+      inst->setAttr(kSimdVldDistAttr, vldAttr);
+    }
+    if (auto vstAttr =
+            selected.entry->symbol->getAttrOfType<StringAttr>(kSimdVstDistAttr)) {
+      inst->setAttr(kSimdVstDistAttr, vstAttr);
+    }
+    if (auto execModeAttr = selected.entry->symbol->getAttrOfType<StringAttr>(
+            kSimdExecModeAttr)) {
+      inst->setAttr(kSimdExecModeAttr, execModeAttr);
     }
 
     func::FuncOp source = selected.entry->symbol;
@@ -1839,17 +1885,20 @@ struct TemplateRegistry {
       Value lhs = core->getOperand(0);
       Value rhs = core->getOperand(1);
       Operation *newCore = nullptr;
-      if (selected.op == "tadd") {
+      if (selected.op == "tadd" || selected.op == "tpartadd" ||
+          selected.op == "tadds") {
         newCore = b.create<arith::AddFOp>(core->getLoc(), lhs, rhs);
-      } else if (selected.op == "tsub") {
+      } else if (selected.op == "tsub" || selected.op == "tsubs") {
         newCore = b.create<arith::SubFOp>(core->getLoc(), lhs, rhs);
-      } else if (selected.op == "tmul") {
+      } else if (selected.op == "tmul" || selected.op == "tmuls") {
         newCore = b.create<arith::MulFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tdiv") {
         newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
-      } else if (selected.op == "tmax") {
+      } else if (selected.op == "tmax" || selected.op == "tpartmax" ||
+                 selected.op == "tmaxs") {
         newCore = b.create<arith::MaximumFOp>(core->getLoc(), lhs, rhs);
-      } else if (selected.op == "tmin") {
+      } else if (selected.op == "tmin" || selected.op == "tpartmin" ||
+                 selected.op == "tmins") {
         newCore = b.create<arith::MinimumFOp>(core->getLoc(), lhs, rhs);
       } else {
         (void)emitFailureWithCode(core, kErrCoreSlot,
@@ -1932,43 +1981,278 @@ getTileOperandInfo(Value operand) {
   return failure();
 }
 
-static FailureOr<MatchRequest> buildBinaryMatchRequest(Operation *op) {
-  BinaryOpInterface iface = getBinaryOpInterface(op);
-  if (iface.opName.empty())
+static LogicalResult addTileOperandToRequest(MatchRequest &request, Value operand,
+                                             std::optional<Type> &elemTy) {
+  FailureOr<std::pair<Type, MatchKey>> infoOr = getTileOperandInfo(operand);
+  if (failed(infoOr))
     return failure();
-
-  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(iface.src0);
-  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(iface.src1);
-  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(iface.dst);
-  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(dstInfoOr))
+  if (elemTy && *elemTy != infoOr->first)
     return failure();
+  elemTy = infoOr->first;
+  request.argTypes.push_back(operand.getType());
+  request.operands.push_back(operand);
+  request.argMatches.push_back(infoOr->second);
+  return success();
+}
 
-  Type elemTy = src0InfoOr->first;
-  if (elemTy != src1InfoOr->first || elemTy != dstInfoOr->first)
+static LogicalResult addScalarOperandToRequest(MatchRequest &request, Value operand,
+                                               std::optional<Type> elemTy) {
+  Type ty = operand.getType();
+  if (!isOplibScalarType(ty))
     return failure();
+  if (elemTy && ty != *elemTy)
+    return failure();
+  request.argTypes.push_back(ty);
+  request.operands.push_back(operand);
+  request.argMatches.push_back(std::nullopt);
+  return success();
+}
 
+static FailureOr<MatchRequest>
+buildBinaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
+                            Value src1, Value dst) {
   MatchRequest request;
-  request.kind = kOpLibKindL3BinaryTemplate.str();
-  request.op = iface.opName.str();
-  request.dtype = dtypeToString(elemTy);
-  request.argTypes = {iface.src0.getType(), iface.src1.getType(), iface.dst.getType()};
-  request.operands = {iface.src0, iface.src1, iface.dst};
-  request.argMatches = {src0InfoOr->second, src1InfoOr->second, dstInfoOr->second};
+  request.kind = kind.str();
+  request.op = opName.str();
+
+  std::optional<Type> elemTy;
+  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
+      failed(addTileOperandToRequest(request, src1, elemTy)) ||
+      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+    return failure();
+  }
+
+  request.dtype = dtypeToString(*elemTy);
   return request;
+}
+
+static FailureOr<MatchRequest>
+buildUnaryTileMatchRequest(StringRef kind, StringRef opName, Value src,
+                           Value dst) {
+  MatchRequest request;
+  request.kind = kind.str();
+  request.op = opName.str();
+
+  std::optional<Type> elemTy;
+  if (failed(addTileOperandToRequest(request, src, elemTy)) ||
+      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+    return failure();
+  }
+
+  request.dtype = dtypeToString(*elemTy);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
+                            Value scalar, Value dst,
+                            std::optional<StringRef> requiredVariantId = std::nullopt) {
+  MatchRequest request;
+  request.kind = kind.str();
+  request.op = opName.str();
+  request.scalarPos = 1;
+  if (requiredVariantId)
+    request.requiredVariantId = requiredVariantId->str();
+
+  std::optional<Type> elemTy;
+  if (failed(addTileOperandToRequest(request, src, elemTy)) ||
+      failed(addScalarOperandToRequest(request, scalar, elemTy)) ||
+      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+    return failure();
+  }
+
+  request.dtype = dtypeToString(*elemTy);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildTernaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
+                             Value src1, Value src2, Value dst) {
+  MatchRequest request;
+  request.kind = kind.str();
+  request.op = opName.str();
+
+  std::optional<Type> elemTy;
+  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
+      failed(addTileOperandToRequest(request, src1, elemTy)) ||
+      failed(addTileOperandToRequest(request, src2, elemTy)) ||
+      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+    return failure();
+  }
+
+  request.dtype = dtypeToString(*elemTy);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildTernaryTileScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
+                                   Value scalar, Value src1, Value dst) {
+  MatchRequest request;
+  request.kind = kind.str();
+  request.op = opName.str();
+  request.scalarPos = 1;
+
+  std::optional<Type> elemTy;
+  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
+      failed(addScalarOperandToRequest(request, scalar, elemTy)) ||
+      failed(addTileOperandToRequest(request, src1, elemTy)) ||
+      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+    return failure();
+  }
+
+  request.dtype = dtypeToString(*elemTy);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildMatchRequest(Operation *op) {
+  if (auto mul = dyn_cast<pto::TMulOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tmul", mul.getSrc0(), mul.getSrc1(),
+                                       mul.getDst());
+  if (auto div = dyn_cast<pto::TDivOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tdiv", div.getSrc0(), div.getSrc1(),
+                                       div.getDst());
+  if (auto add = dyn_cast<pto::TAddOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tadd", add.getSrc0(), add.getSrc1(),
+                                       add.getDst());
+  if (auto sub = dyn_cast<pto::TSubOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tsub", sub.getSrc0(), sub.getSrc1(),
+                                       sub.getDst());
+  if (auto max = dyn_cast<pto::TMaxOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tmax", max.getSrc0(), max.getSrc1(),
+                                       max.getDst());
+  if (auto min = dyn_cast<pto::TMinOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "tmin", min.getSrc0(), min.getSrc1(),
+                                       min.getDst());
+  if (auto rem = dyn_cast<pto::TRemOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                       "trem", rem.getSrc0(), rem.getSrc1(),
+                                       rem.getDst());
+
+  if (auto partAdd = dyn_cast<pto::TPartAddOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_partial_binary_template",
+                                       "tpartadd", partAdd.getSrc0(),
+                                       partAdd.getSrc1(), partAdd.getDst());
+  if (auto partMax = dyn_cast<pto::TPartMaxOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_partial_binary_template",
+                                       "tpartmax", partMax.getSrc0(),
+                                       partMax.getSrc1(), partMax.getDst());
+  if (auto partMin = dyn_cast<pto::TPartMinOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_partial_binary_template",
+                                       "tpartmin", partMin.getSrc0(),
+                                       partMin.getSrc1(), partMin.getDst());
+
+  if (auto prelu = dyn_cast<pto::TPReluOp>(op))
+    return buildBinaryTileMatchRequest("l3_float_binary_special_template",
+                                       "tprelu", prelu.getSrc0(),
+                                       prelu.getSrc1(), prelu.getDst());
+
+  if (auto adds = dyn_cast<pto::TAddSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tadds", adds.getSrc(),
+                                       adds.getScalar(), adds.getDst());
+  if (auto subs = dyn_cast<pto::TSubSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tsubs", subs.getSrc(),
+                                       subs.getScalar(), subs.getDst());
+  if (auto muls = dyn_cast<pto::TMulSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tmuls", muls.getSrc0(),
+                                       muls.getScalar(), muls.getDst());
+  if (auto maxs = dyn_cast<pto::TMaxSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tmaxs", maxs.getSrc(),
+                                       maxs.getScalar(), maxs.getDst());
+  if (auto mins = dyn_cast<pto::TMinSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tmins", mins.getSrc(),
+                                       mins.getScalar(), mins.getDst());
+  if (auto rems = dyn_cast<pto::TRemSOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "trems", rems.getSrc(),
+                                       rems.getScalar(), rems.getDst(),
+                                       StringRef("tile_scalar"));
+  if (auto divs = dyn_cast<pto::TDivSOp>(op)) {
+    auto orderAttr =
+        divs->getAttrOfType<StringAttr>("pto.tdivs.order");
+    if (!orderAttr)
+      return failure();
+    StringRef order = orderAttr.getValue();
+    if (order != "tile_scalar" && order != "scalar_tile")
+      return failure();
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                       "tdivs", divs.getSrc(),
+                                       divs.getScalar(), divs.getDst(), order);
+  }
+
+  if (auto addc = dyn_cast<pto::TAddCOp>(op))
+    return buildTernaryTileMatchRequest("l3_float_ternary_tile_template",
+                                        "taddc", addc.getSrc0(),
+                                        addc.getSrc1(), addc.getSrc2(),
+                                        addc.getDst());
+  if (auto subc = dyn_cast<pto::TSubCOp>(op))
+    return buildTernaryTileMatchRequest("l3_float_ternary_tile_template",
+                                        "tsubc", subc.getSrc0(),
+                                        subc.getSrc1(), subc.getSrc2(),
+                                        subc.getDst());
+
+  if (auto addsc = dyn_cast<pto::TAddSCOp>(op))
+    return buildTernaryTileScalarMatchRequest(
+        "l3_float_ternary_tile_scalar_template", "taddsc", addsc.getSrc0(),
+        addsc.getScalar(), addsc.getSrc1(), addsc.getDst());
+  if (auto subsc = dyn_cast<pto::TSubSCOp>(op))
+    return buildTernaryTileScalarMatchRequest(
+        "l3_float_ternary_tile_scalar_template", "tsubsc", subsc.getSrc0(),
+        subsc.getScalar(), subsc.getSrc1(), subsc.getDst());
+
+  if (auto abs = dyn_cast<pto::TAbsOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_template", "tabs",
+                                      abs.getSrc(), abs.getDst());
+  if (auto neg = dyn_cast<pto::TNegOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_template", "tneg",
+                                      neg.getSrc(), neg.getDst());
+  if (auto recip = dyn_cast<pto::TRecipOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_template", "trecip",
+                                      recip.getSrc(), recip.getDst());
+  if (auto relu = dyn_cast<pto::TReluOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_template", "trelu",
+                                      relu.getSrc(), relu.getDst());
+
+  if (auto exp = dyn_cast<pto::TExpOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_math_template", "texp",
+                                      exp.getSrc(), exp.getDst());
+  if (auto log = dyn_cast<pto::TLogOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_math_template", "tlog",
+                                      log.getSrc(), log.getDst());
+  if (auto sqrt = dyn_cast<pto::TSqrtOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_math_template", "tsqrt",
+                                      sqrt.getSrc(), sqrt.getDst());
+  if (auto rsqrt = dyn_cast<pto::TRsqrtOp>(op))
+    return buildUnaryTileMatchRequest("l3_float_unary_math_template",
+                                      "trsqrt", rsqrt.getSrc(),
+                                      rsqrt.getDst());
+
+  if (auto lrelu = dyn_cast<pto::TLReluOp>(op))
+    return buildTileScalarMatchRequest("l3_float_unary_scalar_template",
+                                       "tlrelu", lrelu.getSrc(),
+                                       lrelu.getSlope(), lrelu.getDst());
+
+  return failure();
 }
 
 static FailureOr<PlannedOpLowering>
 planOneOpLowering(Operation *op, TemplateRegistry &registry,
                   StringRef warningPrefix) {
-  BinaryOpInterface iface = getBinaryOpInterface(op);
-  if (iface.opName.empty())
-    return failure();
-
-  FailureOr<MatchRequest> requestOr = buildBinaryMatchRequest(op);
+  FailureOr<MatchRequest> requestOr = buildMatchRequest(op);
   if (failed(requestOr)) {
     op->emitWarning() << warningPrefix
-                      << ": unsupported operand signature for op '" << iface.opName
-                      << "' (requires rank-2 memref/tile_buf operands)";
+                      << ": unsupported operand signature or missing match metadata";
     return failure();
   }
 
@@ -1977,7 +2261,7 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
       registry.selectVariantFor(request, op->getLoc());
   if (failed(selectedOr)) {
     op->emitWarning() << warningPrefix << ": no OP-Lib candidate for op="
-                      << iface.opName << " dtype=" << request.dtype;
+                      << request.op << " dtype=" << request.dtype;
     return failure();
   }
 
@@ -1986,7 +2270,7 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   if (failed(instanceOr)) {
     op->emitWarning() << warningPrefix
                       << ": failed to instantiate OP-Lib candidate for op="
-                      << iface.opName << " dtype=" << request.dtype;
+                      << request.op << " dtype=" << request.dtype;
     return failure();
   }
 
@@ -2000,9 +2284,6 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
 
 static LogicalResult rewriteOneGroupedOpAsCall(const PlannedOpLowering &planned) {
   Operation *op = planned.op;
-  if (getBinaryOpInterface(op).opName.empty())
-    return op->emitOpError("unsupported grouped op during OP-Lib lowering");
-
   OpBuilder builder(op);
   auto call =
       builder.create<func::CallOp>(op->getLoc(), planned.instance, planned.operands);

@@ -2004,6 +2004,18 @@ static FailureOr<llvm::StringRef>
 getRequiredA5OplibTokenAttr(Operation *op, llvm::StringRef attrName,
                             llvm::StringRef usageName,
                             llvm::StringRef requiredPrefix = "") {
+  auto inferDefaultToken = [&](Operation *scope) -> llvm::StringRef {
+    if (!scope || !scope->getAttr("pto.oplib.kind"))
+      return {};
+    if (attrName == kA5SimdVldDistAttr)
+      return llvm::StringRef("NORM");
+    if (attrName == kA5SimdVstDistAttr)
+      return llvm::StringRef("DIST_NORM");
+    if (attrName == kA5SimdExecModeAttr)
+      return llvm::StringRef("MODE_ZEROING");
+    return {};
+  };
+
   auto tokenAttr = op->getAttrOfType<StringAttr>(attrName);
   llvm::StringRef token;
   if (tokenAttr) {
@@ -2018,6 +2030,16 @@ getRequiredA5OplibTokenAttr(Operation *op, llvm::StringRef attrName,
       token = siblingAttr.getValue();
       if (!token.empty())
         break;
+    }
+  }
+  if (token.empty()) {
+    for (Operation *cursor = op->getParentOp(); cursor && token.empty();
+         cursor = cursor->getParentOp()) {
+      if (auto scopedAttr = cursor->getAttrOfType<StringAttr>(attrName)) {
+        token = scopedAttr.getValue();
+        break;
+      }
+      token = inferDefaultToken(cursor);
     }
   }
 
@@ -2036,6 +2058,28 @@ getRequiredA5OplibTokenAttr(Operation *op, llvm::StringRef attrName,
   }
 
   return token;
+}
+
+static void stampA5OplibFunctionTokenAttrs(ModuleOp module) {
+  auto stampFromBody = [&](func::FuncOp func, llvm::StringRef attrName) {
+    if (func->getAttr(attrName))
+      return;
+    StringAttr inferredAttr;
+    func.walk([&](Operation *op) {
+      if (inferredAttr)
+        return WalkResult::interrupt();
+      inferredAttr = op->getAttrOfType<StringAttr>(attrName);
+      return inferredAttr ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    if (inferredAttr)
+      func->setAttr(attrName, inferredAttr);
+  };
+
+  for (auto func : module.getOps<func::FuncOp>()) {
+    stampFromBody(func, kA5SimdVldDistAttr);
+    stampFromBody(func, kA5SimdVstDistAttr);
+    stampFromBody(func, kA5SimdExecModeAttr);
+  }
 }
 
 // CreatePredicate<T> expects a mutable uint32_t lvalue argument.
@@ -6130,6 +6174,9 @@ struct PTODivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     // The adaptor types may already be converted to emitc.opaque
     Value origSrc = op.getSrc();
     Value origScalar = op.getScalar();
+    auto orderAttr = op->getAttrOfType<StringAttr>("pto.tdivs.order");
+    bool orderIsScalarTile =
+        orderAttr && orderAttr.getValue() == "scalar_tile";
     
     // Determine order based on original operand types
     // Check if src is memref/tensor/partition_tensor_view/tile (not scalar)
@@ -6147,7 +6194,12 @@ struct PTODivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
 
-    if (srcIsMemref && !scalarIsMemref) {
+    if (orderIsScalarTile) {
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TDIVS",
+          ArrayAttr{}, ArrayAttr{},
+          ValueRange{dst, scalar, src});
+    } else if (srcIsMemref && !scalarIsMemref) {
       // memref/scalar: TDIVS(dst, src, scalar) - normal order
       rewriter.create<emitc::CallOpaqueOp>(
           loc, TypeRange{}, "TDIVS",
@@ -6185,12 +6237,20 @@ struct PTOTDivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     Value src    = peelUnrealized(adaptor.getSrc());
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
+    auto orderAttr = op->getAttrOfType<StringAttr>("pto.tdivs.order");
+    bool orderIsScalarTile =
+        orderAttr && orderAttr.getValue() == "scalar_tile";
 
     // Determine order based on operand types
     bool srcIsTile = isa<mlir::pto::TileBufType>(src.getType());
     bool scalarIsTile = isa<mlir::pto::TileBufType>(scalar.getType());
 
-    if (srcIsTile && !scalarIsTile) {
+    if (orderIsScalarTile) {
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TDIVS",
+          ArrayAttr{}, ArrayAttr{},
+          ValueRange{dst, scalar, src});
+    } else if (srcIsTile && !scalarIsTile) {
       // tile/scalar: TDIVS(dst, src, scalar)
       rewriter.create<emitc::CallOpaqueOp>(
           loc, TypeRange{}, "TDIVS",
@@ -8950,6 +9010,10 @@ struct EmitPTOManualPass
     }
 
     if (targetArch == PTOArch::A5) {
+      // Canonicalization and dialect conversion can materialize vector.load/store
+      // from masked forms after per-op attrs have already been stripped. Stamp
+      // function-local fallback tokens ahead of A5 vector validation/lowering.
+      stampA5OplibFunctionTokenAttrs(mop);
       bool hasUnsupportedA5Vector = false;
       mop.walk([&](Operation *op) {
         if (hasUnsupportedA5Vector)
