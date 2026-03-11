@@ -163,6 +163,23 @@ ptoas在build目录下
 
 构建完成后，需要配置环境变量以便系统能找到 Python 包和动态库。您可以将以下命令添加到 `.bashrc` 或启动脚本中。
 
+推荐直接使用项目内置脚本一键导入：
+
+```bash
+cd $PTO_SOURCE_DIR
+source scripts/ptoas_env.sh
+```
+
+如果你的目录结构与默认约定不同，可先覆盖路径变量再 `source`：
+
+```bash
+export LLVM_BUILD_DIR=/path/to/llvm-project/build-shared
+export PTO_INSTALL_DIR=/path/to/PTOAS/install
+source scripts/ptoas_env.sh
+```
+
+脚本位置：`scripts/ptoas_env.sh`
+
 ```bash
 # --- 运行时变量配置 (基于之前定义的路径) ---
 
