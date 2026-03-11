@@ -1750,12 +1750,13 @@ struct PTOViewToMemrefPass
           scalarOperand = src;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TDivSOp>(
+        auto newOp = rewriter.replaceOpWithNewOp<pto::TDivSOp>(
             op,
             TypeRange{},
             memrefOperand,
             scalarOperand,
             dst);
+        newOp->setAttrs(op->getAttrs());
       }
 
       SmallVector<mlir::pto::TExpandsOp, 8> expandsops;

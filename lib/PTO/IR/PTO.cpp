@@ -346,6 +346,9 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
   // Determine order based on types: if first operand is tile_buf, order is (tile, scalar)
   // Otherwise, order is (scalar, tile)
   const bool scalarFirst = (tile1 != nullptr);
+  attrs.set("pto.tdivs.order",
+            StringAttr::get(parser.getContext(),
+                            scalarFirst ? "scalar_tile" : "tile_scalar"));
 
   if (!scalarFirst) {
     // ins(%src, %scalar : tile_buf, scalar_ty)
@@ -369,32 +372,20 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
 }
 
 void mlir::pto::TDivSOp::print(OpAsmPrinter &p) {
-  // Determine order based on operand types
-  // If src is tile_buf and scalar is not, print (src, scalar)
-  // If src is scalar and scalar is tile_buf, print (scalar, src)
-  auto srcType = getSrc().getType();
-  auto scalarType = getScalar().getType();
-  
-  bool srcIsTile = isa<mlir::pto::TileBufType>(srcType);
-  bool scalarIsTile = isa<mlir::pto::TileBufType>(scalarType);
-  
+  auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order");
+  StringRef order = orderAttr ? orderAttr.getValue() : StringRef("tile_scalar");
+
   p << " ins(";
-  if (srcIsTile && !scalarIsTile) {
-    // Print: (tile, scalar) - operands are already in correct order
-    p << getSrc() << ", " << getScalar() << " : "
-      << getSrc().getType() << ", " << getScalar().getType();
-  } else if (!srcIsTile && scalarIsTile) {
-    // Print: (scalar, tile) - need to swap operands in output
+  if (order == "scalar_tile") {
     p << getScalar() << ", " << getSrc() << " : "
       << getScalar().getType() << ", " << getSrc().getType();
   } else {
-    // Default: assume src is tile (should not happen if types are correct)
     p << getSrc() << ", " << getScalar() << " : "
       << getSrc().getType() << ", " << getScalar().getType();
   }
   p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
 
-  p.printOptionalAttrDict((*this)->getAttrs());
+  p.printOptionalAttrDict((*this)->getAttrs(), {"pto.tdivs.order"});
 }
 
 
@@ -1578,6 +1569,13 @@ mlir::LogicalResult mlir::pto::TDivSOp::verify() {
 
   if (scalarTy != elemTy)
     return emitOpError("expects scalar type to match tilebuf element type");
+
+  if (auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order")) {
+    if (orderAttr.getValue() != "tile_scalar" &&
+        orderAttr.getValue() != "scalar_tile") {
+      return emitOpError("invalid pto.tdivs.order, expected tile_scalar or scalar_tile");
+    }
+  }
 
   return mlir::success();
 }

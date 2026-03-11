@@ -3126,32 +3126,74 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    Attribute valueAttr = adaptor.getValue();
 	    if (!valueAttr) valueAttr = op.getValue();
 
+	    auto buildFloatLiteral = [](FloatAttr floatAttr) {
+	      SmallString<32> valStr;
+	      floatAttr.getValue().toString(valStr);
+	      llvm::StringRef s(valStr);
+	      const bool hasFloatMarker =
+	          s.contains('.') || s.contains('e') || s.contains('E') ||
+	          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
+	          s.starts_with("0X") || s.starts_with("nan") ||
+	          s.starts_with("-nan") || s.starts_with("inf") ||
+	          s.starts_with("-inf");
+	      if (!hasFloatMarker)
+	        valStr.append(".0");
+	      if (!floatAttr.getType().isF64())
+	        valStr.append("f");
+	      return valStr.str().str();
+	    };
+
 	    if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(valueAttr)) {
-	      if (isa<VectorType>(op.getType())) {
+	      if (auto vecTy = dyn_cast<VectorType>(op.getType())) {
 	        auto opaqueTy = dyn_cast<emitc::OpaqueType>(newType);
 	        if (!opaqueTy)
 	          return failure();
 
-	        auto buildFloatLiteral = [](FloatAttr floatAttr) {
-	          SmallString<32> valStr;
-	          floatAttr.getValue().toString(valStr);
-	          llvm::StringRef s(valStr);
-	          const bool hasFloatMarker =
-	              s.contains('.') || s.contains('e') || s.contains('E') ||
-	              s.contains('p') || s.contains('P') || s.starts_with("0x") ||
-	              s.starts_with("0X") || s.starts_with("nan") ||
-	              s.starts_with("-nan") || s.starts_with("inf") ||
-	              s.starts_with("-inf");
-	          if (!hasFloatMarker)
-	            valStr.append(".0");
-	          if (!floatAttr.getType().isF64())
-	            valStr.append("f");
-	          return valStr.str().str();
-	        };
+	        if (denseAttr.isSplat() && opaqueTy.getValue().starts_with("RegTensor<")) {
+	          Type scalarTy = getTypeConverter()->convertType(vecTy.getElementType());
+	          if (!scalarTy)
+	            return failure();
+
+	          Attribute splatAttr = denseAttr.getSplatValue<Attribute>();
+	          emitc::OpaqueAttr scalarAttr;
+	          if (auto splatFloat = dyn_cast<FloatAttr>(splatAttr)) {
+	            scalarAttr =
+	                emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(splatFloat));
+	          } else if (auto splatInt = dyn_cast<IntegerAttr>(splatAttr)) {
+	            scalarAttr = emitc::OpaqueAttr::get(
+	                rewriter.getContext(),
+	                std::to_string(splatInt.getValue().getSExtValue()));
+	          } else {
+	            return failure();
+	          }
+
+	          auto scalarConst = rewriter.create<emitc::ConstantOp>(
+	              op.getLoc(), scalarTy, scalarAttr);
+	          auto predOr =
+	              buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+	                               "arith.constant");
+	          if (failed(predOr))
+	            return failure();
+
+	          auto *ctx = rewriter.getContext();
+	          auto regVar = rewriter.create<emitc::VariableOp>(
+	              op.getLoc(), newType, emitc::OpaqueAttr::get(ctx, ""));
+	          auto args = rewriter.getArrayAttr(
+	              {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+	               rewriter.getIndexAttr(2),
+	               emitc::OpaqueAttr::get(ctx, "MODE_MERGING")});
+	          rewriter.create<emitc::CallOpaqueOp>(
+	              op.getLoc(), TypeRange{}, "vdup",
+	              ValueRange{regVar.getResult(), scalarConst.getResult(), *predOr},
+	              args, ArrayAttr{});
+	          rewriter.replaceOp(op, regVar.getResult());
+	          return success();
+	        }
 
 	        std::string expr;
 	        if (denseAttr.isSplat()) {
-	          if (auto splatFloat = dyn_cast<FloatAttr>(denseAttr.getSplatValue<Attribute>())) {
+	          if (auto splatFloat =
+	                  dyn_cast<FloatAttr>(denseAttr.getSplatValue<Attribute>())) {
 	            expr = (opaqueTy.getValue() + "(" + buildFloatLiteral(splatFloat) + ")").str();
 	          } else if (auto splatInt =
 	                         dyn_cast<IntegerAttr>(denseAttr.getSplatValue<Attribute>())) {
@@ -3170,23 +3212,8 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    }
 
 		    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
-		      SmallString<32> valStr;
-		      floatAttr.getValue().toString(valStr);
-		      llvm::StringRef s(valStr);
-		      // Ensure the literal parses as a floating-point constant in C/C++.
-		      // `APFloat::toString` may emit "1" for integral values; make it "1.0".
-		      const bool hasFloatMarker =
-		          s.contains('.') || s.contains('e') || s.contains('E') ||
-		          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
-		          s.starts_with("0X") || s.starts_with("nan") ||
-		          s.starts_with("-nan") || s.starts_with("inf") ||
-		          s.starts_with("-inf");
-		      if (!hasFloatMarker)
-		        valStr.append(".0");
-		      // Suffix: keep `f` for f16/f32; omit for f64.
-		      if (!floatAttr.getType().isF64())
-		        valStr.append("f");
-		      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
+		      auto constAttr =
+		          emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(floatAttr));
 		      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
 		      return success();
 		    }

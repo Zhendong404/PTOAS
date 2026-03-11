@@ -1,283 +1,211 @@
-#!/usr/bin/env python3
-
-import argparse
-
-
-STATIC_TILE = (
-    "!pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, "
-    "blayout=row_major, slayout=none_box, fractal=512, pad=0>"
-)
-
-DYNAMIC_TILE = (
-    "!pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, "
-    "blayout=row_major, slayout=none_box, fractal=512, pad=0>"
-)
+from mlir.ir import Context, InsertionPoint, Location, Module
+from mlir.dialects import arith, func, pto
+from mlir.ir import F32Type, IndexType
 
 
-def indent(lines, depth=4):
-    prefix = " " * depth
-    return "\n".join(prefix + line if line else "" for line in lines)
+def build():
+    with Context() as ctx:
+        pto.register_dialect(ctx, load=True)
 
+        with Location.unknown(ctx):
+            module = Module.create()
 
-def render_alloc(name, tile_ty, valid_row=None, valid_col=None):
-    if valid_row is not None and valid_col is not None:
-        return (
-            f"%{name} = pto.alloc_tile valid_row = %{valid_row} valid_col = %{valid_col} "
-            f": {tile_ty}"
-        )
-    return f"%{name} = pto.alloc_tile : {tile_ty}"
+            f32 = F32Type.get(ctx)
+            index = IndexType.get(ctx)
+            ptr_f32 = pto.PtrType.get(f32, ctx)
 
+            tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
+            tile_view_32 = pto.PartitionTensorViewType.get([32, 32], f32, ctx)
+            vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
+            bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
+            sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
+            pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
 
-def render_ops(tile_ty):
-    return [
-        f"pto.tadd ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tadd_out : {tile_ty})",
-        f"pto.tsub ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tsub_out : {tile_ty})",
-        f"pto.tmul ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tmul_out : {tile_ty})",
-        f"pto.tdiv ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tdiv_out : {tile_ty})",
-        f"pto.tmax ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tmax_out : {tile_ty})",
-        f"pto.tmin ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tmin_out : {tile_ty})",
-        f"pto.trem ins(%a, %b : {tile_ty}, {tile_ty}) outs(%trem_out : {tile_ty})",
-        f"pto.tprelu ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tprelu_out : {tile_ty})",
-        f"pto.tadds ins(%a, %scale : {tile_ty}, f32) outs(%tadds_out : {tile_ty})",
-        f"pto.tsubs ins(%a, %scale : {tile_ty}, f32) outs(%tsubs_out : {tile_ty})",
-        f"pto.tmuls ins(%a, %scale : {tile_ty}, f32) outs(%tmuls_out : {tile_ty})",
-        f"pto.tdivs ins(%a, %scale : {tile_ty}, f32) outs(%tdivs_ts_out : {tile_ty})",
-        f"pto.tdivs ins(%scale, %a : f32, {tile_ty}) outs(%tdivs_st_out : {tile_ty})",
-        f"pto.tmaxs ins(%a, %scale : {tile_ty}, f32) outs(%tmaxs_out : {tile_ty})",
-        f"pto.tmins ins(%a, %scale : {tile_ty}, f32) outs(%tmins_out : {tile_ty})",
-        f"pto.trems ins(%a, %scale : {tile_ty}, f32) outs(%trems_out : {tile_ty})",
-        f"pto.taddc ins(%a, %b, %c : {tile_ty}, {tile_ty}, {tile_ty}) outs(%taddc_out : {tile_ty})",
-        f"pto.tsubc ins(%a, %b, %c : {tile_ty}, {tile_ty}, {tile_ty}) outs(%tsubc_out : {tile_ty})",
-        f"pto.taddsc ins(%a, %bias, %b : {tile_ty}, f32, {tile_ty}) outs(%taddsc_out : {tile_ty})",
-        f"pto.tsubsc ins(%a, %bias, %b : {tile_ty}, f32, {tile_ty}) outs(%tsubsc_out : {tile_ty})",
-        f"pto.tabs ins(%a : {tile_ty}) outs(%tabs_out : {tile_ty})",
-        f"pto.tneg ins(%a : {tile_ty}) outs(%tneg_out : {tile_ty})",
-        f"pto.texp ins(%a : {tile_ty}) outs(%texp_out : {tile_ty})",
-        f"pto.tlog ins(%a : {tile_ty}) outs(%tlog_out : {tile_ty})",
-        f"pto.tsqrt ins(%a : {tile_ty}) outs(%tsqrt_out : {tile_ty})",
-        f"pto.trsqrt ins(%a : {tile_ty}) outs(%trsqrt_out : {tile_ty})",
-        f"pto.trecip ins(%a : {tile_ty}) outs(%trecip_out : {tile_ty})",
-        f"pto.trelu ins(%a : {tile_ty}) outs(%trelu_out : {tile_ty})",
-        f"pto.tlrelu ins(%a, %slope : {tile_ty}, f32) outs(%tlrelu_out : {tile_ty})",
-    ]
+            fractal_ab_size = pto.TileConfig.fractalABSize
+            cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
+            tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
 
+            fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32, ptr_f32], [])
+            with InsertionPoint(module.body):
+                fn = func.FuncOp("vector_arith_44_kernel_2d", fn_ty)
+                entry = fn.add_entry_block()
 
-def render_partial_ops(tile_ty):
-    return [
-        f"pto.tpartadd ins(%part0, %part1 : {tile_ty}, {tile_ty}) outs(%tpartadd_out : {tile_ty})",
-        f"pto.tpartmax ins(%part0, %part1 : {tile_ty}, {tile_ty}) outs(%tpartmax_out : {tile_ty})",
-        f"pto.tpartmin ins(%part0, %part1 : {tile_ty}, {tile_ty}) outs(%tpartmin_out : {tile_ty})",
-    ]
+            with InsertionPoint(entry):
+                c0 = arith.ConstantOp(index, 0).result
+                c1 = arith.ConstantOp(index, 1).result
+                c32 = arith.ConstantOp(index, 32).result
+                scale = arith.ConstantOp(f32, 2.0).result
+                bias = arith.ConstantOp(f32, -0.125).result
+                slope = arith.ConstantOp(f32, 0.3125).result
 
+                arg_a, arg_b, arg_c, arg_out = entry.arguments
 
-def render_static_case():
-    allocs = [
-        render_alloc("a", STATIC_TILE),
-        render_alloc("b", STATIC_TILE),
-        render_alloc("c", STATIC_TILE),
-    ]
-    allocs.extend(
-        render_alloc(name, STATIC_TILE)
-        for name in [
-            "tadd_out",
-            "tsub_out",
-            "tmul_out",
-            "tdiv_out",
-            "tmax_out",
-            "tmin_out",
-            "trem_out",
-            "tprelu_out",
-            "tadds_out",
-            "tsubs_out",
-            "tmuls_out",
-            "tdivs_ts_out",
-            "tdivs_st_out",
-            "tmaxs_out",
-            "tmins_out",
-            "trems_out",
-            "taddc_out",
-            "tsubc_out",
-            "taddsc_out",
-            "tsubsc_out",
-            "tabs_out",
-            "tneg_out",
-            "texp_out",
-            "tlog_out",
-            "tsqrt_out",
-            "trsqrt_out",
-            "trecip_out",
-            "trelu_out",
-            "tlrelu_out",
-            "part0",
-            "part1",
-            "tpartadd_out",
-            "tpartmax_out",
-            "tpartmin_out",
-        ]
-    )
+                tv_a = pto.MakeTensorViewOp(tv2_f32, arg_a, [c32, c32], [c32, c1]).result
+                tv_b = pto.MakeTensorViewOp(tv2_f32, arg_b, [c32, c32], [c32, c1]).result
+                tv_c = pto.MakeTensorViewOp(tv2_f32, arg_c, [c32, c32], [c32, c1]).result
+                tv_out = pto.MakeTensorViewOp(tv2_f32, arg_out, [c32, c32], [c32, c1]).result
 
-    lines = [
-        "module {",
-        "  func.func @vector_arith_44_static() {",
-        "    %scale = arith.constant 2.000000e+00 : f32",
-        "    %bias = arith.constant -1.250000e-01 : f32",
-        "    %slope = arith.constant 3.125000e-01 : f32",
-        indent(allocs),
-        indent(render_ops(STATIC_TILE)),
-        indent(render_partial_ops(STATIC_TILE)),
-        "    return",
-        "  }",
-        "}",
-    ]
-    return "\n".join(lines) + "\n"
+                sv_a = pto.PartitionViewOp(
+                    tile_view_32, tv_a, offsets=[c0, c0], sizes=[c32, c32]
+                ).result
+                sv_b = pto.PartitionViewOp(
+                    tile_view_32, tv_b, offsets=[c0, c0], sizes=[c32, c32]
+                ).result
+                sv_c = pto.PartitionViewOp(
+                    tile_view_32, tv_c, offsets=[c0, c0], sizes=[c32, c32]
+                ).result
+                tb_a = pto.AllocTileOp(tile_buf_32).result
+                tb_b = pto.AllocTileOp(tile_buf_32).result
+                tb_c = pto.AllocTileOp(tile_buf_32).result
 
+                pto.TLoadOp(None, sv_a, tb_a)
+                pto.TLoadOp(None, sv_b, tb_b)
+                pto.TLoadOp(None, sv_c, tb_c)
 
-def render_dynamic_case():
-    allocs = [
-        render_alloc("a", DYNAMIC_TILE, "vrow", "vcol"),
-        render_alloc("b", DYNAMIC_TILE, "vrow", "vcol"),
-        render_alloc("c", DYNAMIC_TILE, "vrow", "vcol"),
-    ]
-    allocs.extend(
-        render_alloc(name, DYNAMIC_TILE, "vrow", "vcol")
-        for name in [
-            "tadd_out",
-            "tsub_out",
-            "tmul_out",
-            "tdiv_out",
-            "tmax_out",
-            "tmin_out",
-            "trem_out",
-            "tprelu_out",
-            "tadds_out",
-            "tsubs_out",
-            "tmuls_out",
-            "tdivs_ts_out",
-            "tdivs_st_out",
-            "tmaxs_out",
-            "tmins_out",
-            "trems_out",
-            "taddc_out",
-            "tsubc_out",
-            "taddsc_out",
-            "tsubsc_out",
-            "tabs_out",
-            "tneg_out",
-            "texp_out",
-            "tlog_out",
-            "tsqrt_out",
-            "trsqrt_out",
-            "trecip_out",
-            "trelu_out",
-            "tlrelu_out",
-        ]
-    )
-    allocs.extend(
-        [
-            render_alloc("part0", DYNAMIC_TILE, "part0_row", "part0_col"),
-            render_alloc("part1", DYNAMIC_TILE, "part1_row", "part1_col"),
-            render_alloc("tpartadd_out", DYNAMIC_TILE, "partd_row", "partd_col"),
-            render_alloc("tpartmax_out", DYNAMIC_TILE, "partd_row", "partd_col"),
-            render_alloc("tpartmin_out", DYNAMIC_TILE, "partd_row", "partd_col"),
-        ]
-    )
+                def store_result(idx, tile):
+                    offset = arith.ConstantOp(index, idx * 32 * 32).result
+                    out_ptr = pto.AddPtrOp(arg_out, offset).result
+                    out_tv = pto.MakeTensorViewOp(
+                        tv2_f32, out_ptr, [c32, c32], [c32, c1]
+                    ).result
+                    out_sv = pto.PartitionViewOp(
+                        tile_view_32, out_tv, offsets=[c0, c0], sizes=[c32, c32]
+                    ).result
+                    pto.TStoreOp(None, tile, out_sv)
 
-    lines = [
-        "module {",
-        "  func.func @vector_arith_44_dynamic(",
-        "      %valid_row: i32, %valid_col: i32,",
-        "      %part0_valid_row: i32, %part0_valid_col: i32,",
-        "      %part1_valid_row: i32, %part1_valid_col: i32,",
-        "      %partd_valid_row: i32, %partd_valid_col: i32) {",
-        "    %scale = arith.constant 2.000000e+00 : f32",
-        "    %bias = arith.constant -1.250000e-01 : f32",
-        "    %slope = arith.constant 3.125000e-01 : f32",
-        "    %vrow = arith.index_cast %valid_row : i32 to index",
-        "    %vcol = arith.index_cast %valid_col : i32 to index",
-        "    %part0_row = arith.index_cast %part0_valid_row : i32 to index",
-        "    %part0_col = arith.index_cast %part0_valid_col : i32 to index",
-        "    %part1_row = arith.index_cast %part1_valid_row : i32 to index",
-        "    %part1_col = arith.index_cast %part1_valid_col : i32 to index",
-        "    %partd_row = arith.index_cast %partd_valid_row : i32 to index",
-        "    %partd_col = arith.index_cast %partd_valid_col : i32 to index",
-        indent(allocs),
-        indent(render_ops(DYNAMIC_TILE)),
-        indent(render_partial_ops(DYNAMIC_TILE)),
-        "    return",
-        "  }",
-        "}",
-    ]
-    return "\n".join(lines) + "\n"
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TAddOp(tb_a, tb_b, tb_out)
+                store_result(0, tb_out)
 
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TSubOp(tb_a, tb_b, tb_out)
+                store_result(1, tb_out)
 
-def render_emitc_case():
-    tile_ty = DYNAMIC_TILE
-    lines = [
-        "module {",
-        "  func.func @vector_arith_44_emitc(",
-        "      %valid_row: i32, %valid_col: i32,",
-        "      %part0_valid_row: i32, %part0_valid_col: i32,",
-        "      %part1_valid_row: i32, %part1_valid_col: i32,",
-        "      %partd_valid_row: i32, %partd_valid_col: i32) {",
-        "    %scale = arith.constant 2.000000e+00 : f32",
-        "    %slope = arith.constant 3.125000e-01 : f32",
-        "    %vrow = arith.index_cast %valid_row : i32 to index",
-        "    %vcol = arith.index_cast %valid_col : i32 to index",
-        "    %part0_row = arith.index_cast %part0_valid_row : i32 to index",
-        "    %part0_col = arith.index_cast %part0_valid_col : i32 to index",
-        "    %part1_row = arith.index_cast %part1_valid_row : i32 to index",
-        "    %part1_col = arith.index_cast %part1_valid_col : i32 to index",
-        "    %partd_row = arith.index_cast %partd_valid_row : i32 to index",
-        "    %partd_col = arith.index_cast %partd_valid_col : i32 to index",
-        indent(
-            [
-                render_alloc("a", tile_ty, "vrow", "vcol"),
-                render_alloc("b", tile_ty, "vrow", "vcol"),
-                render_alloc("trem_out", tile_ty, "vrow", "vcol"),
-                render_alloc("tprelu_out", tile_ty, "vrow", "vcol"),
-                render_alloc("tlrelu_out", tile_ty, "vrow", "vcol"),
-                render_alloc("texp_out", tile_ty, "vrow", "vcol"),
-                render_alloc("tsqrt_out", tile_ty, "vrow", "vcol"),
-                render_alloc("part0", tile_ty, "part0_row", "part0_col"),
-                render_alloc("part1", tile_ty, "part1_row", "part1_col"),
-                render_alloc("tpartadd_out", tile_ty, "partd_row", "partd_col"),
-            ]
-        ),
-        indent(
-            [
-                f"pto.trem ins(%a, %b : {tile_ty}, {tile_ty}) outs(%trem_out : {tile_ty})",
-                f"pto.tprelu ins(%a, %b : {tile_ty}, {tile_ty}) outs(%tprelu_out : {tile_ty})",
-                f"pto.tlrelu ins(%a, %slope : {tile_ty}, f32) outs(%tlrelu_out : {tile_ty})",
-                f"pto.texp ins(%a : {tile_ty}) outs(%texp_out : {tile_ty})",
-                f"pto.tsqrt ins(%a : {tile_ty}) outs(%tsqrt_out : {tile_ty})",
-                f"pto.tpartadd ins(%part0, %part1 : {tile_ty}, {tile_ty}) outs(%tpartadd_out : {tile_ty})",
-            ]
-        ),
-        "    return",
-        "  }",
-        "}",
-    ]
-    return "\n".join(lines) + "\n"
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMulOp(tb_a, tb_b, tb_out)
+                store_result(2, tb_out)
 
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TDivOp(tb_a, tb_b, tb_out)
+                store_result(3, tb_out)
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode",
-        choices=["static", "dynamic", "emitc"],
-        required=True,
-        help="Select which 4.4 vector arithmetic PTO case to emit.",
-    )
-    args = parser.parse_args()
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMaxOp(tb_a, tb_b, tb_out)
+                store_result(4, tb_out)
 
-    if args.mode == "static":
-        print(render_static_case(), end="")
-        return
-    if args.mode == "dynamic":
-        print(render_dynamic_case(), end="")
-        return
-    print(render_emitc_case(), end="")
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMinOp(tb_a, tb_b, tb_out)
+                store_result(5, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TRemOp(tb_a, tb_b, tb_out)
+                store_result(6, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TPReluOp(tb_a, tb_b, tb_out)
+                store_result(7, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TAddSOp(tb_a, scale, tb_out)
+                store_result(8, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TSubSOp(tb_a, scale, tb_out)
+                store_result(9, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMulSOp(tb_a, scale, tb_out)
+                store_result(10, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TDivSOp(tb_a, scale, tb_out)
+                store_result(11, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TDivSOp(scale, tb_a, tb_out)
+                store_result(12, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMaxSOp(tb_a, scale, tb_out)
+                store_result(13, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TMinSOp(tb_a, scale, tb_out)
+                store_result(14, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TRemSOp(tb_a, scale, tb_out)
+                store_result(15, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TAddCOp(tb_a, tb_b, tb_c, tb_out)
+                store_result(16, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TSubCOp(tb_a, tb_b, tb_c, tb_out)
+                store_result(17, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TAddSCOp(tb_a, bias, tb_b, tb_out)
+                store_result(18, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TSubSCOp(tb_a, bias, tb_b, tb_out)
+                store_result(19, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TAbsOp(tb_a, tb_out)
+                store_result(20, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TNegOp(tb_a, tb_out)
+                store_result(21, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TExpOp(tb_a, tb_out)
+                store_result(22, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TLogOp(tb_a, tb_out)
+                store_result(23, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TSqrtOp(tb_a, tb_out)
+                store_result(24, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TRsqrtOp(tb_a, tb_out)
+                store_result(25, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TRecipOp(tb_a, tb_out)
+                store_result(26, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TReluOp(tb_a, tb_out)
+                store_result(27, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TLReluOp(tb_a, slope, tb_out)
+                store_result(28, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TPartAddOp(tb_a, tb_b, tb_out)
+                store_result(29, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TPartMaxOp(tb_a, tb_b, tb_out)
+                store_result(30, tb_out)
+
+                tb_out = pto.AllocTileOp(tile_buf_32).result
+                pto.TPartMinOp(tb_a, tb_b, tb_out)
+                store_result(31, tb_out)
+
+                func.ReturnOp([])
+
+            module.operation.verify()
+            return module
 
 
 if __name__ == "__main__":
-    main()
+    print(build())
