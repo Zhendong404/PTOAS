@@ -62,10 +62,6 @@
 // RUN: cp %S/resources/bad_invalid_scalar_pos_template.txt %t.bad_scalar_pos/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_scalar_pos --pto-arch=a5 -o %t.bad_scalar_pos.cpp > %t.bad_scalar_pos.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-SCALAR-POS < %t.bad_scalar_pos.log
-// RUN: rm -rf %t.bad_cmp_mode && mkdir -p %t.bad_cmp_mode
-// RUN: cp %S/resources/bad_missing_cmp_mode_template.txt %t.bad_cmp_mode/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_cmp_mode --pto-arch=a5 -o %t.bad_cmp_mode.cpp > %t.bad_cmp_mode.log 2>&1
-// RUN: FileCheck %s --check-prefix=BAD-CMP-MODE < %t.bad_cmp_mode.log
 // RUN: rm -rf %t.bad_is_binary && mkdir -p %t.bad_is_binary
 // RUN: cp %S/resources/bad_missing_is_binary_template.txt %t.bad_is_binary/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_is_binary --pto-arch=a5 -o %t.bad_is_binary.cpp > %t.bad_is_binary.log 2>&1
@@ -101,7 +97,6 @@
 // BAD-SIG: invalid OP-Lib signature for kind=l3_float_unary_template
 // BAD-ARG-MATCH: missing or invalid arg1 match attrs
 // BAD-SCALAR-POS: invalid pto.oplib.match.scalar_pos
-// BAD-CMP-MODE: missing required attr: pto.oplib.match.cmp_mode
 // BAD-IS-BINARY: missing required attr: pto.oplib.match.is_binary
 // BAD-MATH: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MATH: math.sin

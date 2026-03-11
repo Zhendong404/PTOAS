@@ -66,8 +66,6 @@ static constexpr llvm::StringLiteral kOpLibAttrMatchFractal =
     "pto.oplib.match.fractal";
 static constexpr llvm::StringLiteral kOpLibAttrMatchScalarPos =
     "pto.oplib.match.scalar_pos";
-static constexpr llvm::StringLiteral kOpLibAttrMatchCmpMode =
-    "pto.oplib.match.cmp_mode";
 static constexpr llvm::StringLiteral kOpLibAttrMatchIsBinary =
     "pto.oplib.match.is_binary";
 static constexpr llvm::StringLiteral kOpLibAttrCost = "pto.oplib.cost";
@@ -175,7 +173,6 @@ struct TemplateEntry {
   SmallVector<TemplateArgRole, 4> argRoles;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
   std::optional<int64_t> scalarPos;
-  std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
   int64_t cost = 0;
   int64_t priority = 0;
@@ -211,20 +208,18 @@ struct MatchRequest {
   SmallVector<Value, 4> operands;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
   std::optional<int64_t> scalarPos;
-  std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
   std::optional<std::string> requiredVariantId;
 };
 
 static bool isSupportedFusionOp(Operation *op) {
   return isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-             pto::TMinOp, pto::TRemOp, pto::TPartAddOp, pto::TPartMaxOp,
-             pto::TPartMinOp, pto::TPReluOp, pto::TAddSOp, pto::TSubSOp,
-             pto::TMulSOp, pto::TDivSOp, pto::TMaxSOp, pto::TMinSOp,
-             pto::TRemSOp, pto::TAddCOp, pto::TSubCOp, pto::TAddSCOp,
-             pto::TSubSCOp, pto::TAbsOp, pto::TNegOp, pto::TExpOp,
-             pto::TLogOp, pto::TSqrtOp, pto::TRsqrtOp, pto::TRecipOp,
-             pto::TReluOp, pto::TLReluOp>(op);
+             pto::TMinOp, pto::TPartAddOp, pto::TPartMaxOp, pto::TPartMinOp,
+             pto::TAddSOp, pto::TSubSOp, pto::TMulSOp, pto::TDivSOp,
+             pto::TMaxSOp, pto::TMinSOp, pto::TAddCOp, pto::TSubCOp,
+             pto::TAddSCOp, pto::TSubSCOp, pto::TAbsOp, pto::TNegOp,
+             pto::TExpOp, pto::TLogOp, pto::TSqrtOp, pto::TRsqrtOp,
+             pto::TRecipOp, pto::TReluOp>(op);
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -576,12 +571,6 @@ getTemplateArgRolesForKind(StringRef kind) {
                    TemplateArgRole::Tile}))
       .Case("l3_scalar_expand_template",
             build({TemplateArgRole::Scalar, TemplateArgRole::Tile}))
-      .Case("l3_cmp_tile_tile_template",
-            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
-                   TemplateArgRole::Tile}))
-      .Case("l3_cmp_tile_scalar_template",
-            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
-                   TemplateArgRole::Tile}))
       .Case("l3_select_mask_template",
             build({TemplateArgRole::Tile, TemplateArgRole::Tile,
                    TemplateArgRole::Tile, TemplateArgRole::Tile}))
@@ -597,11 +586,6 @@ getTemplateArgRolesForKind(StringRef kind) {
       .Case("l3_int_unary_template",
             build({TemplateArgRole::Tile, TemplateArgRole::Tile}))
       .Default(failure());
-}
-
-static bool kindRequiresCmpMode(StringRef kind) {
-  return kind == "l3_cmp_tile_tile_template" ||
-         kind == "l3_cmp_tile_scalar_template";
 }
 
 static bool kindRequiresIsBinary(StringRef kind) {
@@ -893,17 +877,6 @@ struct TemplateRegistry {
         return failure();
       }
       entry->scalarPos = scalarPos;
-    }
-
-    if (auto cmpModeAttr = op->getAttrOfType<StringAttr>(kOpLibAttrMatchCmpMode)) {
-      if (cmpModeAttr.getValue().empty()) {
-        imported.emitError("invalid empty pto.oplib.match.cmp_mode");
-        return failure();
-      }
-      entry->cmpMode = cmpModeAttr.getValue().str();
-    } else if (kindRequiresCmpMode(entry->kind)) {
-      imported.emitError("missing required attr: pto.oplib.match.cmp_mode");
-      return failure();
     }
 
     if (auto isBinaryAttr = op->getAttrOfType<BoolAttr>(kOpLibAttrMatchIsBinary)) {
@@ -1550,8 +1523,6 @@ struct TemplateRegistry {
     if (entry.scalarPos &&
         (!target.scalarPos || *entry.scalarPos != *target.scalarPos))
       return false;
-    if (entry.cmpMode && (!target.cmpMode || *entry.cmpMode != *target.cmpMode))
-      return false;
     if (entry.isBinary &&
         (!target.isBinary || *entry.isBinary != *target.isBinary))
       return false;
@@ -1588,8 +1559,6 @@ struct TemplateRegistry {
         if (request.scalarPos)
           selected.instanceKeyAttrs.push_back("scalar_pos=" +
                                              std::to_string(*request.scalarPos));
-        if (request.cmpMode)
-          selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
         if (request.isBinary)
           selected.instanceKeyAttrs.push_back("is_binary=" +
                                              std::string(*request.isBinary ? "true"
@@ -1623,8 +1592,6 @@ struct TemplateRegistry {
       if (request.scalarPos)
         selected.instanceKeyAttrs.push_back("scalar_pos=" +
                                            std::to_string(*request.scalarPos));
-      if (request.cmpMode)
-        selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
       if (request.isBinary)
         selected.instanceKeyAttrs.push_back("is_binary=" +
                                            std::string(*request.isBinary ? "true"
@@ -2130,11 +2097,6 @@ buildMatchRequest(Operation *op) {
     return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
                                        "tmin", min.getSrc0(), min.getSrc1(),
                                        min.getDst());
-  if (auto rem = dyn_cast<pto::TRemOp>(op))
-    return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
-                                       "trem", rem.getSrc0(), rem.getSrc1(),
-                                       rem.getDst());
-
   if (auto partAdd = dyn_cast<pto::TPartAddOp>(op))
     return buildBinaryTileMatchRequest("l3_float_partial_binary_template",
                                        "tpartadd", partAdd.getSrc0(),
@@ -2147,11 +2109,6 @@ buildMatchRequest(Operation *op) {
     return buildBinaryTileMatchRequest("l3_float_partial_binary_template",
                                        "tpartmin", partMin.getSrc0(),
                                        partMin.getSrc1(), partMin.getDst());
-
-  if (auto prelu = dyn_cast<pto::TPReluOp>(op))
-    return buildBinaryTileMatchRequest("l3_float_binary_special_template",
-                                       "tprelu", prelu.getSrc0(),
-                                       prelu.getSrc1(), prelu.getDst());
 
   if (auto adds = dyn_cast<pto::TAddSOp>(op))
     return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
@@ -2173,11 +2130,6 @@ buildMatchRequest(Operation *op) {
     return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
                                        "tmins", mins.getSrc(),
                                        mins.getScalar(), mins.getDst());
-  if (auto rems = dyn_cast<pto::TRemSOp>(op))
-    return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
-                                       "trems", rems.getSrc(),
-                                       rems.getScalar(), rems.getDst(),
-                                       StringRef("tile_scalar"));
   if (auto divs = dyn_cast<pto::TDivSOp>(op)) {
     auto orderAttr =
         divs->getAttrOfType<StringAttr>("pto.tdivs.order");
@@ -2237,11 +2189,6 @@ buildMatchRequest(Operation *op) {
     return buildUnaryTileMatchRequest("l3_float_unary_math_template",
                                       "trsqrt", rsqrt.getSrc(),
                                       rsqrt.getDst());
-
-  if (auto lrelu = dyn_cast<pto::TLReluOp>(op))
-    return buildTileScalarMatchRequest("l3_float_unary_scalar_template",
-                                       "tlrelu", lrelu.getSrc(),
-                                       lrelu.getSlope(), lrelu.getDst());
 
   return failure();
 }
