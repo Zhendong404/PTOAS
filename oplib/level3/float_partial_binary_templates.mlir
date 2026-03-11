@@ -52,9 +52,8 @@ module {
     %cols01 = arith.select %cols01Lt, %cols0, %cols1 : index
     %colsMinLt = arith.cmpi slt, %cols01, %colsd : index
     %cols = arith.select %colsMinLt, %cols01, %colsd : index
-
-    %zero = arith.constant dense<0.0> : vector<32xf32>
     pto.simd.vec_scope {
+      %zero = arith.constant dense<0.0> : vector<32xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index

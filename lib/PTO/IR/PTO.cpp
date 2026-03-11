@@ -31,6 +31,7 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Interfaces/FoldInterfaces.h"
 
 #include <algorithm>
 #include <numeric>
@@ -715,7 +716,21 @@ LogicalResult mlir::pto::AddPtrOp::verify() {
 // PTODialect
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+struct PTODialectFoldInterface : public DialectFoldInterface {
+  using DialectFoldInterface::DialectFoldInterface;
+
+  bool shouldMaterializeInto(Region *region) const final {
+    return isa<mlir::pto::SimdVecScopeOp>(region->getParentOp());
+  }
+};
+
+} // namespace
+
 void PTODialect::initialize() {
+  addInterfaces<PTODialectFoldInterface>();
+
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "PTO/IR/PTOTypeDefs.cpp.inc"

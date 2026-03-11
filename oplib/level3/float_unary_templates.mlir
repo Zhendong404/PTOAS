@@ -28,9 +28,8 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %zero = arith.constant dense<0.0> : vector<32xf32>
-
     pto.simd.vec_scope {
+      %zero = arith.constant dense<0.0> : vector<32xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -76,9 +75,8 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %zero = arith.constant dense<0.0> : vector<32xf32>
-
     pto.simd.vec_scope {
+      %zero = arith.constant dense<0.0> : vector<32xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -123,10 +121,9 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %zero = arith.constant dense<0.0> : vector<32xf32>
-    %one = arith.constant dense<1.0> : vector<32xf32>
-
     pto.simd.vec_scope {
+      %zero = arith.constant dense<0.0> : vector<32xf32>
+      %one = arith.constant dense<1.0> : vector<32xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -171,9 +168,8 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %zero = arith.constant dense<0.0> : vector<32xf32>
-
     pto.simd.vec_scope {
+      %zero = arith.constant dense<0.0> : vector<32xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
