@@ -557,20 +557,10 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 0.75: drop pto.simd.tile_to_memref after tile_buf lowering.
-      // The bridge becomes redundant once tile_buf is converted to memref.
+      // Stage 0.75: keep pto.simd.tile_to_memref as backend marker.
+      // Bridge lowering is intentionally deferred to EmitC so tile.data()
+      // materialization can be anchored after tile binding (TASSIGN).
       // ------------------------------------------------------------------
-      SmallVector<mlir::pto::SimdTileToMemrefOp, 8> simdTileBridges;
-      func.walk([&](mlir::pto::SimdTileToMemrefOp op) {
-        simdTileBridges.push_back(op);
-      });
-      for (auto op : simdTileBridges) {
-        IRRewriter rewriter(ctx);
-        rewriter.setInsertionPoint(op);
-        // Avoid typed accessor here; operands may already be memref after
-        // signature/tile_buf lowering.
-        rewriter.replaceOp(op, op->getOperand(0));
-      }
 
       // ------------------------------------------------------------------
       // Stage 1: Lower pto.make_tensor_view -> memref.reinterpret_cast

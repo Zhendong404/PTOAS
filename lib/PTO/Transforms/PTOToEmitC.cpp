@@ -89,6 +89,37 @@ static Value peelUnrealized(Value v) {
   return v;
 }
 
+static bool isEmitCTileOpaqueType(Type ty) {
+  if (auto ot = dyn_cast<emitc::OpaqueType>(ty)) {
+    llvm::StringRef v = ot.getValue();
+    return v.starts_with("Tile<") || v.starts_with("ConvTile<");
+  }
+  return false;
+}
+
+static Operation *findTileAssignBefore(Value tile, Operation *anchor) {
+  if (!tile || !anchor)
+    return nullptr;
+  Block *block = anchor->getBlock();
+  if (!block)
+    return nullptr;
+
+  Operation *found = nullptr;
+  for (Operation &op : *block) {
+    if (&op == anchor)
+      break;
+    auto call = dyn_cast<emitc::CallOpaqueOp>(&op);
+    if (!call || call.getCallee() != "TASSIGN")
+      continue;
+    if (call->getNumOperands() < 1)
+      continue;
+    if (call.getOperand(0) != tile)
+      continue;
+    found = &op;
+  }
+  return found;
+}
+
 //===----------------------------------------------------------------------===//
 // Type Converter
 //===----------------------------------------------------------------------===//
@@ -7674,6 +7705,67 @@ struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
   }
 };
 
+struct SimdTileToMemrefToEmitC
+    : public OpConversionPattern<pto::SimdTileToMemrefOp> {
+  using OpConversionPattern<pto::SimdTileToMemrefOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::SimdTileToMemrefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value origSrc = op.getSrc();
+    Type dstTy = getTypeConverter()->convertType(op.getDst().getType());
+    if (!dstTy)
+      return failure();
+
+    if (isEmitCTileOpaqueType(src.getType())) {
+      rewriter.setInsertionPoint(op);
+      if (Operation *assign = findTileAssignBefore(src, op.getOperation()))
+        rewriter.setInsertionPointAfter(assign);
+      auto ptr = rewriter.create<emitc::CallOpaqueOp>(
+          op.getLoc(), dstTy, "PTOAS__TILE_DATA", ArrayAttr{}, ArrayAttr{},
+          ValueRange{src});
+      rewriter.replaceOp(op, ptr.getResult(0));
+      return success();
+    }
+
+    if (src.getType() == dstTy) {
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    if (emitc::isSupportedEmitCType(src.getType()) &&
+        emitc::isSupportedEmitCType(dstTy)) {
+      auto cast = rewriter.create<emitc::CastOp>(op.getLoc(), dstTy, src);
+      rewriter.replaceOp(op, cast.getResult());
+      return success();
+    }
+
+    // In some OP-fusion paths, `simd.tile_to_memref` can still be visited before
+    // block arguments are remapped to converted emitc types. Keep legalization
+    // robust by materializing an unrealized cast from memref src to converted
+    // destination type, then let late cast cleanup canonicalize it.
+    if (isa<MemRefType>(origSrc.getType()) && isa<MemRefType>(op.getDst().getType())) {
+      Value bridgeInput = src;
+      if (Value remappedOrig = rewriter.getRemappedValue(origSrc))
+        bridgeInput = peelUnrealized(remappedOrig);
+
+      if (bridgeInput.getType() == dstTy) {
+        rewriter.replaceOp(op, bridgeInput);
+        return success();
+      }
+
+      auto bridge = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(), dstTy,
+                                                                bridgeInput);
+      rewriter.replaceOp(op, bridge.getResult(0));
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(
+        op, "expected tile-like source or castable emitc-compatible types");
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // SCF Control-Flow Pre-Lowering
 //
@@ -8287,6 +8379,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<SectionToEmitC<pto::SectionCubeOp>>(typeConverter, ctx);
   patterns.add<SectionToEmitC<pto::SectionVectorOp>>(typeConverter, ctx);
   patterns.add<SimdVecScopeToEmitC>(typeConverter, ctx);
+  patterns.add<SimdTileToMemrefToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockIdxToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockNumToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetSubBlockIdxToEmitC>(typeConverter, ctx);
@@ -8702,11 +8795,11 @@ struct EmitPTOManualPass
           return ot.getValue().ends_with("*");
         return false;
       };
-      auto isEmitCTileOpaqueTy = [](Type ty) -> bool {
-        if (auto ot = dyn_cast<emitc::OpaqueType>(ty))
-          return ot.getValue().starts_with("Tile<");
-        return false;
-      };
+      // Prefer inserting tile.data() extraction after the tile has been bound
+      // via TASSIGN(tile, addr). Without this, we can end up emitting C++ like:
+      //   Tile ... t; auto *p = t.data(); TASSIGN(t, addr);
+      // which reads/writes through an uninitialized tile address and causes
+      // nondeterministic results (e.g. Subset ping/pong cases).
       std::function<bool(Value, Value)> rewriteMemrefBridgeUses =
           [&](Value memVal, Value tileInput) -> bool {
         for (OpOperand &memUse : llvm::make_early_inc_range(memVal.getUses())) {
@@ -8719,6 +8812,8 @@ struct EmitPTOManualPass
             Type toTy = toPtr.getResult(0).getType();
             if (isEmitCPtrLikeTy(toTy)) {
               OpBuilder builder(toPtr);
+              if (Operation *assign = findTileAssignBefore(tileInput, toPtr))
+                builder.setInsertionPointAfter(assign);
               auto ptr = builder.create<emitc::CallOpaqueOp>(
                   toPtr.getLoc(), toTy, "PTOAS__TILE_DATA", ArrayAttr{},
                   ArrayAttr{}, ValueRange{tileInput});
@@ -8753,6 +8848,8 @@ struct EmitPTOManualPass
             return false;
 
           OpBuilder builder(rc);
+          if (Operation *assign = findTileAssignBefore(tileInput, rc))
+            builder.setInsertionPointAfter(assign);
           auto rawPtr = builder.create<emitc::CallOpaqueOp>(
               rc.getLoc(), rawPtrTy, "PTOAS__TILE_DATA", ArrayAttr{},
               ArrayAttr{}, ValueRange{tileInput});
@@ -8779,8 +8876,10 @@ struct EmitPTOManualPass
       }
 
       // Bridge cleanup: emitc Tile -> pointer-like value.
-      if (isEmitCTileOpaqueTy(inTy) && isEmitCPtrLikeTy(outTy)) {
+      if (isEmitCTileOpaqueType(inTy) && isEmitCPtrLikeTy(outTy)) {
         OpBuilder builder(cast);
+        if (Operation *assign = findTileAssignBefore(input, cast))
+          builder.setInsertionPointAfter(assign);
         auto ptr = builder.create<emitc::CallOpaqueOp>(
             cast.getLoc(), outTy, "PTOAS__TILE_DATA",
             ArrayAttr{}, ArrayAttr{}, ValueRange{input});
@@ -8791,7 +8890,7 @@ struct EmitPTOManualPass
 
       // Bridge cleanup: emitc Tile -> memref[...], potentially followed by
       // memref->memref/ptr unrealized casts.
-      if (isEmitCTileOpaqueTy(inTy) && isa<MemRefType>(outTy)) {
+      if (isEmitCTileOpaqueType(inTy) && isa<MemRefType>(outTy)) {
         if (rewriteMemrefBridgeUses(output, input)) {
           markErase(cast.getOperation());
           return;
@@ -8803,7 +8902,7 @@ struct EmitPTOManualPass
       if (isa<pto::TileBufType>(inTy) && isa<MemRefType>(outTy)) {
         if (auto srcCast = input.getDefiningOp<UnrealizedConversionCastOp>()) {
           if (srcCast->getNumOperands() == 1 && srcCast->getNumResults() == 1 &&
-              isEmitCTileOpaqueTy(srcCast.getOperand(0).getType())) {
+              isEmitCTileOpaqueType(srcCast.getOperand(0).getType())) {
             Value tileInput = srcCast.getOperand(0);
             if (rewriteMemrefBridgeUses(output, tileInput)) {
               markErase(cast.getOperation());
@@ -8817,7 +8916,7 @@ struct EmitPTOManualPass
 
       // Bridge cleanup:
       // emitc Tile -> pto.tile_buf -> memref -> pointer-like
-      if (isEmitCTileOpaqueTy(inTy) && isa<pto::TileBufType>(outTy)) {
+      if (isEmitCTileOpaqueType(inTy) && isa<pto::TileBufType>(outTy)) {
         bool handledAllUsers = true;
         for (Operation *user : llvm::make_early_inc_range(output.getUsers())) {
           auto toMem = dyn_cast<UnrealizedConversionCastOp>(user);

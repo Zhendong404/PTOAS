@@ -1,4 +1,7 @@
-// RUN: { ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 -o - 2>&1; } | FileCheck %s
+// RUN: { ptoas %S/softmax_chain.pto --op-lib-dir=%S/oplib --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
-// CHECK-LABEL: module {
-// CHECK-NOT: pto.simd.tile_to_memref
+// CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
+// CHECK: pto.simd.tile_to_memref
+// CHECK-LABEL: IR Dump After {anonymous}::EmitPTOManualPass
+// CHECK: emitc.call_opaque "TASSIGN"
+// CHECK-NEXT: {{.*}}emitc.call_opaque "PTOAS__TILE_DATA"

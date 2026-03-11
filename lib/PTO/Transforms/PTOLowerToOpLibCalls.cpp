@@ -1458,10 +1458,12 @@ struct TemplateRegistry {
           return failure();
         }
 
-        // In memref-world lowering, the concrete instance signature may differ from
-        // the seed bridge destination shape. Reuse the mapped concrete memref
-        // directly to avoid leaving unresolved unrealized_conversion_cast ops.
-        mapping.map(bridge.getDst(), mappedSrc);
+        // Keep simd.tile_to_memref as a backend marker even in memref-world.
+        // Use the concrete mapped memref type as the bridge result to avoid
+        // re-introducing unrealized casts for shape-only differences.
+        auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
+            bridge.getLoc(), mappedMemTy, mappedSrc);
+        mapping.map(bridge.getDst(), newBridge.getDst());
         continue;
       }
 

@@ -40,6 +40,9 @@ def PTODpsType :
 def PtrOrMemRef :
   AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 
+def TileBufOrMemRef :
+  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
+
 def ScalarPtrOrMemRef :
   TypeConstraint<
     CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
@@ -1225,14 +1228,17 @@ def SimdVecScopeOp : PTO_Op<"simd.vec_scope", [SingleBlock, NoTerminator]> {
 def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
   let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
   let description = [{
-    This op is the canonical bridge for OP-Lib templates to expose a memref
-    view from tile_buf inputs while keeping external ABI as !pto.tile_buf.
-    It is expected to be consumed before backend codegen (e.g. by
-    PTOViewToMemref).
+    This op is the canonical bridge marker for OP-Lib templates to expose a
+    memref view from tile-like values while keeping external ABI as
+    !pto.tile_buf.
+    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
+    memref bridge type.
+    After memref-world lowering, src may already be memref and this op remains
+    as a marker for backend lowering (EmitC) to materialize tile data access.
   }];
 
   let arguments = (ins
-    TileBufType:$src
+    TileBufOrMemRef:$src
   );
 
   let results = (outs
