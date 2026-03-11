@@ -4742,13 +4742,37 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// pto.tfillpad lowering -> TFILLPAD_EXPAND(dst, src)
+// pto.tfillpad lowering -> TFILLPAD(dst, src)
 //===----------------------------------------------------------------------===//
 
 struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
   using OpConversionPattern<pto::TFillPadOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(pto::TFillPadOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TFILLPAD",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+//===----------------------------------------------------------------------===//
+// pto.tfillpad_expand lowering -> TFILLPAD_EXPAND(dst, src)
+//===----------------------------------------------------------------------===//
+
+struct PTOFillPadExpandToEmitC
+    : public OpConversionPattern<pto::TFillPadExpandOp> {
+  using OpConversionPattern<pto::TFillPadExpandOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TFillPadExpandOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -7291,7 +7315,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOOrToEmitC>(typeConverter, ctx);
   patterns.add<PTOPartAddToEmitC>(typeConverter, ctx);
   patterns.add<PTOExtractToEmitC>(typeConverter, ctx);
-  patterns.add<PTOFillPadToEmitC>(typeConverter, ctx);
+  patterns.add<PTOFillPadToEmitC, PTOFillPadExpandToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherbToEmitC>(typeConverter, ctx);
   patterns.add<PTOMovFPToEmitC>(typeConverter, ctx);

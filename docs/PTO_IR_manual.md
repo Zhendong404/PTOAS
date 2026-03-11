@@ -4635,6 +4635,43 @@ pto.tfillpad ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
 
 ---
 
+##### `pto.tfillpad_expand` - Fill Padding Region With Expand
+
+**Summary:** Copies `src` into `dst` and fills padded elements using `dst`'s PadVal, allowing `dst` to be larger than `src`.
+
+**Semantics:**
+
+```
+For valid elements: dst = src
+For padded elements: dst = PadVal(dst)
+Constraint: dst.rows >= src.rows and dst.cols >= src.cols
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `pto.tile_buf` | Source tile |
+| `dst` | `pto.tile_buf` | Destination tile (with pad config, may be larger) |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Constraints & Verification:**
+
+- The operation has a custom verifier
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+
+**Basic Example:**
+
+```mlir
+pto.tfillpad_expand ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
+```
+
+---
+
 ### 4.11 Sorting Operations
 
 ##### `pto.tsort32` - Sort Fixed 32-Element Blocks

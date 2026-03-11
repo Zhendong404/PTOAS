@@ -1531,16 +1531,16 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
 // TFillPadOp_DPS verifier
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
-  Type srcTy = getSrc().getType();
-  Type dstTy = getDst().getType();
+static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type dstTy,
+                                              bool allowDstExpand,
+                                              llvm::StringRef opName) {
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
-    return emitOpError("expects src/dst to be PTO shaped-like types");
+    return op->emitError("expects src/dst to be PTO shaped-like types");
 
   auto srcShape = getShapeVec(srcTy);
   auto dstShape = getShapeVec(dstTy);
   if (srcShape.size() != 2 || dstShape.size() != 2)
-    return emitOpError("expects rank-2 shaped types for src/dst");
+    return op->emitError("expects rank-2 shaped types for src/dst");
 
   auto srcElem = getElemTy(srcTy);
   auto dstElem = getElemTy(dstTy);
@@ -1556,17 +1556,35 @@ mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
   int64_t srcB = getElemBytes(srcElem);
   int64_t dstB = getElemBytes(dstElem);
   if (srcB < 0 || dstB < 0)
-    return emitOpError("unsupported element type (expects int/float element types)");
+    return op->emitError("unsupported element type (expects int/float element types)");
   if (srcB != dstB)
-    return emitOpError("expects sizeof(src element) == sizeof(dst element)");
+    return op->emitError("expects sizeof(src element) == sizeof(dst element)");
   if (!(srcB == 1 || srcB == 2 || srcB == 4))
-    return emitOpError("expects element size to be 1, 2, or 4 bytes");
+    return op->emitError("expects element size to be 1, 2, or 4 bytes");
 
-  if (srcShape != dstShape)
-    return emitOpError("expects src and dst to have the same static shape for tfillpad");
-  
+  if (!allowDstExpand) {
+    if (srcShape != dstShape)
+      return op->emitError()
+             << "expects src and dst to have the same static shape for " << opName;
+    return mlir::success();
+  }
+
+  if (srcShape[0] > dstShape[0] || srcShape[1] > dstShape[1]) {
+    return op->emitError()
+           << "expects dst static shape to be >= src static shape for " << opName;
+  }
 
   return mlir::success();
+}
+
+mlir::LogicalResult mlir::pto::TFillPadOp::verify() {
+  return verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
+                            /*allowDstExpand=*/false, "tfillpad");
+}
+
+mlir::LogicalResult mlir::pto::TFillPadExpandOp::verify() {
+  return verifyTFillPadLike(getOperation(), getSrc().getType(), getDst().getType(),
+                            /*allowDstExpand=*/true, "tfillpad_expand");
 }
 //===----------------------------------------------------------------------===//
 // TGatherOp_DPS verifier
@@ -4346,6 +4364,7 @@ void TExtractOp::getEffects(
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TFillPadOp, getSrcMutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TFillPadExpandOp, getSrcMutable(), getDstMutable())
 
 void TGatherOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {

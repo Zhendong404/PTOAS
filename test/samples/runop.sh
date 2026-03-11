@@ -463,6 +463,32 @@ PY
       fi
     fi
 
+    if [[ "$base" == "fillpad" ]]; then
+      if ! grep -Fq "TFILLPAD(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD() lowering for pto.tfillpad"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad should not lower via TFILLPAD_EXPAND()"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "fillpad_expand" ]]; then
+      if ! grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_EXPAND() lowering for pto.tfillpad_expand"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_expand should not lower via TFILLPAD()"
+        overall=1
+        continue
+      fi
+    fi
+
 	    # Regression guard for Issue #190:
 	    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
 	    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
