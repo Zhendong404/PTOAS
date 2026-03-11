@@ -1,6 +1,6 @@
 from mlir.ir import Context, InsertionPoint, Location, Module
 from mlir.dialects import arith, func, pto
-from mlir.ir import F32Type, IndexType
+from mlir.ir import F32Type, IndexType, IntegerType
 
 
 def build():
@@ -20,10 +20,12 @@ def build():
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
             pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
+            u8 = IntegerType.get_unsigned(8, ctx)
 
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
+            tile_buf_u8 = pto.TileBufType.get([32, 32], u8, vec, [32, 32], cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(module.body):
@@ -101,8 +103,9 @@ def build():
                 pto.TRemOp(tb_a, tb_b, tb_out)
                 store_result(6, tb_out)
 
+                tb_tmp = pto.AllocTileOp(tile_buf_u8).result
                 tb_out = pto.AllocTileOp(tile_buf_32).result
-                pto.TPReluOp(tb_a, tb_b, tb_out)
+                pto.TPReluOp(tb_a, tb_b, tb_tmp, tb_out)
                 store_result(7, tb_out)
 
                 tb_out = pto.AllocTileOp(tile_buf_32).result

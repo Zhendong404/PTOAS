@@ -32,7 +32,7 @@ export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
-export PTOAS_FLAGS="--pto-arch=a5 --op-lib-dir=$PTO_SOURCE_DIR/oplib/level3"
+export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 export PTOAS_OUT_DIR=$PTO_SOURCE_DIR/output
 
 _ptoas_prepend_path() {
