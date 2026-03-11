@@ -18,7 +18,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 
 #include "mlir/IR/AffineExpr.h"
@@ -28,6 +30,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeRange.h"
 
 #include "mlir/Pass/Pass.h"
@@ -35,6 +38,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -43,6 +47,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -141,6 +146,37 @@ static std::string layoutToEmitCString(mlir::pto::Layout layout) {
   return "pto::Layout::ND";
 }
 
+static bool isEmitCTileOpaqueType(Type ty) {
+  if (auto ot = dyn_cast<emitc::OpaqueType>(ty)) {
+    llvm::StringRef v = ot.getValue();
+    return v.starts_with("Tile<") || v.starts_with("ConvTile<");
+  }
+  return false;
+}
+
+static Operation *findTileAssignBefore(Value tile, Operation *anchor) {
+  if (!tile || !anchor)
+    return nullptr;
+  Block *block = anchor->getBlock();
+  if (!block)
+    return nullptr;
+
+  Operation *found = nullptr;
+  for (Operation &op : *block) {
+    if (&op == anchor)
+      break;
+    auto call = dyn_cast<emitc::CallOpaqueOp>(&op);
+    if (!call || call.getCallee() != "TASSIGN")
+      continue;
+    if (call->getNumOperands() < 1)
+      continue;
+    if (call.getOperand(0) != tile)
+      continue;
+    found = &op;
+  }
+  return found;
+}
+
 //===----------------------------------------------------------------------===//
 // Type Converter
 //===----------------------------------------------------------------------===//
@@ -198,7 +234,132 @@ public:
       if (type.getRank() == 1 && type.getNumElements() == 4 &&
           type.getElementType().isInteger(16))
         return emitc::OpaqueType::get(Ctx, "pto::MrgSortExecutedNumList");
+      if (type.getRank() == 1 && !type.isScalable() &&
+          type.getElementType().isInteger(1))
+        return emitc::OpaqueType::get(Ctx, "MaskReg");
+      if (type.getRank() == 1 && !type.isScalable()) {
+        if (type.getElementType().isF32())
+          return emitc::OpaqueType::get(Ctx, "RegTensor<float>");
+        if (type.getElementType().isF16())
+          return emitc::OpaqueType::get(Ctx, "RegTensor<half>");
+        if (auto intTy = dyn_cast<IntegerType>(type.getElementType())) {
+          if (intTy.isSignlessInteger(8))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int8_t>");
+          if (intTy.isSignlessInteger(16))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int16_t>");
+          if (intTy.isSignlessInteger(32))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int32_t>");
+          if (intTy.isSignlessInteger(64))
+            return emitc::OpaqueType::get(Ctx, "RegTensor<int64_t>");
+        }
+      }
       return Type{};
+    });
+
+    // !pto.tile_buf<...> -> Tile<...>
+    addConversion([Ctx](pto::TileBufType type) -> Type {
+      auto shape = type.getShape();
+      if (shape.size() != 2)
+        return Type{};
+
+      const char *roleTok = "TileType::Vec";
+      if (auto asAttr =
+              dyn_cast_or_null<pto::AddressSpaceAttr>(type.getMemorySpace())) {
+        switch (asAttr.getAddressSpace()) {
+        case pto::AddressSpace::VEC:
+          roleTok = "TileType::Vec";
+          break;
+        case pto::AddressSpace::MAT:
+          roleTok = "TileType::Mat";
+          break;
+        case pto::AddressSpace::LEFT:
+          roleTok = "TileType::Left";
+          break;
+        case pto::AddressSpace::RIGHT:
+          roleTok = "TileType::Right";
+          break;
+        case pto::AddressSpace::ACC:
+          roleTok = "TileType::Acc";
+          break;
+        case pto::AddressSpace::BIAS:
+          roleTok = "TileType::Bias";
+          break;
+        case pto::AddressSpace::SCALING:
+          roleTok = "TileType::Scaling";
+          break;
+        case pto::AddressSpace::GM:
+        case pto::AddressSpace::Zero:
+          roleTok = "TileType::Vec";
+          break;
+        }
+      }
+
+      Type elemType = type.getElementType();
+      std::string elemTok = "float";
+      if (elemType.isF16())
+        elemTok = "half";
+      else if (elemType.isBF16())
+        elemTok = "bfloat16_t";
+      else if (elemType.isF32())
+        elemTok = "float";
+      else if (elemType.isF64())
+        elemTok = "double";
+      else if (elemType.isInteger(8))
+        elemTok = cast<IntegerType>(elemType).isUnsigned() ? "uint8_t" : "int8_t";
+      else if (elemType.isInteger(16))
+        elemTok = cast<IntegerType>(elemType).isUnsigned() ? "uint16_t" : "int16_t";
+      else if (elemType.isInteger(32))
+        elemTok = cast<IntegerType>(elemType).isUnsigned() ? "uint32_t" : "int32_t";
+      else if (elemType.isInteger(64))
+        elemTok = cast<IntegerType>(elemType).isUnsigned() ? "uint64_t" : "int64_t";
+      else
+        return Type{};
+
+      std::string blayoutTok = type.getBLayoutValueI32() == 1 ? "BLayout::ColMajor"
+                                                               : "BLayout::RowMajor";
+      std::string slayoutTok = "SLayout::NoneBox";
+      switch (type.getSLayoutValueI32()) {
+      case 1:
+        slayoutTok = "SLayout::RowMajor";
+        break;
+      case 2:
+        slayoutTok = "SLayout::ColMajor";
+        break;
+      default:
+        slayoutTok = "SLayout::NoneBox";
+        break;
+      }
+
+      std::string padTok = "PadValue::Null";
+      switch (type.getPadValueI32()) {
+      case 1:
+        padTok = "PadValue::Zero";
+        break;
+      case 2:
+        padTok = "PadValue::Max";
+        break;
+      case 3:
+        padTok = "PadValue::Min";
+        break;
+      default:
+        padTok = "PadValue::Null";
+        break;
+      }
+
+      int64_t vrow = shape[0];
+      int64_t vcol = shape[1];
+      if (type.hasValidShape() && type.getValidShape().size() == 2) {
+        vrow = type.getValidShape()[0];
+        vcol = type.getValidShape()[1];
+      }
+
+      std::string tileTok =
+          std::string("Tile<") + roleTok + ", " + elemTok + ", " +
+          std::to_string(shape[0]) + ", " + std::to_string(shape[1]) + ", " +
+          blayoutTok + ", " + std::to_string(vrow) + ", " +
+          std::to_string(vcol) + ", " + slayoutTok + ", " +
+          std::to_string(type.getSFractalSizeI32()) + ", " + padTok + ">";
+      return emitc::OpaqueType::get(Ctx, tileTok);
     });
     
     // ---------------------------------------------------------
@@ -332,6 +493,9 @@ struct ArithSimpleBinaryToEmitC : public OpConversionPattern<ArithOp> {
   LogicalResult
   matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return rewriter.notifyMatchFailure(
+          op, "A5 OP-Lib vector lowering requires dedicated vector patterns");
     Type dstTy = this->getTypeConverter()->convertType(op.getType());
     if (!dstTy)
       return failure();
@@ -1703,6 +1867,1084 @@ static Value castSignlessIntToUnsignedSameWidth(ConversionPatternRewriter &rewri
   return emitCCast(rewriter, loc, uTy, v);
 }
 
+static LogicalResult validateA5OplibVectorType(Operation *op, VectorType vecTy,
+                                               llvm::StringRef usageName) {
+  if (vecTy.getRank() != 1 || vecTy.isScalable()) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " requires fixed 1-D vector, got " << vecTy;
+    return mlir::failure();
+  }
+
+  int64_t lanes = vecTy.getNumElements();
+  Type elemTy = vecTy.getElementType();
+  if (elemTy.isInteger(1)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " does not treat vector<i1> as data vector";
+    return mlir::failure();
+  }
+
+  auto emitLaneError = [&](unsigned bitWidth) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << elemTy
+                    << " lanes " << lanes
+                    << " (expect total width 1024 or 2048 bits)";
+    return mlir::failure();
+  };
+
+  if (elemTy.isF16() || elemTy.isF32() || isa<IntegerType>(elemTy)) {
+    unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
+    int64_t totalBits = static_cast<int64_t>(bitWidth) * lanes;
+    if (totalBits != 1024 && totalBits != 2048)
+      return emitLaneError(bitWidth);
+    return mlir::success();
+  }
+
+  op->emitError() << "A5 OP-Lib vector lowering unsupported: element type "
+                  << elemTy;
+  return mlir::failure();
+}
+
+static FailureOr<llvm::StringRef> getA5VectorElemTokenUnchecked(Type elemTy) {
+  if (elemTy.isF32())
+    return llvm::StringRef("float");
+  if (elemTy.isF16())
+    return llvm::StringRef("half");
+  if (elemTy.isInteger(8))
+    return llvm::StringRef("int8_t");
+  if (elemTy.isInteger(16))
+    return llvm::StringRef("int16_t");
+  if (elemTy.isInteger(32))
+    return llvm::StringRef("int32_t");
+  if (elemTy.isInteger(64))
+    return llvm::StringRef("int64_t");
+  return failure();
+}
+
+static FailureOr<llvm::StringRef> getA5VectorElemToken(Operation *op,
+                                                       VectorType vecTy,
+                                                       llvm::StringRef usage) {
+  if (failed(validateA5OplibVectorType(op, vecTy, usage)))
+    return failure();
+  return getA5VectorElemTokenUnchecked(vecTy.getElementType());
+}
+
+static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
+                                                      VectorType maskTy,
+                                                      llvm::StringRef usage) {
+  if (maskTy.getRank() != 1 || maskTy.isScalable() ||
+      !maskTy.getElementType().isInteger(1)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                    << " requires fixed 1-D vector<i1> mask, got " << maskTy;
+    return failure();
+  }
+
+  int64_t lanes = maskTy.getNumElements();
+  if (lanes == 32)
+    return llvm::StringRef("float");
+  if (lanes == 128)
+    return llvm::StringRef("half");
+
+  auto inferElemFromVecTy = [](VectorType vecTy) -> FailureOr<llvm::StringRef> {
+    return getA5VectorElemTokenUnchecked(vecTy.getElementType());
+  };
+
+  if (lanes == 64) {
+    if (auto vmload = dyn_cast<vector::MaskedLoadOp>(op))
+      return inferElemFromVecTy(vmload.getVectorType());
+    if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op))
+      return inferElemFromVecTy(
+          cast<VectorType>(vmstore.getValueToStore().getType()));
+
+    if (auto cmask = dyn_cast<vector::CreateMaskOp>(op)) {
+      llvm::StringRef inferred;
+      bool hasUser = false;
+      for (Operation *user : cmask->getUsers()) {
+        FailureOr<llvm::StringRef> tok = failure();
+        if (auto useLoad = dyn_cast<vector::MaskedLoadOp>(user)) {
+          tok = inferElemFromVecTy(useLoad.getVectorType());
+        } else if (auto useStore = dyn_cast<vector::MaskedStoreOp>(user)) {
+          tok = inferElemFromVecTy(
+              cast<VectorType>(useStore.getValueToStore().getType()));
+        } else {
+          continue;
+        }
+        if (failed(tok))
+          continue;
+        if (!hasUser) {
+          inferred = *tok;
+          hasUser = true;
+          continue;
+        }
+        if (inferred != *tok) {
+          op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                          << " mask lanes 64 has mixed f32/f16 users";
+          return failure();
+        }
+      }
+      if (hasUser)
+        return inferred;
+      return llvm::StringRef("float");
+    }
+  }
+
+  op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                  << " mask lanes " << lanes << " (expect 32, 64, or 128)";
+  return failure();
+}
+
+static FailureOr<Value>
+getA5LinearizedIndex(ConversionPatternRewriter &rewriter, Operation *op,
+                     ValueRange indices, MemRefType baseTy,
+                     llvm::StringRef usageName) {
+  if (indices.size() == 1)
+    return indices.front();
+
+  if (indices.size() != 2) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " expects 1-D or 2-D indices, got " << indices.size();
+    return failure();
+  }
+
+  if (!baseTy || baseTy.getRank() != 2) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " expects rank-2 memref for 2-D indices";
+    return failure();
+  }
+
+  SmallVector<int64_t, 4> strides;
+  int64_t offset = 0;
+  if (failed(getStridesAndOffset(baseTy, strides, offset)) ||
+      strides.size() != 2 || strides[0] == ShapedType::kDynamic ||
+      strides[1] == ShapedType::kDynamic) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " requires static strides for 2-D linearization";
+    return failure();
+  }
+
+  Type idxTy = indices.front().getType();
+  auto makeIdxConst = [&](int64_t v) -> Value {
+    return makeEmitCIntConstant(rewriter, op->getLoc(), idxTy, v);
+  };
+
+  Value row = indices[0];
+  Value col = indices[1];
+  if (row.getType() != idxTy)
+    row = rewriter.create<emitc::CastOp>(op->getLoc(), idxTy, row).getResult();
+  if (col.getType() != idxTy)
+    col = rewriter.create<emitc::CastOp>(op->getLoc(), idxTy, col).getResult();
+
+  Value rowLinear = row;
+  if (strides[0] != 1) {
+    Value s0 = makeIdxConst(strides[0]);
+    rowLinear =
+        rewriter.create<emitc::MulOp>(op->getLoc(), idxTy, row, s0).getResult();
+  }
+
+  Value colLinear = col;
+  if (strides[1] != 1) {
+    Value s1 = makeIdxConst(strides[1]);
+    colLinear =
+        rewriter.create<emitc::MulOp>(op->getLoc(), idxTy, col, s1).getResult();
+  }
+
+  Value linear =
+      rewriter.create<emitc::AddOp>(op->getLoc(), idxTy, rowLinear, colLinear)
+          .getResult();
+  return linear;
+}
+
+static constexpr llvm::StringLiteral kA5SimdVldDistAttr = "pto.simd.vld_dist";
+static constexpr llvm::StringLiteral kA5SimdVstDistAttr = "pto.simd.vst_dist";
+static constexpr llvm::StringLiteral kA5SimdExecModeAttr = "pto.simd.exec_mode";
+
+static FailureOr<llvm::StringRef>
+getRequiredA5OplibTokenAttr(Operation *op, llvm::StringRef attrName,
+                            llvm::StringRef usageName,
+                            llvm::StringRef requiredPrefix = "") {
+  auto inferDefaultToken = [&](Operation *scope) -> llvm::StringRef {
+    if (!scope || !scope->getAttr("pto.oplib.kind"))
+      return {};
+    if (attrName == kA5SimdVldDistAttr)
+      return llvm::StringRef("NORM");
+    if (attrName == kA5SimdVstDistAttr)
+      return llvm::StringRef("DIST_NORM");
+    if (attrName == kA5SimdExecModeAttr)
+      return llvm::StringRef("MODE_ZEROING");
+    return {};
+  };
+
+  auto tokenAttr = op->getAttrOfType<StringAttr>(attrName);
+  llvm::StringRef token;
+  if (tokenAttr) {
+    token = tokenAttr.getValue();
+  } else if (Block *block = op->getBlock()) {
+    // Canonicalization can rewrite vector.maskedload/store to vector.load/store
+    // and drop attrs. Recover from sibling ops in the same block when possible.
+    for (Operation &sibling : *block) {
+      auto siblingAttr = sibling.getAttrOfType<StringAttr>(attrName);
+      if (!siblingAttr)
+        continue;
+      token = siblingAttr.getValue();
+      if (!token.empty())
+        break;
+    }
+  }
+  if (token.empty()) {
+    for (Operation *cursor = op->getParentOp(); cursor && token.empty();
+         cursor = cursor->getParentOp()) {
+      if (auto scopedAttr = cursor->getAttrOfType<StringAttr>(attrName)) {
+        token = scopedAttr.getValue();
+        break;
+      }
+      token = inferDefaultToken(cursor);
+    }
+  }
+
+  if (token.empty()) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " requires string attr '" << attrName
+                    << "' (or a block-local fallback token)";
+    return failure();
+  }
+
+  if (!requiredPrefix.empty() && !token.starts_with(requiredPrefix)) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usageName
+                    << " attr '" << attrName << "' must start with '"
+                    << requiredPrefix << "', got '" << token << "'";
+    return failure();
+  }
+
+  return token;
+}
+
+static void stampA5OplibFunctionTokenAttrs(ModuleOp module) {
+  auto stampFromBody = [&](func::FuncOp func, llvm::StringRef attrName) {
+    if (func->getAttr(attrName))
+      return;
+    StringAttr inferredAttr;
+    func.walk([&](Operation *op) {
+      if (inferredAttr)
+        return WalkResult::interrupt();
+      inferredAttr = op->getAttrOfType<StringAttr>(attrName);
+      return inferredAttr ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    if (inferredAttr)
+      func->setAttr(attrName, inferredAttr);
+  };
+
+  for (auto func : module.getOps<func::FuncOp>()) {
+    stampFromBody(func, kA5SimdVldDistAttr);
+    stampFromBody(func, kA5SimdVstDistAttr);
+    stampFromBody(func, kA5SimdExecModeAttr);
+  }
+}
+
+// CreatePredicate<T> expects a mutable uint32_t lvalue argument.
+// Materialize one explicitly to avoid binding rvalues (e.g. conditional expr).
+static Value materializeA5PredicateScalarLValue(
+    ConversionPatternRewriter &rewriter, Location loc, Value scalar) {
+  auto *ctx = rewriter.getContext();
+  auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+  Value scalarU32 = emitCCast(rewriter, loc, u32Ty, scalar);
+  auto scalarVar = rewriter.create<emitc::VariableOp>(
+      loc, u32Ty, emitc::OpaqueAttr::get(ctx, "0"));
+  rewriter.create<emitc::AssignOp>(loc, scalarVar.getResult(), scalarU32);
+  return scalarVar.getResult();
+}
+
+static FailureOr<Value> buildA5Predicate(ConversionPatternRewriter &rewriter,
+                                         Location loc, Operation *op,
+                                         VectorType vecTy,
+                                         llvm::StringRef usageName) {
+  auto elemTokOr = getA5VectorElemToken(op, vecTy, usageName);
+  if (failed(elemTokOr))
+    return failure();
+
+  int64_t lanes = vecTy.getNumElements();
+  auto *ctx = rewriter.getContext();
+  auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+  Value laneCount = makeEmitCIntConstant(rewriter, loc, u32Ty, lanes);
+  Value laneCountLValue =
+      materializeA5PredicateScalarLValue(rewriter, loc, laneCount);
+  auto maskTy = emitc::OpaqueType::get(ctx, "MaskReg");
+  auto templateArgs =
+      rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, *elemTokOr)});
+  auto pred = rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{maskTy}, "CreatePredicate", ValueRange{laneCountLValue},
+      ArrayAttr{}, templateArgs);
+  return pred.getResult(0);
+}
+
+static FailureOr<Value>
+buildA5PredicateFromActiveCount(ConversionPatternRewriter &rewriter, Location loc,
+                                Operation *op, VectorType maskTy,
+                                Value activeCount,
+                                llvm::StringRef usageName) {
+  auto elemTokOr = getA5MaskElemToken(op, maskTy, usageName);
+  if (failed(elemTokOr))
+    return failure();
+
+  auto *ctx = rewriter.getContext();
+  Value activeCountLValue =
+      materializeA5PredicateScalarLValue(rewriter, loc, activeCount);
+  auto maskRegTy = emitc::OpaqueType::get(ctx, "MaskReg");
+  auto templateArgs =
+      rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, *elemTokOr)});
+  auto pred = rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{maskRegTy}, "CreatePredicate",
+      ValueRange{activeCountLValue}, ArrayAttr{}, templateArgs);
+  return pred.getResult(0);
+}
+
+template <typename ArithOp> static llvm::StringRef getA5VectorBinaryCallee();
+
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::AddFOp>() {
+  return "vadd";
+}
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::SubFOp>() {
+  return "vsub";
+}
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::MulFOp>() {
+  return "vmul";
+}
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::DivFOp>() {
+  return "vdiv";
+}
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::MaximumFOp>() {
+  return "vmax";
+}
+template <> llvm::StringRef getA5VectorBinaryCallee<arith::MinimumFOp>() {
+  return "vmin";
+}
+
+template <typename ArithOp> static llvm::StringRef getA5VectorUnaryCallee();
+
+template <> llvm::StringRef getA5VectorUnaryCallee<arith::NegFOp>() {
+  return "vneg";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::AbsFOp>() {
+  return "vabs";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::ExpOp>() {
+  return "vexp";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::LogOp>() {
+  return "vln";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::SqrtOp>() {
+  return "vsqrt";
+}
+template <> llvm::StringRef getA5VectorUnaryCallee<math::RsqrtOp>() {
+  return "vrsqrt";
+}
+
+template <typename ArithOp> static llvm::StringRef getA5VectorIntBinaryCallee();
+
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::AndIOp>() {
+  return "vand";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::OrIOp>() {
+  return "vor";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::XOrIOp>() {
+  return "vxor";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShLIOp>() {
+  return "vshl";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRUIOp>() {
+  return "vshru";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRSIOp>() {
+  return "vshrs";
+}
+
+template <typename OpTy>
+static Value tryRemapMaskFromUnaryMaskedLoadUse(OpTy op,
+                                                ConversionPatternRewriter &rewriter) {
+  if (auto maskedLoad = op.getOperand().template getDefiningOp<vector::MaskedLoadOp>()) {
+    Value remapped = rewriter.getRemappedValue(maskedLoad.getMask());
+    if (!remapped)
+      return Value();
+    remapped = peelUnrealized(remapped);
+    if (isa<VectorType>(remapped.getType()))
+      return Value();
+    return remapped;
+  }
+  return Value();
+}
+
+static FailureOr<llvm::StringRef>
+getA5CmpPredicateToken(arith::CmpIPredicate pred) {
+  switch (pred) {
+  case arith::CmpIPredicate::eq:
+    return llvm::StringRef("EQ");
+  case arith::CmpIPredicate::ne:
+    return llvm::StringRef("NE");
+  case arith::CmpIPredicate::slt:
+    return llvm::StringRef("LT");
+  case arith::CmpIPredicate::sle:
+    return llvm::StringRef("LE");
+  case arith::CmpIPredicate::sgt:
+    return llvm::StringRef("GT");
+  case arith::CmpIPredicate::sge:
+    return llvm::StringRef("GE");
+  case arith::CmpIPredicate::ult:
+    return llvm::StringRef("ULT");
+  case arith::CmpIPredicate::ule:
+    return llvm::StringRef("ULE");
+  case arith::CmpIPredicate::ugt:
+    return llvm::StringRef("UGT");
+  case arith::CmpIPredicate::uge:
+    return llvm::StringRef("UGE");
+  }
+  return failure();
+}
+
+static FailureOr<llvm::StringRef>
+getA5CmpPredicateToken(arith::CmpFPredicate pred) {
+  switch (pred) {
+  case arith::CmpFPredicate::OEQ:
+  case arith::CmpFPredicate::UEQ:
+    return llvm::StringRef("EQ");
+  case arith::CmpFPredicate::ONE:
+  case arith::CmpFPredicate::UNE:
+    return llvm::StringRef("NE");
+  case arith::CmpFPredicate::OLT:
+  case arith::CmpFPredicate::ULT:
+    return llvm::StringRef("LT");
+  case arith::CmpFPredicate::OLE:
+  case arith::CmpFPredicate::ULE:
+    return llvm::StringRef("LE");
+  case arith::CmpFPredicate::OGT:
+  case arith::CmpFPredicate::UGT:
+    return llvm::StringRef("GT");
+  case arith::CmpFPredicate::OGE:
+  case arith::CmpFPredicate::UGE:
+    return llvm::StringRef("GE");
+  default:
+    return failure();
+  }
+}
+
+static FailureOr<llvm::StringRef>
+getA5ReductionCallee(vector::CombiningKind kind, Type elemTy) {
+  switch (kind) {
+  case vector::CombiningKind::ADD:
+    return llvm::StringRef("vreduce_add");
+  case vector::CombiningKind::MAXIMUMF:
+  case vector::CombiningKind::MAXSI:
+  case vector::CombiningKind::MAXUI:
+    return llvm::StringRef("vreduce_max");
+  case vector::CombiningKind::MINIMUMF:
+  case vector::CombiningKind::MINSI:
+  case vector::CombiningKind::MINUI:
+    return llvm::StringRef("vreduce_min");
+  default:
+    return failure();
+  }
+}
+
+template <typename ArithOp>
+struct OplibVectorUnaryToEmitC : public OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    Value pred = tryRemapMaskFromUnaryMaskedLoadUse(op, rewriter);
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
+
+    auto execModeOr = getRequiredA5OplibTokenAttr(
+        op.getOperation(), kA5SimdExecModeAttr, op->getName().getStringRef(),
+        "MODE_");
+    if (failed(execModeOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *execModeOr)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, getA5VectorUnaryCallee<ArithOp>(),
+        ValueRange{regVar.getResult(), adaptor.getOperand(), pred}, args,
+        ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+template <typename ArithOp>
+struct OplibVectorIntBinaryToEmitC : public OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto predOr =
+        buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                         op->getName().getStringRef());
+    if (failed(predOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, getA5VectorIntBinaryCallee<ArithOp>(),
+        ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),
+                   *predOr},
+        args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorNotToEmitC : public OpConversionPattern<arith::XOrIOp> {
+  using OpConversionPattern<arith::XOrIOp>::OpConversionPattern;
+  LogicalResult matchAndRewrite(arith::XOrIOp, OpAdaptor,
+                                ConversionPatternRewriter &) const override {
+    return failure();
+  }
+};
+
+struct OplibVectorCmpIToEmitC : public OpConversionPattern<arith::CmpIOp> {
+  using OpConversionPattern<arith::CmpIOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(arith::CmpIOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto resultTy = dyn_cast<VectorType>(op.getType());
+    if (!resultTy)
+      return failure();
+
+    auto lhsTy = dyn_cast<VectorType>(op.getLhs().getType());
+    auto rhsTy = dyn_cast<VectorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, lhsTy, "arith.cmpi")) ||
+        failed(validateA5OplibVectorType(op, rhsTy, "arith.cmpi")))
+      return failure();
+
+    auto predTokOr = getA5CmpPredicateToken(op.getPredicate());
+    if (failed(predTokOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: predicate "
+                     << stringifyCmpIPredicate(op.getPredicate());
+      return failure();
+    }
+
+    Type maskTy = this->getTypeConverter()->convertType(op.getType());
+    if (!maskTy)
+      return failure();
+    auto *ctx = rewriter.getContext();
+    auto maskVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+                                         ValueRange{maskVar.getResult(),
+                                                    adaptor.getLhs(),
+                                                    adaptor.getRhs()},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, maskVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorCmpFToEmitC : public OpConversionPattern<arith::CmpFOp> {
+  using OpConversionPattern<arith::CmpFOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(arith::CmpFOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto resultTy = dyn_cast<VectorType>(op.getType());
+    if (!resultTy)
+      return failure();
+
+    auto lhsTy = dyn_cast<VectorType>(op.getLhs().getType());
+    auto rhsTy = dyn_cast<VectorType>(op.getRhs().getType());
+    if (!lhsTy || !rhsTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, lhsTy, "arith.cmpf")) ||
+        failed(validateA5OplibVectorType(op, rhsTy, "arith.cmpf")))
+      return failure();
+
+    auto predTokOr = getA5CmpPredicateToken(op.getPredicate());
+    if (failed(predTokOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: predicate "
+                     << stringifyCmpFPredicate(op.getPredicate());
+      return failure();
+    }
+
+    Type maskTy = this->getTypeConverter()->convertType(op.getType());
+    if (!maskTy)
+      return failure();
+    auto *ctx = rewriter.getContext();
+    auto maskVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+                                         ValueRange{maskVar.getResult(),
+                                                    adaptor.getLhs(),
+                                                    adaptor.getRhs()},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, maskVar.getResult());
+    return success();
+  }
+};
+
+template <typename SelectOpTy>
+struct OplibVectorSelectToEmitC : public OpConversionPattern<SelectOpTy> {
+  using OpConversionPattern<SelectOpTy>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(SelectOpTy op, typename SelectOpTy::Adaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Value cond = peelUnrealized(adaptor.getCondition());
+    if (isa<VectorType>(cond.getType()))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "vsel",
+        ValueRange{regVar.getResult(), adaptor.getTrueValue(),
+                   adaptor.getFalseValue(), cond},
+        args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorReductionToEmitC
+    : public OpConversionPattern<vector::ReductionOp> {
+  using OpConversionPattern<vector::ReductionOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(vector::ReductionOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getVector().getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, "vector.reduction")))
+      return failure();
+
+    auto calleeOr = getA5ReductionCallee(op.getKind(), vecTy.getElementType());
+    if (failed(calleeOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: reduction kind "
+                     << stringifyCombiningKind(op.getKind());
+      return failure();
+    }
+
+    Type dstTy = this->getTypeConverter()->convertType(op.getType());
+    if (!dstTy)
+      return failure();
+
+    SmallVector<Value, 2> operands{adaptor.getVector()};
+    if (adaptor.getAcc())
+      operands.push_back(adaptor.getAcc());
+
+    auto call = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{dstTy}, *calleeOr, operands, ArrayAttr{},
+        ArrayAttr{});
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
+
+struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
+  using OpConversionPattern<vector::LoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::LoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, "vector.load")))
+      return failure();
+
+    auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    auto linearIndexOr =
+        getA5LinearizedIndex(rewriter, op.getOperation(), adaptor.getIndices(),
+                             baseTy, "vector.load");
+    if (failed(linearIndexOr))
+      return failure();
+
+    Type regTy = getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto vldDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVldDistAttr,
+                                                 "vector.load");
+    if (failed(vldDistOr))
+      return failure();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2),
+         emitc::OpaqueAttr::get(ctx, *vldDistOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
+                                         ValueRange{regVar.getResult(),
+                                                    adaptor.getBase(),
+                                                    *linearIndexOr},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorCreateMaskToEmitC
+    : public OpConversionPattern<vector::CreateMaskOp> {
+  using OpConversionPattern<vector::CreateMaskOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::CreateMaskOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto maskTy = dyn_cast<VectorType>(op.getType());
+    if (!maskTy)
+      return failure();
+
+    if (op.getOperands().size() != 1) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.create_mask "
+             "expects one active_count operand";
+      return failure();
+    }
+
+    auto predOr = buildA5PredicateFromActiveCount(
+        rewriter, op.getLoc(), op.getOperation(), maskTy,
+        adaptor.getOperands().front(), "vector.create_mask");
+    if (failed(predOr))
+      return failure();
+
+    rewriter.replaceOp(op, *predOr);
+    return success();
+  }
+};
+
+struct OplibVectorConstantMaskToEmitC
+    : public OpConversionPattern<vector::ConstantMaskOp> {
+  using OpConversionPattern<vector::ConstantMaskOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::ConstantMaskOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto maskTy = dyn_cast<VectorType>(op.getType());
+    if (!maskTy)
+      return failure();
+
+    ArrayAttr dimSizes = op.getMaskDimSizes();
+    if (dimSizes.size() != 1) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.constant_mask "
+             "expects one dimension";
+      return failure();
+    }
+
+    auto dimAttr = dyn_cast<IntegerAttr>(dimSizes[0]);
+    if (!dimAttr) {
+      op.emitError()
+          << "A5 OP-Lib vector lowering unsupported: vector.constant_mask "
+             "dimension must be integer";
+      return failure();
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+    Value activeCount =
+        makeEmitCIntConstant(rewriter, op.getLoc(), u32Ty, dimAttr.getInt());
+    auto predOr = buildA5PredicateFromActiveCount(
+        rewriter, op.getLoc(), op.getOperation(), maskTy, activeCount,
+        "vector.constant_mask");
+    if (failed(predOr))
+      return failure();
+
+    rewriter.replaceOp(op, *predOr);
+    return success();
+  }
+};
+
+struct OplibVectorMaskedLoadToEmitC
+    : public OpConversionPattern<vector::MaskedLoadOp> {
+  using OpConversionPattern<vector::MaskedLoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::MaskedLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, "vector.maskedload")))
+      return failure();
+
+    auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    auto linearIndexOr = getA5LinearizedIndex(
+        rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
+        "vector.maskedload");
+    if (failed(linearIndexOr))
+      return failure();
+
+    // A5 vld has no predicate operand. Keep an unmasked load and forward mask
+    // semantics to masked users (arith/store) in dedicated lowering patterns.
+    Type regTy = getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto vldDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVldDistAttr,
+                                                 "vector.maskedload");
+    if (failed(vldDistOr))
+      return failure();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2),
+         emitc::OpaqueAttr::get(ctx, *vldDistOr)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
+                                         ValueRange{regVar.getResult(),
+                                                    adaptor.getBase(),
+                                                    *linearIndexOr},
+                                         args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
+  using OpConversionPattern<vector::StoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getValueToStore().getType());
+    if (!vecTy)
+      return failure();
+    auto elemTokOr = getA5VectorElemToken(op, vecTy, "vector.store");
+    if (failed(elemTokOr))
+      return failure();
+
+    auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    auto linearIndexOr =
+        getA5LinearizedIndex(rewriter, op.getOperation(), adaptor.getIndices(),
+                             baseTy, "vector.store");
+    if (failed(linearIndexOr))
+      return failure();
+
+    auto predOr = buildA5Predicate(rewriter, op.getLoc(), op, vecTy, "vector.store");
+    if (failed(predOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto vstDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVstDistAttr,
+                                                 "vector.store", "DIST_");
+    if (failed(vstDistOr))
+      return failure();
+    std::string distExpr = std::string(
+        "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
+                           std::string(*elemTokOr) + ", pto::DistVST::" +
+                           std::string(*vstDistOr) + ">())>()";
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, distExpr),
+         rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vsts",
+                                         ValueRange{adaptor.getValueToStore(),
+                                                    adaptor.getBase(),
+                                                    *linearIndexOr,
+                                                    *predOr},
+                                         args, ArrayAttr{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct OplibVectorMaskedStoreToEmitC
+    : public OpConversionPattern<vector::MaskedStoreOp> {
+  using OpConversionPattern<vector::MaskedStoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::MaskedStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getValueToStore().getType());
+    if (!vecTy)
+      return failure();
+    auto elemTokOr = getA5VectorElemToken(op, vecTy, "vector.maskedstore");
+    if (failed(elemTokOr))
+      return failure();
+
+    auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    auto linearIndexOr = getA5LinearizedIndex(
+        rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
+        "vector.maskedstore");
+    if (failed(linearIndexOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto vstDistOr = getRequiredA5OplibTokenAttr(op.getOperation(),
+                                                 kA5SimdVstDistAttr,
+                                                 "vector.maskedstore",
+                                                 "DIST_");
+    if (failed(vstDistOr))
+      return failure();
+    std::string distExpr = std::string(
+        "std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<") +
+                           std::string(*elemTokOr) + ", pto::DistVST::" +
+                           std::string(*vstDistOr) + ">())>()";
+    Value mask = peelUnrealized(adaptor.getMask());
+    if (isa<VectorType>(mask.getType())) {
+      auto predOr = buildA5Predicate(rewriter, op.getLoc(), op, vecTy,
+                                     "vector.maskedstore");
+      if (failed(predOr))
+        return failure();
+      mask = *predOr;
+    }
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, distExpr),
+         rewriter.getIndexAttr(3)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vsts",
+                                         ValueRange{adaptor.getValueToStore(),
+                                                    adaptor.getBase(),
+                                                    *linearIndexOr,
+                                                    mask},
+                                         args, ArrayAttr{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+template <typename ArithOp>
+struct OplibVectorBinaryArithToEmitC : public OpConversionPattern<ArithOp> {
+  using OpConversionPattern<ArithOp>::OpConversionPattern;
+
+  static Value tryRemapMaskFromMaskedLoadUse(ArithOp op,
+                                             ConversionPatternRewriter &rewriter) {
+    auto extractMask = [&](Value v) -> Value {
+      if (auto maskedLoad = v.getDefiningOp<vector::MaskedLoadOp>())
+        return maskedLoad.getMask();
+      return Value();
+    };
+
+    Value lhsMask = extractMask(op.getLhs());
+    Value rhsMask = extractMask(op.getRhs());
+    Value selectedMask;
+    if (lhsMask && rhsMask) {
+      if (lhsMask != rhsMask)
+        return Value();
+      selectedMask = lhsMask;
+    } else {
+      selectedMask = lhsMask ? lhsMask : rhsMask;
+    }
+
+    if (!selectedMask)
+      return Value();
+
+    Value remapped = rewriter.getRemappedValue(selectedMask);
+    if (!remapped)
+      return Value();
+    remapped = peelUnrealized(remapped);
+    if (isa<VectorType>(remapped.getType()))
+      return Value();
+    return remapped;
+  }
+
+  LogicalResult
+  matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+    if (failed(validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    Value pred = tryRemapMaskFromMaskedLoadUse(op, rewriter);
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto execModeOr = getRequiredA5OplibTokenAttr(
+        op.getOperation(), kA5SimdExecModeAttr, op->getName().getStringRef(),
+        "MODE_");
+    if (failed(execModeOr))
+      return failure();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3),
+         emitc::OpaqueAttr::get(ctx, *execModeOr)});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, getA5VectorBinaryCallee<ArithOp>(),
+        ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),
+                   pred},
+        args, ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
 struct ArithMulIToEmitC : public OpConversionPattern<arith::MulIOp> {
   using OpConversionPattern<arith::MulIOp>::OpConversionPattern;
 
@@ -1791,6 +3033,30 @@ struct ArithCastOPToEmitC : public OpConversionPattern<arith::IndexCastOp> {
     if (!newTy)
       return failure();
     rewriter.replaceOpWithNewOp<emitc::CastOp>(op, newTy, adaptor.getIn());
+    return success();
+  }
+};
+
+struct MemRefCastToEmitC : public OpConversionPattern<memref::CastOp> {
+  using OpConversionPattern<memref::CastOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(memref::CastOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Type dstTy = getTypeConverter()->convertType(op.getType());
+    if (!dstTy)
+      return failure();
+
+    Value src = adaptor.getSource();
+    if (src.getType() == dstTy) {
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    if (!emitc::isSupportedEmitCType(src.getType()) ||
+        !emitc::isSupportedEmitCType(dstTy))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<emitc::CastOp>(op, dstTy, src);
     return success();
   }
 };
@@ -1916,24 +3182,94 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    Attribute valueAttr = adaptor.getValue();
 	    if (!valueAttr) valueAttr = op.getValue();
 
+	    auto buildFloatLiteral = [](FloatAttr floatAttr) {
+	      SmallString<32> valStr;
+	      floatAttr.getValue().toString(valStr);
+	      llvm::StringRef s(valStr);
+	      const bool hasFloatMarker =
+	          s.contains('.') || s.contains('e') || s.contains('E') ||
+	          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
+	          s.starts_with("0X") || s.starts_with("nan") ||
+	          s.starts_with("-nan") || s.starts_with("inf") ||
+	          s.starts_with("-inf");
+	      if (!hasFloatMarker)
+	        valStr.append(".0");
+	      if (!floatAttr.getType().isF64())
+	        valStr.append("f");
+	      return valStr.str().str();
+	    };
+
+	    if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(valueAttr)) {
+	      if (auto vecTy = dyn_cast<VectorType>(op.getType())) {
+	        auto opaqueTy = dyn_cast<emitc::OpaqueType>(newType);
+	        if (!opaqueTy)
+	          return failure();
+
+	        if (denseAttr.isSplat() && opaqueTy.getValue().starts_with("RegTensor<")) {
+	          Type scalarTy = getTypeConverter()->convertType(vecTy.getElementType());
+	          if (!scalarTy)
+	            return failure();
+
+	          Attribute splatAttr = denseAttr.getSplatValue<Attribute>();
+	          emitc::OpaqueAttr scalarAttr;
+	          if (auto splatFloat = dyn_cast<FloatAttr>(splatAttr)) {
+	            scalarAttr =
+	                emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(splatFloat));
+	          } else if (auto splatInt = dyn_cast<IntegerAttr>(splatAttr)) {
+	            scalarAttr = emitc::OpaqueAttr::get(
+	                rewriter.getContext(),
+	                std::to_string(splatInt.getValue().getSExtValue()));
+	          } else {
+	            return failure();
+	          }
+
+	          auto scalarConst = rewriter.create<emitc::ConstantOp>(
+	              op.getLoc(), scalarTy, scalarAttr);
+	          auto predOr =
+	              buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+	                               "arith.constant");
+	          if (failed(predOr))
+	            return failure();
+
+	          auto *ctx = rewriter.getContext();
+	          auto regVar = rewriter.create<emitc::VariableOp>(
+	              op.getLoc(), newType, emitc::OpaqueAttr::get(ctx, ""));
+	          auto args = rewriter.getArrayAttr(
+	              {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+	               rewriter.getIndexAttr(2),
+	               emitc::OpaqueAttr::get(ctx, "MODE_MERGING")});
+	          rewriter.create<emitc::CallOpaqueOp>(
+	              op.getLoc(), TypeRange{}, "vdup",
+	              ValueRange{regVar.getResult(), scalarConst.getResult(), *predOr},
+	              args, ArrayAttr{});
+	          rewriter.replaceOp(op, regVar.getResult());
+	          return success();
+	        }
+
+	        std::string expr;
+	        if (denseAttr.isSplat()) {
+	          if (auto splatFloat =
+	                  dyn_cast<FloatAttr>(denseAttr.getSplatValue<Attribute>())) {
+	            expr = (opaqueTy.getValue() + "(" + buildFloatLiteral(splatFloat) + ")").str();
+	          } else if (auto splatInt =
+	                         dyn_cast<IntegerAttr>(denseAttr.getSplatValue<Attribute>())) {
+	            expr = (opaqueTy.getValue() + "(" +
+	                    std::to_string(splatInt.getValue().getSExtValue()) + ")")
+	                       .str();
+	          }
+	        }
+	        if (expr.empty())
+	          expr = (opaqueTy.getValue() + "{}").str();
+
+	        auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), expr);
+	        rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
+	        return success();
+	      }
+	    }
+
 		    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
-		      SmallString<32> valStr;
-		      floatAttr.getValue().toString(valStr);
-		      llvm::StringRef s(valStr);
-		      // Ensure the literal parses as a floating-point constant in C/C++.
-		      // `APFloat::toString` may emit "1" for integral values; make it "1.0".
-		      const bool hasFloatMarker =
-		          s.contains('.') || s.contains('e') || s.contains('E') ||
-		          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
-		          s.starts_with("0X") || s.starts_with("nan") ||
-		          s.starts_with("-nan") || s.starts_with("inf") ||
-		          s.starts_with("-inf");
-		      if (!hasFloatMarker)
-		        valStr.append(".0");
-		      // Suffix: keep `f` for f16/f32; omit for f64.
-		      if (!floatAttr.getType().isF64())
-		        valStr.append("f");
-		      auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
+		      auto constAttr =
+		          emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(floatAttr));
 		      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
 		      return success();
 		    }
@@ -3107,6 +4443,217 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// pto.alloc_tile lowering
+//===----------------------------------------------------------------------===//
+struct AllocTileConversion : public OpConversionPattern<pto::AllocTileOp> {
+  using OpConversionPattern<pto::AllocTileOp>::OpConversionPattern;
+
+  static bool getConstInt(Value v, int64_t &outVal) {
+    if (!v)
+      return false;
+    if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
+      if (auto attr = dyn_cast<IntegerAttr>(cst.getValue())) {
+        outVal = attr.getInt();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  LogicalResult matchAndRewrite(pto::AllocTileOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto tileTy = dyn_cast<pto::TileBufType>(op.getType());
+    if (!tileTy)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+
+    auto shape = tileTy.getShape();
+    if (shape.size() != 2) {
+      op.emitError() << "EmitPTOManual only supports rank-2 pto.alloc_tile, got rank "
+                     << shape.size();
+      return failure();
+    }
+
+    const char *roleTok = "TileType::Vec";
+    if (auto asAttr =
+            dyn_cast_or_null<pto::AddressSpaceAttr>(tileTy.getMemorySpace())) {
+      switch (asAttr.getAddressSpace()) {
+      case pto::AddressSpace::VEC:
+        roleTok = "TileType::Vec";
+        break;
+      case pto::AddressSpace::MAT:
+        roleTok = "TileType::Mat";
+        break;
+      case pto::AddressSpace::LEFT:
+        roleTok = "TileType::Left";
+        break;
+      case pto::AddressSpace::RIGHT:
+        roleTok = "TileType::Right";
+        break;
+      case pto::AddressSpace::ACC:
+        roleTok = "TileType::Acc";
+        break;
+      case pto::AddressSpace::BIAS:
+        roleTok = "TileType::Bias";
+        break;
+      case pto::AddressSpace::SCALING:
+        roleTok = "TileType::Scaling";
+        break;
+      case pto::AddressSpace::GM:
+      case pto::AddressSpace::Zero:
+        roleTok = "TileType::Vec";
+        break;
+      }
+    }
+
+    Type elemType = tileTy.getElementType();
+    std::string elemTypeStr = "float";
+    if (elemType.isF16())
+      elemTypeStr = "half";
+    else if (elemType.isBF16())
+      elemTypeStr = "bfloat16_t";
+    else if (elemType.isF32())
+      elemTypeStr = "float";
+    else if (elemType.isF64())
+      elemTypeStr = "double";
+    else if (elemType.isInteger(8))
+      elemTypeStr =
+          cast<IntegerType>(elemType).isUnsigned() ? "uint8_t" : "int8_t";
+    else if (elemType.isInteger(16))
+      elemTypeStr =
+          cast<IntegerType>(elemType).isUnsigned() ? "uint16_t" : "int16_t";
+    else if (elemType.isInteger(32))
+      elemTypeStr =
+          cast<IntegerType>(elemType).isUnsigned() ? "uint32_t" : "int32_t";
+    else if (elemType.isInteger(64))
+      elemTypeStr =
+          cast<IntegerType>(elemType).isUnsigned() ? "uint64_t" : "int64_t";
+
+    std::string blayoutStr = tileTy.getBLayoutValueI32() == 1
+                                 ? "BLayout::ColMajor"
+                                 : "BLayout::RowMajor";
+    std::string slayoutStr = "SLayout::NoneBox";
+    switch (tileTy.getSLayoutValueI32()) {
+    case 1:
+      slayoutStr = "SLayout::RowMajor";
+      break;
+    case 2:
+      slayoutStr = "SLayout::ColMajor";
+      break;
+    default:
+      slayoutStr = "SLayout::NoneBox";
+      break;
+    }
+
+    std::string padStr = "PadValue::Null";
+    switch (tileTy.getPadValueI32()) {
+    case 1:
+      padStr = "PadValue::Zero";
+      break;
+    case 2:
+      padStr = "PadValue::Max";
+      break;
+    case 3:
+      padStr = "PadValue::Min";
+      break;
+    default:
+      padStr = "PadValue::Null";
+      break;
+    }
+
+    std::string vrowTok = std::to_string(shape[0]);
+    std::string vcolTok = std::to_string(shape[1]);
+    bool rowDynamic = false;
+    bool colDynamic = false;
+    SmallVector<Value> ctorArgs;
+
+    int64_t rowConst = 0;
+    if (Value vRow = op.getValidRow()) {
+      if (getConstInt(vRow, rowConst)) {
+        vrowTok = std::to_string(rowConst);
+      } else {
+        vrowTok = "-1";
+        rowDynamic = true;
+      }
+    } else if (tileTy.hasValidShape() && tileTy.getValidShape().size() == 2 &&
+               tileTy.getValidShape()[0] >= 0) {
+      vrowTok = std::to_string(tileTy.getValidShape()[0]);
+    }
+
+    int64_t colConst = 0;
+    if (Value vCol = op.getValidCol()) {
+      if (getConstInt(vCol, colConst)) {
+        vcolTok = std::to_string(colConst);
+      } else {
+        vcolTok = "-1";
+        colDynamic = true;
+      }
+    } else if (tileTy.hasValidShape() && tileTy.getValidShape().size() == 2 &&
+               tileTy.getValidShape()[1] >= 0) {
+      vcolTok = std::to_string(tileTy.getValidShape()[1]);
+    }
+
+    if (rowDynamic && adaptor.getValidRow())
+      ctorArgs.push_back(adaptor.getValidRow());
+    if (colDynamic && adaptor.getValidCol())
+      ctorArgs.push_back(adaptor.getValidCol());
+
+    std::string tileTypeStr =
+        std::string("Tile<") + roleTok + ", " + elemTypeStr + ", " +
+        std::to_string(shape[0]) + ", " + std::to_string(shape[1]) + ", " +
+        blayoutStr + ", " + vrowTok + ", " + vcolTok + ", " + slayoutStr +
+        ", " + std::to_string(tileTy.getSFractalSizeI32()) + ", " + padStr +
+        ">";
+
+    auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
+    Value tileValue;
+    if (ctorArgs.empty()) {
+      tileValue =
+          rewriter
+              .create<emitc::VariableOp>(loc, tileType,
+                                         emitc::OpaqueAttr::get(ctx, ""))
+              .getResult();
+    } else {
+      tileValue = rewriter
+                      .create<emitc::CallOpaqueOp>(
+                          loc, tileType, tileTypeStr, ArrayAttr{}, ArrayAttr{},
+                          ValueRange(ctorArgs))
+                      .getResult(0);
+    }
+
+    if (!op.getAddr()) {
+      return rewriter.notifyMatchFailure(
+          op,
+          "pto.alloc_tile without addr is unsupported in EmitPTOManual; "
+          "expect PlanMemory to materialize explicit address");
+    }
+
+    Value addr = adaptor.getAddr();
+    if (isa<emitc::PointerType>(addr.getType()) ||
+        (isa<emitc::OpaqueType>(addr.getType()) &&
+         cast<emitc::OpaqueType>(addr.getType()).getValue().ends_with("*"))) {
+      auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
+      auto rcU64 =
+          rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
+      addr = rewriter
+                 .create<emitc::CallOpaqueOp>(
+                     loc, u64Ty, "reinterpret_cast",
+                     /*args=*/ArrayAttr{}, /*templateArgs=*/rcU64,
+                     /*operands=*/ValueRange{addr})
+                 .getResult(0);
+    }
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TASSIGN", ArrayAttr{}, ArrayAttr{},
+        ValueRange{tileValue, addr});
+    rewriter.replaceOp(op, tileValue);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // pto.load_dps / pto.store_dps lowering (FIX: keep optional result)
 //===----------------------------------------------------------------------===
 
@@ -3974,6 +5521,23 @@ struct PTOTAddToTADD : public OpConversionPattern<pto::TAddOp> {
   }
 };
 
+struct FuncCallToEmitC : public OpConversionPattern<func::CallOp> {
+  using OpConversionPattern<func::CallOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(func::CallOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> resultTypes;
+    if (failed(getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+
+    auto call = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange(resultTypes), op.getCallee(),
+        ArrayAttr{}, ArrayAttr{}, adaptor.getOperands());
+    rewriter.replaceOp(op, call->getResults());
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // populate patterns
 //===----------------------------------------------------------------------===
@@ -4147,6 +5711,174 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
 
     rewriter.replaceOp(op, tile);
     return success();
+  }
+};
+
+struct MemRefDimToEmitC : public OpConversionPattern<memref::DimOp> {
+  using OpConversionPattern<memref::DimOp>::OpConversionPattern;
+
+  static std::optional<int64_t> getDimIndex(memref::DimOp op) {
+    if (std::optional<int64_t> idx = op.getConstantIndex())
+      return idx;
+    if (auto cst = op.getIndex().getDefiningOp<arith::ConstantOp>()) {
+      if (auto ia = dyn_cast<IntegerAttr>(cst.getValue()))
+        return ia.getInt();
+    }
+    return std::nullopt;
+  }
+
+  static Value materializeDimValue(Value src, Type outTy, Location loc,
+                                   ConversionPatternRewriter &rewriter) {
+    if (!src)
+      return Value();
+
+    if (Value remapped = rewriter.getRemappedValue(src)) {
+      if (remapped.getType() == outTy)
+        return remapped;
+      return rewriter.create<emitc::CastOp>(loc, outTy, remapped).getResult();
+    }
+
+    if (auto cst = src.getDefiningOp<arith::ConstantOp>()) {
+      if (auto ia = dyn_cast<IntegerAttr>(cst.getValue()))
+        return makeEmitCIntConstant(rewriter, loc, outTy, ia.getInt());
+    }
+
+    return rewriter.create<UnrealizedConversionCastOp>(loc, outTy, src)
+        .getResult(0);
+  }
+
+  static Value tryResolveFromTileBridge(memref::DimOp op, int64_t dimIdx,
+                                        Type outTy,
+                                        ConversionPatternRewriter &rewriter) {
+    auto getRuntimeValidDimFromEmitCTile = [&](Value maybePtr) -> Value {
+      if (!maybePtr)
+        return Value();
+      auto ptrDef = maybePtr.getDefiningOp<emitc::CallOpaqueOp>();
+      if (!ptrDef || ptrDef.getCallee() != "PTOAS__TILE_DATA" ||
+          ptrDef->getNumOperands() != 1)
+        return Value();
+      Value tileObj = ptrDef->getOperand(0);
+      auto tileTy = dyn_cast<emitc::OpaqueType>(tileObj.getType());
+      if (!tileTy || !tileTy.getValue().starts_with("Tile<"))
+        return Value();
+
+      auto *ctx = rewriter.getContext();
+      llvm::StringRef callee =
+          (dimIdx == 0) ? "PTOAS__TILE_GET_VALID_ROW"
+                        : "PTOAS__TILE_GET_VALID_COL";
+      auto dimI32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+      Value dimI32 = rewriter
+                         .create<emitc::CallOpaqueOp>(
+                             op.getLoc(), TypeRange{dimI32Ty}, callee,
+                             ArrayAttr{}, ArrayAttr{}, ValueRange{tileObj})
+                         .getResult(0);
+      if (dimI32.getType() == outTy)
+        return dimI32;
+      return rewriter.create<emitc::CastOp>(op.getLoc(), outTy, dimI32)
+          .getResult();
+    };
+
+    std::function<Value(Value)> resolveFromMemrefValue = [&](Value memVal) -> Value {
+      auto cast = memVal.getDefiningOp<UnrealizedConversionCastOp>();
+      if (!cast || cast->getNumOperands() != 1)
+        return Value();
+
+      Value input = cast->getOperand(0);
+      if (Value dyn = getRuntimeValidDimFromEmitCTile(input))
+        return dyn;
+
+      // Handle bridge-introduced memref producers that still carry valid-shape
+      // metadata (dynamic row/col) on PTO ops.
+      if (auto pc = input.getDefiningOp<pto::PointerCastOp>()) {
+        Value v = (dimIdx == 0) ? pc.getValidRow() : pc.getValidCol();
+        if (v)
+          return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+      }
+      if (auto bind = input.getDefiningOp<pto::BindTileOp>()) {
+        Value v = (dimIdx == 0) ? bind.getValidRow() : bind.getValidCol();
+        if (v)
+          return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+      }
+
+      // Follow memref->memref bridge chains.
+      if (isa<MemRefType>(input.getType()))
+        if (Value fromUpstream = resolveFromMemrefValue(input))
+          return fromUpstream;
+
+      auto tileTy = dyn_cast<pto::TileBufType>(input.getType());
+      if (!tileTy)
+        return Value();
+
+      auto resolveDynamicFromProducer = [&](Value tileVal, int64_t dim) -> Value {
+        if (auto alloc = tileVal.getDefiningOp<pto::AllocTileOp>()) {
+          Value v = (dim == 0) ? alloc.getValidRow() : alloc.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        if (auto bind = tileVal.getDefiningOp<pto::BindTileOp>()) {
+          Value v = (dim == 0) ? bind.getValidRow() : bind.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        if (auto pc = tileVal.getDefiningOp<pto::PointerCastOp>()) {
+          Value v = (dim == 0) ? pc.getValidRow() : pc.getValidCol();
+          if (v)
+            return materializeDimValue(v, outTy, op.getLoc(), rewriter);
+        }
+        return Value();
+      };
+
+      if (Value dyn = resolveDynamicFromProducer(input, dimIdx))
+        return dyn;
+
+      ArrayRef<int64_t> validShape = tileTy.getValidShape();
+      if (validShape.size() >= 2 && validShape[dimIdx] >= 0) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), outTy,
+                                    validShape[dimIdx]);
+      }
+
+      ArrayRef<int64_t> shape = tileTy.getShape();
+      if (shape.size() >= 2 && shape[dimIdx] >= 0) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), outTy, shape[dimIdx]);
+      }
+
+      return Value();
+    };
+
+    return resolveFromMemrefValue(op.getSource());
+  }
+
+  LogicalResult matchAndRewrite(memref::DimOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto memTy = dyn_cast<MemRefType>(op.getSource().getType());
+    if (!memTy)
+      return failure();
+
+    std::optional<int64_t> dimIdxOpt = getDimIndex(op);
+    if (!dimIdxOpt)
+      return rewriter.notifyMatchFailure(op, "requires constant dim index");
+    int64_t dimIdx = *dimIdxOpt;
+    if (dimIdx < 0 || dimIdx >= memTy.getRank())
+      return rewriter.notifyMatchFailure(op, "dim index out of range");
+
+    Type outTy = getTypeConverter()->convertType(op.getType());
+    if (!outTy)
+      return failure();
+
+    if (!memTy.isDynamicDim(dimIdx)) {
+      rewriter.replaceOp(op, makeEmitCIntConstant(rewriter, op.getLoc(), outTy,
+                                                  memTy.getDimSize(dimIdx)));
+      return success();
+    }
+
+    if (Value resolved = tryResolveFromTileBridge(op, dimIdx, outTy, rewriter)) {
+      rewriter.replaceOp(op, resolved);
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(
+        op, "dynamic memref.dim currently requires tile bridge provenance");
   }
 };
 //===----------------------------------------------------------------------===//
@@ -4586,6 +6318,9 @@ struct PTODivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     // The adaptor types may already be converted to emitc.opaque
     Value origSrc = op.getSrc();
     Value origScalar = op.getScalar();
+    auto orderAttr = op->getAttrOfType<StringAttr>("pto.tdivs.order");
+    bool orderIsScalarTile =
+        orderAttr && orderAttr.getValue() == "scalar_tile";
     
     // Determine order based on original operand types
     // Check if src is memref/tensor/partition_tensor_view/tile (not scalar)
@@ -4603,7 +6338,12 @@ struct PTODivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
 
-    if (srcIsMemref && !scalarIsMemref) {
+    if (orderIsScalarTile) {
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TDIVS",
+          ArrayAttr{}, ArrayAttr{},
+          ValueRange{dst, scalar, src});
+    } else if (srcIsMemref && !scalarIsMemref) {
       // memref/scalar: TDIVS(dst, src, scalar) - normal order
       rewriter.create<emitc::CallOpaqueOp>(
           loc, TypeRange{}, "TDIVS",
@@ -4641,12 +6381,20 @@ struct PTOTDivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     Value src    = peelUnrealized(adaptor.getSrc());
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
+    auto orderAttr = op->getAttrOfType<StringAttr>("pto.tdivs.order");
+    bool orderIsScalarTile =
+        orderAttr && orderAttr.getValue() == "scalar_tile";
 
     // Determine order based on operand types
     bool srcIsTile = isa<mlir::pto::TileBufType>(src.getType());
     bool scalarIsTile = isa<mlir::pto::TileBufType>(scalar.getType());
 
-    if (srcIsTile && !scalarIsTile) {
+    if (orderIsScalarTile) {
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TDIVS",
+          ArrayAttr{}, ArrayAttr{},
+          ValueRange{dst, scalar, src});
+    } else if (srcIsTile && !scalarIsTile) {
       // tile/scalar: TDIVS(dst, src, scalar)
       rewriter.create<emitc::CallOpaqueOp>(
           loc, TypeRange{}, "TDIVS",
@@ -6821,6 +8569,87 @@ struct SectionToEmitC : public OpConversionPattern<SectionOpTy> {
   }
 };
 
+struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
+  using OpConversionPattern<pto::SimdVecScopeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::SimdVecScopeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    rewriter.create<emitc::VerbatimOp>(loc, "__VEC_SCOPE__ {");
+
+    Block &innerBlock = op.getBody().front();
+    if (!innerBlock.empty()) {
+      rewriter.inlineBlockBefore(&innerBlock, op.getOperation(), ValueRange{});
+    }
+
+    rewriter.create<emitc::VerbatimOp>(loc, "}");
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct SimdTileToMemrefToEmitC
+    : public OpConversionPattern<pto::SimdTileToMemrefOp> {
+  using OpConversionPattern<pto::SimdTileToMemrefOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::SimdTileToMemrefOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value origSrc = op.getSrc();
+    Type dstTy = getTypeConverter()->convertType(op.getDst().getType());
+    if (!dstTy)
+      return failure();
+
+    if (isEmitCTileOpaqueType(src.getType())) {
+      rewriter.setInsertionPoint(op);
+      if (Operation *assign = findTileAssignBefore(src, op.getOperation()))
+        rewriter.setInsertionPointAfter(assign);
+      auto ptr = rewriter.create<emitc::CallOpaqueOp>(
+          op.getLoc(), dstTy, "PTOAS__TILE_DATA", ArrayAttr{}, ArrayAttr{},
+          ValueRange{src});
+      rewriter.replaceOp(op, ptr.getResult(0));
+      return success();
+    }
+
+    if (src.getType() == dstTy) {
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    if (emitc::isSupportedEmitCType(src.getType()) &&
+        emitc::isSupportedEmitCType(dstTy)) {
+      auto cast = rewriter.create<emitc::CastOp>(op.getLoc(), dstTy, src);
+      rewriter.replaceOp(op, cast.getResult());
+      return success();
+    }
+
+    // In some OP-fusion paths, `simd.tile_to_memref` can still be visited before
+    // block arguments are remapped to converted emitc types. Keep legalization
+    // robust by materializing an unrealized cast from memref src to converted
+    // destination type, then let late cast cleanup canonicalize it.
+    if (isa<MemRefType>(origSrc.getType()) && isa<MemRefType>(op.getDst().getType())) {
+      Value bridgeInput = src;
+      if (Value remappedOrig = rewriter.getRemappedValue(origSrc))
+        bridgeInput = peelUnrealized(remappedOrig);
+
+      if (bridgeInput.getType() == dstTy) {
+        rewriter.replaceOp(op, bridgeInput);
+        return success();
+      }
+
+      auto bridge = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(), dstTy,
+                                                                bridgeInput);
+      rewriter.replaceOp(op, bridge.getResult(0));
+      return success();
+    }
+
+    return rewriter.notifyMatchFailure(
+        op, "expected tile-like source or castable emitc-compatible types");
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // SCF Control-Flow Pre-Lowering
 //
@@ -7322,6 +9151,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOOrsToEmitC>(typeConverter, ctx);
   patterns.add<PTOLogToEmitC>(typeConverter, ctx);
   patterns.add<FuncToEmitC>(typeConverter, ctx);
+  patterns.add<FuncCallToEmitC>(typeConverter, ctx);
   patterns.add<PTOMovToEmitC>(typeConverter, ctx);
   patterns.add<ArithConstantToEmitC>(typeConverter, ctx);
   patterns.add<ArithAddUIExtendedToEmitC>(typeConverter, ctx);
@@ -7336,6 +9166,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOLReluToEmitC>(typeConverter, ctx);
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
+  patterns.add<AllocTileConversion>(typeConverter, ctx);
   patterns.add<PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL,
                PTOLoadScalarToEmitC, PTOStoreScalarToEmitC>(typeConverter, ctx);
@@ -7369,7 +9200,35 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMaxUIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinSIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinUIToEmitC>(typeConverter, ctx);
+  patterns.add<OplibVectorCreateMaskToEmitC, OplibVectorConstantMaskToEmitC,
+               OplibVectorLoadToEmitC,
+               OplibVectorMaskedLoadToEmitC, OplibVectorStoreToEmitC,
+               OplibVectorMaskedStoreToEmitC,
+               OplibVectorBinaryArithToEmitC<arith::AddFOp>,
+               OplibVectorBinaryArithToEmitC<arith::SubFOp>,
+               OplibVectorBinaryArithToEmitC<arith::MulFOp>,
+               OplibVectorBinaryArithToEmitC<arith::DivFOp>,
+               OplibVectorBinaryArithToEmitC<arith::MaximumFOp>,
+               OplibVectorBinaryArithToEmitC<arith::MinimumFOp>,
+               OplibVectorUnaryToEmitC<arith::NegFOp>,
+               OplibVectorUnaryToEmitC<math::AbsFOp>,
+               OplibVectorUnaryToEmitC<math::ExpOp>,
+               OplibVectorUnaryToEmitC<math::LogOp>,
+               OplibVectorUnaryToEmitC<math::SqrtOp>,
+               OplibVectorUnaryToEmitC<math::RsqrtOp>,
+               OplibVectorCmpFToEmitC, OplibVectorCmpIToEmitC,
+               OplibVectorSelectToEmitC<arith::SelectOp>,
+               OplibVectorReductionToEmitC,
+               OplibVectorIntBinaryToEmitC<arith::AndIOp>,
+               OplibVectorIntBinaryToEmitC<arith::OrIOp>,
+               OplibVectorIntBinaryToEmitC<arith::XOrIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShLIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShRUIOp>,
+               OplibVectorIntBinaryToEmitC<arith::ShRSIOp>>(
+      typeConverter, ctx);
   patterns.add<ArithNegFToEmitC>(typeConverter, ctx);
+  patterns.add<ArithSimpleBinaryToEmitC<arith::AddFOp, emitc::AddOp>>(
+      typeConverter, ctx);
   patterns.add<ArithSimpleBinaryToEmitC<arith::SubFOp, emitc::SubOp>>(typeConverter,
                                                                      ctx);
   patterns.add<ArithSimpleBinaryToEmitC<arith::MulFOp, emitc::MulOp>>(typeConverter,
@@ -7408,15 +9267,19 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOTGemvToTGEMV>(typeConverter, ctx);
   patterns.add<PTOTGemvAccToTGEMVACC>(typeConverter, ctx);
   patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
+  patterns.add<MemRefDimToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
+  patterns.add<MemRefCastToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
   patterns.add<PTOSyncSetToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<PTOSyncWaitToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<SectionToEmitC<pto::SectionCubeOp>>(typeConverter, ctx);
   patterns.add<SectionToEmitC<pto::SectionVectorOp>>(typeConverter, ctx);
+  patterns.add<SimdVecScopeToEmitC>(typeConverter, ctx);
+  patterns.add<SimdTileToMemrefToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockIdxToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockNumToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetSubBlockIdxToEmitC>(typeConverter, ctx);
@@ -7464,6 +9327,7 @@ struct EmitPTOManualPass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<emitc::EmitCDialect, func::FuncDialect, arith::ArithDialect,
                     memref::MemRefDialect, affine::AffineDialect,
+                    vector::VectorDialect,
                     mlir::cf::ControlFlowDialect, mlir::pto::PTODialect>();
   }
 
@@ -7567,6 +9431,382 @@ struct EmitPTOManualPass
         return signalPassFailure();
     }
 
+    if (targetArch == PTOArch::A5) {
+      // Canonicalization and dialect conversion can materialize vector.load/store
+      // from masked forms after per-op attrs have already been stripped. Stamp
+      // function-local fallback tokens ahead of A5 vector validation/lowering.
+      stampA5OplibFunctionTokenAttrs(mop);
+      bool hasUnsupportedA5Vector = false;
+      mop.walk([&](Operation *op) {
+        if (hasUnsupportedA5Vector)
+          return WalkResult::interrupt();
+
+        if (auto vload = dyn_cast<vector::LoadOp>(op)) {
+          if (failed(validateA5OplibVectorType(
+                  vload.getOperation(), vload.getVectorType(), "vector.load"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto vmload = dyn_cast<vector::MaskedLoadOp>(op)) {
+          if (failed(validateA5OplibVectorType(vmload.getOperation(),
+                                               vmload.getVectorType(),
+                                               "vector.maskedload"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          auto maskTy = dyn_cast<VectorType>(vmload.getMask().getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(vmload.getOperation(), maskTy,
+                                        "vector.maskedload"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto vstore = dyn_cast<vector::StoreOp>(op)) {
+          auto vecTy = dyn_cast<VectorType>(vstore.getValueToStore().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(vstore.getOperation(), vecTy,
+                                               "vector.store"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op)) {
+          auto vecTy =
+              dyn_cast<VectorType>(vmstore.getValueToStore().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(vmstore.getOperation(), vecTy,
+                                               "vector.maskedstore"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          auto maskTy = dyn_cast<VectorType>(vmstore.getMask().getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(vmstore.getOperation(), maskTy,
+                                        "vector.maskedstore"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmask = dyn_cast<vector::CreateMaskOp>(op)) {
+          auto maskTy = dyn_cast<VectorType>(cmask.getType());
+          if (!maskTy ||
+              failed(getA5MaskElemToken(cmask.getOperation(), maskTy,
+                                        "vector.create_mask"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto negf = dyn_cast<arith::NegFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(negf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(negf.getOperation(), vecTy,
+                                               "arith.negf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto absf = dyn_cast<math::AbsFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(absf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(absf.getOperation(), vecTy,
+                                               "math.absf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto exp = dyn_cast<math::ExpOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(exp.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(exp.getOperation(), vecTy,
+                                               "math.exp"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto log = dyn_cast<math::LogOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(log.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(log.getOperation(), vecTy,
+                                               "math.log"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto sqrt = dyn_cast<math::SqrtOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(sqrt.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(sqrt.getOperation(), vecTy,
+                                               "math.sqrt"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto rsqrt = dyn_cast<math::RsqrtOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(rsqrt.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(rsqrt.getOperation(), vecTy,
+                                               "math.rsqrt"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto addf = dyn_cast<arith::AddFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(addf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(addf.getOperation(), vecTy,
+                                               "arith.addf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto subf = dyn_cast<arith::SubFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(subf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(subf.getOperation(), vecTy,
+                                               "arith.subf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto mulf = dyn_cast<arith::MulFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(mulf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(mulf.getOperation(), vecTy,
+                                               "arith.mulf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto divf = dyn_cast<arith::DivFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(divf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(divf.getOperation(), vecTy,
+                                               "arith.divf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto maxf = dyn_cast<arith::MaximumFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(maxf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(maxf.getOperation(), vecTy,
+                                               "arith.maximumf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto minf = dyn_cast<arith::MinimumFOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(minf.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(minf.getOperation(), vecTy,
+                                               "arith.minimumf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmpf = dyn_cast<arith::CmpFOp>(op)) {
+          auto lhsTy = dyn_cast<VectorType>(cmpf.getLhs().getType());
+          auto rhsTy = dyn_cast<VectorType>(cmpf.getRhs().getType());
+          if ((lhsTy || rhsTy) &&
+              (!lhsTy || !rhsTy ||
+               failed(validateA5OplibVectorType(cmpf.getOperation(), lhsTy,
+                                                "arith.cmpf")) ||
+               failed(validateA5OplibVectorType(cmpf.getOperation(), rhsTy,
+                                                "arith.cmpf")))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto cmpi = dyn_cast<arith::CmpIOp>(op)) {
+          auto lhsTy = dyn_cast<VectorType>(cmpi.getLhs().getType());
+          auto rhsTy = dyn_cast<VectorType>(cmpi.getRhs().getType());
+          if ((lhsTy || rhsTy) &&
+              (!lhsTy || !rhsTy ||
+               failed(validateA5OplibVectorType(cmpi.getOperation(), lhsTy,
+                                                "arith.cmpi")) ||
+               failed(validateA5OplibVectorType(cmpi.getOperation(), rhsTy,
+                                                "arith.cmpi")))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(sel.getType()); vecTy) {
+            if (failed(validateA5OplibVectorType(sel.getOperation(), vecTy,
+                                                 "arith.select"))) {
+              hasUnsupportedA5Vector = true;
+              return WalkResult::interrupt();
+            }
+            auto condTy = dyn_cast<VectorType>(sel.getCondition().getType());
+            if (condTy &&
+                failed(getA5MaskElemToken(sel.getOperation(), condTy,
+                                          "arith.select"))) {
+              hasUnsupportedA5Vector = true;
+              return WalkResult::interrupt();
+            }
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto red = dyn_cast<vector::ReductionOp>(op)) {
+          auto vecTy = dyn_cast<VectorType>(red.getVector().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(red.getOperation(), vecTy,
+                                               "vector.reduction"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto andi = dyn_cast<arith::AndIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(andi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(andi.getOperation(), vecTy,
+                                               "arith.andi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto ori = dyn_cast<arith::OrIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(ori.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(ori.getOperation(), vecTy,
+                                               "arith.ori"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto xori = dyn_cast<arith::XOrIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(xori.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(xori.getOperation(), vecTy,
+                                               "arith.xori"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shli = dyn_cast<arith::ShLIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shli.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shli.getOperation(), vecTy,
+                                               "arith.shli"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shrui = dyn_cast<arith::ShRUIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shrui.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shrui.getOperation(), vecTy,
+                                               "arith.shrui"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto shrsi = dyn_cast<arith::ShRSIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(shrsi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(shrsi.getOperation(), vecTy,
+                                               "arith.shrsi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        return WalkResult::advance();
+      });
+      if (hasUnsupportedA5Vector)
+        return signalPassFailure();
+    }
+
+    {
+      auto hasDirectCallUse = [&](func::FuncOp fn) -> bool {
+        bool used = false;
+        StringRef sym = fn.getSymName();
+        mop.walk([&](func::CallOp call) {
+          if (call.getCallee() == sym) {
+            used = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+        return used;
+      };
+
+      SmallVector<func::FuncOp, 8> funcsToErase;
+      for (auto func : mop.getOps<func::FuncOp>()) {
+        if (!func.isPrivate())
+          continue;
+
+        const bool isOplibEntry =
+            func->hasAttr("pto.oplib.entry_role") ||
+            func->hasAttr("pto.oplib.kind");
+        const bool isOplibInstance =
+            func->hasAttr("pto.oplib.instance.variant_id");
+        if ((isOplibEntry || isOplibInstance) && !hasDirectCallUse(func)) {
+          funcsToErase.push_back(func);
+          continue;
+        }
+
+        if (SymbolTable::symbolKnownUseEmpty(func, mop))
+          funcsToErase.push_back(func);
+      }
+      for (func::FuncOp func : funcsToErase)
+        func.erase();
+    }
+
     // 2. 配置转换目标
     PTOToEmitCTypeConverter typeConverter(ctx);
     ConversionTarget target(*ctx);
@@ -7574,6 +9814,7 @@ struct EmitPTOManualPass
     target.addIllegalDialect<memref::MemRefDialect>();
     target.addIllegalDialect<pto::PTODialect>();
     target.addIllegalDialect<arith::ArithDialect>();
+    target.addIllegalDialect<vector::VectorDialect>();
     target.addIllegalDialect<mlir::scf::SCFDialect>(); 
     
     // If we introduced CFG branches (e.g. from scf.while), make sure they are
@@ -7620,7 +9861,12 @@ struct EmitPTOManualPass
     // --- Step A: 清理 UnrealizedConversionCastOp ---
     // Prefer dropping redundant/unused casts; otherwise lower to emitc.cast
     // so the C++ emitter can print it.
-    llvm::SmallVector<UnrealizedConversionCastOp> castsToErase;
+    llvm::SmallVector<Operation *> opsToErase;
+    llvm::SmallPtrSet<Operation *, 32> opsToEraseSet;
+    auto markErase = [&](Operation *op) {
+      if (op && opsToEraseSet.insert(op).second)
+        opsToErase.push_back(op);
+    };
     bool castCleanupFailed = false;
     mop.walk([&](UnrealizedConversionCastOp cast) {
       if (castCleanupFailed)
@@ -7637,22 +9883,177 @@ struct EmitPTOManualPass
       Type inTy = input.getType();
       Type outTy = output.getType();
 
+      auto isEmitCPtrLikeTy = [](Type ty) -> bool {
+        if (isa<emitc::PointerType>(ty))
+          return true;
+        if (auto ot = dyn_cast<emitc::OpaqueType>(ty))
+          return ot.getValue().ends_with("*");
+        return false;
+      };
+      // Prefer inserting tile.data() extraction after the tile has been bound
+      // via TASSIGN(tile, addr). Without this, we can end up emitting C++ like:
+      //   Tile ... t; auto *p = t.data(); TASSIGN(t, addr);
+      // which reads/writes through an uninitialized tile address and causes
+      // nondeterministic results (e.g. Subset ping/pong cases).
+      std::function<bool(Value, Value)> rewriteMemrefBridgeUses =
+          [&](Value memVal, Value tileInput) -> bool {
+        for (OpOperand &memUse : llvm::make_early_inc_range(memVal.getUses())) {
+          Operation *memUser = memUse.getOwner();
+          if (auto toPtr = dyn_cast<UnrealizedConversionCastOp>(memUser)) {
+            if (toPtr->getNumOperands() != 1 || toPtr->getNumResults() != 1 ||
+                toPtr.getOperand(0) != memVal)
+              return false;
+
+            Type toTy = toPtr.getResult(0).getType();
+            if (isEmitCPtrLikeTy(toTy)) {
+              OpBuilder builder(toPtr);
+              if (Operation *assign = findTileAssignBefore(tileInput, toPtr))
+                builder.setInsertionPointAfter(assign);
+              auto ptr = builder.create<emitc::CallOpaqueOp>(
+                  toPtr.getLoc(), toTy, "PTOAS__TILE_DATA", ArrayAttr{},
+                  ArrayAttr{}, ValueRange{tileInput});
+              toPtr.getResult(0).replaceAllUsesWith(ptr.getResult(0));
+              markErase(toPtr.getOperation());
+              continue;
+            }
+
+            if (isa<MemRefType>(toTy)) {
+              if (!rewriteMemrefBridgeUses(toPtr.getResult(0), tileInput))
+                return false;
+              markErase(toPtr.getOperation());
+              continue;
+            }
+
+            return false;
+          }
+
+          auto rc = dyn_cast<emitc::CallOpaqueOp>(memUser);
+          if (!rc || rc.getCallee() != "reinterpret_cast" ||
+              rc->getNumOperands() != 1 || rc->getNumResults() != 1 ||
+              rc.getOperand(0) != memVal)
+            return false;
+
+          Type rawPtrTy =
+              typeConverter.convertType(mlir::cast<MemRefType>(memVal.getType()));
+          if (!rawPtrTy || !isEmitCPtrLikeTy(rawPtrTy))
+            return false;
+
+          auto outOpaque = dyn_cast<emitc::OpaqueType>(rc.getResult(0).getType());
+          if (!outOpaque)
+            return false;
+
+          OpBuilder builder(rc);
+          if (Operation *assign = findTileAssignBefore(tileInput, rc))
+            builder.setInsertionPointAfter(assign);
+          auto rawPtr = builder.create<emitc::CallOpaqueOp>(
+              rc.getLoc(), rawPtrTy, "PTOAS__TILE_DATA", ArrayAttr{},
+              ArrayAttr{}, ValueRange{tileInput});
+          auto templateArgs = builder.getArrayAttr(
+              {emitc::OpaqueAttr::get(ctx, outOpaque.getValue())});
+          auto newRc = builder.create<emitc::CallOpaqueOp>(
+              rc.getLoc(), rc.getResult(0).getType(), "reinterpret_cast",
+              ArrayAttr{}, templateArgs, ValueRange{rawPtr.getResult(0)});
+          rc.getResult(0).replaceAllUsesWith(newRc.getResult(0));
+          markErase(rc.getOperation());
+        }
+        return true;
+      };
+
       if (output.use_empty()) {
-        castsToErase.push_back(cast);
+        markErase(cast.getOperation());
         return;
       }
 
       if (inTy == outTy) {
         output.replaceAllUsesWith(input);
-        castsToErase.push_back(cast);
+        markErase(cast.getOperation());
         return;
+      }
+
+      // Bridge cleanup: emitc Tile -> pointer-like value.
+      if (isEmitCTileOpaqueType(inTy) && isEmitCPtrLikeTy(outTy)) {
+        OpBuilder builder(cast);
+        if (Operation *assign = findTileAssignBefore(input, cast))
+          builder.setInsertionPointAfter(assign);
+        auto ptr = builder.create<emitc::CallOpaqueOp>(
+            cast.getLoc(), outTy, "PTOAS__TILE_DATA",
+            ArrayAttr{}, ArrayAttr{}, ValueRange{input});
+        output.replaceAllUsesWith(ptr.getResult(0));
+        markErase(cast.getOperation());
+        return;
+      }
+
+      // Bridge cleanup: emitc Tile -> memref[...], potentially followed by
+      // memref->memref/ptr unrealized casts.
+      if (isEmitCTileOpaqueType(inTy) && isa<MemRefType>(outTy)) {
+        if (rewriteMemrefBridgeUses(output, input)) {
+          markErase(cast.getOperation());
+          return;
+        }
+      }
+
+      // Bridge cleanup:
+      // pto.tile_buf -> memref, where tile_buf is produced from an emitc Tile.
+      if (isa<pto::TileBufType>(inTy) && isa<MemRefType>(outTy)) {
+        if (auto srcCast = input.getDefiningOp<UnrealizedConversionCastOp>()) {
+          if (srcCast->getNumOperands() == 1 && srcCast->getNumResults() == 1 &&
+              isEmitCTileOpaqueType(srcCast.getOperand(0).getType())) {
+            Value tileInput = srcCast.getOperand(0);
+            if (rewriteMemrefBridgeUses(output, tileInput)) {
+              markErase(cast.getOperation());
+              if (srcCast.getResult(0).use_empty())
+                markErase(srcCast.getOperation());
+              return;
+            }
+          }
+        }
+      }
+
+      // Bridge cleanup:
+      // emitc Tile -> pto.tile_buf -> memref -> pointer-like
+      if (isEmitCTileOpaqueType(inTy) && isa<pto::TileBufType>(outTy)) {
+        bool handledAllUsers = true;
+        for (Operation *user : llvm::make_early_inc_range(output.getUsers())) {
+          auto toMem = dyn_cast<UnrealizedConversionCastOp>(user);
+          if (!toMem || toMem->getNumOperands() != 1 || toMem->getNumResults() != 1 ||
+              !isa<MemRefType>(toMem.getResult(0).getType())) {
+            handledAllUsers = false;
+            break;
+          }
+
+          Value memVal = toMem.getResult(0);
+          if (!rewriteMemrefBridgeUses(memVal, input)) {
+            handledAllUsers = false;
+            break;
+          }
+
+          markErase(toMem.getOperation());
+        }
+
+        if (handledAllUsers) {
+          markErase(cast.getOperation());
+          return;
+        }
+      }
+
+      // Bridge cleanup (deferred):
+      // pointer-like -> memref bridge may transiently remain, and in some
+      // cases is only consumed by other unrealized casts that become dead
+      // later in this cleanup stage. Defer instead of failing early.
+      if (isEmitCPtrLikeTy(inTy) && isa<MemRefType>(outTy)) {
+        bool onlyUsedByUnrealized =
+            llvm::all_of(output.getUsers(), [](Operation *user) {
+              return isa<UnrealizedConversionCastOp>(user);
+            });
+        if (onlyUsedByUnrealized)
+          return;
       }
 
       if (emitc::isSupportedEmitCType(inTy) && emitc::isSupportedEmitCType(outTy)) {
         OpBuilder builder(cast);
         auto c = builder.create<emitc::CastOp>(cast.getLoc(), outTy, input);
         output.replaceAllUsesWith(c.getResult());
-        castsToErase.push_back(cast);
+        markErase(cast.getOperation());
         return;
       }
 
@@ -7661,8 +10062,37 @@ struct EmitPTOManualPass
       castCleanupFailed = true;
     });
 
-    for (auto cast : castsToErase)
-      cast.erase();
+    for (Operation *op : opsToErase)
+      if (op && op->getBlock())
+        op->erase();
+
+    // Fixed-point prune for dead/identity unrealized casts that may become
+    // removable after the first cleanup wave.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<UnrealizedConversionCastOp, 16> deadOrIdentity;
+      mop.walk([&](UnrealizedConversionCastOp cast) {
+        if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+          return;
+        Value in = cast.getOperand(0);
+        Value out = cast.getResult(0);
+        if (out.use_empty()) {
+          deadOrIdentity.push_back(cast);
+          return;
+        }
+        if (in.getType() == out.getType()) {
+          out.replaceAllUsesWith(in);
+          deadOrIdentity.push_back(cast);
+        }
+      });
+      for (UnrealizedConversionCastOp cast : deadOrIdentity) {
+        if (cast && cast->getBlock()) {
+          cast.erase();
+          changed = true;
+        }
+      }
+    }
 
     if (castCleanupFailed)
       return signalPassFailure();
@@ -7702,16 +10132,45 @@ struct EmitPTOManualPass
       }
     }
 
-    // --- Step B: 修复 Loop 归纳变量 (IV) ---
-    // 此时 emitc.for 的 operand 已经是 int32 了，我们检查 IV 是否匹配，不匹配则修正
+    // --- Step B: Normalize loop induction variable type ---
+    // Keep IV type aligned with loop bounds by default. On A5, force uint16_t
+    // loop IV/bounds/step so OP-Lib loops always map to hardware-loop patterns.
     mop.walk([&](emitc::ForOp forOp) {
-       Type boundTy = forOp.getLowerBound().getType(); 
-       BlockArgument iv = forOp.getBody()->getArgument(0); 
-       
-       if (iv.getType() != boundTy) {
-         iv.setType(boundTy); // 强制将 IV 类型 (index) 修改为与边界一致 (int32)
-       }
+      Type boundTy = forOp.getLowerBound().getType();
+      Type targetTy = boundTy;
+      if (targetArch == PTOArch::A5) {
+        targetTy = emitc::OpaqueType::get(mop.getContext(), "uint16_t");
+        OpBuilder b(forOp);
+        auto castToTarget = [&](Value v) -> Value {
+          // Prefer casting from the original source value instead of an
+          // intermediate index-typed cast result (which prints as size_t in C++).
+          if (auto idxCast = v.getDefiningOp<emitc::CastOp>()) {
+            if (isa<IndexType>(idxCast.getResult().getType()))
+              v = idxCast.getSource();
+          }
+          if (v.getType() == targetTy)
+            return v;
+          return b.create<emitc::CastOp>(forOp.getLoc(), targetTy, v)
+              .getResult();
+        };
+        forOp.setLowerBound(castToTarget(forOp.getLowerBound()));
+        forOp.setUpperBound(castToTarget(forOp.getUpperBound()));
+        forOp.setStep(castToTarget(forOp.getStep()));
+      }
+
+      BlockArgument iv = forOp.getBody()->getArgument(0);
+      if (iv.getType() != targetTy)
+        iv.setType(targetTy);
     });
+
+    // Remove dead casts left behind by loop bound/type rewrites.
+    SmallVector<emitc::CastOp> deadCasts;
+    mop.walk([&](emitc::CastOp castOp) {
+      if (castOp.getResult().use_empty())
+        deadCasts.push_back(castOp);
+    });
+    for (emitc::CastOp castOp : deadCasts)
+      castOp.erase();
     
     // --- Step C: 消除冗余 Tile 变量 (Dead Code Elimination) [新增] ---
     // 逻辑：如果一个 emitc.variable 没有被读取（use_empty），

@@ -64,6 +64,19 @@ std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<mlir::Pass> createPTOInsertLoadStoreForMixCVPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPTOCreateFusionGroupsPass();
+LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
+                                      bool debug = false);
+std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
+    const PTOInstantiateAndLowerToLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOOutlineFusionGroupsPass(
+    const PTOOutlineFusionGroupsOptions &options = {});
+std::unique_ptr<Pass> createPTOInlineLibCallPass(
+    const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOValidateSimdIRPass();
+std::unique_ptr<Pass> createPTOLowerSimdToVectorPass();
+std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
+    const PTOLowLevelLoopFusionOptions &options = {});
 // Declare register function
 void registerPTOPasses();
 

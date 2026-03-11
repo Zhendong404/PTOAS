@@ -1940,6 +1940,11 @@ void PlanMemoryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
   //VFInplaceReuseAnalysis vfInplaceReuseAnalysis(moduleOp);
   for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+    if (funcOp->hasAttr("pto.oplib.kind") ||
+        funcOp->hasAttr("pto.oplib.instance.variant_id") ||
+        funcOp.getSymName().starts_with("__pto_oplib_")) {
+      continue;
+    }
     // if (hacc::utils::isHost(funcOp))
     //   continue;
     // if (pto::isVF(funcOp))

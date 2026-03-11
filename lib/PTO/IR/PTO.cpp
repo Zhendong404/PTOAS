@@ -13,6 +13,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -31,6 +32,7 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/Interfaces/FoldInterfaces.h"
 
 #include <algorithm>
 #include <numeric>
@@ -271,6 +273,9 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
   // Determine order based on types: if first operand is tile_buf, order is (tile, scalar)
   // Otherwise, order is (scalar, tile)
   const bool scalarFirst = (tile1 != nullptr);
+  attrs.set("pto.tdivs.order",
+            StringAttr::get(parser.getContext(),
+                            scalarFirst ? "scalar_tile" : "tile_scalar"));
 
   if (!scalarFirst) {
     // ins(%src, %scalar : tile_buf, scalar_ty)
@@ -294,32 +299,20 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
 }
 
 void mlir::pto::TDivSOp::print(OpAsmPrinter &p) {
-  // Determine order based on operand types
-  // If src is tile_buf and scalar is not, print (src, scalar)
-  // If src is scalar and scalar is tile_buf, print (scalar, src)
-  auto srcType = getSrc().getType();
-  auto scalarType = getScalar().getType();
-  
-  bool srcIsTile = isa<mlir::pto::TileBufType>(srcType);
-  bool scalarIsTile = isa<mlir::pto::TileBufType>(scalarType);
-  
+  auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order");
+  StringRef order = orderAttr ? orderAttr.getValue() : StringRef("tile_scalar");
+
   p << " ins(";
-  if (srcIsTile && !scalarIsTile) {
-    // Print: (tile, scalar) - operands are already in correct order
-    p << getSrc() << ", " << getScalar() << " : "
-      << getSrc().getType() << ", " << getScalar().getType();
-  } else if (!srcIsTile && scalarIsTile) {
-    // Print: (scalar, tile) - need to swap operands in output
+  if (order == "scalar_tile") {
     p << getScalar() << ", " << getSrc() << " : "
       << getScalar().getType() << ", " << getSrc().getType();
   } else {
-    // Default: assume src is tile (should not happen if types are correct)
     p << getSrc() << ", " << getScalar() << " : "
       << getSrc().getType() << ", " << getScalar().getType();
   }
   p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
 
-  p.printOptionalAttrDict((*this)->getAttrs());
+  p.printOptionalAttrDict((*this)->getAttrs(), {"pto.tdivs.order"});
 }
 
 
@@ -649,7 +642,21 @@ LogicalResult mlir::pto::AddPtrOp::verify() {
 // PTODialect
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+struct PTODialectFoldInterface : public DialectFoldInterface {
+  using DialectFoldInterface::DialectFoldInterface;
+
+  bool shouldMaterializeInto(Region *region) const final {
+    return isa<mlir::pto::SimdVecScopeOp>(region->getParentOp());
+  }
+};
+
+} // namespace
+
 void PTODialect::initialize() {
+  addInterfaces<PTODialectFoldInterface>();
+
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "PTO/IR/PTOTypeDefs.cpp.inc"
@@ -1439,6 +1446,13 @@ mlir::LogicalResult mlir::pto::TDivSOp::verify() {
 
   if (scalarTy != elemTy)
     return emitOpError("expects scalar type to match tilebuf element type");
+
+  if (auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order")) {
+    if (orderAttr.getValue() != "tile_scalar" &&
+        orderAttr.getValue() != "scalar_tile") {
+      return emitOpError("invalid pto.tdivs.order, expected tile_scalar or scalar_tile");
+    }
+  }
 
   return mlir::success();
 }
@@ -3369,6 +3383,347 @@ mlir::LogicalResult mlir::pto::TXorSOp::verify() {
     return emitOpError() << "expects src and dst to have the same element type";
 
   return mlir::success();
+}
+
+static LogicalResult verifySimdMaskVector(Operation *op, Type maskTy,
+                                          int64_t &lanesOut) {
+  auto maskVec = dyn_cast<VectorType>(maskTy);
+  if (!maskVec || maskVec.isScalable())
+    return op->emitOpError("expects fixed-width vector mask type");
+  if (!maskVec.getElementType().isInteger(1))
+    return op->emitOpError("expects mask element type to be i1");
+  lanesOut = maskVec.getNumElements();
+  if (lanesOut <= 0)
+    return op->emitOpError("expects positive mask lanes");
+  return success();
+}
+
+static LogicalResult verifySimdValueVector(Operation *op, Type valueTy,
+                                           int64_t expectedLanes) {
+  auto valueVec = dyn_cast<VectorType>(valueTy);
+  if (!valueVec || valueVec.isScalable())
+    return op->emitOpError("expects fixed-width vector value type");
+  if (valueVec.getNumElements() != expectedLanes)
+    return op->emitOpError("expects value lanes to match mask lanes");
+  Type elemTy = valueVec.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return op->emitOpError("expects vector element type to be integer or float");
+  return success();
+}
+
+static LogicalResult
+computeExpectedTileBufMemrefStrides(TileBufType tileTy,
+                                    SmallVectorImpl<int64_t> &expectedStrides) {
+  if (tileTy.getRank() != 2)
+    return failure();
+
+  ArrayRef<int64_t> shape = tileTy.getShape();
+  if (shape.size() != 2)
+    return failure();
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return failure();
+
+  auto cfg = tileTy.getConfigAttr();
+  if (!cfg)
+    cfg = TileBufConfigAttr::getDefault(tileTy.getContext());
+
+  auto getElemBytes = [](Type elemTy) -> int64_t {
+    if (auto ft = elemTy.dyn_cast<FloatType>()) {
+      if (ft.isF16() || ft.isBF16())
+        return 2;
+      if (ft.isF32())
+        return 4;
+      if (ft.isF64())
+        return 8;
+    } else if (auto it = elemTy.dyn_cast<IntegerType>()) {
+      int64_t bytes = it.getWidth() / 8;
+      return bytes > 0 ? bytes : 1;
+    }
+    return -1;
+  };
+
+  auto readBLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<BLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+
+  auto readSLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<SLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+
+  int64_t innerRows = 1, innerCols = 1;
+  bool boxed = false;
+  int32_t bl = 0, sl = 0;
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize()))
+    fr = static_cast<int32_t>(attr.getInt());
+
+  boxed = (sl != 0);
+  if (boxed) {
+    int64_t elemBytes = getElemBytes(tileTy.getElementType());
+    if (elemBytes <= 0)
+      return failure();
+    if (fr == 1024) {
+      innerRows = 16;
+      innerCols = 16;
+    } else if (fr == 32) {
+      innerRows = 16;
+      innerCols = 2;
+    } else if (fr == 512) {
+      if (sl == 1) {
+        innerRows = 16;
+        innerCols = 32 / elemBytes;
+      } else if (sl == 2) {
+        innerRows = 32 / elemBytes;
+        innerCols = 16;
+      } else {
+        return failure();
+      }
+    } else {
+      return failure();
+    }
+  }
+
+  expectedStrides.clear();
+  if (!boxed) {
+    if (bl == 1) {
+      expectedStrides.push_back(1);
+      expectedStrides.push_back(shape[0]);
+    } else {
+      expectedStrides.push_back(shape[1]);
+      expectedStrides.push_back(1);
+    }
+    return success();
+  }
+
+  if (bl == 1) {
+    if (sl != 1)
+      return failure();
+    expectedStrides.push_back(innerCols);
+    expectedStrides.push_back(shape[0]);
+    return success();
+  }
+
+  expectedStrides.push_back(shape[1]);
+  expectedStrides.push_back(innerRows);
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects result to be memref");
+
+  Type srcTy = getSrc().getType();
+  if (auto tileTy = dyn_cast<TileBufType>(srcTy)) {
+    if (memTy.getElementType() != tileTy.getElementType()) {
+      return emitOpError(
+          "expects memref element type to match tile_buf element type");
+    }
+
+    if (memTy.getMemorySpace() != tileTy.getMemorySpace()) {
+      return emitOpError(
+          "expects memref memory space to match tile_buf memory space");
+    }
+
+    if (memTy.getRank() != tileTy.getRank()) {
+      return emitOpError("expects memref rank to match tile_buf rank");
+    }
+
+    ArrayRef<int64_t> tileShape = tileTy.getShape();
+    ArrayRef<int64_t> validShape = tileTy.getValidShape();
+    ArrayRef<int64_t> memShape = memTy.getShape();
+    if (tileShape.size() != memShape.size()) {
+      return emitOpError("expects memref shape rank to match tile_buf shape rank");
+    }
+
+    if (validShape.size() != memShape.size()) {
+      return emitOpError(
+          "expects tile_buf valid shape rank to match memref shape rank");
+    }
+
+    for (unsigned i = 0; i < validShape.size(); ++i) {
+      int64_t expect = validShape[i];
+      if (expect < 0) {
+        // For dynamic valid dims ('?'), accept either:
+        // 1) dynamic memref dim, or
+        // 2) physical static tile dim (legacy OP-Lib templates).
+        if (memShape[i] >= 0 && memShape[i] != tileShape[i]) {
+          return emitOpError()
+                 << "expects memref dim " << i
+                 << " to be dynamic or match physical tile dim "
+                 << tileShape[i] << " because tile_buf valid dim is ?";
+        }
+        continue;
+      }
+
+      if (memShape[i] != expect) {
+        return emitOpError() << "expects memref dim " << i
+                             << " to match tile_buf valid dim; got " << memShape[i]
+                             << ", expected " << expect;
+      }
+    }
+
+    SmallVector<int64_t, 4> expectedStrides;
+    if (failed(computeExpectedTileBufMemrefStrides(tileTy, expectedStrides))) {
+      return emitOpError("cannot infer expected strides from tile_buf layout");
+    }
+
+    SmallVector<int64_t, 4> memStrides;
+    int64_t memOffset = ShapedType::kDynamic;
+    if (failed(getStridesAndOffset(memTy, memStrides, memOffset))) {
+      return emitOpError("expects memref to use strided layout");
+    }
+    if (memOffset != 0) {
+      return emitOpError("expects memref offset to be 0");
+    }
+    if (memStrides.size() != expectedStrides.size()) {
+      return emitOpError("expects memref stride rank to match tile_buf rank");
+    }
+    for (unsigned i = 0; i < expectedStrides.size(); ++i) {
+      if (memStrides[i] != expectedStrides[i]) {
+        return emitOpError()
+               << "expects memref strides to match tile_buf layout; got "
+               << memStrides[i] << " at dim " << i << ", expected "
+               << expectedStrides[i];
+      }
+    }
+    return success();
+  }
+
+  auto srcMemTy = dyn_cast<MemRefType>(srcTy);
+  if (!srcMemTy)
+    return emitOpError("expects src to be !pto.tile_buf or memref");
+
+  if (srcMemTy.getElementType() != memTy.getElementType()) {
+    return emitOpError("expects src/result memref element types to match");
+  }
+
+  if (srcMemTy.getMemorySpace() != memTy.getMemorySpace()) {
+    return emitOpError("expects src/result memref memory spaces to match");
+  }
+
+  if (srcMemTy.getRank() != memTy.getRank()) {
+    return emitOpError("expects src/result memref ranks to match");
+  }
+
+  ArrayRef<int64_t> srcShape = srcMemTy.getShape();
+  ArrayRef<int64_t> dstShape = memTy.getShape();
+  for (unsigned i = 0; i < srcShape.size(); ++i) {
+    if (srcShape[i] >= 0 && dstShape[i] >= 0 && srcShape[i] != dstShape[i]) {
+      return emitOpError() << "expects compatible src/result memref shapes; dim "
+                           << i << " mismatches (" << srcShape[i] << " vs "
+                           << dstShape[i] << ")";
+    }
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdPredicateOp::verify() {
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdLoadOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!memTy)
+    return emitOpError("expects src to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref source");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdStoreOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects dst to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref destination");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdLoadPUOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getSrc().getType());
+  if (!memTy)
+    return emitOpError("expects src to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref source");
+
+  if (getStep() <= 0)
+    return emitOpError("expects step to be > 0");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdStorePUOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects dst to be memref");
+  if (memTy.getRank() != 1)
+    return emitOpError("expects rank-1 memref destination");
+
+  if (getStep() <= 0)
+    return emitOpError("expects step to be > 0");
+
+  int64_t lanes = -1;
+  if (failed(verifySimdMaskVector(*this, getMask().getType(), lanes)))
+    return failure();
+  if (failed(verifySimdValueVector(*this, getValue().getType(), lanes)))
+    return failure();
+
+  auto valueVec = cast<VectorType>(getValue().getType());
+  if (valueVec.getElementType() != memTy.getElementType())
+    return emitOpError("expects memref element type to match value vector element type");
+  return success();
 }
 //===----------------------------------------------------------------------===//
 // PTO.cpp  (add TSYNC DPS/tilebuf implementation)

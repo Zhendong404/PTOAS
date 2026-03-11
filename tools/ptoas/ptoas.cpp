@@ -18,6 +18,8 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include <cctype>
 #include <cstring>
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -35,6 +37,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include <memory>
 #include <string>
 
 using namespace mlir;
@@ -97,6 +100,34 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableOpFusion(
+    "enable-op-fusion",
+    llvm::cl::desc("Enable OP fusion passes (A5 only: create-groups/outline/low-level-loop-fusion)"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> opLibDir(
+    "op-lib-dir",
+    llvm::cl::desc("Directory containing OP-Lib template .mlir files for OP-LIB lowering (A5 only)"),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""));
+
+static llvm::cl::opt<bool> opFusionDebug(
+    "op-fusion-debug",
+    llvm::cl::desc("Enable verbose debug logs for OP fusion (grouping/materialization/loop fusion)"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> printIRAfterAll(
+    "print-ir-after-all",
+    llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> printIRAfterAllFuncFilter(
+    "print-ir-after-all-func-filter",
+    llvm::cl::desc("When --print-ir-after-all is enabled, only print dumps for "
+                   "func.func whose symbol name contains this substring"),
+    llvm::cl::value_desc("substring"),
+    llvm::cl::init(""));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -125,6 +156,11 @@ enum class PTOBuildLevel {
   Level3,
 };
 
+enum class PTOTargetArch {
+  A3,
+  A5,
+};
+
 static PTOBuildLevel defaultBuildLevel() {
   return PTOBuildLevel::Level2;
 }
@@ -148,6 +184,96 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   return false;
 }
 
+static bool parseTargetArch(llvm::StringRef archStr, PTOTargetArch &out) {
+  std::string s = archStr.str();
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "a3") {
+    out = PTOTargetArch::A3;
+    return true;
+  }
+  if (s == "a5") {
+    out = PTOTargetArch::A5;
+    return true;
+  }
+  return false;
+}
+
+namespace {
+class FuncFilteredIRPrinterConfig final : public PassManager::IRPrinterConfig {
+public:
+  FuncFilteredIRPrinterConfig(std::string funcFilter, llvm::raw_ostream &out)
+      : IRPrinterConfig(/*printModuleScope=*/false,
+                        /*printAfterOnlyOnChange=*/false,
+                        /*printAfterOnlyOnFailure=*/false),
+        funcFilter(std::move(funcFilter)), out(out) {}
+
+  void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
+
+  void printAfterIfEnabled(Pass *, Operation *op,
+                           PrintCallbackFn printCallback) override {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (!funcOp.getSymName().contains(funcFilter))
+        return;
+      printCallback(out);
+      return;
+    }
+
+    auto moduleOp = dyn_cast<ModuleOp>(op);
+    if (!moduleOp)
+      return;
+
+    llvm::SmallVector<func::FuncOp, 4> matchedFuncs;
+    for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+      if (funcOp.getSymName().contains(funcFilter))
+        matchedFuncs.push_back(funcOp);
+    }
+    if (matchedFuncs.empty())
+      return;
+
+    std::string dumpText;
+    llvm::raw_string_ostream dumpStream(dumpText);
+    printCallback(dumpStream);
+    dumpStream.flush();
+
+    llvm::StringRef headerLine = dumpText;
+    if (size_t newlinePos = headerLine.find('\n'); newlinePos != std::string::npos)
+      headerLine = headerLine.take_front(newlinePos);
+    out << headerLine << "\n";
+
+    auto flags = getOpPrintingFlags().useLocalScope();
+    for (func::FuncOp funcOp : matchedFuncs) {
+      funcOp.print(out, flags);
+      out << "\n";
+    }
+    out << "\n";
+  }
+
+private:
+  std::string funcFilter;
+  llvm::raw_ostream &out;
+};
+} // namespace
+
+static void maybeEnablePrintIRAfterAll(PassManager &pm) {
+  if (!printIRAfterAll)
+    return;
+  std::string funcFilter = printIRAfterAllFuncFilter;
+  if (!funcFilter.empty()) {
+    pm.enableIRPrinting(
+        std::make_unique<FuncFilteredIRPrinterConfig>(std::move(funcFilter),
+                                                      llvm::errs()));
+    return;
+  }
+
+  pm.enableIRPrinting(
+      [](Pass *, Operation *) { return false; },
+      [](Pass *, Operation *) { return true; },
+      /*printModuleScope=*/true,
+      /*printAfterOnlyOnChange=*/false,
+      /*printAfterOnlyOnFailure=*/false);
+}
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 //
@@ -156,6 +282,8 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
 //   PTOAS__TILE_SET_VALUE(dst, offset, val) -> dst.SetValue(offset, val)
 //   PTOAS__TILE_GET_VALUE(src, offset)      -> src.GetValue(offset)
 //   PTOAS__TILE_DATA(obj)                  -> obj.data()
+//   PTOAS__TILE_GET_VALID_ROW(obj)         -> obj.GetValidRow()
+//   PTOAS__TILE_GET_VALID_COL(obj)         -> obj.GetValidCol()
 //   PTOAS__PTR_LOAD(ptr, offset)           -> ptr[offset]
 //   PTOAS__PTR_STORE(ptr, offset, val)     -> ptr[offset] = val
 // --------------------------------------------------------------------------
@@ -255,6 +383,10 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
         cpp, "PTOAS__TILE_GET_VALUE", "GetValue", /*expectedNumArgs=*/2);
     changed |= rewriteMarkerCallToMember(
         cpp, "PTOAS__TILE_DATA", "data", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_GET_VALID_ROW", "GetValidRow", /*expectedNumArgs=*/1);
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_GET_VALID_COL", "GetValidCol", /*expectedNumArgs=*/1);
   }
 }
 
@@ -522,11 +654,13 @@ int main(int argc, char **argv) {
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
   registry.insert<mlir::arith::ArithDialect>();
+  registry.insert<mlir::math::MathDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::affine::AffineDialect>();
   registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
+  registry.insert<mlir::vector::VectorDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
   //mlir::registerAllDialects(registry);
@@ -553,13 +687,17 @@ int main(int argc, char **argv) {
   // Be tolerant: ptobc decode may materialize ops from dialects that aren't
   // explicitly registered/loaded in this tool yet.
   context.allowUnregisteredDialects(true);
+  if (printIRAfterAll)
+    context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
+  context.getOrLoadDialect<math::MathDialect>();
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
+  context.getOrLoadDialect<vector::VectorDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
 
   OwningOpRef<ModuleOp> module;
@@ -601,6 +739,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  PTOTargetArch effectiveArch = PTOTargetArch::A3;
+  if (!parseTargetArch(ptoTargetArch, effectiveArch)) {
+    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
+                 << "'. Expected 'a3' or 'a5'.\n";
+    return 1;
+  }
+  const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
+
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
@@ -620,8 +766,23 @@ int main(int argc, char **argv) {
         hasAddr = true;
       }
     });
-    if (hasAddr)
+  if (hasAddr)
       return 1;
+  }
+
+  if (enableA5OplibPipeline && opLibDir.empty()) {
+    llvm::errs() << "Error: --op-lib-dir is required.\n";
+    return 1;
+  }
+
+  if (!enableA5OplibPipeline && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                    "--pto-arch!=a5.\n";
+  }
+
+  if (!printIRAfterAll && !printIRAfterAllFuncFilter.empty()) {
+    llvm::errs() << "Warning: --print-ir-after-all-func-filter has no effect "
+                    "without --print-ir-after-all.\n";
   }
 
   // [Fix] ToolOutputFile Usage
@@ -632,14 +793,35 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Main PassManager
+  // Stage 1: front-end lowering to memref-level IR.
+  if (enableA5OplibPipeline) {
+    if (failed(pto::importPTOOpLibTemplates(*module, opLibDir, opFusionDebug))) {
+      llvm::errs() << "Error: Failed to import OP-Lib templates.\n";
+      return 1;
+    }
+  }
+
+  PassManager preCodegenPm(&context);
+  maybeEnablePrintIRAfterAll(preCodegenPm);
+
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
+  // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
+  preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+  if (enableA5OplibPipeline) {
+    preCodegenPm.addPass(pto::createPTOValidateSimdIRPass());
+  }
+
+  preCodegenPm.addPass(pto::createPTOViewToMemrefPass());
+
+  if (failed(preCodegenPm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
+  // Stage 2: remaining optimization + codegen pipeline.
   PassManager pm(&context);
-  
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertLoadStoreForMixCVPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
+  maybeEnablePrintIRAfterAll(pm);
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
@@ -664,30 +846,64 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (enableA5OplibPipeline) {
+    if (enableOpFusion) {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOCreateFusionGroupsPass());
+
+      pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
+      outlineGroupsOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
+    }
+
+    pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
+    instantiateLowerOptions.opLibDir = opLibDir;
+    instantiateLowerOptions.debug = opFusionDebug;
+    pm.addPass(
+        pto::createPTOInstantiateAndLowerToLibCallPass(instantiateLowerOptions));
+
+    pto::PTOInlineLibCallOptions inlineLibCallOptions;
+    inlineLibCallOptions.debug = opFusionDebug;
+    pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
+
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+
+    if (enableOpFusion) {
+      pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
+      loopFusionOptions.debug = opFusionDebug;
+      pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    }
+  }
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+
+  if (failed(pm.run(*module))) {
+    llvm::errs() << "Error: Pass execution failed.\n";
+    return 1;
+  }
+
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
-  pm.addPass(createCSEPass());
+  PassManager codegenPm(&context);
+  maybeEnablePrintIRAfterAll(codegenPm);
   std::string arch = ptoTargetArch;
   for (char &c : arch)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch != "a3" && arch != "a5") {
-    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
-                 << "'. Expected 'a3' or 'a5'.\n";
-    return 1;
-  }
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+  codegenPm.addPass(createCSEPass());
+  if (effectiveArch == PTOTargetArch::A3) {
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+    codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
   }
-  pm.addPass(emitc::createFormExpressionsPass());
-  pm.addPass(mlir::createCSEPass());
+  codegenPm.addPass(emitc::createFormExpressionsPass());
+  codegenPm.addPass(mlir::createCSEPass());
 
-  if (failed(pm.run(*module))) {
+  if (failed(codegenPm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return 1;
   }

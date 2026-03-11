@@ -557,6 +557,12 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
+      // Stage 0.75: keep pto.simd.tile_to_memref as backend marker.
+      // Bridge lowering is intentionally deferred to EmitC so tile.data()
+      // materialization can be anchored after tile binding (TASSIGN).
+      // ------------------------------------------------------------------
+
+      // ------------------------------------------------------------------
       // Stage 1: Lower pto.make_tensor_view -> memref.reinterpret_cast
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::MakeTensorViewOp, 8> makeViews;
@@ -1927,12 +1933,13 @@ struct PTOViewToMemrefPass
           scalarOperand = src;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TDivSOp>(
+        auto newOp = rewriter.replaceOpWithNewOp<pto::TDivSOp>(
             op,
             TypeRange{},
             memrefOperand,
             scalarOperand,
             dst);
+        newOp->setAttrs(op->getAttrs());
       }
 
       SmallVector<mlir::pto::TExpandsOp, 8> expandsops;
