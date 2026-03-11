@@ -2172,7 +2172,7 @@ template <> llvm::StringRef getA5VectorUnaryCallee<math::ExpOp>() {
   return "vexp";
 }
 template <> llvm::StringRef getA5VectorUnaryCallee<math::LogOp>() {
-  return "vlog";
+  return "vln";
 }
 template <> llvm::StringRef getA5VectorUnaryCallee<math::SqrtOp>() {
   return "vsqrt";

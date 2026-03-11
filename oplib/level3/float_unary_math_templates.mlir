@@ -170,6 +170,7 @@ module {
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %zero = arith.constant dense<0.0> : vector<32xf32>
+    %one = arith.constant dense<1.0> : vector<32xf32>
 
     pto.simd.vec_scope {
       scf.for %r = %c0 to %rows step %c1 {
@@ -179,7 +180,8 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<32xi1>
           %a = vector.maskedload %m0[%r, %cidx], %mask, %zero {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-          %d = math.rsqrt %a {pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
+          %sqrt = math.sqrt %a {pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
+          %d = arith.divf %one, %sqrt {pto.simd.exec_mode = "MODE_ZEROING"} : vector<32xf32>
           vector.maskedstore %md[%r, %cidx], %mask, %d {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
         }
       }
