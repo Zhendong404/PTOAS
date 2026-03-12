@@ -3098,8 +3098,15 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
   };
   if (!isAllowedElem(srcElem))
     return emitOpError("expects src0 and dst element type to be i8/i16/i32/f16/bf16/f32");
-  if (!maskElem.isInteger(8))
-    return emitOpError("expects mask element type to be i8");
+  auto isAllowedMaskElem = [&](mlir::Type t) -> bool {
+    if (auto it = mlir::dyn_cast<mlir::IntegerType>(t)) {
+      unsigned w = it.getWidth();
+      return (w == 8 || w == 16 || w == 32);
+    }
+    return t.isIndex();
+  };
+  if (!isAllowedMaskElem(maskElem))
+    return emitOpError("expects mask element type to be i8/i16/i32 or index");
   if (getShapeVec(t0)[1] != getShapeVec(td)[1])
     return emitOpError("expects src0 and dst cols to match");
   return mlir::success();

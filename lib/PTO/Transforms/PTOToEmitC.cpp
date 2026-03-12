@@ -2307,7 +2307,7 @@ template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShLIOp>() {
   return "vshl";
 }
 template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRUIOp>() {
-  return "vshru";
+  return "vshr";
 }
 template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::ShRSIOp>() {
   return "vshrs";
@@ -2385,15 +2385,15 @@ static FailureOr<llvm::StringRef>
 getA5ReductionCallee(vector::CombiningKind kind, Type elemTy) {
   switch (kind) {
   case vector::CombiningKind::ADD:
-    return llvm::StringRef("vreduce_add");
+    return llvm::StringRef("ptoas_vreduce_add");
   case vector::CombiningKind::MAXIMUMF:
   case vector::CombiningKind::MAXSI:
   case vector::CombiningKind::MAXUI:
-    return llvm::StringRef("vreduce_max");
+    return llvm::StringRef("ptoas_vreduce_max");
   case vector::CombiningKind::MINIMUMF:
   case vector::CombiningKind::MINSI:
   case vector::CombiningKind::MINUI:
-    return llvm::StringRef("vreduce_min");
+    return llvm::StringRef("ptoas_vreduce_min");
   default:
     return failure();
   }
@@ -2639,14 +2639,81 @@ struct OplibVectorReductionToEmitC
     if (!dstTy)
       return failure();
 
-    SmallVector<Value, 2> operands{adaptor.getVector()};
+    Value pred;
+    if (auto maskedLoad = op.getVector().getDefiningOp<vector::MaskedLoadOp>()) {
+      Value remapped = rewriter.getRemappedValue(maskedLoad.getMask());
+      if (remapped) {
+        remapped = peelUnrealized(remapped);
+        if (!isa<VectorType>(remapped.getType()))
+          pred = remapped;
+      }
+    }
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
+
+    SmallVector<Value, 3> operands{adaptor.getVector()};
     if (adaptor.getAcc())
       operands.push_back(adaptor.getAcc());
+    operands.push_back(pred);
 
     auto call = rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{dstTy}, *calleeOr, operands, ArrayAttr{},
         ArrayAttr{});
     rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
+
+struct OplibMemRefLoadToEmitC : public OpConversionPattern<memref::LoadOp> {
+  using OpConversionPattern<memref::LoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto baseTy = dyn_cast<MemRefType>(op.getMemRef().getType());
+    auto linearIndexOr = getA5LinearizedIndex(
+        rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
+        "memref.load");
+    if (failed(linearIndexOr))
+      return failure();
+
+    Type dstTy = this->getTypeConverter()->convertType(op.getType());
+    if (!dstTy)
+      return failure();
+
+    auto call = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{dstTy}, "ptoas_memref_load",
+        ValueRange{adaptor.getMemref(), *linearIndexOr}, ArrayAttr{},
+        ArrayAttr{});
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
+
+struct OplibMemRefStoreToEmitC : public OpConversionPattern<memref::StoreOp> {
+  using OpConversionPattern<memref::StoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto baseTy = dyn_cast<MemRefType>(op.getMemRef().getType());
+    auto linearIndexOr = getA5LinearizedIndex(
+        rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
+        "memref.store");
+    if (failed(linearIndexOr))
+      return failure();
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "ptoas_memref_store",
+        ValueRange{adaptor.getMemref(), *linearIndexOr, adaptor.getValue()},
+        ArrayAttr{}, ArrayAttr{});
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -9292,6 +9359,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMinUIToEmitC>(typeConverter, ctx);
   patterns.add<VectorSplatToEmitC, OplibVectorCreateMaskToEmitC,
                OplibVectorConstantMaskToEmitC,
+               OplibMemRefLoadToEmitC, OplibMemRefStoreToEmitC,
                OplibVectorLoadToEmitC,
                OplibVectorMaskedLoadToEmitC, OplibVectorStoreToEmitC,
                OplibVectorMaskedStoreToEmitC,
@@ -9439,18 +9507,96 @@ struct EmitPTOManualPass
 	    // Only inject the bitcast helper when we actually lower ops that need it
 	    // (e.g. arith.bitcast or arith.maximumf/minimumf tie-breaking on zeros).
 	    bool needsBitcastHelper = false;
+	    bool needsMemrefScalarHelper = false;
+      bool needsVectorReductionHelper = false;
 	    mop.walk([&](Operation *op) {
 	      if (isa<arith::BitcastOp, arith::MaximumFOp, arith::MinimumFOp>(op)) {
 	        needsBitcastHelper = true;
-	        return WalkResult::interrupt();
 	      }
+	      if (isa<memref::LoadOp, memref::StoreOp>(op))
+	        needsMemrefScalarHelper = true;
+        if (isa<vector::ReductionOp>(op))
+          needsVectorReductionHelper = true;
+	      if (needsBitcastHelper && needsMemrefScalarHelper &&
+            needsVectorReductionHelper)
+	        return WalkResult::interrupt();
 	      return WalkResult::advance();
 	    });
+	    if (needsMemrefScalarHelper) {
+	      builder.create<emitc::VerbatimOp>(
+	          loc, builder.getStringAttr(R"cpp(
+		template <typename PtrT, typename IndexT>
+		PTO_INTERNAL auto ptoas_memref_load(PtrT base, IndexT idx) -> decltype(base[0]) {
+		  return base[idx];
+		}
+		template <typename PtrT, typename IndexT, typename T>
+		PTO_INTERNAL void ptoas_memref_store(PtrT base, IndexT idx, T value) {
+		  base[idx] = value;
+		}
+		)cpp"));
+	      }
+      if (needsVectorReductionHelper) {
+        builder.create<emitc::VerbatimOp>(
+            loc, builder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcadd(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, T acc, MaskReg pred) {
+      return ptoas_vreduce_add(src, pred) + acc;
+    }
+
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcmax(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, T acc, MaskReg pred) {
+      T red = ptoas_vreduce_max(src, pred);
+      return red > acc ? red : acc;
+    }
+
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcmin(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, T acc, MaskReg pred) {
+      T red = ptoas_vreduce_min(src, pred);
+      return red < acc ? red : acc;
+    }
+    )cpp"));
+      }
 	    if (needsBitcastHelper) {
 	      builder.create<emitc::VerbatimOp>(
 	          loc, builder.getStringAttr(R"cpp(
 		template <typename To, typename From>
-		static inline To ptoas_bitcast(From from) {
+		PTO_INTERNAL static inline To ptoas_bitcast(From from) {
 		  static_assert(sizeof(To) == sizeof(From), "ptoas_bitcast: size mismatch");
 		  To to;
 		  __builtin_memcpy(&to, &from, sizeof(To));

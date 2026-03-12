@@ -66,6 +66,8 @@ static constexpr llvm::StringLiteral kOpLibAttrMatchFractal =
     "pto.oplib.match.fractal";
 static constexpr llvm::StringLiteral kOpLibAttrMatchScalarPos =
     "pto.oplib.match.scalar_pos";
+static constexpr llvm::StringLiteral kOpLibAttrMatchCmpMode =
+    "pto.oplib.match.cmp_mode";
 static constexpr llvm::StringLiteral kOpLibAttrMatchIsBinary =
     "pto.oplib.match.is_binary";
 static constexpr llvm::StringLiteral kOpLibAttrCost = "pto.oplib.cost";
@@ -173,6 +175,7 @@ struct TemplateEntry {
   SmallVector<TemplateArgRole, 4> argRoles;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
   std::optional<int64_t> scalarPos;
+  std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
   int64_t cost = 0;
   int64_t priority = 0;
@@ -208,6 +211,7 @@ struct MatchRequest {
   SmallVector<Value, 4> operands;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
   std::optional<int64_t> scalarPos;
+  std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
   std::optional<std::string> requiredVariantId;
 };
@@ -222,7 +226,11 @@ static bool isSupportedFusionOp(Operation *op) {
              pto::TRecipOp, pto::TReluOp, pto::TRowSumOp, pto::TRowMaxOp,
              pto::TRowMinOp, pto::TColSumOp, pto::TColMaxOp, pto::TColMinOp,
              pto::TRowExpandOp, pto::TColExpandOp, pto::TRowExpandMulOp,
-             pto::TRowExpandDivOp, pto::TRowExpandSubOp, pto::TExpandsOp>(op);
+             pto::TRowExpandDivOp, pto::TRowExpandSubOp, pto::TExpandsOp,
+             pto::TCmpOp, pto::TCmpSOp, pto::TSelOp, pto::TSelSOp,
+             pto::TAndOp, pto::TOrOp, pto::TXorOp, pto::TShlOp, pto::TShrOp,
+             pto::TAndSOp, pto::TOrSOp, pto::TXorSOp, pto::TShlSOp,
+             pto::TShrSOp, pto::TNotOp>(op);
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -504,6 +512,29 @@ static bool isAllowedLayoutName(StringRef layoutName) {
          layoutName == "none_box" || layoutName == "any";
 }
 
+static bool isAllowedCmpModeName(StringRef cmpMode) {
+  return cmpMode == "EQ" || cmpMode == "NE" || cmpMode == "LT" ||
+         cmpMode == "LE" || cmpMode == "GT" || cmpMode == "GE";
+}
+
+static std::string cmpModeToString(pto::CmpMode cmpMode) {
+  switch (cmpMode) {
+  case pto::CmpMode::EQ:
+    return "EQ";
+  case pto::CmpMode::NE:
+    return "NE";
+  case pto::CmpMode::LT:
+    return "LT";
+  case pto::CmpMode::LE:
+    return "LE";
+  case pto::CmpMode::GT:
+    return "GT";
+  case pto::CmpMode::GE:
+    return "GE";
+  }
+  return "EQ";
+}
+
 static bool containsString(ArrayRef<std::string> values, StringRef key) {
   return llvm::any_of(values, [&](const std::string &s) { return s == key; });
 }
@@ -574,6 +605,12 @@ getTemplateArgRolesForKind(StringRef kind) {
                    TemplateArgRole::Tile}))
       .Case("l3_scalar_expand_template",
             build({TemplateArgRole::Scalar, TemplateArgRole::Tile}))
+      .Case("l3_cmp_tile_tile_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Tile,
+                   TemplateArgRole::Tile}))
+      .Case("l3_cmp_tile_scalar_template",
+            build({TemplateArgRole::Tile, TemplateArgRole::Scalar,
+                   TemplateArgRole::Tile}))
       .Case("l3_select_mask_template",
             build({TemplateArgRole::Tile, TemplateArgRole::Tile,
                    TemplateArgRole::Tile, TemplateArgRole::Tile}))
@@ -593,6 +630,11 @@ getTemplateArgRolesForKind(StringRef kind) {
 
 static bool kindRequiresIsBinary(StringRef kind) {
   return kind == "l3_reduce_colsum_template";
+}
+
+static bool kindRequiresCmpMode(StringRef kind) {
+  return kind == "l3_cmp_tile_tile_template" ||
+         kind == "l3_cmp_tile_scalar_template";
 }
 
 static bool isBinaryFloatCore(Operation *op) {
@@ -634,10 +676,13 @@ static bool isAllowedTemplateBodyOp(Operation *op) {
   if (isa<UnrealizedConversionCastOp>(op))
     return false;
 
-  // OP-Lib template bodies must use vector memory ops, not scalar memref
-  // load/store.
-  if (isa<memref::LoadOp, memref::StoreOp>(op))
-    return false;
+  // Allow scalar memref.load/store for special patterns (e.g. scalar factor
+  // extraction in row/col broadcast templates), but keep vector paths as the
+  // primary implementation style.
+  if (auto load = dyn_cast<memref::LoadOp>(op))
+    return !isa<VectorType>(load.getType());
+  if (auto store = dyn_cast<memref::StoreOp>(op))
+    return !isa<VectorType>(store.getValueToStore().getType());
 
   StringRef ns = op->getName().getDialectNamespace();
   if (ns == "arith" || ns == "vector" || ns == "memref" || ns == "scf")
@@ -880,6 +925,18 @@ struct TemplateRegistry {
         return failure();
       }
       entry->scalarPos = scalarPos;
+    }
+
+    if (op->hasAttr(kOpLibAttrMatchCmpMode)) {
+      auto cmpModeOr = parseStringAttr(op, kOpLibAttrMatchCmpMode);
+      if (failed(cmpModeOr) || !isAllowedCmpModeName(*cmpModeOr)) {
+        imported.emitError("invalid pto.oplib.match.cmp_mode");
+        return failure();
+      }
+      entry->cmpMode = *cmpModeOr;
+    } else if (kindRequiresCmpMode(entry->kind)) {
+      imported.emitError("missing required attr: pto.oplib.match.cmp_mode");
+      return failure();
     }
 
     if (auto isBinaryAttr = op->getAttrOfType<BoolAttr>(kOpLibAttrMatchIsBinary)) {
@@ -1526,6 +1583,9 @@ struct TemplateRegistry {
     if (entry.scalarPos &&
         (!target.scalarPos || *entry.scalarPos != *target.scalarPos))
       return false;
+    if (entry.cmpMode &&
+        (!target.cmpMode || *entry.cmpMode != *target.cmpMode))
+      return false;
     if (entry.isBinary &&
         (!target.isBinary || *entry.isBinary != *target.isBinary))
       return false;
@@ -1562,6 +1622,8 @@ struct TemplateRegistry {
         if (request.scalarPos)
           selected.instanceKeyAttrs.push_back("scalar_pos=" +
                                              std::to_string(*request.scalarPos));
+        if (request.cmpMode)
+          selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
         if (request.isBinary)
           selected.instanceKeyAttrs.push_back("is_binary=" +
                                              std::string(*request.isBinary ? "true"
@@ -1595,6 +1657,8 @@ struct TemplateRegistry {
       if (request.scalarPos)
         selected.instanceKeyAttrs.push_back("scalar_pos=" +
                                            std::to_string(*request.scalarPos));
+      if (request.cmpMode)
+        selected.instanceKeyAttrs.push_back("cmp_mode=" + *request.cmpMode);
       if (request.isBinary)
         selected.instanceKeyAttrs.push_back("is_binary=" +
                                            std::string(*request.isBinary ? "true"
@@ -1966,11 +2030,12 @@ static LogicalResult addTileOperandToRequest(MatchRequest &request, Value operan
 }
 
 static LogicalResult addScalarOperandToRequest(MatchRequest &request, Value operand,
-                                               std::optional<Type> elemTy) {
+                                               std::optional<Type> elemTy,
+                                               bool requireElemTypeMatch = true) {
   Type ty = operand.getType();
   if (!isOplibScalarType(ty))
     return failure();
-  if (elemTy && ty != *elemTy)
+  if (requireElemTypeMatch && elemTy && ty != *elemTy)
     return failure();
   request.argTypes.push_back(ty);
   request.operands.push_back(operand);
@@ -1993,10 +2058,12 @@ createMatchRequest(StringRef kind, StringRef opName,
 
 static LogicalResult addOperandToRequest(MatchRequest &request, Value operand,
                                          TemplateArgRole role,
-                                         std::optional<Type> &elemTy) {
+                                         std::optional<Type> &elemTy,
+                                         bool requireScalarElemTypeMatch = true) {
   if (role == TemplateArgRole::Tile)
     return addTileOperandToRequest(request, operand, elemTy);
-  return addScalarOperandToRequest(request, operand, elemTy);
+  return addScalarOperandToRequest(request, operand, elemTy,
+                                   requireScalarElemTypeMatch);
 }
 
 static FailureOr<MatchRequest>
@@ -2011,7 +2078,8 @@ static FailureOr<MatchRequest>
 buildTypedMatchRequest(StringRef kind, StringRef opName, ArrayRef<Value> operands,
                        ArrayRef<TemplateArgRole> argRoles,
                        std::optional<int64_t> scalarPos = std::nullopt,
-                       std::optional<StringRef> requiredVariantId = std::nullopt) {
+                       std::optional<StringRef> requiredVariantId = std::nullopt,
+                       bool requireScalarElemTypeMatch = true) {
   if (operands.size() != argRoles.size())
     return failure();
 
@@ -2019,7 +2087,8 @@ buildTypedMatchRequest(StringRef kind, StringRef opName, ArrayRef<Value> operand
       createMatchRequest(kind, opName, scalarPos, requiredVariantId);
   std::optional<Type> elemTy;
   for (auto [operand, role] : llvm::zip(operands, argRoles)) {
-    if (failed(addOperandToRequest(request, operand, role, elemTy)))
+    if (failed(addOperandToRequest(request, operand, role, elemTy,
+                                   requireScalarElemTypeMatch)))
       return failure();
   }
   return finalizeMatchRequest(std::move(request), elemTy);
@@ -2032,6 +2101,111 @@ buildBinaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
   SmallVector<TemplateArgRole, 4> argRoles{
       TemplateArgRole::Tile, TemplateArgRole::Tile, TemplateArgRole::Tile};
   return buildTypedMatchRequest(kind, opName, operands, argRoles);
+}
+
+static void appendTileOperandUnchecked(MatchRequest &request, Value operand,
+                                       const MatchKey &key) {
+  request.argTypes.push_back(operand.getType());
+  request.operands.push_back(operand);
+  request.argMatches.push_back(key);
+}
+
+static void appendScalarOperandUnchecked(MatchRequest &request, Value operand) {
+  request.argTypes.push_back(operand.getType());
+  request.operands.push_back(operand);
+  request.argMatches.push_back(std::nullopt);
+}
+
+static FailureOr<MatchRequest>
+buildCmpTileTileMatchRequest(StringRef kind, StringRef opName, Value src0,
+                             Value src1, Value dst) {
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(dstInfoOr))
+    return failure();
+  if (src0InfoOr->first != src1InfoOr->first)
+    return failure();
+  auto dstIntTy = dyn_cast<IntegerType>(dstInfoOr->first);
+  if (!dstIntTy || dstIntTy.getWidth() != 32)
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName);
+  appendTileOperandUnchecked(request, src0, src0InfoOr->second);
+  appendTileOperandUnchecked(request, src1, src1InfoOr->second);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(src0InfoOr->first);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
+                               Value scalar, Value dst) {
+  FailureOr<std::pair<Type, MatchKey>> srcInfoOr = getTileOperandInfo(src);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(srcInfoOr) || failed(dstInfoOr))
+    return failure();
+  if (!isOplibScalarType(scalar.getType()) || scalar.getType() != srcInfoOr->first)
+    return failure();
+  auto dstIntTy = dyn_cast<IntegerType>(dstInfoOr->first);
+  if (!dstIntTy || dstIntTy.getWidth() != 32)
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName, /*scalarPos=*/1);
+  appendTileOperandUnchecked(request, src, srcInfoOr->second);
+  appendScalarOperandUnchecked(request, scalar);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(srcInfoOr->first);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
+                            Value src0, Value src1, Value dst) {
+  FailureOr<std::pair<Type, MatchKey>> maskInfoOr = getTileOperandInfo(mask);
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(maskInfoOr) || failed(src0InfoOr) || failed(src1InfoOr) ||
+      failed(dstInfoOr))
+    return failure();
+  auto maskIntTy = dyn_cast<IntegerType>(maskInfoOr->first);
+  if (!maskIntTy || maskIntTy.getWidth() != 32)
+    return failure();
+  if (src0InfoOr->first != src1InfoOr->first ||
+      src0InfoOr->first != dstInfoOr->first)
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName);
+  appendTileOperandUnchecked(request, mask, maskInfoOr->second);
+  appendTileOperandUnchecked(request, src0, src0InfoOr->second);
+  appendTileOperandUnchecked(request, src1, src1InfoOr->second);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(src0InfoOr->first);
+  return request;
+}
+
+static FailureOr<MatchRequest>
+buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
+                              Value src1, Value selectMode, Value dst) {
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(dstInfoOr))
+    return failure();
+  if (!isOplibScalarType(selectMode.getType()))
+    return failure();
+  if (src0InfoOr->first != src1InfoOr->first ||
+      src0InfoOr->first != dstInfoOr->first)
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName, /*scalarPos=*/2);
+  appendTileOperandUnchecked(request, src0, src0InfoOr->second);
+  appendTileOperandUnchecked(request, src1, src1InfoOr->second);
+  appendScalarOperandUnchecked(request, selectMode);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(src0InfoOr->first);
+  return request;
 }
 
 static FailureOr<MatchRequest>
@@ -2265,6 +2439,89 @@ buildMatchRequest(Operation *op) {
     return buildScalarExpandMatchRequest("l3_scalar_expand_template",
                                          "texpands", expands.getScalar(),
                                          expands.getDst());
+
+  if (auto cmp = dyn_cast<pto::TCmpOp>(op)) {
+    FailureOr<MatchRequest> requestOr =
+        buildCmpTileTileMatchRequest("l3_cmp_tile_tile_template", "tcmp",
+                                     cmp.getSrc0(), cmp.getSrc1(),
+                                     cmp.getDst());
+    if (failed(requestOr))
+      return failure();
+    if (auto cmpModeAttr = cmp.getCmpModeAttr())
+      requestOr->cmpMode = cmpModeToString(cmpModeAttr.getValue());
+    else
+      requestOr->cmpMode = "EQ";
+    return *requestOr;
+  }
+
+  if (auto cmps = dyn_cast<pto::TCmpSOp>(op)) {
+    FailureOr<MatchRequest> requestOr =
+        buildCmpTileScalarMatchRequest("l3_cmp_tile_scalar_template", "tcmps",
+                                       cmps.getSrc(), cmps.getScalar(),
+                                       cmps.getDst());
+    if (failed(requestOr))
+      return failure();
+    if (auto cmpModeAttr = cmps.getCmpModeAttr())
+      requestOr->cmpMode = cmpModeToString(cmpModeAttr.getValue());
+    else
+      requestOr->cmpMode = "EQ";
+    return *requestOr;
+  }
+
+  if (auto sel = dyn_cast<pto::TSelOp>(op))
+    return buildSelectMaskMatchRequest("l3_select_mask_template", "tsel",
+                                       sel.getMask(), sel.getSrc0(),
+                                       sel.getSrc1(), sel.getDst());
+  if (auto sels = dyn_cast<pto::TSelSOp>(op))
+    return buildSelectScalarMatchRequest("l3_select_scalar_template", "tsels",
+                                         sels.getSrc0(), sels.getSrc1(),
+                                         sels.getSelectMode(), sels.getDst());
+
+  if (auto andOp = dyn_cast<pto::TAndOp>(op))
+    return buildBinaryTileMatchRequest("l3_int_binary_elementwise_template",
+                                       "tand", andOp.getSrc0(),
+                                       andOp.getSrc1(), andOp.getDst());
+  if (auto orOp = dyn_cast<pto::TOrOp>(op))
+    return buildBinaryTileMatchRequest("l3_int_binary_elementwise_template",
+                                       "tor", orOp.getSrc0(), orOp.getSrc1(),
+                                       orOp.getDst());
+  if (auto xorOp = dyn_cast<pto::TXorOp>(op))
+    return buildBinaryTileMatchRequest("l3_int_binary_elementwise_template",
+                                       "txor", xorOp.getSrc0(),
+                                       xorOp.getSrc1(), xorOp.getDst());
+  if (auto shlOp = dyn_cast<pto::TShlOp>(op))
+    return buildBinaryTileMatchRequest("l3_int_binary_elementwise_template",
+                                       "tshl", shlOp.getSrc0(),
+                                       shlOp.getSrc1(), shlOp.getDst());
+  if (auto shrOp = dyn_cast<pto::TShrOp>(op))
+    return buildBinaryTileMatchRequest("l3_int_binary_elementwise_template",
+                                       "tshr", shrOp.getSrc0(),
+                                       shrOp.getSrc1(), shrOp.getDst());
+
+  if (auto ands = dyn_cast<pto::TAndSOp>(op))
+    return buildTileScalarMatchRequest(
+        "l3_int_tile_scalar_elementwise_template", "tands", ands.getSrc(),
+        ands.getScalar(), ands.getDst());
+  if (auto ors = dyn_cast<pto::TOrSOp>(op))
+    return buildTileScalarMatchRequest(
+        "l3_int_tile_scalar_elementwise_template", "tors", ors.getSrc(),
+        ors.getScalar(), ors.getDst());
+  if (auto xors = dyn_cast<pto::TXorSOp>(op))
+    return buildTileScalarMatchRequest(
+        "l3_int_tile_scalar_elementwise_template", "txors", xors.getSrc(),
+        xors.getScalar(), xors.getDst());
+  if (auto shls = dyn_cast<pto::TShlSOp>(op))
+    return buildTileScalarMatchRequest(
+        "l3_int_tile_scalar_elementwise_template", "tshls", shls.getSrc(),
+        shls.getScalar(), shls.getDst());
+  if (auto shrs = dyn_cast<pto::TShrSOp>(op))
+    return buildTileScalarMatchRequest(
+        "l3_int_tile_scalar_elementwise_template", "tshrs", shrs.getSrc(),
+        shrs.getScalar(), shrs.getDst());
+
+  if (auto notOp = dyn_cast<pto::TNotOp>(op))
+    return buildUnaryTileMatchRequest("l3_int_unary_template", "tnot",
+                                      notOp.getSrc(), notOp.getDst());
 
   return failure();
 }
