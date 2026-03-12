@@ -13,7 +13,7 @@ add_llvm_executable(pto-opt
 # =========================================================
 set_target_properties(pto-opt PROPERTIES OUTPUT_NAME "ptoas")
 target_compile_definitions(pto-opt PRIVATE
-  PTOAS_RELEASE_VERSION="${PROJECT_VERSION}"
+  PTOAS_RELEASE_VERSION="${PTOAS_CLI_VERSION}"
 )
 # [修改 2] 更新链接库名称
 # 原因：In-tree 时你的库叫 MLIRPTODialect，但现在 Out-of-tree 它们是你自己定义的

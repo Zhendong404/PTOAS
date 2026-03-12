@@ -204,8 +204,8 @@ ptoas --version
 
 ```
 
-> `ptoas --version` 的版本号来自项目根目录 `CMakeLists.txt` 的 `project(ptoas VERSION x.y)`；
-> 每次发布请按 `+0.1` 递增。
+> `ptoas --version` 默认显示项目根目录 `CMakeLists.txt` 里的基线版本；
+> GitHub `release` workflow 会基于这个版本自动 `+0.1`，并校验 release tag 与结果一致。
 
 ### 5.2 Python 接口 (Python API)
 

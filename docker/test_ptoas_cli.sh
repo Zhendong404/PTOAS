@@ -27,6 +27,11 @@ export DYLD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${DYLD_LI
 echo "Testing ptoas CLI..."
 which ptoas
 
+echo "Checking ptoas version..."
+VERSION_OUTPUT="$(ptoas --version | tr -d '\r')"
+echo "$VERSION_OUTPUT"
+echo "$VERSION_OUTPUT" | grep -Eq '^ptoas [0-9]+\.[0-9]+$'
+
 # Test MatMul sample
 echo "Testing MatMul sample..."
 cd "${PTO_SOURCE_DIR}/test/samples/MatMul/"

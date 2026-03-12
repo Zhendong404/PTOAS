@@ -42,7 +42,7 @@ using namespace mlir;
 using namespace pto;
 
 #ifndef PTOAS_RELEASE_VERSION
-#define PTOAS_RELEASE_VERSION "0.7"
+#define PTOAS_RELEASE_VERSION "unknown"
 #endif
 
 static void printPTOASVersion(llvm::raw_ostream &os) {
