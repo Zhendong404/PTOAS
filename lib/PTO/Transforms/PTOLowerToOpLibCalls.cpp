@@ -1975,100 +1975,101 @@ static LogicalResult addScalarOperandToRequest(MatchRequest &request, Value oper
   return success();
 }
 
-static FailureOr<MatchRequest>
-buildBinaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
-                            Value src1, Value dst) {
+static MatchRequest
+createMatchRequest(StringRef kind, StringRef opName,
+                   std::optional<int64_t> scalarPos = std::nullopt,
+                   std::optional<StringRef> requiredVariantId = std::nullopt) {
   MatchRequest request;
   request.kind = kind.str();
   request.op = opName.str();
+  request.scalarPos = scalarPos;
+  if (requiredVariantId)
+    request.requiredVariantId = requiredVariantId->str();
+  return request;
+}
 
-  std::optional<Type> elemTy;
-  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
-      failed(addTileOperandToRequest(request, src1, elemTy)) ||
-      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
+static LogicalResult addOperandToRequest(MatchRequest &request, Value operand,
+                                         TemplateArgRole role,
+                                         std::optional<Type> &elemTy) {
+  if (role == TemplateArgRole::Tile)
+    return addTileOperandToRequest(request, operand, elemTy);
+  return addScalarOperandToRequest(request, operand, elemTy);
+}
+
+static FailureOr<MatchRequest>
+finalizeMatchRequest(MatchRequest request, std::optional<Type> elemTy) {
+  if (!elemTy)
     return failure();
-  }
-
   request.dtype = dtypeToString(*elemTy);
   return request;
 }
 
 static FailureOr<MatchRequest>
+buildTypedMatchRequest(StringRef kind, StringRef opName, ArrayRef<Value> operands,
+                       ArrayRef<TemplateArgRole> argRoles,
+                       std::optional<int64_t> scalarPos = std::nullopt,
+                       std::optional<StringRef> requiredVariantId = std::nullopt) {
+  if (operands.size() != argRoles.size())
+    return failure();
+
+  MatchRequest request =
+      createMatchRequest(kind, opName, scalarPos, requiredVariantId);
+  std::optional<Type> elemTy;
+  for (auto [operand, role] : llvm::zip(operands, argRoles)) {
+    if (failed(addOperandToRequest(request, operand, role, elemTy)))
+      return failure();
+  }
+  return finalizeMatchRequest(std::move(request), elemTy);
+}
+
+static FailureOr<MatchRequest>
+buildBinaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
+                            Value src1, Value dst) {
+  SmallVector<Value, 4> operands{src0, src1, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{
+      TemplateArgRole::Tile, TemplateArgRole::Tile, TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles);
+}
+
+static FailureOr<MatchRequest>
 buildUnaryTileMatchRequest(StringRef kind, StringRef opName, Value src,
                            Value dst) {
-  MatchRequest request;
-  request.kind = kind.str();
-  request.op = opName.str();
-
-  std::optional<Type> elemTy;
-  if (failed(addTileOperandToRequest(request, src, elemTy)) ||
-      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
-    return failure();
-  }
-
-  request.dtype = dtypeToString(*elemTy);
-  return request;
+  SmallVector<Value, 4> operands{src, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{TemplateArgRole::Tile,
+                                           TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles);
 }
 
 static FailureOr<MatchRequest>
 buildTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
                             Value scalar, Value dst,
                             std::optional<StringRef> requiredVariantId = std::nullopt) {
-  MatchRequest request;
-  request.kind = kind.str();
-  request.op = opName.str();
-  request.scalarPos = 1;
-  if (requiredVariantId)
-    request.requiredVariantId = requiredVariantId->str();
-
-  std::optional<Type> elemTy;
-  if (failed(addTileOperandToRequest(request, src, elemTy)) ||
-      failed(addScalarOperandToRequest(request, scalar, elemTy)) ||
-      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
-    return failure();
-  }
-
-  request.dtype = dtypeToString(*elemTy);
-  return request;
+  SmallVector<Value, 4> operands{src, scalar, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{
+      TemplateArgRole::Tile, TemplateArgRole::Scalar, TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles,
+                                /*scalarPos=*/1, requiredVariantId);
 }
 
 static FailureOr<MatchRequest>
 buildTernaryTileMatchRequest(StringRef kind, StringRef opName, Value src0,
                              Value src1, Value src2, Value dst) {
-  MatchRequest request;
-  request.kind = kind.str();
-  request.op = opName.str();
-
-  std::optional<Type> elemTy;
-  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
-      failed(addTileOperandToRequest(request, src1, elemTy)) ||
-      failed(addTileOperandToRequest(request, src2, elemTy)) ||
-      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
-    return failure();
-  }
-
-  request.dtype = dtypeToString(*elemTy);
-  return request;
+  SmallVector<Value, 4> operands{src0, src1, src2, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{
+      TemplateArgRole::Tile, TemplateArgRole::Tile, TemplateArgRole::Tile,
+      TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles);
 }
 
 static FailureOr<MatchRequest>
 buildTernaryTileScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
                                    Value scalar, Value src1, Value dst) {
-  MatchRequest request;
-  request.kind = kind.str();
-  request.op = opName.str();
-  request.scalarPos = 1;
-
-  std::optional<Type> elemTy;
-  if (failed(addTileOperandToRequest(request, src0, elemTy)) ||
-      failed(addScalarOperandToRequest(request, scalar, elemTy)) ||
-      failed(addTileOperandToRequest(request, src1, elemTy)) ||
-      failed(addTileOperandToRequest(request, dst, elemTy)) || !elemTy) {
-    return failure();
-  }
-
-  request.dtype = dtypeToString(*elemTy);
-  return request;
+  SmallVector<Value, 4> operands{src0, scalar, src1, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{
+      TemplateArgRole::Tile, TemplateArgRole::Scalar, TemplateArgRole::Tile,
+      TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles,
+                                /*scalarPos=*/1);
 }
 
 static FailureOr<MatchRequest>
