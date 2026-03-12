@@ -148,6 +148,7 @@ jobs:
       - name: Create Python wheel
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
+          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
           bash $PTO_SOURCE_DIR/docker/create_wheel.sh
 
       - name: Repair wheel with auditwheel

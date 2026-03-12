@@ -141,6 +141,7 @@ jobs:
       - name: Create Python wheel
         run: |
           export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
+          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             TARGET_ARCH="x86_64"
           else
