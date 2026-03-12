@@ -37,10 +37,8 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %zeroVec = arith.constant dense<0.0> : vector<32xf32>
-      %mask1 = vector.create_mask %c1 : vector<32xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %rowScaleLane = vector.maskedload %m1[%r, %c0], %mask1, %zeroVec {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-        %rowScale = vector.reduction <add>, %rowScaleLane : vector<32xf32> into f32
+        %rowScale = memref.load %m1[%r, %c0] : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
         %rowScaleVec = vector.splat %rowScale : vector<32xf32>
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -94,10 +92,8 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %zeroVec = arith.constant dense<0.0> : vector<32xf32>
-      %mask1 = vector.create_mask %c1 : vector<32xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %rowScaleLane = vector.maskedload %m1[%r, %c0], %mask1, %zeroVec {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-        %rowScale = vector.reduction <add>, %rowScaleLane : vector<32xf32> into f32
+        %rowScale = memref.load %m1[%r, %c0] : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
         %rowScaleVec = vector.splat %rowScale : vector<32xf32>
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -151,10 +147,8 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %zeroVec = arith.constant dense<0.0> : vector<32xf32>
-      %mask1 = vector.create_mask %c1 : vector<32xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %rowScaleLane = vector.maskedload %m1[%r, %c0], %mask1, %zeroVec {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
-        %rowScale = vector.reduction <add>, %rowScaleLane : vector<32xf32> into f32
+        %rowScale = memref.load %m1[%r, %c0] : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
         %rowScaleVec = vector.splat %rowScale : vector<32xf32>
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
