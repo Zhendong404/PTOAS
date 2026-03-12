@@ -26,6 +26,7 @@ Env:
   PTOBC_BIN   # path to ptobc executable (optional)
   PYTHON_BIN  # python executable to run samples (optional)
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
+  PTOAS_LOG_DIR  # where per-case logs go (optional; defaults to ${PTOAS_OUT_DIR}_log)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync)
@@ -105,13 +106,30 @@ resolve_ptobc_bin() {
   return 1
 }
 
+print_failure_excerpt() {
+  local log_path="$1"
+  local excerpt=""
+
+  [[ -f "${log_path}" ]] || return 0
+
+  excerpt="$(grep -E -i 'error:|fatal:|undefined reference|undefined symbol|undeclared identifier|exception|traceback|failed' "${log_path}" | tail -n 5 || true)"
+  if [[ -z "${excerpt}" ]]; then
+    excerpt="$(tail -n 10 "${log_path}" 2>/dev/null || true)"
+  fi
+
+  printf '%s' "${excerpt}"
+}
+
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
-  local dir ptoas ptobc python out_subdir
+  local dir ptoas ptobc python out_subdir log_root log_subdir
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
+  log_root="${PTOAS_LOG_DIR:-$(dirname -- "${out_dir}")/$(basename -- "${out_dir}")_log}"
+  log_subdir="${log_root}/${A}"
   mkdir -p "${out_subdir}"
+  mkdir -p "${log_subdir}"
 
   ptoas="$(resolve_ptoas_bin)"
   ptobc="$(resolve_ptobc_bin)"
@@ -178,6 +196,7 @@ process_one_dir() {
 
   # Run every .py file in this directory (no requirement that name matches folder).
   local f mlir ptobc_file decoded_pto cpp base overall=0
+  local python_log ptoas_log ptobc_encode_log ptobc_decode_log
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
     base="$(basename "$f" .py)"
@@ -222,13 +241,17 @@ process_one_dir() {
     fi
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
+    python_log="${log_subdir}/${base}-python.log"
+    ptoas_log="${log_subdir}/${base}-ptoas.log"
+    ptobc_encode_log="${log_subdir}/${base}-ptobc-encode.log"
+    ptobc_decode_log="${log_subdir}/${base}-ptobc-decode.log"
 
-    if ! "$python" "$f" > "$mlir"; then
+    if ! "$python" "$f" >"$mlir" 2>"${python_log}"; then
       if [[ $expect_fail -eq 1 ]]; then
         echo -e "${A}(${base}.py)\tXFAIL\tpython failed as expected"
         continue
       fi
-      echo -e "${A}(${base}.py)\tFAIL\tpython failed: ${base}.py"
+      echo -e "${A}(${base}.py)\tFAIL\tpython failed: ${base}.py\t${python_log}"
       overall=1
       continue
     fi
@@ -238,21 +261,21 @@ process_one_dir() {
     decoded_pto="${out_subdir}/${base}-roundtrip.pto"
     if [[ $use_ptobc_roundtrip -eq 1 ]]; then
       # Allow generic escape for ops that are not yet in the compact v0 opcode table.
-      if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$mlir" -o "$ptobc_file" >/dev/null 2>&1; then
+      if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$mlir" -o "$ptobc_file" >"${ptobc_encode_log}" 2>&1; then
         if [[ $expect_fail -eq 1 ]]; then
           echo -e "${A}(${base}.py)\tXFAIL\tptobc encode failed as expected"
           continue
         fi
-        echo -e "${A}(${base}.py)\tFAIL\tptobc encode failed: $(basename "$mlir")"
+        echo -e "${A}(${base}.py)\tFAIL\tptobc encode failed: $(basename "$mlir")\t${ptobc_encode_log}"
         overall=1
         continue
       fi
-      if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >/dev/null 2>&1; then
+      if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >"${ptobc_decode_log}" 2>&1; then
         if [[ $expect_fail -eq 1 ]]; then
           echo -e "${A}(${base}.py)\tXFAIL\tptobc decode failed as expected"
           continue
         fi
-        echo -e "${A}(${base}.py)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")"
+        echo -e "${A}(${base}.py)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")\t${ptobc_decode_log}"
         overall=1
         continue
       fi
@@ -261,12 +284,12 @@ process_one_dir() {
 
     # Write output via -o to avoid mixing debug prints with generated C++.
     local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-    if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
+    if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
       if [[ $expect_fail -eq 1 ]]; then
         echo -e "${A}(${base}.py)\tXFAIL\tptoas failed as expected"
         continue
       fi
-      echo -e "${A}(${base}.py)\tFAIL\tptoas failed: $(basename "$mlir")"
+      echo -e "${A}(${base}.py)\tFAIL\tptoas failed: $(basename "$mlir")\t${ptoas_log}"
       overall=1
       continue
     fi
@@ -553,16 +576,19 @@ PY
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
+      ptoas_log="${log_subdir}/${base}-ptoas.log"
+      ptobc_encode_log="${log_subdir}/${base}-ptobc-encode.log"
+      ptobc_decode_log="${log_subdir}/${base}-ptobc-decode.log"
 
       if [[ $use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
-        if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then
-          echo -e "${A}(${base}.pto)\tFAIL\tptobc encode failed: $(basename "$f")"
+        if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >"${ptobc_encode_log}" 2>&1; then
+          echo -e "${A}(${base}.pto)\tFAIL\tptobc encode failed: $(basename "$f")\t${ptobc_encode_log}"
           overall=1
           continue
         fi
-        if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >/dev/null 2>&1; then
-          echo -e "${A}(${base}.pto)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")"
+        if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >"${ptobc_decode_log}" 2>&1; then
+          echo -e "${A}(${base}.pto)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")\t${ptobc_decode_log}"
           overall=1
           continue
         fi
@@ -570,8 +596,8 @@ PY
       fi
 
       local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-      if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
-        echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
+      if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
+        echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")\t${ptoas_log}"
         overall=1
         continue
       fi
@@ -621,6 +647,58 @@ PY
   return $overall
 }
 
+print_summary_from_results() {
+  local results_file="$1"
+  local show_header="${2:-1}"
+  local ok=0
+  local fail=0
+  local skip=0
+  local line name status message log_path excerpt
+  local -a fail_lines=()
+  local -a fail_logs=()
+
+  if [[ "${show_header}" == "1" ]]; then
+    echo "========== SUMMARY =========="
+  fi
+
+  while IFS=$'\t' read -r name status message log_path; do
+    [[ -n "${name}" ]] || continue
+    printf "%-12s %-4s %s\n" "${name}" "${status}" "${message}"
+    case "${status}" in
+      OK) ok=$((ok + 1)) ;;
+      FAIL)
+        fail=$((fail + 1))
+        fail_lines+=("$(printf "%-12s %-4s %s" "${name}" "${status}" "${message}")")
+        fail_logs+=("${log_path:-}")
+        ;;
+      SKIP) skip=$((skip + 1)) ;;
+    esac
+  done < <(sort "${results_file}")
+
+  echo "-----------------------------"
+  printf "OK=%d  FAIL=%d  SKIP=%d\n" "${ok}" "${fail}" "${skip}"
+  if [[ ${fail} -gt 0 ]]; then
+    echo "---------- FAIL CASES --------"
+    for ((i=0; i<${#fail_lines[@]}; ++i)); do
+      echo "${fail_lines[i]}"
+      log_path="${fail_logs[i]}"
+      if [[ -n "${log_path}" ]]; then
+        echo "log: ${log_path}"
+        excerpt="$(print_failure_excerpt "${log_path}")"
+        if [[ -n "${excerpt}" ]]; then
+          while IFS= read -r line; do
+            [[ -n "${line}" ]] || continue
+            echo "reason: ${line}"
+          done <<< "${excerpt}"
+        fi
+      fi
+    done
+  fi
+  echo "============================="
+
+  [[ ${fail} -eq 0 ]]
+}
+
 run_all() {
   local results tmp out_dir
   out_dir="${PTOAS_OUT_DIR}"
@@ -637,30 +715,7 @@ run_all() {
     [[ -d "$d" ]] || continue
     process_one_dir "$(basename "$d")" "$out_dir" >>"$tmp"
   done
-
-  echo "========== SUMMARY =========="
-  sort "$tmp" | awk -F'\t' '
-    BEGIN { ok=0; fail=0; skip=0; }
-    {
-      printf "%-12s %-4s %s\n", $1, $2, $3;
-      if ($2=="OK") ok++;
-      else if ($2=="FAIL") {
-        fail++;
-        fail_lines[fail] = sprintf("%-12s %-4s %s", $1, $2, $3);
-      }
-      else if ($2=="SKIP") skip++;
-    }
-    END {
-      print "-----------------------------";
-      printf "OK=%d  FAIL=%d  SKIP=%d\n", ok, fail, skip;
-      if (fail > 0) {
-        print "---------- FAIL CASES --------";
-        for (i = 1; i <= fail; ++i)
-          print fail_lines[i];
-      }
-      print "=============================";
-      exit (fail==0 ? 0 : 1);
-    }'
+  print_summary_from_results "$tmp" 1
 }
 
 # -----------------------------------------------------------------------------
@@ -691,24 +746,9 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
     mkdir -p "${out_dir}"
   fi
   echo "PTOAS_OUT_DIR=${out_dir}"
-  echo "========== SUMMARY =========="
-  process_one_dir "$A" "$out_dir" | awk -F'\t' '
-    {
-      line = sprintf("%-12s %-4s %s", $1, $2, $3);
-      print line;
-      if ($2 == "FAIL") {
-        fail++;
-        fail_lines[fail] = line;
-      }
-    }
-    END {
-      if (fail > 0) {
-        print "---------- FAIL CASES --------";
-        for (i = 1; i <= fail; ++i)
-          print fail_lines[i];
-      }
-      exit (fail == 0 ? 0 : 1);
-    }'
+  tmp="$(mktemp -t ptoas.runop.XXXXXX)"
+  process_one_dir "$A" "$out_dir" >"$tmp"
+  print_summary_from_results "$tmp" 1
 else
   usage
 fi

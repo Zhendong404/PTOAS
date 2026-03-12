@@ -236,6 +236,17 @@ cleanup_work_dir() {
   [[ -n "${work_dir}" ]] && rm -rf -- "${work_dir}"
 }
 
+get_log_failure_reason() {
+  local log_path="$1"
+  local excerpt
+
+  excerpt="$(grep -E -i 'error:|fatal:|undefined reference|undefined symbol|undeclared identifier|exception|traceback|failed' "${log_path}" | tail -n 5 || true)"
+  if [[ -z "${excerpt}" ]]; then
+    excerpt="$(tail -n 10 "${log_path}" 2>/dev/null || true)"
+  fi
+  printf '%s' "${excerpt}"
+}
+
 find_generated_output() {
   local work_dir="$1"
   local src_stem="$2"
@@ -432,10 +443,18 @@ echo "失败数   : ${FAIL_COUNT}"
 echo "耗时(秒) : ${ELAPSED}"
 
 if [[ ${FAIL_COUNT} -gt 0 ]]; then
+  failure_reason=""
   echo
   echo "失败文件列表:"
   for f in "${FAILED_FILES[@]}"; do
     echo "  - ${f} (log: ${LOG_DIR}/${f%.cpp}.log)"
+    failure_reason="$(get_log_failure_reason "${LOG_DIR}/${f%.cpp}.log")"
+    if [[ -n "${failure_reason}" ]]; then
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] || continue
+        echo "    reason: ${line}"
+      done <<< "${failure_reason}"
+    fi
   done
   exit 1
 fi
