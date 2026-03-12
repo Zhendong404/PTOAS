@@ -199,6 +199,11 @@ process_one_dir() {
   local python_log ptoas_log ptobc_encode_log ptobc_decode_log
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
+    case "$(basename "$f")" in
+      *_golden.py|*_compare.py|validation_runtime.py)
+        continue
+        ;;
+    esac
     base="$(basename "$f" .py)"
     local expect_fail=0
     case "$base" in
