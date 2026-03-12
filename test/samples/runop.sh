@@ -644,12 +644,20 @@ run_all() {
     {
       printf "%-12s %-4s %s\n", $1, $2, $3;
       if ($2=="OK") ok++;
-      else if ($2=="FAIL") fail++;
+      else if ($2=="FAIL") {
+        fail++;
+        fail_lines[fail] = sprintf("%-12s %-4s %s", $1, $2, $3);
+      }
       else if ($2=="SKIP") skip++;
     }
     END {
       print "-----------------------------";
       printf "OK=%d  FAIL=%d  SKIP=%d\n", ok, fail, skip;
+      if (fail > 0) {
+        print "---------- FAIL CASES --------";
+        for (i = 1; i <= fail; ++i)
+          print fail_lines[i];
+      }
       print "=============================";
       exit (fail==0 ? 0 : 1);
     }'
@@ -684,7 +692,23 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
   fi
   echo "PTOAS_OUT_DIR=${out_dir}"
   echo "========== SUMMARY =========="
-  process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
+  process_one_dir "$A" "$out_dir" | awk -F'\t' '
+    {
+      line = sprintf("%-12s %-4s %s", $1, $2, $3);
+      print line;
+      if ($2 == "FAIL") {
+        fail++;
+        fail_lines[fail] = line;
+      }
+    }
+    END {
+      if (fail > 0) {
+        print "---------- FAIL CASES --------";
+        for (i = 1; i <= fail; ++i)
+          print fail_lines[i];
+      }
+      exit (fail == 0 ? 0 : 1);
+    }'
 else
   usage
 fi
