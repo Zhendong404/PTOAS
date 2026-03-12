@@ -5,12 +5,13 @@ set -u
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-SRC_ROOT="${REPO_ROOT}/output"
-BUILD_ROOT="${REPO_ROOT}/build/output_asm"
-LOG_DIR=""
+DEFAULT_SOURCE_DIR="${PTO_SOURCE_DIR:-${REPO_ROOT}}"
+SRC_ROOT="${PTOAS_OUT_DIR:-${DEFAULT_SOURCE_DIR}/build/output}"
+BUILD_ROOT="${DEFAULT_SOURCE_DIR}/build/output_asm"
+LOG_DIR="${DEFAULT_SOURCE_DIR}/build/output_log"
 
-COMPILER=""
-PTO_ISA_PATH=""
+COMPILER="${COMPILER:-}"
+PTO_ISA_PATH="${PTO_ISA_PATH:-${PTO_ISA_ROOT:-}}"
 EXTRA_ARGS=()
 
 JOBS="${JOBS:-$(nproc)}"
@@ -24,8 +25,8 @@ print_usage() {
 
 用法:
   scripts/batch_compile_output_cpp.sh \
-    --compiler <编译器路径> \
-    --pto-isa-path <PTO-ISA路径> \
+    [--compiler <编译器路径>] \
+    [--pto-isa-path <PTO-ISA路径>] \
     [--compile-arg <单个参数>]... \
     [--jobs <并行数>] \
     [--aicore-arch <arch>] \
@@ -35,8 +36,11 @@ print_usage() {
     [--log-dir <日志目录>]
 
 参数说明:
-  --compiler, -c         编译器路径，例如: /usr/local/Ascend/.../bisheng
-  --pto-isa-path, -p     PTO-ISA 根路径。脚本会自动检测 include 目录:
+  --compiler, -c         编译器路径。默认优先使用环境变量 COMPILER，
+                         其次使用 PATH 中的 bisheng 或
+                         ${ASCEND_HOME_PATH}/bin/bisheng
+  --pto-isa-path, -p     PTO-ISA 根路径。默认优先使用环境变量
+                         PTO_ISA_PATH / PTO_ISA_ROOT。脚本会自动检测 include 目录:
                          1) <PTO-ISA>/include
                          2) <PTO-ISA>/tests/common (存在时自动加入)
                          3) <PTO-ISA>
@@ -45,10 +49,14 @@ print_usage() {
   --aicore-arch          默认: dav-c220-vec
   --mem-base-define      默认: MEMORY_BASE (可改为 REGISTER_BASE)
   --no-default-args      不使用脚本内置默认参数（仅使用 --compile-arg）
-  --src-root             要扫描的 .cpp 根目录，默认: <repo>/output
-  --build-root           .S 产物目录，默认: <repo>/build/output_asm
+  --src-root             要扫描的 .cpp 根目录，默认: $PTOAS_OUT_DIR
+                         或 $PTO_SOURCE_DIR/build/output
+  --build-root           .S 产物目录，默认: $PTO_SOURCE_DIR/build/output_asm
   --log-dir              编译日志目录，默认: <build-root>/logs
   --help, -h             显示帮助
+
+推荐先执行:
+  source scripts/ptoas_env.sh
 
 默认编译参数来源:
   由 test/npu_validation/scripts/generate_testcase.py 中
@@ -128,8 +136,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "${COMPILER}" ]] || die "必须指定 --compiler"
-[[ -n "${PTO_ISA_PATH}" ]] || die "必须指定 --pto-isa-path"
+if [[ -z "${COMPILER}" ]]; then
+  if command -v bisheng >/dev/null 2>&1; then
+    COMPILER="$(command -v bisheng)"
+  elif [[ -n "${ASCEND_HOME_PATH:-}" && -x "${ASCEND_HOME_PATH}/bin/bisheng" ]]; then
+    COMPILER="${ASCEND_HOME_PATH}/bin/bisheng"
+  fi
+elif [[ "${COMPILER}" != */* ]] && command -v "${COMPILER}" >/dev/null 2>&1; then
+  COMPILER="$(command -v "${COMPILER}")"
+fi
+
+[[ -n "${COMPILER}" ]] || die "未找到编译器，请先 source scripts/ptoas_env.sh，或通过 --compiler/COMPILER 指定 bisheng 路径"
+[[ -n "${PTO_ISA_PATH}" ]] || die "未找到 PTO-ISA 路径，请通过 --pto-isa-path、PTO_ISA_PATH 或 PTO_ISA_ROOT 指定"
 [[ -x "${COMPILER}" ]] || die "编译器不可执行: ${COMPILER}"
 [[ -d "${SRC_ROOT}" ]] || die "源码目录不存在: ${SRC_ROOT}"
 [[ -d "${PTO_ISA_PATH}" ]] || die "PTO-ISA 路径不存在: ${PTO_ISA_PATH}"
@@ -207,19 +225,103 @@ TOTAL_COUNT=${#CPP_FILES[@]}
 STATUS_FILE="$(mktemp "${BUILD_ROOT}/compile_status.XXXXXX")" || die "创建状态文件失败"
 trap 'rm -f "${STATUS_FILE}"' EXIT
 
+record_compile_status() {
+  local status="$1"
+  local rel_path="$2"
+  printf '%s\t%s\n' "${status}" "${rel_path}" >>"${STATUS_FILE}"
+}
+
+cleanup_work_dir() {
+  local work_dir="$1"
+  [[ -n "${work_dir}" ]] && rm -rf -- "${work_dir}"
+}
+
+find_generated_output() {
+  local work_dir="$1"
+  local src_stem="$2"
+  local candidate
+
+  for candidate in \
+    "${work_dir}/${src_stem}.o" \
+    "${work_dir}/${src_stem}.S" \
+    "${work_dir}/${src_stem}.s"; do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  find "${work_dir}" -maxdepth 1 -type f \( -name "*.o" -o -name "*.S" -o -name "*.s" \) | head -n 1
+}
+
+write_rebuild_cmd() {
+  local cmd_path="$1"
+  local asm_path="$2"
+  local src_stem="$3"
+  shift 3
+  local -a cmd=("$@")
+  local cmd_text=""
+  local arg
+
+  for arg in "${cmd[@]}"; do
+    printf -v cmd_text '%s %q' "${cmd_text}" "${arg}"
+  done
+  cmd_text="${cmd_text# }"
+
+  {
+    echo "#!/usr/bin/env bash"
+    echo
+    echo "set -euo pipefail"
+    echo
+    printf 'ASM_PATH=%q\n' "${asm_path}"
+    printf 'SRC_STEM=%q\n' "${src_stem}"
+    printf 'WORK_ROOT=%q\n' "${BUILD_ROOT}"
+    echo
+    echo 'WORK_DIR="$(mktemp -d "${WORK_ROOT}/tmp_rebuild.XXXXXX")"'
+    echo 'trap '\''rm -rf -- "${WORK_DIR}"'\'' EXIT'
+    echo
+    echo 'cd "${WORK_DIR}"'
+    echo "${cmd_text}"
+    echo
+    echo 'GENERATED_FILE=""'
+    echo 'for candidate in "${WORK_DIR}/${SRC_STEM}.o" "${WORK_DIR}/${SRC_STEM}.S" "${WORK_DIR}/${SRC_STEM}.s"; do'
+    echo '  if [[ -f "${candidate}" ]]; then'
+    echo '    GENERATED_FILE="${candidate}"'
+    echo '    break'
+    echo '  fi'
+    echo 'done'
+    echo
+    echo 'if [[ -z "${GENERATED_FILE}" ]]; then'
+    echo '  GENERATED_FILE="$(find "${WORK_DIR}" -maxdepth 1 -type f \( -name "*.o" -o -name "*.S" -o -name "*.s" \) | head -n 1)"'
+    echo 'fi'
+    echo
+    echo 'if [[ -z "${GENERATED_FILE}" || ! -f "${GENERATED_FILE}" ]]; then'
+    echo '  echo "[ERROR] 编译成功但未找到输出文件，期望类型: .o/.S/.s" >&2'
+    echo '  exit 1'
+    echo 'fi'
+    echo
+    echo 'mkdir -p "$(dirname -- "${ASM_PATH}")"'
+    echo 'mv -f -- "${GENERATED_FILE}" "${ASM_PATH}"'
+    printf 'echo "已更新: %s"\n' "${asm_path}"
+  } >"${cmd_path}" || return 1
+
+  chmod +x "${cmd_path}"
+}
+
 compile_one() {
   local src="$1"
-  local rel_path asm_path log_path src_base src_stem work_dir generated_file
+  local rel_path asm_path log_path cmd_path src_base src_stem work_dir generated_file
   local -a cmd=()
 
   rel_path="${src#"${SRC_ROOT}/"}"
   asm_path="${BUILD_ROOT}/${rel_path%.cpp}.S"
   log_path="${LOG_DIR}/${rel_path%.cpp}.log"
+  cmd_path="$(dirname -- "${log_path}")/cmd.sh"
   src_base="$(basename -- "${src}")"
   src_stem="${src_base%.cpp}"
 
   mkdir -p "$(dirname -- "${asm_path}")" "$(dirname -- "${log_path}")" || {
-    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    record_compile_status "FAIL" "${rel_path}"
     return 0
   }
 
@@ -234,31 +336,26 @@ compile_one() {
   for inc in "${INCLUDE_DIRS[@]}"; do
     cmd+=("-I${inc}")
   done
-  cmd+=("-S" "${src}")
+  cmd+=("-c" "${src}")
+
+  if ! write_rebuild_cmd "${cmd_path}" "${asm_path}" "${src_stem}" "${cmd[@]}"; then
+    record_compile_status "FAIL" "${rel_path}"
+    return 0
+  fi
 
   echo "[BUILD] ${rel_path}"
   work_dir="$(mktemp -d "${BUILD_ROOT}/tmp_compile.XXXXXX")" || {
-    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    record_compile_status "FAIL" "${rel_path}"
     return 0
   }
 
   if ! (cd "${work_dir}" && "${cmd[@]}") >"${log_path}" 2>&1; then
-    rm -rf -- "${work_dir}"
-    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    cleanup_work_dir "${work_dir}"
+    record_compile_status "FAIL" "${rel_path}"
     return 0
   fi
 
-  generated_file=""
-  # bisheng with -S may emit <stem>.o by default; keep this as top priority.
-  if [[ -f "${work_dir}/${src_stem}.o" ]]; then
-    generated_file="${work_dir}/${src_stem}.o"
-  elif [[ -f "${work_dir}/${src_stem}.S" ]]; then
-    generated_file="${work_dir}/${src_stem}.S"
-  elif [[ -f "${work_dir}/${src_stem}.s" ]]; then
-    generated_file="${work_dir}/${src_stem}.s"
-  else
-    generated_file="$(find "${work_dir}" -maxdepth 1 -type f \( -name "*.o" -o -name "*.S" -o -name "*.s" \) | head -n 1)"
-  fi
+  generated_file="$(find_generated_output "${work_dir}" "${src_stem}")"
 
   if [[ -z "${generated_file}" || ! -f "${generated_file}" ]]; then
     {
@@ -266,21 +363,21 @@ compile_one() {
       echo "[ERROR] 编译成功但未找到输出文件，期望类型: .o/.S/.s"
       echo "[ERROR] 临时目录: ${work_dir}"
     } >>"${log_path}"
-    rm -rf -- "${work_dir}"
-    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    cleanup_work_dir "${work_dir}"
+    record_compile_status "FAIL" "${rel_path}"
     return 0
   fi
 
   if mv -f -- "${generated_file}" "${asm_path}"; then
-    rm -rf -- "${work_dir}"
-    echo -e "OK\t${rel_path}" >>"${STATUS_FILE}"
+    cleanup_work_dir "${work_dir}"
+    record_compile_status "OK" "${rel_path}"
   else
     {
       echo
       echo "[ERROR] 输出重命名失败: ${generated_file} -> ${asm_path}"
     } >>"${log_path}"
-    rm -rf -- "${work_dir}"
-    echo -e "FAIL\t${rel_path}" >>"${STATUS_FILE}"
+    cleanup_work_dir "${work_dir}"
+    record_compile_status "FAIL" "${rel_path}"
   fi
 }
 

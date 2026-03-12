@@ -27,13 +27,14 @@ export WORKSPACE_DIR="${WORKSPACE_DIR:-$(cd -- "${PTO_SOURCE_DIR}/.." && pwd)}"
 export LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-${WORKSPACE_DIR}/llvm-project}"
 export LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${LLVM_SOURCE_DIR}/build-shared}"
 export PTO_INSTALL_DIR="${PTO_INSTALL_DIR:-${PTO_SOURCE_DIR}/install}"
+export PTO_ISA_PATH="${PTO_ISA_PATH:-${WORKSPACE_DIR}/pto-isa}"
 
 export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core}"
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-export PTOAS_OUT_DIR=$PTO_SOURCE_DIR/output
+export PTOAS_OUT_DIR=$PTO_SOURCE_DIR/build/output
 
 _ptoas_prepend_path() {
   local var_name="$1"
@@ -73,6 +74,7 @@ fi
 echo "[ptoas_env] PTO_SOURCE_DIR=${PTO_SOURCE_DIR}"
 echo "[ptoas_env] LLVM_BUILD_DIR=${LLVM_BUILD_DIR}"
 echo "[ptoas_env] PTO_INSTALL_DIR=${PTO_INSTALL_DIR}"
+echo "[ptoas_env] PTO_ISA_PATH=${PTO_ISA_PATH}"
 echo "[ptoas_env] PATH/PYTHONPATH/LD_LIBRARY_PATH updated"
 
 unset _PTOAS_ENV_SCRIPT_DIR
