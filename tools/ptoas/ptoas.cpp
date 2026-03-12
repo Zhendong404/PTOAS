@@ -682,6 +682,9 @@ int main(int argc, char **argv) {
                  << "'. Expected 'a3' or 'a5'.\n";
     return 1;
   }
+  std::string arch = asciiLowercaseCopy(ptoTargetArch);
+  module->getOperation()->setAttr("pto.target_arch",
+                                  mlir::StringAttr::get(&context, arch));
   const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
@@ -826,9 +829,6 @@ int main(int argc, char **argv) {
 
   PassManager codegenPm(&context);
   maybeEnablePrintIRAfterAll(codegenPm);
-  std::string arch = asciiLowercaseCopy(ptoTargetArch);
-  module->getOperation()->setAttr("pto.target_arch",
-                                  mlir::StringAttr::get(&context, arch));
   codegenPm.addPass(createCSEPass());
   if (effectiveArch == PTOTargetArch::A3) {
     codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
