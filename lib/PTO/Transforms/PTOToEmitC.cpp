@@ -91,6 +91,61 @@ static Value peelUnrealized(Value v) {
   return v;
 }
 
+static std::optional<int64_t> getIntegerLiteralValue(Value v) {
+  SmallPtrSet<Operation *, 8> visited;
+
+  while (v) {
+    Operation *def = v.getDefiningOp();
+    if (!def || !visited.insert(def).second)
+      return std::nullopt;
+
+    if (auto castOp = dyn_cast<emitc::CastOp>(def)) {
+      v = castOp.getOperand();
+      continue;
+    }
+    if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(def)) {
+      if (castOp->getNumOperands() != 1)
+        return std::nullopt;
+      v = castOp.getOperand(0);
+      continue;
+    }
+    if (auto literalOp = dyn_cast<emitc::LiteralOp>(def)) {
+      int64_t value = 0;
+      if (!literalOp.getValue().getAsInteger(10, value))
+        return value;
+      return std::nullopt;
+    }
+    if (auto constantOp = dyn_cast<emitc::ConstantOp>(def)) {
+      Attribute valueAttr = constantOp.getValue();
+      if (auto intAttr = dyn_cast<IntegerAttr>(valueAttr))
+        return intAttr.getValue().getSExtValue();
+      if (auto opaqueAttr = dyn_cast<emitc::OpaqueAttr>(valueAttr)) {
+        int64_t value = 0;
+        if (!opaqueAttr.getValue().getAsInteger(10, value))
+          return value;
+      }
+      return std::nullopt;
+    }
+    if (auto constantOp = dyn_cast<arith::ConstantOp>(def)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constantOp.getValue()))
+        return intAttr.getValue().getSExtValue();
+      return std::nullopt;
+    }
+
+    return std::nullopt;
+  }
+
+  return std::nullopt;
+}
+
+static Value makeEmitCIntegerLiteral(OpBuilder &builder, Location loc, Type type,
+                                     int64_t value) {
+  return builder
+      .create<emitc::LiteralOp>(loc, type, builder.getStringAttr(
+                                               std::to_string(value)))
+      .getResult();
+}
+
 static std::optional<mlir::pto::Layout> getLayoutAttrFromOp(Operation *op) {
   if (!op)
     return std::nullopt;
@@ -10185,9 +10240,9 @@ struct EmitPTOManualPass
     mop.walk([&](emitc::ForOp forOp) {
       Type boundTy = forOp.getLowerBound().getType();
       Type targetTy = boundTy;
+      OpBuilder b(forOp);
       if (targetArch == PTOArch::A5) {
         targetTy = emitc::OpaqueType::get(mop.getContext(), "uint16_t");
-        OpBuilder b(forOp);
         auto castToTarget = [&](Value v) -> Value {
           // Prefer casting from the original source value instead of an
           // intermediate index-typed cast result (which prints as size_t in C++).
@@ -10203,6 +10258,18 @@ struct EmitPTOManualPass
         forOp.setLowerBound(castToTarget(forOp.getLowerBound()));
         forOp.setUpperBound(castToTarget(forOp.getUpperBound()));
         forOp.setStep(castToTarget(forOp.getStep()));
+
+        auto inlineLoopControlLiteral = [&](Value v) -> Value {
+          std::optional<int64_t> constant = getIntegerLiteralValue(v);
+          if (!constant)
+            return v;
+          return makeEmitCIntegerLiteral(b, forOp.getLoc(), targetTy,
+                                         *constant);
+        };
+
+        forOp.setLowerBound(inlineLoopControlLiteral(forOp.getLowerBound()));
+        forOp.setUpperBound(inlineLoopControlLiteral(forOp.getUpperBound()));
+        forOp.setStep(inlineLoopControlLiteral(forOp.getStep()));
       }
 
       BlockArgument iv = forOp.getBody()->getArgument(0);
