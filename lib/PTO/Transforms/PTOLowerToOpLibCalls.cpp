@@ -219,7 +219,10 @@ static bool isSupportedFusionOp(Operation *op) {
              pto::TMaxSOp, pto::TMinSOp, pto::TAddCOp, pto::TSubCOp,
              pto::TAddSCOp, pto::TSubSCOp, pto::TAbsOp, pto::TNegOp,
              pto::TExpOp, pto::TLogOp, pto::TSqrtOp, pto::TRsqrtOp,
-             pto::TRecipOp, pto::TReluOp>(op);
+             pto::TRecipOp, pto::TReluOp, pto::TRowSumOp, pto::TRowMaxOp,
+             pto::TRowMinOp, pto::TColSumOp, pto::TColMaxOp, pto::TColMinOp,
+             pto::TRowExpandOp, pto::TColExpandOp, pto::TRowExpandMulOp,
+             pto::TRowExpandDivOp, pto::TRowExpandSubOp, pto::TExpandsOp>(op);
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -2073,6 +2076,16 @@ buildTernaryTileScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
 }
 
 static FailureOr<MatchRequest>
+buildScalarExpandMatchRequest(StringRef kind, StringRef opName, Value scalar,
+                              Value dst) {
+  SmallVector<Value, 4> operands{scalar, dst};
+  SmallVector<TemplateArgRole, 4> argRoles{TemplateArgRole::Scalar,
+                                           TemplateArgRole::Tile};
+  return buildTypedMatchRequest(kind, opName, operands, argRoles,
+                                /*scalarPos=*/0);
+}
+
+static FailureOr<MatchRequest>
 buildMatchRequest(Operation *op) {
   if (auto mul = dyn_cast<pto::TMulOp>(op))
     return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
@@ -2190,6 +2203,68 @@ buildMatchRequest(Operation *op) {
     return buildUnaryTileMatchRequest("l3_float_unary_math_template",
                                       "trsqrt", rsqrt.getSrc(),
                                       rsqrt.getDst());
+
+  if (auto rowsum = dyn_cast<pto::TRowSumOp>(op))
+    return buildBinaryTileMatchRequest("l3_reduce_row_template", "trowsum",
+                                       rowsum.getSrc(), rowsum.getTmp(),
+                                       rowsum.getDst());
+  if (auto rowmax = dyn_cast<pto::TRowMaxOp>(op))
+    return buildBinaryTileMatchRequest("l3_reduce_row_template", "trowmax",
+                                       rowmax.getSrc(), rowmax.getTmp(),
+                                       rowmax.getDst());
+  if (auto rowmin = dyn_cast<pto::TRowMinOp>(op))
+    return buildBinaryTileMatchRequest("l3_reduce_row_template", "trowmin",
+                                       rowmin.getSrc(), rowmin.getTmp(),
+                                       rowmin.getDst());
+
+  if (auto colmax = dyn_cast<pto::TColMaxOp>(op))
+    return buildUnaryTileMatchRequest("l3_reduce_col_template", "tcolmax",
+                                      colmax.getSrc(), colmax.getDst());
+  if (auto colmin = dyn_cast<pto::TColMinOp>(op))
+    return buildUnaryTileMatchRequest("l3_reduce_col_template", "tcolmin",
+                                      colmin.getSrc(), colmin.getDst());
+  if (auto colsum = dyn_cast<pto::TColSumOp>(op)) {
+    Value tmp = colsum.getTmp();
+    if (!tmp)
+      return failure();
+    FailureOr<MatchRequest> requestOr = buildBinaryTileMatchRequest(
+        "l3_reduce_colsum_template", "tcolsum", colsum.getSrc(), tmp,
+        colsum.getDst());
+    if (failed(requestOr))
+      return failure();
+    requestOr->isBinary = colsum.getIsBinary();
+    return *requestOr;
+  }
+
+  if (auto rowexpand = dyn_cast<pto::TRowExpandOp>(op))
+    return buildUnaryTileMatchRequest("l3_broadcast_row_template",
+                                      "trowexpand", rowexpand.getSrc(),
+                                      rowexpand.getDst());
+  if (auto colexpand = dyn_cast<pto::TColExpandOp>(op))
+    return buildUnaryTileMatchRequest("l3_broadcast_col_template",
+                                      "tcolexpand", colexpand.getSrc(),
+                                      colexpand.getDst());
+
+  if (auto rowexpandMul = dyn_cast<pto::TRowExpandMulOp>(op))
+    return buildBinaryTileMatchRequest("l3_broadcast_row_binary_template",
+                                       "trowexpandmul", rowexpandMul.getSrc0(),
+                                       rowexpandMul.getSrc1(),
+                                       rowexpandMul.getDst());
+  if (auto rowexpandDiv = dyn_cast<pto::TRowExpandDivOp>(op))
+    return buildBinaryTileMatchRequest("l3_broadcast_row_binary_template",
+                                       "trowexpanddiv", rowexpandDiv.getSrc0(),
+                                       rowexpandDiv.getSrc1(),
+                                       rowexpandDiv.getDst());
+  if (auto rowexpandSub = dyn_cast<pto::TRowExpandSubOp>(op))
+    return buildBinaryTileMatchRequest("l3_broadcast_row_binary_template",
+                                       "trowexpandsub", rowexpandSub.getSrc0(),
+                                       rowexpandSub.getSrc1(),
+                                       rowexpandSub.getDst());
+
+  if (auto expands = dyn_cast<pto::TExpandsOp>(op))
+    return buildScalarExpandMatchRequest("l3_scalar_expand_template",
+                                         "texpands", expands.getScalar(),
+                                         expands.getDst());
 
   return failure();
 }

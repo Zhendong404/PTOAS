@@ -2943,8 +2943,8 @@ Reduce along rows or columns of a tile. All execute on the **Vector pipeline** (
 
 | Op | Semantics |
 |----|----------|
-| `pto.trowsum` | `dst[i,0] = sum_j src[i,j]` |
-| `pto.trowmax` | `dst[i,0] = max_j src[i,j]` |
+| `pto.trowsum` | `dst[i,0] = sum_j src[i,j]` (requires tmp) |
+| `pto.trowmax` | `dst[i,0] = max_j src[i,j]` (requires tmp) |
 | `pto.trowmin` | `dst[i,0] = min_j src[i,j]` (requires tmp) |
 | `pto.tcolsum` | `dst[0,j] = sum_i src[i,j]` (requires tmp, optional isBinary) |
 | `pto.tcolmax` | `dst[0,j] = max_i src[i,j]` |
@@ -3092,6 +3092,7 @@ pto.trowmin ins(<src>, <tmp> : <src_type>, <tmp_type>)
 **Constraints & Verification:**
 
 - The operation has a custom verifier
+- `tmp` is required by the current PTO IR / lowering contract
 
 **Hardware Mapping:**
 
