@@ -3169,6 +3169,57 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
   }
 };
 
+static std::string buildEmitCFloatLiteral(FloatAttr floatAttr) {
+  SmallString<32> valStr;
+  floatAttr.getValue().toString(valStr);
+  llvm::StringRef s(valStr);
+  const bool hasFloatMarker =
+      s.contains('.') || s.contains('e') || s.contains('E') ||
+      s.contains('p') || s.contains('P') || s.starts_with("0x") ||
+      s.starts_with("0X") || s.starts_with("nan") ||
+      s.starts_with("-nan") || s.starts_with("inf") ||
+      s.starts_with("-inf");
+  if (!hasFloatMarker)
+    valStr.append(".0");
+  if (!floatAttr.getType().isF64())
+    valStr.append("f");
+  return valStr.str().str();
+}
+
+static FailureOr<emitc::OpaqueAttr>
+buildEmitCOpaqueScalarAttr(MLIRContext *ctx, Attribute attr) {
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr))
+    return emitc::OpaqueAttr::get(ctx, buildEmitCFloatLiteral(floatAttr));
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return emitc::OpaqueAttr::get(
+        ctx, std::to_string(intAttr.getValue().getSExtValue()));
+  return failure();
+}
+
+static LogicalResult lowerVectorSplatToVdup(
+    ConversionPatternRewriter &rewriter, Location loc, Operation *op,
+    Type resultType, VectorType vecTy, Value scalar, llvm::StringRef usageName) {
+  auto opaqueTy = dyn_cast<emitc::OpaqueType>(resultType);
+  if (!opaqueTy || !opaqueTy.getValue().starts_with("RegTensor<"))
+    return failure();
+
+  auto predOr = buildA5Predicate(rewriter, loc, op, vecTy, usageName);
+  if (failed(predOr))
+    return failure();
+
+  auto *ctx = rewriter.getContext();
+  auto regVar = rewriter.create<emitc::VariableOp>(
+      loc, resultType, emitc::OpaqueAttr::get(ctx, ""));
+  auto args = rewriter.getArrayAttr(
+      {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+       rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, "MODE_MERGING")});
+  rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{}, "vdup",
+      ValueRange{regVar.getResult(), scalar, *predOr}, args, ArrayAttr{});
+  rewriter.replaceOp(op, regVar.getResult());
+  return success();
+}
+
 		struct ArithConstantToEmitC : public OpConversionPattern<arith::ConstantOp> {
 		  using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
 		
@@ -3182,23 +3233,6 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    Attribute valueAttr = adaptor.getValue();
 	    if (!valueAttr) valueAttr = op.getValue();
 
-	    auto buildFloatLiteral = [](FloatAttr floatAttr) {
-	      SmallString<32> valStr;
-	      floatAttr.getValue().toString(valStr);
-	      llvm::StringRef s(valStr);
-	      const bool hasFloatMarker =
-	          s.contains('.') || s.contains('e') || s.contains('E') ||
-	          s.contains('p') || s.contains('P') || s.starts_with("0x") ||
-	          s.starts_with("0X") || s.starts_with("nan") ||
-	          s.starts_with("-nan") || s.starts_with("inf") ||
-	          s.starts_with("-inf");
-	      if (!hasFloatMarker)
-	        valStr.append(".0");
-	      if (!floatAttr.getType().isF64())
-	        valStr.append("f");
-	      return valStr.str().str();
-	    };
-
 	    if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(valueAttr)) {
 	      if (auto vecTy = dyn_cast<VectorType>(op.getType())) {
 	        auto opaqueTy = dyn_cast<emitc::OpaqueType>(newType);
@@ -3211,46 +3245,26 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	            return failure();
 
 	          Attribute splatAttr = denseAttr.getSplatValue<Attribute>();
-	          emitc::OpaqueAttr scalarAttr;
-	          if (auto splatFloat = dyn_cast<FloatAttr>(splatAttr)) {
-	            scalarAttr =
-	                emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(splatFloat));
-	          } else if (auto splatInt = dyn_cast<IntegerAttr>(splatAttr)) {
-	            scalarAttr = emitc::OpaqueAttr::get(
-	                rewriter.getContext(),
-	                std::to_string(splatInt.getValue().getSExtValue()));
-	          } else {
+	          auto scalarAttrOr =
+	              buildEmitCOpaqueScalarAttr(rewriter.getContext(), splatAttr);
+	          if (failed(scalarAttrOr))
 	            return failure();
-	          }
 
 	          auto scalarConst = rewriter.create<emitc::ConstantOp>(
-	              op.getLoc(), scalarTy, scalarAttr);
-	          auto predOr =
-	              buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
-	                               "arith.constant");
-	          if (failed(predOr))
-	            return failure();
-
-	          auto *ctx = rewriter.getContext();
-	          auto regVar = rewriter.create<emitc::VariableOp>(
-	              op.getLoc(), newType, emitc::OpaqueAttr::get(ctx, ""));
-	          auto args = rewriter.getArrayAttr(
-	              {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
-	               rewriter.getIndexAttr(2),
-	               emitc::OpaqueAttr::get(ctx, "MODE_MERGING")});
-	          rewriter.create<emitc::CallOpaqueOp>(
-	              op.getLoc(), TypeRange{}, "vdup",
-	              ValueRange{regVar.getResult(), scalarConst.getResult(), *predOr},
-	              args, ArrayAttr{});
-	          rewriter.replaceOp(op, regVar.getResult());
-	          return success();
+	              op.getLoc(), scalarTy, *scalarAttrOr);
+	          return lowerVectorSplatToVdup(rewriter, op.getLoc(),
+	                                        op.getOperation(), newType, vecTy,
+	                                        scalarConst.getResult(),
+	                                        "arith.constant");
 	        }
 
 	        std::string expr;
 	        if (denseAttr.isSplat()) {
 	          if (auto splatFloat =
 	                  dyn_cast<FloatAttr>(denseAttr.getSplatValue<Attribute>())) {
-	            expr = (opaqueTy.getValue() + "(" + buildFloatLiteral(splatFloat) + ")").str();
+	            expr = (opaqueTy.getValue() + "(" +
+	                    buildEmitCFloatLiteral(splatFloat) + ")")
+	                       .str();
 	          } else if (auto splatInt =
 	                         dyn_cast<IntegerAttr>(denseAttr.getSplatValue<Attribute>())) {
 	            expr = (opaqueTy.getValue() + "(" +
@@ -3269,7 +3283,8 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 
 		    if (auto floatAttr = dyn_cast_or_null<FloatAttr>(valueAttr)) {
 		      auto constAttr =
-		          emitc::OpaqueAttr::get(rewriter.getContext(), buildFloatLiteral(floatAttr));
+		          emitc::OpaqueAttr::get(rewriter.getContext(),
+		                                 buildEmitCFloatLiteral(floatAttr));
 		      rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
 		      return success();
 		    }
@@ -3284,6 +3299,26 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 	    return failure();
 	  }
 	};
+
+struct VectorSplatToEmitC : public OpConversionPattern<vector::SplatOp> {
+  using OpConversionPattern<vector::SplatOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(vector::SplatOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getType());
+    if (!vecTy)
+      return failure();
+
+    Type newType = getTypeConverter()->convertType(op.getType());
+    if (!newType)
+      return failure();
+
+    return lowerVectorSplatToVdup(rewriter, op.getLoc(), op.getOperation(),
+                                  newType, vecTy, adaptor.getInput(),
+                                  "vector.splat");
+  }
+};
 //===----------------------------------------------------------------------===//
 // pto.mgather lowering -> MGATHER(dst, mem, idx)
 // %dst = pto.mgather %mem, %idx : memref<...>, memref<...> -> memref<...>
@@ -9200,7 +9235,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMaxUIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinSIToEmitC>(typeConverter, ctx);
   patterns.add<ArithMinUIToEmitC>(typeConverter, ctx);
-  patterns.add<OplibVectorCreateMaskToEmitC, OplibVectorConstantMaskToEmitC,
+  patterns.add<VectorSplatToEmitC, OplibVectorCreateMaskToEmitC,
+               OplibVectorConstantMaskToEmitC,
                OplibVectorLoadToEmitC,
                OplibVectorMaskedLoadToEmitC, OplibVectorStoreToEmitC,
                OplibVectorMaskedStoreToEmitC,
@@ -9491,6 +9527,17 @@ struct EmitPTOManualPass
           if (!maskTy ||
               failed(getA5MaskElemToken(vmstore.getOperation(), maskTy,
                                         "vector.maskedstore"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto splat = dyn_cast<vector::SplatOp>(op)) {
+          auto vecTy = dyn_cast<VectorType>(splat.getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(splat.getOperation(), vecTy,
+                                               "vector.splat"))) {
             hasUnsupportedA5Vector = true;
             return WalkResult::interrupt();
           }

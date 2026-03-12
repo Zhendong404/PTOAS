@@ -26,6 +26,7 @@
 
 // SOFTMAX: vlds(
 // SOFTMAX: vsts(
+// SOFTMAX: vdup(
 // SOFTMAX: vadd(
 // SOFTMAX: CreatePredicate<float>(
 // SOFTMAX-DAG: __VEC_SCOPE__ {

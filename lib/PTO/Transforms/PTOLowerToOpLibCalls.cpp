@@ -753,7 +753,7 @@ struct TemplateRegistry {
     std::string sym =
         "__pto_oplib_entry_" + sanitizeSymbolComponent(libFunc.getSymName());
     int suffix = 0;
-    while (symbolTable.lookup(sym)) {
+    while (SymbolTable::lookupSymbolIn(module, sym)) {
       sym = "__pto_oplib_entry_" +
             sanitizeSymbolComponent(libFunc.getSymName()) + "_" +
             std::to_string(++suffix);
@@ -1661,7 +1661,7 @@ struct TemplateRegistry {
                           sanitizeSymbolComponent(selected.variantId);
     std::string sym = symBase;
     int suffix = 0;
-    while (symbolTable.lookup(sym))
+    while (SymbolTable::lookupSymbolIn(module, sym))
       sym = symBase + "_" + std::to_string(++suffix);
 
     OpBuilder modBuilder(module.getContext());
