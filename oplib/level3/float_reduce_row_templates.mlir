@@ -23,7 +23,7 @@ module {
         pto.oplib.match.arg1.fractal = -1 : i64,
         pto.oplib.match.arg2.rows = -1 : i64,
         pto.oplib.match.arg2.cols = -1 : i64,
-        pto.oplib.match.arg2.blayout = "row_major",
+        pto.oplib.match.arg2.blayout = "any",
         pto.oplib.match.arg2.slayout = "any",
         pto.oplib.match.arg2.fractal = -1 : i64,
         pto.oplib.cost = 10 : i64,

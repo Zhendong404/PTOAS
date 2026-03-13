@@ -29,6 +29,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -688,6 +689,35 @@ bool mlir::pto::isScalarPtrOrMemRef(Type type) {
   if (auto memTy = dyn_cast<MemRefType>(type))
     return isGmAddressSpaceAttr(memTy.getMemorySpace());
   return false;
+}
+
+std::string mlir::pto::getOpLibDTypeName(Type type) {
+  if (type.isF16())
+    return "f16";
+  if (type.isF32())
+    return "f32";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  type.print(os);
+  return os.str();
+}
+
+std::string mlir::pto::getOpLibCmpModeName(CmpMode cmpMode) {
+  switch (cmpMode) {
+  case CmpMode::EQ:
+    return "EQ";
+  case CmpMode::NE:
+    return "NE";
+  case CmpMode::LT:
+    return "LT";
+  case CmpMode::LE:
+    return "LE";
+  case CmpMode::GT:
+    return "GT";
+  case CmpMode::GE:
+    return "GE";
+  }
+  return "EQ";
 }
 
 //===----------------------------------------------------------------------===//
@@ -4959,6 +4989,471 @@ void TMatmulMxBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<Mem
   // 这里的 bias 是必选的 AnyType:$bias，所以是 Singleton
   addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
+}
+
+static OpLibMatchDescriptor buildUnaryTileOpLibDesc(StringRef kind,
+                                                    StringRef opName, Value src,
+                                                    Value dst) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  return desc;
+}
+
+static OpLibMatchDescriptor buildBinaryTileOpLibDesc(StringRef kind,
+                                                     StringRef opName,
+                                                     Value src0, Value src1,
+                                                     Value dst) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src0, src1, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  return desc;
+}
+
+static OpLibMatchDescriptor buildTileScalarOpLibDesc(StringRef kind,
+                                                     StringRef opName, Value src,
+                                                     Value scalar, Value dst,
+                                                     int64_t scalarPos = 1) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src, scalar, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Scalar),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  desc.scalarPos = scalarPos;
+  return desc;
+}
+
+static OpLibMatchDescriptor buildTernaryTileOpLibDesc(
+    StringRef kind, StringRef opName, Value src0, Value src1, Value src2,
+    Value dst) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src0, src1, src2, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  return desc;
+}
+
+static OpLibMatchDescriptor buildTernaryTileScalarOpLibDesc(
+    StringRef kind, StringRef opName, Value src0, Value scalar, Value src1,
+    Value dst, int64_t scalarPos = 1) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src0, scalar, src1, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Scalar),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  desc.scalarPos = scalarPos;
+  return desc;
+}
+
+static OpLibMatchDescriptor buildQuaternaryTileOpLibDesc(
+    StringRef kind, StringRef opName, Value src0, Value src1, Value src2,
+    Value dst) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src0, src1, src2, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  return desc;
+}
+
+static OpLibMatchDescriptor buildBinaryTileScalarOpLibDesc(
+    StringRef kind, StringRef opName, Value src0, Value src1, Value scalar,
+    Value dst, int64_t scalarPos = 2) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {src0, src1, scalar, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+      static_cast<int64_t>(OpLibArgRole::Scalar),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  desc.scalarPos = scalarPos;
+  return desc;
+}
+
+static OpLibMatchDescriptor buildScalarExpandOpLibDesc(StringRef kind,
+                                                       StringRef opName,
+                                                       Value scalar, Value dst) {
+  OpLibMatchDescriptor desc;
+  desc.kind = kind.str();
+  desc.opName = opName.str();
+  desc.operands = {scalar, dst};
+  desc.operandRoles = {
+      static_cast<int64_t>(OpLibArgRole::Scalar),
+      static_cast<int64_t>(OpLibArgRole::Tile),
+  };
+  desc.scalarPos = 0;
+  return desc;
+}
+
+FailureOr<OpLibMatchDescriptor> TAbsOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_template", "tabs", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAddOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tadd",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSubOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tsub",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TMulOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmul",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TDivOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tdiv",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TMaxOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmax",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TMinOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmin",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TPartAddOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_partial_binary_template",
+                                  "tpartadd", getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TPartMaxOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_partial_binary_template",
+                                  "tpartmax", getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TPartMinOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_float_partial_binary_template",
+                                  "tpartmin", getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TNegOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_template", "tneg", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRecipOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_template", "trecip", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TReluOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_template", "trelu", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TExpOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_math_template", "texp",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TLogOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_math_template", "tlog",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSqrtOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_math_template", "tsqrt",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRsqrtOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_float_unary_math_template", "trsqrt",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TNotOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_int_unary_template", "tnot", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAddSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tadds",
+                                  getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSubSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tsubs",
+                                  getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TMulSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmuls",
+                                  getSrc0(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TDivSOp::getOpLibMatchDescriptor() {
+  OpLibMatchDescriptor desc = buildTileScalarOpLibDesc(
+      "l3_float_tile_scalar_template", "tdivs", getSrc(), getScalar(),
+      getDst());
+  auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order");
+  if (!orderAttr)
+    return failure();
+  StringRef order = orderAttr.getValue();
+  if (order != "tile_scalar" && order != "scalar_tile")
+    return failure();
+  desc.requiredVariantId = order.str();
+  return desc;
+}
+
+FailureOr<OpLibMatchDescriptor> TMaxSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmaxs",
+                                  getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TMinSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmins",
+                                  getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAddCOp::getOpLibMatchDescriptor() {
+  return buildTernaryTileOpLibDesc("l3_float_ternary_tile_template", "taddc",
+                                   getSrc0(), getSrc1(), getSrc2(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSubCOp::getOpLibMatchDescriptor() {
+  return buildTernaryTileOpLibDesc("l3_float_ternary_tile_template", "tsubc",
+                                   getSrc0(), getSrc1(), getSrc2(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAddSCOp::getOpLibMatchDescriptor() {
+  return buildTernaryTileScalarOpLibDesc(
+      "l3_float_ternary_tile_scalar_template", "taddsc", getSrc0(),
+      getScalar(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSubSCOp::getOpLibMatchDescriptor() {
+  return buildTernaryTileScalarOpLibDesc(
+      "l3_float_ternary_tile_scalar_template", "tsubsc", getSrc0(),
+      getScalar(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TLReluOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tlrelu",
+                                  getSrc(), getSlope(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TPReluOp::getOpLibMatchDescriptor() {
+  auto tmpITy = dyn_cast<IntegerType>(getElemTy(getTmp().getType()));
+  if (!tmpITy || tmpITy.getWidth() != 8)
+    return failure();
+  return buildTernaryTileOpLibDesc("l3_float_ternary_tile_template", "tprelu",
+                                   getSrc0(), getSrc1(), getTmp(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRemOp::getOpLibMatchDescriptor() {
+  if (!isa<FloatType>(getElemTy(getSrc0().getType())))
+    return failure();
+  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "trem",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRemSOp::getOpLibMatchDescriptor() {
+  if (!isa<FloatType>(getElemTy(getSrc().getType())))
+    return failure();
+  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "trems",
+                                  getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TCmpOp::getOpLibMatchDescriptor() {
+  auto dstITy = dyn_cast<IntegerType>(getElemTy(getDst().getType()));
+  if (!dstITy || dstITy.getWidth() != 8)
+    return failure();
+  OpLibMatchDescriptor desc = buildBinaryTileOpLibDesc(
+      "l3_cmp_tile_tile_template", "tcmp", getSrc0(), getSrc1(), getDst());
+  if (auto cmpModeAttr = getCmpModeAttr())
+    desc.cmpMode = getOpLibCmpModeName(cmpModeAttr.getValue());
+  else
+    desc.cmpMode = "EQ";
+  return desc;
+}
+
+FailureOr<OpLibMatchDescriptor> TCmpSOp::getOpLibMatchDescriptor() {
+  auto dstITy = dyn_cast<IntegerType>(getElemTy(getDst().getType()));
+  if (!dstITy || dstITy.getWidth() != 8)
+    return failure();
+  OpLibMatchDescriptor desc = buildTileScalarOpLibDesc(
+      "l3_cmp_tile_scalar_template", "tcmps", getSrc(), getScalar(), getDst());
+  if (auto cmpModeAttr = getCmpModeAttr())
+    desc.cmpMode = getOpLibCmpModeName(cmpModeAttr.getValue());
+  else
+    desc.cmpMode = "EQ";
+  return desc;
+}
+
+FailureOr<OpLibMatchDescriptor> TSelOp::getOpLibMatchDescriptor() {
+  auto maskITy = dyn_cast<IntegerType>(getElemTy(getMask().getType()));
+  if (!maskITy || maskITy.getWidth() != 8)
+    return failure();
+  return buildQuaternaryTileOpLibDesc("l3_select_mask_template", "tsel",
+                                      getMask(), getSrc0(), getSrc1(),
+                                      getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TSelSOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileScalarOpLibDesc("l3_select_scalar_template", "tsels",
+                                        getSrc0(), getSrc1(), getSelectMode(),
+                                        getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAndOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_int_binary_elementwise_template", "tand",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TOrOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_int_binary_elementwise_template", "tor",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TXorOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_int_binary_elementwise_template", "txor",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TShlOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_int_binary_elementwise_template", "tshl",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TShrOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_int_binary_elementwise_template", "tshr",
+                                  getSrc0(), getSrc1(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TAndSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_int_tile_scalar_elementwise_template",
+                                  "tands", getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TOrSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_int_tile_scalar_elementwise_template",
+                                  "tors", getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TXorSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_int_tile_scalar_elementwise_template",
+                                  "txors", getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TShlSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_int_tile_scalar_elementwise_template",
+                                  "tshls", getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TShrSOp::getOpLibMatchDescriptor() {
+  return buildTileScalarOpLibDesc("l3_int_tile_scalar_elementwise_template",
+                                  "tshrs", getSrc(), getScalar(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowSumOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_reduce_row_template", "trowsum", getSrc(),
+                                  getTmp(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowMaxOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_reduce_row_template", "trowmax", getSrc(),
+                                  getTmp(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowMinOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_reduce_row_template", "trowmin", getSrc(),
+                                  getTmp(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TColMaxOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_reduce_col_template", "tcolmax", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TColMinOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_reduce_col_template", "tcolmin", getSrc(),
+                                 getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TColSumOp::getOpLibMatchDescriptor() {
+  Value tmp = getTmp();
+  if (!tmp)
+    return failure();
+  OpLibMatchDescriptor desc = buildBinaryTileOpLibDesc(
+      "l3_reduce_colsum_template", "tcolsum", getSrc(), tmp, getDst());
+  desc.isBinary = getIsBinary();
+  return desc;
+}
+
+FailureOr<OpLibMatchDescriptor> TRowExpandOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_broadcast_row_template", "trowexpand",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TColExpandOp::getOpLibMatchDescriptor() {
+  return buildUnaryTileOpLibDesc("l3_broadcast_col_template", "tcolexpand",
+                                 getSrc(), getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowExpandMulOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
+                                  "trowexpandmul", getSrc0(), getSrc1(),
+                                  getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowExpandDivOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
+                                  "trowexpanddiv", getSrc0(), getSrc1(),
+                                  getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TRowExpandSubOp::getOpLibMatchDescriptor() {
+  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
+                                  "trowexpandsub", getSrc0(), getSrc1(),
+                                  getDst());
+}
+
+FailureOr<OpLibMatchDescriptor> TExpandsOp::getOpLibMatchDescriptor() {
+  return buildScalarExpandOpLibDesc("l3_scalar_expand_template", "texpands",
+                                    getScalar(), getDst());
 }
 
 // [Include 必须放在最后]

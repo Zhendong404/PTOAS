@@ -25,6 +25,9 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "PTO/IR/PTOOpLibMatch.h"
+
+#include <string>
 
 //===----------------------------------------------------------------------===//
 // PTO Dialect
@@ -75,6 +78,12 @@ AddressSpaceAttr getPTOAddressSpaceAttr(Type type);
 
 /// Return true if type is a ptr/memref in GM address space (or default).
 bool isScalarPtrOrMemRef(Type type);
+
+// Shared helper for OPLib dtype string keys used in matching.
+std::string getOpLibDTypeName(Type type);
+
+// Shared helper for OPLib cmp mode string keys used in matching.
+std::string getOpLibCmpModeName(CmpMode cmpMode);
 
 } // namespace pto
 } // namespace mlir

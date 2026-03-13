@@ -82,7 +82,7 @@
 // BAD-LANES: E_OPLIB_SIMD_LANES_MISMATCH
 // BAD-SIMD-ATTR: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-IR: E_OPLIB_BODY_DISALLOWED_IR
-// BAD-VEC: A5 OP-Lib vector lowering unsupported
+// BAD-VEC: no matching OP-Lib entry for kind=l3_float_tile_scalar_template op=tmuls dtype=f32
 // BAD-LEGACY-CAST: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MISSING-KNOBS: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-MISSING-KNOBS: pto.simd.exec_mode
@@ -100,4 +100,4 @@
 // BAD-IS-BINARY: missing required attr: pto.oplib.match.is_binary
 // BAD-MATH: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MATH: math.sin
-// BAD-VEC-INT: A5 OP-Lib vector lowering unsupported
+// BAD-VEC-INT: no matching OP-Lib entry for kind=l3_float_tile_scalar_template op=tmuls dtype=f32

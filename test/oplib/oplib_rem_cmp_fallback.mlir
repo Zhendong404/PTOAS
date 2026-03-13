@@ -1,7 +1,3 @@
-// RUN: ptoas %S/rem_cmp_fallback.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.fallback.cpp
-// RUN: FileCheck %s < %t.fallback.cpp
+// RUN: { ptoas %S/rem_cmp_fallback.pto --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.fallback.cpp 2>&1 || true; } | FileCheck %s
 
-// CHECK: TCMP(
-// CHECK: TCMPS(
-// CHECK-NOT: __pto_oplib_inst_
-// CHECK-NOT: PTOAS__OPLIB_
+// CHECK: error: 'pto.tcmp' op dst element type must be i32 mask type

@@ -1977,23 +1977,27 @@ static LogicalResult validateA5OplibVectorType(Operation *op, VectorType vecTy,
     return mlir::failure();
   }
 
-  auto emitLaneError = [&](unsigned bitWidth) {
-    op->emitError() << "A5 OP-Lib vector lowering unsupported: " << elemTy
-                    << " lanes " << lanes
-                    << " (expect total width 1024 or 2048 bits)";
+  if (!(elemTy.isF16() || elemTy.isF32() || isa<IntegerType>(elemTy))) {
+    op->emitError() << "A5 OP-Lib vector lowering unsupported: element type "
+                    << elemTy;
     return mlir::failure();
-  };
-
-  if (elemTy.isF16() || elemTy.isF32() || isa<IntegerType>(elemTy)) {
-    unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
-    int64_t totalBits = static_cast<int64_t>(bitWidth) * lanes;
-    if (totalBits != 1024 && totalBits != 2048)
-      return emitLaneError(bitWidth);
-    return mlir::success();
   }
 
-  op->emitError() << "A5 OP-Lib vector lowering unsupported: element type "
-                  << elemTy;
+  // A5 data vectors are modeled as fixed 64 lanes regardless of element kind.
+  if (lanes == 64)
+    return mlir::success();
+
+  // Keep a compatibility path for existing templates still encoded by total
+  // bit-width rather than explicit lane count.
+  unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
+  int64_t totalBits = static_cast<int64_t>(bitWidth) * lanes;
+  if (totalBits == 1024 || totalBits == 2048)
+    return mlir::success();
+
+  op->emitError() << "A5 OP-Lib vector lowering unsupported: " << elemTy
+                  << " lanes " << lanes
+                  << " (A5 expects 64 lanes; legacy accepts total width 1024 or "
+                     "2048 bits)";
   return mlir::failure();
 }
 
@@ -2042,16 +2046,16 @@ static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
   };
 
   if (lanes == 64) {
-    if (auto vmload = dyn_cast<vector::MaskedLoadOp>(op))
-      return inferElemFromVecTy(vmload.getVectorType());
-    if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op))
-      return inferElemFromVecTy(
-          cast<VectorType>(vmstore.getValueToStore().getType()));
-
-    if (auto cmask = dyn_cast<vector::CreateMaskOp>(op)) {
-      llvm::StringRef inferred;
+    auto inferFromMaskUsers =
+        [&](Operation *maskOp) -> FailureOr<llvm::StringRef> {
+      llvm::StringRef inferredFp;
+      llvm::StringRef inferredInt;
       bool hasUser = false;
-      for (Operation *user : cmask->getUsers()) {
+      auto isFpToken = [](llvm::StringRef tok) {
+        return tok == "float" || tok == "half";
+      };
+
+      for (Operation *user : maskOp->getUsers()) {
         FailureOr<llvm::StringRef> tok = failure();
         if (auto useLoad = dyn_cast<vector::MaskedLoadOp>(user)) {
           tok = inferElemFromVecTy(useLoad.getVectorType());
@@ -2063,21 +2067,47 @@ static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
         }
         if (failed(tok))
           continue;
-        if (!hasUser) {
-          inferred = *tok;
-          hasUser = true;
+
+        hasUser = true;
+        if (isFpToken(*tok)) {
+          if (inferredFp.empty()) {
+            inferredFp = *tok;
+            continue;
+          }
+          if (inferredFp != *tok) {
+            op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
+                            << " mask lanes 64 has mixed f32/f16 users";
+            return failure();
+          }
           continue;
         }
-        if (inferred != *tok) {
-          op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
-                          << " mask lanes 64 has mixed f32/f16 users";
-          return failure();
-        }
+
+        if (inferredInt.empty())
+          inferredInt = *tok;
       }
-      if (hasUser)
-        return inferred;
+
+      if (hasUser) {
+        // For mixed integer/float users, prefer float/half token because this
+        // mask is usually driven by floating-point data-path active count.
+        if (!inferredFp.empty())
+          return inferredFp;
+        if (!inferredInt.empty())
+          return inferredInt;
+      }
+
       return llvm::StringRef("float");
-    }
+    };
+
+    if (auto vmload = dyn_cast<vector::MaskedLoadOp>(op))
+      return inferElemFromVecTy(vmload.getVectorType());
+    if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op))
+      return inferElemFromVecTy(
+          cast<VectorType>(vmstore.getValueToStore().getType()));
+
+    if (auto cmask = dyn_cast<vector::CreateMaskOp>(op))
+      return inferFromMaskUsers(cmask.getOperation());
+    if (auto constMask = dyn_cast<vector::ConstantMaskOp>(op))
+      return inferFromMaskUsers(constMask.getOperation());
   }
 
   op->emitError() << "A5 OP-Lib vector lowering unsupported: " << usage
