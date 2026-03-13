@@ -549,6 +549,10 @@ static bool canUseSeedRewriteFor(StringRef kind, StringRef op) {
   if (kind == "l3_float_tile_scalar_template")
     return op == "tadds" || op == "tsubs" || op == "tmuls" || op == "tmaxs" ||
            op == "tmins";
+  if (kind == "l3_reduce_row_template")
+    return op == "trowsum" || op == "trowmax" || op == "trowmin";
+  if (kind == "l3_reduce_col_template")
+    return op == "tcolmax" || op == "tcolmin";
   return false;
 }
 
@@ -1921,7 +1925,7 @@ struct TemplateRegistry {
       Value rhs = core->getOperand(1);
       Operation *newCore = nullptr;
       if (selected.op == "tadd" || selected.op == "tpartadd" ||
-          selected.op == "tadds") {
+          selected.op == "tadds" || selected.op == "trowsum") {
         newCore = b.create<arith::AddFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tsub" || selected.op == "tsubs") {
         newCore = b.create<arith::SubFOp>(core->getLoc(), lhs, rhs);
@@ -1930,10 +1934,12 @@ struct TemplateRegistry {
       } else if (selected.op == "tdiv") {
         newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tmax" || selected.op == "tpartmax" ||
-                 selected.op == "tmaxs") {
+                 selected.op == "tmaxs" || selected.op == "trowmax" ||
+                 selected.op == "tcolmax") {
         newCore = b.create<arith::MaximumFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tmin" || selected.op == "tpartmin" ||
-                 selected.op == "tmins") {
+                 selected.op == "tmins" || selected.op == "trowmin" ||
+                 selected.op == "tcolmin") {
         newCore = b.create<arith::MinimumFOp>(core->getLoc(), lhs, rhs);
       } else {
         (void)emitFailureWithCode(core, kErrCoreSlot,

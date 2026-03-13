@@ -3,11 +3,14 @@
 
 // STATIC-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // STATIC-DAG: pto.oplib.instance.op = "trowsum"
+// STATIC-DAG: pto.oplib.instance.from_seed = true
 // STATIC-DAG: pto.oplib.instance.op = "trowmax"
+// STATIC-DAG: pto.oplib.instance.seed_id = "seed_l3_reduce_row_core"
 // STATIC-DAG: pto.oplib.instance.op = "trowmin"
 // STATIC-DAG: pto.oplib.instance.op = "tcolsum"
 // STATIC-DAG: pto.oplib.instance.variant_id = "linear"
 // STATIC-DAG: pto.oplib.instance.op = "tcolmax"
+// STATIC-DAG: pto.oplib.instance.seed_id = "seed_l3_reduce_col_core"
 // STATIC-DAG: pto.oplib.instance.op = "tcolmin"
 // STATIC-DAG: pto.oplib.instance.op = "trowexpand"
 // STATIC-DAG: pto.oplib.instance.op = "tcolexpand"
@@ -18,11 +21,14 @@
 
 // DYNAMIC-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // DYNAMIC-DAG: pto.oplib.instance.op = "trowsum"
+// DYNAMIC-DAG: pto.oplib.instance.from_seed = true
 // DYNAMIC-DAG: pto.oplib.instance.op = "trowmax"
+// DYNAMIC-DAG: pto.oplib.instance.seed_id = "seed_l3_reduce_row_core"
 // DYNAMIC-DAG: pto.oplib.instance.op = "trowmin"
 // DYNAMIC-DAG: pto.oplib.instance.op = "tcolsum"
 // DYNAMIC-DAG: pto.oplib.instance.variant_id = "linear"
 // DYNAMIC-DAG: pto.oplib.instance.op = "tcolmax"
+// DYNAMIC-DAG: pto.oplib.instance.seed_id = "seed_l3_reduce_col_core"
 // DYNAMIC-DAG: pto.oplib.instance.op = "tcolmin"
 // DYNAMIC-DAG: pto.oplib.instance.op = "trowexpand"
 // DYNAMIC-DAG: pto.oplib.instance.op = "tcolexpand"
