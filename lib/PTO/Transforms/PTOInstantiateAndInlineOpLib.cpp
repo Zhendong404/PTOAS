@@ -48,6 +48,38 @@ static Value maybeUnwrapCastToExpected(Value operand, Type expectedType) {
   return operand;
 }
 
+static Operation *cloneOpForInlineWithFix(OpBuilder &builder, Operation &op,
+                                          IRMapping &mapping) {
+  if (auto alloc = dyn_cast<pto::AllocTileOp>(&op)) {
+    auto mapOperand = [&](Value operand, Type expectedType) -> Value {
+      if (!operand)
+        return Value();
+      Value mapped = mapping.lookupOrNull(operand);
+      if (!mapped)
+        mapped = operand;
+      return maybeUnwrapCastToExpected(mapped, expectedType);
+    };
+
+    Value mappedAddr = mapOperand(alloc.getAddr(),
+                                  alloc.getAddr() ? alloc.getAddr().getType()
+                                                  : Type());
+    Value mappedValidRow =
+        mapOperand(alloc.getValidRow(),
+                   alloc.getValidRow() ? alloc.getValidRow().getType() : Type());
+    Value mappedValidCol =
+        mapOperand(alloc.getValidCol(),
+                   alloc.getValidCol() ? alloc.getValidCol().getType() : Type());
+
+    auto cloned = builder.create<pto::AllocTileOp>(
+        alloc.getLoc(), alloc.getType(), mappedAddr, mappedValidRow,
+        mappedValidCol);
+    cloned->setAttrs(alloc->getAttrs());
+    return cloned.getOperation();
+  }
+
+  return builder.clone(op, mapping);
+}
+
 static void eraseDeadBridgeCasts(func::FuncOp func) {
   bool changed = true;
   while (changed) {
@@ -92,7 +124,7 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
     mapping.map(arg, operand);
 
   for (Operation &op : entry.without_terminator()) {
-    Operation *newOp = builder.clone(op, mapping);
+    Operation *newOp = cloneOpForInlineWithFix(builder, op, mapping);
     for (auto [oldRes, newRes] : llvm::zip(op.getResults(), newOp->getResults()))
       mapping.map(oldRes, newRes);
   }
