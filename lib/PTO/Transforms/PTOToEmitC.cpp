@@ -9562,183 +9562,8 @@ struct EmitPTOManualPass
 	    builder.setInsertionPointToStart(mop.getBody());
 	    builder.create<emitc::IncludeOp>(
 	        loc, builder.getStringAttr("pto/pto-inst.hpp"), /*isAngled=*/nullptr);
-	    builder.create<emitc::VerbatimOp>(
+	    auto usingNamespace = builder.create<emitc::VerbatimOp>(
 	        loc, builder.getStringAttr("using namespace pto;"));
-	
-	    // Only inject the bitcast helper when we actually lower ops that need it
-	    // (e.g. arith.bitcast or arith.maximumf/minimumf tie-breaking on zeros).
-	    bool needsBitcastHelper = false;
-	    bool needsMemrefScalarHelper = false;
-      bool needsVectorReductionHelper = false;
-      bool needsVectorCmpHelper = false;
-      bool needsVectorRemfHelper = false;
-	    mop.walk([&](Operation *op) {
-	      if (isa<arith::BitcastOp, arith::MaximumFOp, arith::MinimumFOp>(op)) {
-	        needsBitcastHelper = true;
-	      }
-	      if (isa<memref::LoadOp, memref::StoreOp>(op))
-	        needsMemrefScalarHelper = true;
-        if (isa<vector::ReductionOp>(op))
-          needsVectorReductionHelper = true;
-        if (isa<arith::CmpIOp, arith::CmpFOp>(op) &&
-            isa<VectorType>(op->getResultTypes().front()))
-          needsVectorCmpHelper = true;
-        if (auto remf = dyn_cast<arith::RemFOp>(op);
-            remf && isa<VectorType>(remf.getType()))
-          needsVectorRemfHelper = true;
-	      if (needsBitcastHelper && needsMemrefScalarHelper &&
-            needsVectorReductionHelper && needsVectorCmpHelper &&
-            needsVectorRemfHelper)
-	        return WalkResult::interrupt();
-	      return WalkResult::advance();
-	    });
-	    if (needsMemrefScalarHelper) {
-	      builder.create<emitc::VerbatimOp>(
-	          loc, builder.getStringAttr(R"cpp(
-		template <typename PtrT, typename IndexT>
-		PTO_INTERNAL auto ptoas_memref_load(PtrT base, IndexT idx) -> decltype(base[0]) {
-		  return base[idx];
-		}
-		template <typename PtrT, typename IndexT, typename T>
-		PTO_INTERNAL void ptoas_memref_store(PtrT base, IndexT idx, T value) {
-		  base[idx] = value;
-		}
-		)cpp"));
-	      }
-      if (needsVectorReductionHelper) {
-        builder.create<emitc::VerbatimOp>(
-            loc, builder.getStringAttr(R"cpp(
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, MaskReg pred) {
-      RegTensor<T> dst;
-      vcadd(dst, src, pred, MODE_ZEROING);
-      uint32_t one = 1;
-      MaskReg pred1 = CreatePredicate<T>(one);
-      T out{};
-      constexpr auto distValue =
-          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
-      vsts(dst, &out, 0, distValue, pred1);
-      return out;
-    }
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, T acc, MaskReg pred) {
-      return ptoas_vreduce_add(src, pred) + acc;
-    }
-
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, MaskReg pred) {
-      RegTensor<T> dst;
-      vcmax(dst, src, pred, MODE_ZEROING);
-      uint32_t one = 1;
-      MaskReg pred1 = CreatePredicate<T>(one);
-      T out{};
-      constexpr auto distValue =
-          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
-      vsts(dst, &out, 0, distValue, pred1);
-      return out;
-    }
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, T acc, MaskReg pred) {
-      T red = ptoas_vreduce_max(src, pred);
-      return red > acc ? red : acc;
-    }
-
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, MaskReg pred) {
-      RegTensor<T> dst;
-      vcmin(dst, src, pred, MODE_ZEROING);
-      uint32_t one = 1;
-      MaskReg pred1 = CreatePredicate<T>(one);
-      T out{};
-      constexpr auto distValue =
-          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
-      vsts(dst, &out, 0, distValue, pred1);
-      return out;
-    }
-    template <typename T>
-    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, T acc, MaskReg pred) {
-      T red = ptoas_vreduce_min(src, pred);
-      return red < acc ? red : acc;
-    }
-    )cpp"));
-      }
-      if (needsVectorCmpHelper) {
-        builder.create<emitc::VerbatimOp>(
-            loc, builder.getStringAttr(R"cpp(
-    template <typename T>
-    PTO_INTERNAL void ptoas_vcmp(MaskReg &dst, RegTensor<T> src0, RegTensor<T> src1,
-                                 CmpMode mode, MaskReg pred) {
-      switch (mode) {
-      case CmpMode::EQ:
-        vcmp_eq(dst, src0, src1, pred);
-        break;
-      case CmpMode::NE:
-        vcmp_ne(dst, src0, src1, pred);
-        break;
-      case CmpMode::LT:
-        vcmp_lt(dst, src0, src1, pred);
-        break;
-      case CmpMode::LE:
-        vcmp_le(dst, src0, src1, pred);
-        break;
-      case CmpMode::GT:
-        vcmp_gt(dst, src0, src1, pred);
-        break;
-      case CmpMode::GE:
-        vcmp_ge(dst, src0, src1, pred);
-        break;
-      default:
-        vcmp_eq(dst, src0, src1, pred);
-        break;
-      }
-    }
-    )cpp"));
-      }
-      if (needsVectorRemfHelper) {
-        builder.create<emitc::VerbatimOp>(
-            loc, builder.getStringAttr(R"cpp(
-    template <typename T>
-    PTO_INTERNAL void ptoas_vrem(RegTensor<T> &dst, RegTensor<T> src0,
-                                 RegTensor<T> src1, MaskReg pred) {
-      if constexpr (std::is_same<T, float>::value) {
-        vdiv(dst, src0, src1, pred, MODE_ZEROING);
-        vtrc(dst, dst, ROUND_F, pred);
-        vmul(dst, dst, src1, pred, MODE_ZEROING);
-        vsub(dst, src0, dst, pred, MODE_ZEROING);
-      } else if constexpr (std::is_same<T, half>::value) {
-        RegTensor<float> even0, even1, even2, odd0, odd1, odd2;
-        RegTensor<T> dstEven, dstOdd;
-        vcvt(even0, src0, pred, PART_EVEN);
-        vcvt(even1, src1, pred, PART_EVEN);
-        vcvt(odd0, src0, pred, PART_ODD);
-        vcvt(odd1, src1, pred, PART_ODD);
-        vdiv(even2, even0, even1, pred, MODE_ZEROING);
-        vdiv(odd2, odd0, odd1, pred, MODE_ZEROING);
-        vtrc(even2, even2, ROUND_F, pred);
-        vtrc(odd2, odd2, ROUND_F, pred);
-        vmul(even2, even2, even1, pred, MODE_ZEROING);
-        vmul(odd2, odd2, odd1, pred, MODE_ZEROING);
-        vsub(even2, even0, even2, pred, MODE_ZEROING);
-        vsub(odd2, odd0, odd2, pred, MODE_ZEROING);
-        vcvt(dstEven, even2, pred, ROUND_Z, RS_ENABLE, PART_EVEN);
-        vcvt(dstOdd, odd2, pred, ROUND_Z, RS_ENABLE, PART_ODD);
-        vor(dst, dstEven, dstOdd, pred);
-      }
-    }
-    )cpp"));
-      }
-	    if (needsBitcastHelper) {
-	      builder.create<emitc::VerbatimOp>(
-	          loc, builder.getStringAttr(R"cpp(
-		template <typename To, typename From>
-		PTO_INTERNAL static inline To ptoas_bitcast(From from) {
-		  static_assert(sizeof(To) == sizeof(From), "ptoas_bitcast: size mismatch");
-		  To to;
-		  __builtin_memcpy(&to, &from, sizeof(To));
-		  return to;
-		}
-		)cpp"));
-	    }
 
 	    // 1.5 Pre-lower SCF constructs not handled by SCFToEmitC.
 	    {
@@ -10232,6 +10057,182 @@ struct EmitPTOManualPass
     if (failed(applyPartialConversion(mop, target, std::move(patterns)))) {
       llvm::errs() << "Conversion FAILED! Rolling back executed.\n";
       return signalPassFailure();
+    }
+
+    // 3.5 按最终 EmitC 调用点按需注入 helper，避免每个用例都携带全量 helper。
+    bool needsBitcastHelper = false;
+    bool needsMemrefScalarHelper = false;
+    bool needsVectorReductionHelper = false;
+    bool needsVectorCmpHelper = false;
+    bool needsVectorRemfHelper = false;
+    mop.walk([&](emitc::CallOpaqueOp call) {
+      StringRef callee = call.getCallee();
+      if (callee == "ptoas_bitcast")
+        needsBitcastHelper = true;
+      if (callee == "ptoas_memref_load" || callee == "ptoas_memref_store")
+        needsMemrefScalarHelper = true;
+      if (callee == "ptoas_vreduce_add" || callee == "ptoas_vreduce_max" ||
+          callee == "ptoas_vreduce_min")
+        needsVectorReductionHelper = true;
+      if (callee == "ptoas_vcmp")
+        needsVectorCmpHelper = true;
+      if (callee == "ptoas_vrem")
+        needsVectorRemfHelper = true;
+      if (needsBitcastHelper && needsMemrefScalarHelper &&
+          needsVectorReductionHelper && needsVectorCmpHelper &&
+          needsVectorRemfHelper)
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    });
+
+    OpBuilder helperBuilder(usingNamespace.getOperation());
+    helperBuilder.setInsertionPointAfter(usingNamespace);
+    if (needsMemrefScalarHelper) {
+      helperBuilder.create<emitc::VerbatimOp>(
+          loc, helperBuilder.getStringAttr(R"cpp(
+		template <typename PtrT, typename IndexT>
+		PTO_INTERNAL auto ptoas_memref_load(PtrT base, IndexT idx) -> decltype(base[0]) {
+		  return base[idx];
+		}
+		template <typename PtrT, typename IndexT, typename T>
+		PTO_INTERNAL void ptoas_memref_store(PtrT base, IndexT idx, T value) {
+		  base[idx] = value;
+		}
+		)cpp"));
+    }
+    if (needsVectorReductionHelper) {
+      helperBuilder.create<emitc::VerbatimOp>(
+          loc, helperBuilder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcadd(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, T acc, MaskReg pred) {
+      return ptoas_vreduce_add(src, pred) + acc;
+    }
+
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcmax(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_max(RegTensor<T> src, T acc, MaskReg pred) {
+      T red = ptoas_vreduce_max(src, pred);
+      return red > acc ? red : acc;
+    }
+
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, MaskReg pred) {
+      RegTensor<T> dst;
+      vcmin(dst, src, pred, MODE_ZEROING);
+      uint32_t one = 1;
+      MaskReg pred1 = CreatePredicate<T>(one);
+      T out{};
+      constexpr auto distValue =
+          std::integral_constant<::DistVST, static_cast<::DistVST>(GetDistVst<T, pto::DistVST::DIST_NORM>())>();
+      vsts(dst, &out, 0, distValue, pred1);
+      return out;
+    }
+    template <typename T>
+    PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, T acc, MaskReg pred) {
+      T red = ptoas_vreduce_min(src, pred);
+      return red < acc ? red : acc;
+    }
+    )cpp"));
+    }
+    if (needsVectorCmpHelper) {
+      helperBuilder.create<emitc::VerbatimOp>(
+          loc, helperBuilder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL void ptoas_vcmp(MaskReg &dst, RegTensor<T> src0, RegTensor<T> src1,
+                                 CmpMode mode, MaskReg pred) {
+      switch (mode) {
+      case CmpMode::EQ:
+        vcmp_eq(dst, src0, src1, pred);
+        break;
+      case CmpMode::NE:
+        vcmp_ne(dst, src0, src1, pred);
+        break;
+      case CmpMode::LT:
+        vcmp_lt(dst, src0, src1, pred);
+        break;
+      case CmpMode::LE:
+        vcmp_le(dst, src0, src1, pred);
+        break;
+      case CmpMode::GT:
+        vcmp_gt(dst, src0, src1, pred);
+        break;
+      case CmpMode::GE:
+        vcmp_ge(dst, src0, src1, pred);
+        break;
+      default:
+        vcmp_eq(dst, src0, src1, pred);
+        break;
+      }
+    }
+    )cpp"));
+    }
+    if (needsVectorRemfHelper) {
+      helperBuilder.create<emitc::VerbatimOp>(
+          loc, helperBuilder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL void ptoas_vrem(RegTensor<T> &dst, RegTensor<T> src0,
+                                 RegTensor<T> src1, MaskReg pred) {
+      if constexpr (std::is_same<T, float>::value) {
+        vdiv(dst, src0, src1, pred, MODE_ZEROING);
+        vtrc(dst, dst, ROUND_F, pred);
+        vmul(dst, dst, src1, pred, MODE_ZEROING);
+        vsub(dst, src0, dst, pred, MODE_ZEROING);
+      } else if constexpr (std::is_same<T, half>::value) {
+        RegTensor<float> even0, even1, even2, odd0, odd1, odd2;
+        RegTensor<T> dstEven, dstOdd;
+        vcvt(even0, src0, pred, PART_EVEN);
+        vcvt(even1, src1, pred, PART_EVEN);
+        vcvt(odd0, src0, pred, PART_ODD);
+        vcvt(odd1, src1, pred, PART_ODD);
+        vdiv(even2, even0, even1, pred, MODE_ZEROING);
+        vdiv(odd2, odd0, odd1, pred, MODE_ZEROING);
+        vtrc(even2, even2, ROUND_F, pred);
+        vtrc(odd2, odd2, ROUND_F, pred);
+        vmul(even2, even2, even1, pred, MODE_ZEROING);
+        vmul(odd2, odd2, odd1, pred, MODE_ZEROING);
+        vsub(even2, even0, even2, pred, MODE_ZEROING);
+        vsub(odd2, odd0, odd2, pred, MODE_ZEROING);
+        vcvt(dstEven, even2, pred, ROUND_Z, RS_ENABLE, PART_EVEN);
+        vcvt(dstOdd, odd2, pred, ROUND_Z, RS_ENABLE, PART_ODD);
+        vor(dst, dstEven, dstOdd, pred);
+      }
+    }
+    )cpp"));
+    }
+    if (needsBitcastHelper) {
+      helperBuilder.create<emitc::VerbatimOp>(
+          loc, helperBuilder.getStringAttr(R"cpp(
+		template <typename To, typename From>
+		PTO_INTERNAL static inline To ptoas_bitcast(From from) {
+		  static_assert(sizeof(To) == sizeof(From), "ptoas_bitcast: size mismatch");
+		  To to;
+		  __builtin_memcpy(&to, &from, sizeof(To));
+		  return to;
+		}
+		)cpp"));
     }
 
     // =========================================================================
