@@ -230,7 +230,8 @@ static bool isSupportedFusionOp(Operation *op) {
              pto::TCmpOp, pto::TCmpSOp, pto::TSelOp, pto::TSelSOp,
              pto::TAndOp, pto::TOrOp, pto::TXorOp, pto::TShlOp, pto::TShrOp,
              pto::TAndSOp, pto::TOrSOp, pto::TXorSOp, pto::TShlSOp,
-             pto::TShrSOp, pto::TNotOp>(op);
+             pto::TShrSOp, pto::TNotOp, pto::TRemOp, pto::TRemSOp,
+             pto::TPReluOp, pto::TLReluOp>(op);
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -2209,6 +2210,35 @@ buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
 }
 
 static FailureOr<MatchRequest>
+buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
+                       Value tmp, Value dst) {
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
+  FailureOr<std::pair<Type, MatchKey>> tmpInfoOr = getTileOperandInfo(tmp);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(tmpInfoOr) ||
+      failed(dstInfoOr))
+    return failure();
+
+  if (src0InfoOr->first != src1InfoOr->first ||
+      src0InfoOr->first != dstInfoOr->first)
+    return failure();
+  if (!isa<FloatType>(src0InfoOr->first))
+    return failure();
+  auto tmpIntTy = dyn_cast<IntegerType>(tmpInfoOr->first);
+  if (!tmpIntTy || tmpIntTy.getWidth() != 8)
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName);
+  appendTileOperandUnchecked(request, src0, src0InfoOr->second);
+  appendTileOperandUnchecked(request, src1, src1InfoOr->second);
+  appendTileOperandUnchecked(request, tmp, tmpInfoOr->second);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(src0InfoOr->first);
+  return request;
+}
+
+static FailureOr<MatchRequest>
 buildUnaryTileMatchRequest(StringRef kind, StringRef opName, Value src,
                            Value dst) {
   SmallVector<Value, 4> operands{src, dst};
@@ -2364,6 +2394,16 @@ buildMatchRequest(Operation *op) {
     return buildUnaryTileMatchRequest("l3_float_unary_template", "trelu",
                                       relu.getSrc(), relu.getDst());
 
+  if (auto tlrelu = dyn_cast<pto::TLReluOp>(op))
+    return buildTileScalarMatchRequest("l3_float_tile_scalar_template", "tlrelu",
+                                       tlrelu.getSrc(), tlrelu.getSlope(),
+                                       tlrelu.getDst());
+
+  if (auto tprelu = dyn_cast<pto::TPReluOp>(op))
+    return buildPReluMatchRequest("l3_float_ternary_tile_template", "tprelu",
+                                  tprelu.getSrc0(), tprelu.getSrc1(),
+                                  tprelu.getTmp(), tprelu.getDst());
+
   if (auto exp = dyn_cast<pto::TExpOp>(op))
     return buildUnaryTileMatchRequest("l3_float_unary_math_template", "texp",
                                       exp.getSrc(), exp.getDst());
@@ -2518,6 +2558,28 @@ buildMatchRequest(Operation *op) {
     return buildTileScalarMatchRequest(
         "l3_int_tile_scalar_elementwise_template", "tshrs", shrs.getSrc(),
         shrs.getScalar(), shrs.getDst());
+
+  if (auto rem = dyn_cast<pto::TRemOp>(op)) {
+    if (auto srcInfoOr = getTileOperandInfo(rem.getSrc0());
+        succeeded(srcInfoOr) && isa<FloatType>(srcInfoOr->first)) {
+      return buildBinaryTileMatchRequest("l3_float_binary_elementwise_template",
+                                         "trem", rem.getSrc0(), rem.getSrc1(),
+                                         rem.getDst());
+    } else {
+      return failure();
+    }
+  }
+
+  if (auto rems = dyn_cast<pto::TRemSOp>(op)) {
+    if (auto srcInfoOr = getTileOperandInfo(rems.getSrc());
+        succeeded(srcInfoOr) && isa<FloatType>(srcInfoOr->first)) {
+      return buildTileScalarMatchRequest("l3_float_tile_scalar_template",
+                                         "trems", rems.getSrc(),
+                                         rems.getScalar(), rems.getDst());
+    } else {
+      return failure();
+    }
+  }
 
   if (auto notOp = dyn_cast<pto::TNotOp>(op))
     return buildUnaryTileMatchRequest("l3_int_unary_template", "tnot",

@@ -48,7 +48,8 @@ struct GroupInterface {
 
 static bool isSupportedFusionOp(Operation *op) {
   return isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-             pto::TMinOp>(op);
+             pto::TMinOp, pto::TRemOp, pto::TRemSOp, pto::TPReluOp,
+             pto::TLReluOp>(op);
 }
 
 static FailureOr<BinaryOpInterface> getBinaryOpInterface(Operation *op) {

@@ -948,6 +948,45 @@ struct ArithRemFToEmitC : public OpConversionPattern<arith::RemFOp> {
     if (!dstTy)
       return failure();
 
+    if (auto vecTy = dyn_cast<VectorType>(op.getType())) {
+      if (vecTy.getRank() != 1 || vecTy.isScalable())
+        return failure();
+
+      llvm::StringRef elemTok;
+      if (vecTy.getElementType().isF32())
+        elemTok = "float";
+      else if (vecTy.getElementType().isF16())
+        elemTok = "half";
+      else
+        return failure();
+
+      auto *ctx = rewriter.getContext();
+      auto u32Ty = getUnsignedIntOpaqueType(ctx, 32);
+      Value laneCount =
+          makeEmitCIntConstant(rewriter, loc, u32Ty, vecTy.getNumElements());
+      auto laneVar = rewriter.create<emitc::VariableOp>(
+          loc, u32Ty, emitc::OpaqueAttr::get(ctx, "0"));
+      rewriter.create<emitc::AssignOp>(loc, laneVar.getResult(), laneCount);
+      auto maskTy = emitc::OpaqueType::get(ctx, "MaskReg");
+      auto pred = rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{maskTy}, "CreatePredicate", ValueRange{laneVar},
+          ArrayAttr{},
+          rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, elemTok)}));
+
+      auto regVar = rewriter.create<emitc::VariableOp>(
+          loc, dstTy, emitc::OpaqueAttr::get(ctx, ""));
+      auto args = rewriter.getArrayAttr(
+          {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+           rewriter.getIndexAttr(2), rewriter.getIndexAttr(3)});
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "ptoas_vrem",
+          ValueRange{regVar.getResult(), adaptor.getLhs(), adaptor.getRhs(),
+                     pred.getResult(0)},
+          args, ArrayAttr{});
+      rewriter.replaceOp(op, regVar.getResult());
+      return success();
+    }
+
     // Use builtin `fmod` when possible. For f16, compute in float and cast back.
     Type callTy = dstTy;
     Value lhs = adaptor.getLhs();
@@ -2332,25 +2371,25 @@ static FailureOr<llvm::StringRef>
 getA5CmpPredicateToken(arith::CmpIPredicate pred) {
   switch (pred) {
   case arith::CmpIPredicate::eq:
-    return llvm::StringRef("EQ");
+    return llvm::StringRef("CmpMode::EQ");
   case arith::CmpIPredicate::ne:
-    return llvm::StringRef("NE");
+    return llvm::StringRef("CmpMode::NE");
   case arith::CmpIPredicate::slt:
-    return llvm::StringRef("LT");
+    return llvm::StringRef("CmpMode::LT");
   case arith::CmpIPredicate::sle:
-    return llvm::StringRef("LE");
+    return llvm::StringRef("CmpMode::LE");
   case arith::CmpIPredicate::sgt:
-    return llvm::StringRef("GT");
+    return llvm::StringRef("CmpMode::GT");
   case arith::CmpIPredicate::sge:
-    return llvm::StringRef("GE");
+    return llvm::StringRef("CmpMode::GE");
   case arith::CmpIPredicate::ult:
-    return llvm::StringRef("ULT");
+    return llvm::StringRef("CmpMode::LT");
   case arith::CmpIPredicate::ule:
-    return llvm::StringRef("ULE");
+    return llvm::StringRef("CmpMode::LE");
   case arith::CmpIPredicate::ugt:
-    return llvm::StringRef("UGT");
+    return llvm::StringRef("CmpMode::GT");
   case arith::CmpIPredicate::uge:
-    return llvm::StringRef("UGE");
+    return llvm::StringRef("CmpMode::GE");
   }
   return failure();
 }
@@ -2360,22 +2399,22 @@ getA5CmpPredicateToken(arith::CmpFPredicate pred) {
   switch (pred) {
   case arith::CmpFPredicate::OEQ:
   case arith::CmpFPredicate::UEQ:
-    return llvm::StringRef("EQ");
+    return llvm::StringRef("CmpMode::EQ");
   case arith::CmpFPredicate::ONE:
   case arith::CmpFPredicate::UNE:
-    return llvm::StringRef("NE");
+    return llvm::StringRef("CmpMode::NE");
   case arith::CmpFPredicate::OLT:
   case arith::CmpFPredicate::ULT:
-    return llvm::StringRef("LT");
+    return llvm::StringRef("CmpMode::LT");
   case arith::CmpFPredicate::OLE:
   case arith::CmpFPredicate::ULE:
-    return llvm::StringRef("LE");
+    return llvm::StringRef("CmpMode::LE");
   case arith::CmpFPredicate::OGT:
   case arith::CmpFPredicate::UGT:
-    return llvm::StringRef("GT");
+    return llvm::StringRef("CmpMode::GT");
   case arith::CmpFPredicate::OGE:
   case arith::CmpFPredicate::UGE:
-    return llvm::StringRef("GE");
+    return llvm::StringRef("CmpMode::GE");
   default:
     return failure();
   }
@@ -2524,13 +2563,24 @@ struct OplibVectorCmpIToEmitC : public OpConversionPattern<arith::CmpIOp> {
     auto *ctx = rewriter.getContext();
     auto maskVar = rewriter.create<emitc::VariableOp>(
         op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto predOr =
+        buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), lhsTy,
+                         op->getName().getStringRef());
+    if (failed(predOr))
+      return failure();
+    auto modeTy = emitc::OpaqueType::get(ctx, "CmpMode");
+    auto modeVal = rewriter.create<emitc::ConstantOp>(
+        op.getLoc(), modeTy, emitc::OpaqueAttr::get(ctx, *predTokOr));
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
-         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
-    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3),
+         rewriter.getIndexAttr(4)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "ptoas_vcmp",
                                          ValueRange{maskVar.getResult(),
                                                     adaptor.getLhs(),
-                                                    adaptor.getRhs()},
+                                                    adaptor.getRhs(),
+                                                    modeVal.getResult(),
+                                                    *predOr},
                                          args, ArrayAttr{});
     rewriter.replaceOp(op, maskVar.getResult());
     return success();
@@ -2567,13 +2617,24 @@ struct OplibVectorCmpFToEmitC : public OpConversionPattern<arith::CmpFOp> {
     auto *ctx = rewriter.getContext();
     auto maskVar = rewriter.create<emitc::VariableOp>(
         op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto predOr =
+        buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), lhsTy,
+                         op->getName().getStringRef());
+    if (failed(predOr))
+      return failure();
+    auto modeTy = emitc::OpaqueType::get(ctx, "CmpMode");
+    auto modeVal = rewriter.create<emitc::ConstantOp>(
+        op.getLoc(), modeTy, emitc::OpaqueAttr::get(ctx, *predTokOr));
     auto args = rewriter.getArrayAttr(
         {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
-         rewriter.getIndexAttr(2), emitc::OpaqueAttr::get(ctx, *predTokOr)});
-    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vcmp",
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3),
+         rewriter.getIndexAttr(4)});
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "ptoas_vcmp",
                                          ValueRange{maskVar.getResult(),
                                                     adaptor.getLhs(),
-                                                    adaptor.getRhs()},
+                                                    adaptor.getRhs(),
+                                                    modeVal.getResult(),
+                                                    *predOr},
                                          args, ArrayAttr{});
     rewriter.replaceOp(op, maskVar.getResult());
     return success();
@@ -9509,6 +9570,8 @@ struct EmitPTOManualPass
 	    bool needsBitcastHelper = false;
 	    bool needsMemrefScalarHelper = false;
       bool needsVectorReductionHelper = false;
+      bool needsVectorCmpHelper = false;
+      bool needsVectorRemfHelper = false;
 	    mop.walk([&](Operation *op) {
 	      if (isa<arith::BitcastOp, arith::MaximumFOp, arith::MinimumFOp>(op)) {
 	        needsBitcastHelper = true;
@@ -9517,8 +9580,15 @@ struct EmitPTOManualPass
 	        needsMemrefScalarHelper = true;
         if (isa<vector::ReductionOp>(op))
           needsVectorReductionHelper = true;
+        if (isa<arith::CmpIOp, arith::CmpFOp>(op) &&
+            isa<VectorType>(op->getResultTypes().front()))
+          needsVectorCmpHelper = true;
+        if (auto remf = dyn_cast<arith::RemFOp>(op);
+            remf && isa<VectorType>(remf.getType()))
+          needsVectorRemfHelper = true;
 	      if (needsBitcastHelper && needsMemrefScalarHelper &&
-            needsVectorReductionHelper)
+            needsVectorReductionHelper && needsVectorCmpHelper &&
+            needsVectorRemfHelper)
 	        return WalkResult::interrupt();
 	      return WalkResult::advance();
 	    });
@@ -9589,6 +9659,71 @@ struct EmitPTOManualPass
     PTO_INTERNAL T ptoas_vreduce_min(RegTensor<T> src, T acc, MaskReg pred) {
       T red = ptoas_vreduce_min(src, pred);
       return red < acc ? red : acc;
+    }
+    )cpp"));
+      }
+      if (needsVectorCmpHelper) {
+        builder.create<emitc::VerbatimOp>(
+            loc, builder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL void ptoas_vcmp(MaskReg &dst, RegTensor<T> src0, RegTensor<T> src1,
+                                 CmpMode mode, MaskReg pred) {
+      switch (mode) {
+      case CmpMode::EQ:
+        vcmp_eq(dst, src0, src1, pred);
+        break;
+      case CmpMode::NE:
+        vcmp_ne(dst, src0, src1, pred);
+        break;
+      case CmpMode::LT:
+        vcmp_lt(dst, src0, src1, pred);
+        break;
+      case CmpMode::LE:
+        vcmp_le(dst, src0, src1, pred);
+        break;
+      case CmpMode::GT:
+        vcmp_gt(dst, src0, src1, pred);
+        break;
+      case CmpMode::GE:
+        vcmp_ge(dst, src0, src1, pred);
+        break;
+      default:
+        vcmp_eq(dst, src0, src1, pred);
+        break;
+      }
+    }
+    )cpp"));
+      }
+      if (needsVectorRemfHelper) {
+        builder.create<emitc::VerbatimOp>(
+            loc, builder.getStringAttr(R"cpp(
+    template <typename T>
+    PTO_INTERNAL void ptoas_vrem(RegTensor<T> &dst, RegTensor<T> src0,
+                                 RegTensor<T> src1, MaskReg pred) {
+      if constexpr (std::is_same<T, float>::value) {
+        vdiv(dst, src0, src1, pred, MODE_ZEROING);
+        vtrc(dst, dst, ROUND_F, pred);
+        vmul(dst, dst, src1, pred, MODE_ZEROING);
+        vsub(dst, src0, dst, pred, MODE_ZEROING);
+      } else if constexpr (std::is_same<T, half>::value) {
+        RegTensor<float> even0, even1, even2, odd0, odd1, odd2;
+        RegTensor<T> dstEven, dstOdd;
+        vcvt(even0, src0, pred, PART_EVEN);
+        vcvt(even1, src1, pred, PART_EVEN);
+        vcvt(odd0, src0, pred, PART_ODD);
+        vcvt(odd1, src1, pred, PART_ODD);
+        vdiv(even2, even0, even1, pred, MODE_ZEROING);
+        vdiv(odd2, odd0, odd1, pred, MODE_ZEROING);
+        vtrc(even2, even2, ROUND_F, pred);
+        vtrc(odd2, odd2, ROUND_F, pred);
+        vmul(even2, even2, even1, pred, MODE_ZEROING);
+        vmul(odd2, odd2, odd1, pred, MODE_ZEROING);
+        vsub(even2, even0, even2, pred, MODE_ZEROING);
+        vsub(odd2, odd0, odd2, pred, MODE_ZEROING);
+        vcvt(dstEven, even2, pred, ROUND_Z, RS_ENABLE, PART_EVEN);
+        vcvt(dstOdd, odd2, pred, ROUND_Z, RS_ENABLE, PART_ODD);
+        vor(dst, dstEven, dstOdd, pred);
+      }
     }
     )cpp"));
       }
