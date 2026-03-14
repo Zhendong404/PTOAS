@@ -1,14 +1,14 @@
 ## 1. A5 V1 范围与真值层
 
-- [ ] 1.1 盘点 `PTO_IR_manual.md` 第 4.5~4.9 节的 op 标题集合，形成 V1 in-scope operator 列表。
-- [ ] 1.2 设计并落地 `pto-isa` A5 自动对齐 manifest schema，至少包含 op、family、A5 状态、dtype、关键约束和语义来源路径。
-- [ ] 1.3 实现从 `pto-isa` 提取 4.5~4.9 A5 约束的同步脚本，并生成 checked-in manifest snapshot。
-- [ ] 1.4 为 manifest 中的 `implemented` / `deferred` 状态定义明确的校验规则和失败诊断。
+- [x] 1.1 盘点 `PTO_IR_manual.md` 第 4.5~4.9 节的 op 标题集合，形成 V1 in-scope operator 列表。
+- [x] 1.2 设计并落地 `pto-isa` A5 自动对齐 manifest schema，至少包含 op、family、A5 状态、dtype、关键约束和语义来源路径。
+- [x] 1.3 实现从 `pto-isa` 提取 4.5~4.9 A5 约束的同步脚本，并生成 checked-in manifest snapshot。
+- [x] 1.4 为 manifest 中的 `implemented` / `deferred` 状态定义明确的校验规则和失败诊断。
 
 ## 2. Family DSL 与生成器基础设施
 
-- [ ] 2.1 设计并落地声明式 Family DSL，覆盖 family、参数角色、dtype 轴、variant 轴、metadata 和 matcher key。
-- [ ] 2.2 定义 Mixed-Body MLIR snippet 合同，分别覆盖 binary、tile-scalar、unary、ternary、compare、select、reduction、broadcast family。
+- [x] 2.1 设计并落地声明式 Family DSL，覆盖 family、参数角色、dtype 轴、variant 轴、metadata 和 matcher key。
+- [x] 2.2 定义 Mixed-Body MLIR snippet 合同，分别覆盖 binary、tile-scalar、unary、ternary、compare、select、reduction、broadcast family。
 - [ ] 2.3 重构 `oplib/level3/generate_level3_templates.py` 或等价入口，使其从 Family DSL + snippet 生成 concrete `.mlir` 模板。
 - [ ] 2.4 保留 `--write` / `--check` 工作流，并补齐漂移检测。
 

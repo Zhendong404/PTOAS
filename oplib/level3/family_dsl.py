@@ -10,6 +10,7 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 FAMILY_DSL_PATH = SCRIPT_DIR / "families" / "a5_oplib_v1_family_dsl.json"
+SNIPPET_CONTRACTS_PATH = SCRIPT_DIR / "families" / "a5_oplib_v1_snippet_contracts.json"
 CATALOG_PATH = SCRIPT_DIR / "skeletons" / "catalog.json"
 
 ALLOWED_ROLE_KINDS = {"tile", "scalar"}
@@ -34,6 +35,49 @@ ALLOWED_MATCHER_KEYS = {
     "isBinary",
 }
 ALLOWED_MATCHER_LOCATIONS = {"template_attr", "request_only"}
+ALLOWED_SNIPPET_FAMILY_CLASSES = {
+    "binary",
+    "tile_scalar",
+    "unary",
+    "ternary",
+    "compare",
+    "select",
+    "reduction",
+    "broadcast",
+}
+EXPECTED_RESULT_SSA_BY_FAMILY_CLASS = {
+    "binary": "%result",
+    "tile_scalar": "%result",
+    "unary": "%result",
+    "ternary": "%result",
+    "compare": "%cmp",
+    "select": "%result",
+    "reduction": "%result",
+    "broadcast": "%result",
+}
+FAMILY_CLASS_BY_KIND = {
+    "l3_float_binary_elementwise_template": "binary",
+    "l3_int_binary_elementwise_template": "binary",
+    "l3_float_partial_binary_template": "binary",
+    "l3_float_tile_scalar_template": "tile_scalar",
+    "l3_int_tile_scalar_elementwise_template": "tile_scalar",
+    "l3_float_ternary_tile_template": "ternary",
+    "l3_float_ternary_tile_scalar_template": "ternary",
+    "l3_float_unary_template": "unary",
+    "l3_float_unary_math_template": "unary",
+    "l3_int_unary_template": "unary",
+    "l3_reduce_row_template": "reduction",
+    "l3_reduce_col_template": "reduction",
+    "l3_reduce_colsum_template": "reduction",
+    "l3_broadcast_row_template": "broadcast",
+    "l3_broadcast_col_template": "broadcast",
+    "l3_broadcast_row_binary_template": "broadcast",
+    "l3_scalar_expand_template": "broadcast",
+    "l3_cmp_tile_tile_template": "compare",
+    "l3_cmp_tile_scalar_template": "compare",
+    "l3_select_mask_template": "select",
+    "l3_select_scalar_template": "select",
+}
 
 
 def load_json(path: Path) -> Any:
@@ -50,6 +94,10 @@ def scalar_index(parameter_roles: list[dict[str, Any]]) -> int | None:
         if role["kind"] == "scalar":
             return index
     return None
+
+
+def role_signature(parameter_roles: list[dict[str, Any]]) -> list[str]:
+    return [role["kind"] for role in parameter_roles]
 
 
 def matcher_keys_by_name(family: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -153,7 +201,114 @@ def _validate_ops(family: dict[str, Any]) -> None:
             )
 
 
-def validate_family_dsl(doc: dict[str, Any]) -> None:
+def validate_snippet_contracts(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    _require(isinstance(doc, dict), "snippet contracts root must be an object")
+    _require(
+        str(doc.get("schema_version", "")).strip() == "a5_oplib_v1_snippet_contracts/v1",
+        "snippet contracts have unexpected schema_version",
+    )
+    contracts = doc.get("contracts")
+    _require(isinstance(contracts, list) and contracts, "snippet contracts require a non-empty 'contracts' list")
+
+    seen_ids: set[str] = set()
+    contract_map: dict[str, dict[str, Any]] = {}
+    for contract in contracts:
+        _require(isinstance(contract, dict), "each snippet contract must be an object")
+        contract_id = str(contract.get("id", "")).strip()
+        family_class = str(contract.get("family_class", "")).strip()
+        _require(contract_id, "snippet contract missing id")
+        _require(contract_id not in seen_ids, f"duplicate snippet contract id: {contract_id}")
+        seen_ids.add(contract_id)
+        _require(
+            family_class in ALLOWED_SNIPPET_FAMILY_CLASSES,
+            f"snippet contract {contract_id} has unsupported family_class: {family_class}",
+        )
+
+        signature = contract.get("role_signature")
+        _require(
+            isinstance(signature, list) and signature,
+            f"snippet contract {contract_id} requires non-empty role_signature",
+        )
+        for kind in signature:
+            _require(
+                kind in ALLOWED_ROLE_KINDS,
+                f"snippet contract {contract_id} has unsupported role kind in role_signature: {kind}",
+            )
+
+        visible_ssa = contract.get("visible_ssa")
+        _require(
+            isinstance(visible_ssa, list) and visible_ssa,
+            f"snippet contract {contract_id} requires non-empty visible_ssa",
+        )
+        visible_names: set[str] = set()
+        for entry in visible_ssa:
+            _require(isinstance(entry, dict), f"snippet contract {contract_id} visible_ssa entry must be an object")
+            name = str(entry.get("name", "")).strip()
+            source = str(entry.get("source", "")).strip()
+            _require(name.startswith("%"), f"snippet contract {contract_id} visible SSA must start with %: {name}")
+            _require(name not in visible_names, f"snippet contract {contract_id} duplicates visible SSA: {name}")
+            visible_names.add(name)
+            _require(source, f"snippet contract {contract_id} visible SSA {name} missing source")
+
+        result_ssa = str(contract.get("result_ssa", "")).strip()
+        expected_result_ssa = EXPECTED_RESULT_SSA_BY_FAMILY_CLASS[family_class]
+        _require(result_ssa, f"snippet contract {contract_id} missing result_ssa")
+        _require(
+            result_ssa == expected_result_ssa,
+            f"snippet contract {contract_id} must use result SSA {expected_result_ssa}, got {result_ssa}",
+        )
+
+        generator_owned = contract.get("generator_owned")
+        _require(
+            isinstance(generator_owned, list) and generator_owned,
+            f"snippet contract {contract_id} requires non-empty generator_owned",
+        )
+        for item in generator_owned:
+            _require(
+                isinstance(item, str) and item.strip(),
+                f"snippet contract {contract_id} generator_owned entries must be non-empty strings",
+            )
+
+        snippet_must_not_define = contract.get("snippet_must_not_define")
+        _require(
+            isinstance(snippet_must_not_define, list) and snippet_must_not_define,
+            f"snippet contract {contract_id} requires non-empty snippet_must_not_define",
+        )
+        for name in snippet_must_not_define:
+            _require(
+                isinstance(name, str) and name.startswith("%"),
+                f"snippet contract {contract_id} snippet_must_not_define entries must be SSA names: {name}",
+            )
+
+        forbidden_ops = contract.get("forbidden_ops")
+        _require(
+            isinstance(forbidden_ops, list) and forbidden_ops,
+            f"snippet contract {contract_id} requires non-empty forbidden_ops",
+        )
+        for op_name in forbidden_ops:
+            _require(
+                isinstance(op_name, str) and op_name.strip(),
+                f"snippet contract {contract_id} forbidden_ops entries must be non-empty strings",
+            )
+
+        contract_map[contract_id] = contract
+
+    return contract_map
+
+
+def load_snippet_contracts(path: Path = SNIPPET_CONTRACTS_PATH) -> dict[str, Any]:
+    doc = load_json(path)
+    validate_snippet_contracts(doc)
+    return doc
+
+
+def validate_family_dsl(
+    doc: dict[str, Any],
+    contract_map: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    if contract_map is None:
+        contract_map = validate_snippet_contracts(load_json(SNIPPET_CONTRACTS_PATH))
+
     _require(isinstance(doc, dict), "family DSL root must be an object")
     _require(
         str(doc.get("schema_version", "")).strip() == "a5_oplib_v1_family_dsl/v1",
@@ -171,6 +326,7 @@ def validate_family_dsl(doc: dict[str, Any]) -> None:
         kind = str(family.get("kind", "")).strip()
         status = str(family.get("status", "")).strip()
         pattern_id = str(family.get("pattern", "")).strip()
+        snippet_contract_id = str(family.get("snippet_contract", "")).strip()
         _require(family_name, "family entry missing family name")
         _require(family_name not in seen_family, f"duplicate family name: {family_name}")
         seen_family.add(family_name)
@@ -179,6 +335,15 @@ def validate_family_dsl(doc: dict[str, Any]) -> None:
         seen_kind.add(kind)
         _require(status in ALLOWED_FAMILY_STATUS, f"family {family_name} has unsupported status: {status}")
         _require(pattern_id in pattern_map, f"family {family_name} references unknown pattern: {pattern_id}")
+        _require(
+            kind in FAMILY_CLASS_BY_KIND,
+            f"family {family_name} uses unsupported kind for A5 OpLib V1 snippet contracts: {kind}",
+        )
+        _require(snippet_contract_id, f"family {family_name} missing snippet_contract")
+        _require(
+            snippet_contract_id in contract_map,
+            f"family {family_name} references unknown snippet contract: {snippet_contract_id}",
+        )
 
         roles = family.get("parameter_roles")
         _require(isinstance(roles, list) and roles, f"family {family_name} requires parameter_roles")
@@ -199,6 +364,21 @@ def validate_family_dsl(doc: dict[str, Any]) -> None:
         _require(output_count == 1, f"family {family_name} must have exactly one output role")
         _require(roles[-1]["io"] == "output", f"family {family_name} must place output role last")
 
+        contract = contract_map[snippet_contract_id]
+        expected_family_class = FAMILY_CLASS_BY_KIND[kind]
+        _require(
+            contract["family_class"] == expected_family_class,
+            "family "
+            f"{family_name} kind {kind} expects snippet contract class {expected_family_class}, "
+            f"got {contract['family_class']}",
+        )
+        _require(
+            contract["role_signature"] == role_signature(roles),
+            "family "
+            f"{family_name} role signature {role_signature(roles)} does not match snippet contract "
+            f"{snippet_contract_id} signature {contract['role_signature']}",
+        )
+
         dtype_axis = family.get("dtype_axis")
         _require(isinstance(dtype_axis, dict), f"family {family_name} requires dtype_axis")
         dtype_values = dtype_axis.get("values")
@@ -213,7 +393,10 @@ def validate_family_dsl(doc: dict[str, Any]) -> None:
                 f"family {family_name} variant_id_by_dtype must be a non-empty object",
             )
             for dtype in variant_map:
-                _require(dtype in dtype_values, f"family {family_name} variant_id_by_dtype references unknown dtype {dtype}")
+                _require(
+                    dtype in dtype_values,
+                    f"family {family_name} variant_id_by_dtype references unknown dtype {dtype}",
+                )
 
         variant_axis = family.get("variant_axis")
         _require(isinstance(variant_axis, dict), f"family {family_name} requires variant_axis")
@@ -258,14 +441,21 @@ def validate_family_dsl(doc: dict[str, Any]) -> None:
         _validate_ops(family)
 
 
-def load_family_dsl(path: Path = FAMILY_DSL_PATH) -> dict[str, Any]:
+def load_family_dsl(
+    path: Path = FAMILY_DSL_PATH,
+    snippet_contracts_path: Path = SNIPPET_CONTRACTS_PATH,
+) -> dict[str, Any]:
     doc = load_json(path)
-    validate_family_dsl(doc)
+    contract_map = validate_snippet_contracts(load_json(snippet_contracts_path))
+    validate_family_dsl(doc, contract_map)
     return doc
 
 
-def project_catalog_from_family_dsl(doc: dict[str, Any]) -> dict[str, Any]:
-    validate_family_dsl(doc)
+def project_catalog_from_family_dsl(
+    doc: dict[str, Any],
+    contract_map: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    validate_family_dsl(doc, contract_map)
     pattern_order = [pattern["id"] for pattern in doc["patterns"]]
     projected_patterns: dict[str, dict[str, Any]] = {
         pattern["id"]: {
@@ -385,9 +575,10 @@ def project_catalog_from_family_dsl(doc: dict[str, Any]) -> dict[str, Any]:
 def ensure_catalog_sync(
     catalog: dict[str, Any],
     family_doc: dict[str, Any] | None = None,
+    contract_map: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     family_doc = family_doc or load_family_dsl()
-    projected = project_catalog_from_family_dsl(family_doc)
+    projected = project_catalog_from_family_dsl(family_doc, contract_map)
     if catalog == projected:
         return projected
 
@@ -411,7 +602,13 @@ def ensure_catalog_sync(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Validate and inspect the A5 OpLib V1 Family DSL.")
     parser.add_argument("--family-dsl", type=Path, default=FAMILY_DSL_PATH)
+    parser.add_argument("--snippet-contracts", type=Path, default=SNIPPET_CONTRACTS_PATH)
     parser.add_argument("--catalog", type=Path, default=CATALOG_PATH)
+    parser.add_argument(
+        "--check-snippet-contracts",
+        action="store_true",
+        help="check snippet contract data and family-to-contract bindings",
+    )
     parser.add_argument("--check-catalog", action="store_true", help="check catalog.json against the Family DSL")
     parser.add_argument(
         "--print-projected-catalog",
@@ -423,16 +620,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
-    family_doc = load_family_dsl(args.family_dsl)
+    snippet_contract_doc = load_snippet_contracts(args.snippet_contracts)
+    contract_map = validate_snippet_contracts(snippet_contract_doc)
+    family_doc = load_json(args.family_dsl)
+    validate_family_dsl(family_doc, contract_map)
     if args.print_projected_catalog:
-        print(json.dumps(project_catalog_from_family_dsl(family_doc), indent=2, ensure_ascii=False))
+        print(json.dumps(project_catalog_from_family_dsl(family_doc, contract_map), indent=2, ensure_ascii=False))
+        return 0
+    if args.check_snippet_contracts:
+        print("OK: snippet contracts parsed and Family DSL bindings validated.")
         return 0
     if args.check_catalog:
         catalog = load_json(args.catalog)
-        ensure_catalog_sync(catalog, family_doc)
-        print("OK: Family DSL and skeleton catalog are synchronized.")
+        ensure_catalog_sync(catalog, family_doc, contract_map)
+        print("OK: Family DSL, snippet contracts, and skeleton catalog are synchronized.")
         return 0
-    print("OK: Family DSL parsed and validated.")
+    print("OK: Family DSL and snippet contracts parsed and validated.")
     return 0
 
 

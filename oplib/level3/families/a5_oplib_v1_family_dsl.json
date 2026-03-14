@@ -44,6 +44,7 @@
       "pattern": "binary",
       "kind": "l3_float_binary_elementwise_template",
       "status": "active",
+      "snippet_contract": "binary_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -179,6 +180,7 @@
       "pattern": "binary",
       "kind": "l3_int_binary_elementwise_template",
       "status": "active",
+      "snippet_contract": "binary_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -297,6 +299,7 @@
       "pattern": "binary",
       "kind": "l3_float_partial_binary_template",
       "status": "reserved",
+      "snippet_contract": "binary_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -381,6 +384,7 @@
       "pattern": "tile_scalar",
       "kind": "l3_float_tile_scalar_template",
       "status": "active",
+      "snippet_contract": "tile_scalar_result",
       "parameter_roles": [
         {
           "name": "src",
@@ -499,6 +503,7 @@
       "pattern": "tile_scalar",
       "kind": "l3_int_tile_scalar_elementwise_template",
       "status": "active",
+      "snippet_contract": "tile_scalar_result",
       "parameter_roles": [
         {
           "name": "src",
@@ -623,6 +628,7 @@
       "pattern": "binary",
       "kind": "l3_float_ternary_tile_template",
       "status": "reserved",
+      "snippet_contract": "ternary_tile_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -708,6 +714,7 @@
       "pattern": "tile_scalar",
       "kind": "l3_float_ternary_tile_scalar_template",
       "status": "reserved",
+      "snippet_contract": "ternary_tile_scalar_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -795,6 +802,7 @@
       "pattern": "unary",
       "kind": "l3_float_unary_template",
       "status": "active",
+      "snippet_contract": "unary_result",
       "parameter_roles": [
         {
           "name": "src",
@@ -880,6 +888,7 @@
       "pattern": "unary",
       "kind": "l3_float_unary_math_template",
       "status": "active",
+      "snippet_contract": "unary_result",
       "parameter_roles": [
         {
           "name": "src",
@@ -965,6 +974,7 @@
       "pattern": "unary",
       "kind": "l3_int_unary_template",
       "status": "active",
+      "snippet_contract": "unary_result",
       "parameter_roles": [
         {
           "name": "src",
@@ -1059,6 +1069,7 @@
       "pattern": "binary",
       "kind": "l3_reduce_row_template",
       "status": "reserved",
+      "snippet_contract": "reduce_row_core",
       "parameter_roles": [
         {
           "name": "src",
@@ -1139,6 +1150,7 @@
       "pattern": "unary",
       "kind": "l3_reduce_col_template",
       "status": "reserved",
+      "snippet_contract": "reduce_col_core",
       "parameter_roles": [
         {
           "name": "src",
@@ -1210,6 +1222,7 @@
       "pattern": "binary",
       "kind": "l3_reduce_colsum_template",
       "status": "reserved",
+      "snippet_contract": "reduce_colsum_core",
       "parameter_roles": [
         {
           "name": "src",
@@ -1296,6 +1309,7 @@
       "pattern": "unary",
       "kind": "l3_broadcast_row_template",
       "status": "reserved",
+      "snippet_contract": "broadcast_row_core",
       "parameter_roles": [
         {
           "name": "src",
@@ -1363,6 +1377,7 @@
       "pattern": "unary",
       "kind": "l3_broadcast_col_template",
       "status": "reserved",
+      "snippet_contract": "broadcast_col_core",
       "parameter_roles": [
         {
           "name": "src",
@@ -1430,6 +1445,7 @@
       "pattern": "binary",
       "kind": "l3_broadcast_row_binary_template",
       "status": "reserved",
+      "snippet_contract": "broadcast_row_binary_result",
       "parameter_roles": [
         {
           "name": "src0",
@@ -1510,6 +1526,7 @@
       "pattern": "tile_scalar",
       "kind": "l3_scalar_expand_template",
       "status": "reserved",
+      "snippet_contract": "scalar_expand_result",
       "parameter_roles": [
         {
           "name": "scalar",
@@ -1583,6 +1600,7 @@
       "pattern": "compare",
       "kind": "l3_cmp_tile_tile_template",
       "status": "active",
+      "snippet_contract": "compare_tile_tile_cmp",
       "parameter_roles": [
         {
           "name": "src0",
@@ -1719,6 +1737,7 @@
       "pattern": "compare",
       "kind": "l3_cmp_tile_scalar_template",
       "status": "active",
+      "snippet_contract": "compare_tile_scalar_cmp",
       "parameter_roles": [
         {
           "name": "src",
@@ -1861,6 +1880,7 @@
       "pattern": "binary",
       "kind": "l3_select_mask_template",
       "status": "reserved",
+      "snippet_contract": "select_mask_result",
       "parameter_roles": [
         {
           "name": "mask",
@@ -1938,6 +1958,7 @@
       "pattern": "tile_scalar",
       "kind": "l3_select_scalar_template",
       "status": "reserved",
+      "snippet_contract": "select_scalar_result",
       "parameter_roles": [
         {
           "name": "src0",
