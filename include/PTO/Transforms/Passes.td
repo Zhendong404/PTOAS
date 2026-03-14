@@ -146,6 +146,9 @@ def PTOInstantiateAndLowerToLibCall : Pass<"pto-instantiate-lower-to-libcall", "
     Option<"opLibDir", "op-lib-dir", "std::string",
            /*default=*/"\"\"",
            "Directory containing OP-Lib template .mlir files">,
+    Option<"opLibManifest", "op-lib-manifest", "std::string",
+           /*default=*/"\"\"",
+           "Path to the A5 OpLib V1 manifest snapshot used to classify in-scope and deferred ops">,
     Option<"debug", "debug", "bool",
            /*default=*/"false",
            "Enable verbose debug logging for OP-Lib lowering">

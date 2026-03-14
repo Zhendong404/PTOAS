@@ -23,12 +23,15 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <limits>
 #include <optional>
@@ -47,6 +50,8 @@ namespace pto {
 using namespace mlir;
 
 namespace {
+static constexpr llvm::StringLiteral kA5OpLibManifestRelPath =
+    "oplib/level3/families/a5_oplib_v1_manifest.yaml";
 
 static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
@@ -138,6 +143,28 @@ struct GroupInfo {
   SmallVector<Operation *, 8> ops;
 };
 
+enum class A5ManifestStatus {
+  Implemented,
+  Deferred,
+};
+
+struct A5ManifestEntry {
+  std::string family;
+  A5ManifestStatus status = A5ManifestStatus::Deferred;
+  std::string deferredReason;
+};
+
+struct A5OpLibManifest {
+  llvm::StringMap<A5ManifestEntry> operators;
+
+  const A5ManifestEntry *lookup(StringRef opName) const {
+    auto it = operators.find(opName);
+    if (it == operators.end())
+      return nullptr;
+    return &it->second;
+  }
+};
+
 enum class EntryRole {
   Variant,
   Seed,
@@ -222,47 +249,172 @@ struct MatchRequest {
   std::optional<std::string> requiredVariantId;
 };
 
-static bool isSupportedFusionOp(Operation *op) {
-  if (!isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-           pto::TMinOp, pto::TPartAddOp, pto::TPartMaxOp, pto::TPartMinOp,
-           pto::TAddSOp, pto::TSubSOp, pto::TMulSOp, pto::TDivSOp,
-           pto::TMaxSOp, pto::TMinSOp, pto::TAddCOp, pto::TSubCOp,
-           pto::TAddSCOp, pto::TSubSCOp, pto::TAbsOp, pto::TNegOp,
-           pto::TExpOp, pto::TLogOp, pto::TSqrtOp, pto::TRsqrtOp,
-           pto::TRecipOp, pto::TReluOp, pto::TRowSumOp, pto::TRowMaxOp,
-           pto::TRowMinOp, pto::TColSumOp, pto::TColMaxOp, pto::TColMinOp,
-           pto::TRowExpandOp, pto::TColExpandOp, pto::TRowExpandMulOp,
-           pto::TRowExpandDivOp, pto::TRowExpandSubOp, pto::TExpandsOp,
-           pto::TCmpOp, pto::TCmpSOp, pto::TSelOp, pto::TSelSOp,
-           pto::TAndOp, pto::TOrOp, pto::TXorOp, pto::TShlOp, pto::TShrOp,
-           pto::TAndSOp, pto::TOrSOp, pto::TXorSOp, pto::TShlSOp,
-           pto::TShrSOp, pto::TNotOp, pto::TRemOp, pto::TRemSOp,
-           pto::TPReluOp, pto::TLReluOp>(op)) {
-    return false;
+static StringRef getPTOMnemonic(Operation *op) {
+  StringRef fullName = op->getName().getStringRef();
+  size_t dot = fullName.rfind('.');
+  if (dot == StringRef::npos)
+    return fullName;
+  return fullName.drop_front(dot + 1);
+}
+
+static llvm::Expected<A5OpLibManifest> loadA5OpLibManifest(StringRef path) {
+  auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
+  if (!bufferOrErr) {
+    return llvm::createStringError(
+        std::errc::no_such_file_or_directory,
+        "failed to read A5 OpLib V1 manifest '%s': %s", path.data(),
+        bufferOrErr.getError().message().c_str());
   }
 
-  for (Value operand : op->getOperands()) {
-    Type ty = operand.getType();
-    if (isa<FloatType, IntegerType, IndexType>(ty))
-      continue;
-    if (auto tileTy = dyn_cast<pto::TileBufType>(ty)) {
-      if (tileTy.getRank() != 2 ||
-          !isa<FloatType, IntegerType>(tileTy.getElementType())) {
-        return false;
-      }
-      continue;
-    }
-    if (auto memTy = dyn_cast<MemRefType>(ty)) {
-      if (memTy.getRank() != 2 ||
-          !isa<FloatType, IntegerType>(memTy.getElementType())) {
-        return false;
-      }
-      continue;
-    }
-    return false;
+  llvm::Expected<llvm::json::Value> rootOrErr =
+      llvm::json::parse((*bufferOrErr)->getBuffer());
+  if (!rootOrErr) {
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "failed to parse A5 OpLib V1 manifest '%s': %s",
+                                   path.data(),
+                                   llvm::toString(rootOrErr.takeError()).c_str());
   }
 
-  return true;
+  auto *root = rootOrErr->getAsObject();
+  if (!root) {
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "A5 OpLib V1 manifest '%s' root must be an object",
+                                   path.data());
+  }
+
+  auto schema = root->getString("schema_version");
+  if (!schema || *schema != "a5_oplib_v1_manifest/v1") {
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "A5 OpLib V1 manifest '%s' has unexpected schema_version '%s'",
+        path.data(), schema ? schema->data() : "<empty>");
+  }
+
+  auto *operators = root->getArray("operators");
+  if (!operators) {
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "A5 OpLib V1 manifest '%s' is missing operators array", path.data());
+  }
+
+  A5OpLibManifest manifest;
+  for (llvm::json::Value &value : *operators) {
+    auto *entryObj = value.getAsObject();
+    if (!entryObj) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' contains non-object operator entry",
+          path.data());
+    }
+
+    auto opName = entryObj->getString("op");
+    auto family = entryObj->getString("family");
+    auto status = entryObj->getString("a5_status");
+    if (!opName || opName->empty() || !family || family->empty() || !status ||
+        status->empty()) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' contains operator entry with missing op/family/a5_status",
+          path.data());
+    }
+
+    auto [it, inserted] = manifest.operators.try_emplace(opName->str());
+    if (!inserted) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' contains duplicate operator '%s'",
+          path.data(), opName->data());
+    }
+
+    it->second.family = family->str();
+    if (*status == "implemented") {
+      it->second.status = A5ManifestStatus::Implemented;
+    } else if (*status == "deferred") {
+      it->second.status = A5ManifestStatus::Deferred;
+    } else {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' contains unsupported status '%s' for op '%s'",
+          path.data(), status->data(), opName->data());
+    }
+
+    if (auto deferredReason = entryObj->getString("deferred_reason"))
+      it->second.deferredReason = deferredReason->str();
+  }
+
+  return manifest;
+}
+
+static std::string extractSourceFilePath(Location loc) {
+  if (auto fileLoc = dyn_cast<FileLineColLoc>(loc))
+    return fileLoc.getFilename().str();
+  if (auto nameLoc = dyn_cast<NameLoc>(loc))
+    return extractSourceFilePath(nameLoc.getChildLoc());
+  if (auto callLoc = dyn_cast<CallSiteLoc>(loc))
+    return extractSourceFilePath(callLoc.getCallee());
+  if (auto fusedLoc = dyn_cast<FusedLoc>(loc)) {
+    for (Location child : fusedLoc.getLocations()) {
+      std::string path = extractSourceFilePath(child);
+      if (!path.empty())
+        return path;
+    }
+  }
+  return {};
+}
+
+static std::string findA5OpLibManifestFrom(StringRef startPath) {
+  namespace fs = std::filesystem;
+
+  if (startPath.empty())
+    return {};
+
+  std::error_code ec;
+  fs::path current(startPath.str());
+  if (fs::is_regular_file(current, ec))
+    current = current.parent_path();
+
+  while (!current.empty()) {
+    fs::path candidate = current / kA5OpLibManifestRelPath.str();
+    if (fs::exists(candidate, ec))
+      return candidate.string();
+
+    fs::path parent = current.parent_path();
+    if (parent.empty() || parent == current)
+      break;
+    current = parent;
+  }
+
+  return {};
+}
+
+static std::string resolveA5OpLibManifestPath(StringRef explicitPath,
+                                              StringRef opLibDir,
+                                              Location moduleLoc) {
+  if (!explicitPath.empty())
+    return explicitPath.str();
+
+  if (!opLibDir.empty()) {
+    std::string siblingPath =
+        (Twine(opLibDir) + "/families/a5_oplib_v1_manifest.yaml").str();
+    if (llvm::sys::fs::exists(siblingPath))
+      return siblingPath;
+
+    std::string repoRelative = findA5OpLibManifestFrom(opLibDir);
+    if (!repoRelative.empty())
+      return repoRelative;
+  }
+
+  std::string moduleRelative = findA5OpLibManifestFrom(extractSourceFilePath(moduleLoc));
+  if (!moduleRelative.empty())
+    return moduleRelative;
+
+  return {};
+}
+
+static bool isA5OpLibV1TargetOp(Operation *op, const A5OpLibManifest &manifest) {
+  if (op->getName().getDialectNamespace() != "pto")
+    return false;
+  return manifest.lookup(getPTOMnemonic(op)) != nullptr;
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -2423,12 +2575,31 @@ static FailureOr<MatchRequest> buildMatchRequest(Operation *op) {
 }
 
 static FailureOr<PlannedOpLowering>
-planOneOpLowering(Operation *op, TemplateRegistry &registry,
+planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
+                  TemplateRegistry &registry,
                   StringRef errorPrefix, bool enableDebugLog = false) {
+  StringRef opName = getPTOMnemonic(op);
+  const A5ManifestEntry *manifestEntry = manifest.lookup(opName);
+  if (!manifestEntry) {
+    op->emitError() << errorPrefix << ": op=" << opName
+                    << " is outside the A5 OpLib V1 manifest scope";
+    return failure();
+  }
+
+  if (manifestEntry->status == A5ManifestStatus::Deferred) {
+    op->emitError()
+        << errorPrefix << ": manifest marks op='" << opName
+        << "' as deferred"
+        << (manifestEntry->deferredReason.empty()
+                ? ""
+                : Twine(": ") + manifestEntry->deferredReason);
+    return failure();
+  }
+
   FailureOr<MatchRequest> requestOr = buildMatchRequest(op);
   if (failed(requestOr)) {
-    op->emitError() << errorPrefix
-                    << ": unsupported operand signature or missing match metadata";
+    op->emitError() << errorPrefix << ": manifest-implemented op='" << opName
+                    << "' failed to build MatchRequest from interface metadata";
     return failure();
   }
 
@@ -2441,7 +2612,8 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   FailureOr<SelectedVariant> selectedOr =
       registry.selectVariantFor(request, op->getLoc());
   if (failed(selectedOr)) {
-    op->emitError() << errorPrefix << ": no OP-Lib candidate for op="
+    op->emitError() << errorPrefix
+                    << ": manifest-implemented op has no OP-Lib candidate for op="
                     << request.op << " dtype=" << request.dtype;
     return failure();
   }
@@ -2449,9 +2621,10 @@ planOneOpLowering(Operation *op, TemplateRegistry &registry,
   FailureOr<func::FuncOp> instanceOr =
       registry.getOrCreateInstance(*selectedOr, request.argTypes, op->getLoc());
   if (failed(instanceOr)) {
-    op->emitError() << errorPrefix
-                    << ": failed to instantiate OP-Lib candidate for op="
-                    << request.op << " dtype=" << request.dtype;
+    op->emitError()
+        << errorPrefix
+        << ": failed to instantiate OP-Lib candidate for manifest-implemented op="
+        << request.op << " dtype=" << request.dtype;
     return failure();
   }
 
@@ -2523,6 +2696,7 @@ struct PTOInstantiateAndLowerToLibCallPass
       PTOInstantiateAndLowerToLibCallPass>::PTOInstantiateAndLowerToLibCallBase;
 
   void collectGroupsInRegion(Region &region,
+                             const A5OpLibManifest &manifest,
                              SmallVectorImpl<GroupInfo> &groups) {
     for (Block &block : region.getBlocks()) {
       GroupInfo current;
@@ -2538,7 +2712,7 @@ struct PTOInstantiateAndLowerToLibCallPass
       for (Operation &op : block.getOperations()) {
         Operation *curOp = &op;
 
-        if (hasFusionGroupAttrs(curOp) && isSupportedFusionOp(curOp)) {
+        if (hasFusionGroupAttrs(curOp) && isA5OpLibV1TargetOp(curOp, manifest)) {
           auto gidAttr = curOp->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr);
           auto orderAttr = curOp->getAttrOfType<IntegerAttr>(kFusionOrderAttr);
 
@@ -2566,18 +2740,21 @@ struct PTOInstantiateAndLowerToLibCallPass
         }
 
         for (Region &nested : curOp->getRegions())
-          collectGroupsInRegion(nested, groups);
+          collectGroupsInRegion(nested, manifest, groups);
       }
 
       flush();
     }
   }
 
-  LogicalResult planGroupLowerings(GroupInfo &group, TemplateRegistry &registry,
+  LogicalResult planGroupLowerings(GroupInfo &group,
+                                   const A5OpLibManifest &manifest,
+                                   TemplateRegistry &registry,
                                    SmallVectorImpl<PlannedOpLowering> &planned) {
     for (Operation *op : group.ops) {
       FailureOr<PlannedOpLowering> oneOr =
-          planOneOpLowering(op, registry, "fusion-group lowering", debug);
+          planOneOpLowering(op, manifest, registry, "fusion-group lowering",
+                            debug);
       if (failed(oneOr))
         return failure();
       planned.push_back(*oneOr);
@@ -2585,12 +2762,13 @@ struct PTOInstantiateAndLowerToLibCallPass
     return success();
   }
 
-  LogicalResult lowerOneGroup(TemplateRegistry &registry, GroupInfo &group) {
+  LogicalResult lowerOneGroup(const A5OpLibManifest &manifest,
+                              TemplateRegistry &registry, GroupInfo &group) {
     if (group.ops.empty())
       return success();
 
     SmallVector<PlannedOpLowering, 8> planned;
-    if (failed(planGroupLowerings(group, registry, planned))) {
+    if (failed(planGroupLowerings(group, manifest, registry, planned))) {
       group.ops.front()->emitError()
           << "fusion-group lowering required but failed for group_id="
           << group.groupId;
@@ -2614,11 +2792,12 @@ struct PTOInstantiateAndLowerToLibCallPass
     return success();
   }
 
-  LogicalResult lowerSingleOps(func::FuncOp func, TemplateRegistry &registry) {
+  LogicalResult lowerSingleOps(func::FuncOp func, const A5OpLibManifest &manifest,
+                               TemplateRegistry &registry) {
     SmallVector<Operation *, 32> toRewrite;
 
     func.walk([&](Operation *op) {
-      if (!isSupportedFusionOp(op))
+      if (!isA5OpLibV1TargetOp(op, manifest))
         return;
       if (hasFusionGroupAttrs(op))
         return;
@@ -2630,7 +2809,8 @@ struct PTOInstantiateAndLowerToLibCallPass
         continue;
 
       FailureOr<PlannedOpLowering> plannedOr =
-          planOneOpLowering(op, registry, "single-op lowering", debug);
+          planOneOpLowering(op, manifest, registry, "single-op lowering",
+                            debug);
       if (failed(plannedOr))
         return failure();
 
@@ -2649,14 +2829,17 @@ struct PTOInstantiateAndLowerToLibCallPass
     return success();
   }
 
-  LogicalResult verifyNoRemainingTargetOps(func::FuncOp func) {
+  LogicalResult verifyNoRemainingTargetOps(func::FuncOp func,
+                                           const A5OpLibManifest &manifest) {
     bool hasFailure = false;
     func.walk([&](Operation *op) {
-      if (!isSupportedFusionOp(op))
+      const A5ManifestEntry *manifestEntry = manifest.lookup(getPTOMnemonic(op));
+      if (!manifestEntry ||
+          manifestEntry->status != A5ManifestStatus::Implemented)
         return;
       op->emitError()
-          << "OP-Lib lowering is required for PTO IR 4.5~4.9 op family, but "
-             "this op was not lowered";
+          << "OP-Lib lowering is required for manifest-implemented PTO IR 4.5~4.9 "
+             "op, but this op was not lowered";
       hasFailure = true;
     });
     return failure(hasFailure);
@@ -2666,6 +2849,25 @@ struct PTOInstantiateAndLowerToLibCallPass
     ModuleOp module = getOperation();
     MLIRContext *ctx = &getContext();
     SymbolTable symbolTable(module);
+
+    std::string manifestPath =
+        resolveA5OpLibManifestPath(opLibManifest, opLibDir, module.getLoc());
+    if (manifestPath.empty()) {
+      emitError(module.getLoc())
+          << "failed to resolve A5 OpLib V1 manifest path; set --op-lib-manifest "
+             "or keep oplib/level3/families/a5_oplib_v1_manifest.yaml available";
+      signalPassFailure();
+      return;
+    }
+
+    llvm::Expected<A5OpLibManifest> manifestOrErr =
+        loadA5OpLibManifest(manifestPath);
+    if (!manifestOrErr) {
+      emitError(module.getLoc()) << llvm::toString(manifestOrErr.takeError());
+      signalPassFailure();
+      return;
+    }
+    A5OpLibManifest manifest = std::move(*manifestOrErr);
 
     TemplateRegistry registry{module, symbolTable, debug};
     int importedFromModule = 0;
@@ -2681,6 +2883,8 @@ struct PTOInstantiateAndLowerToLibCallPass
     } else if (debug) {
       llvm::errs() << "[op-fusion] using " << importedFromModule
                    << " pre-imported OP-Lib entries from module\n";
+      llvm::errs() << "[op-fusion] loaded A5 OpLib manifest from "
+                   << manifestPath << "\n";
     }
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
@@ -2692,25 +2896,25 @@ struct PTOInstantiateAndLowerToLibCallPass
         continue;
 
       SmallVector<GroupInfo, 8> groups;
-      collectGroupsInRegion(func.getRegion(), groups);
+      collectGroupsInRegion(func.getRegion(), manifest, groups);
       if (debug && !groups.empty()) {
         llvm::errs() << "[op-fusion] found " << groups.size() << " group(s) in @"
                      << func.getSymName() << "\n";
       }
 
       for (GroupInfo &group : groups) {
-        if (failed(lowerOneGroup(registry, group))) {
+        if (failed(lowerOneGroup(manifest, registry, group))) {
           signalPassFailure();
           return;
         }
       }
 
-      if (failed(lowerSingleOps(func, registry))) {
+      if (failed(lowerSingleOps(func, manifest, registry))) {
         signalPassFailure();
         return;
       }
 
-      if (failed(verifyNoRemainingTargetOps(func))) {
+      if (failed(verifyNoRemainingTargetOps(func, manifest))) {
         signalPassFailure();
         return;
       }
