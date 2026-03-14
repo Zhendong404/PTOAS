@@ -74,15 +74,21 @@
 // RUN: cp %S/resources/bad_vector_int_unsupported_template.txt %t.bad_vec_int/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vec_int --pto-arch=a5 -o %t.bad_vec_int.cpp > %t.bad_vec_int.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-VEC-INT < %t.bad_vec_int.log
+// RUN: rm -rf %t.bad_nonscalar_memref && mkdir -p %t.bad_nonscalar_memref
+// RUN: cp %S/resources/bad_non_scalar_memref_fallback_template.txt %t.bad_nonscalar_memref/bad.mlir
+// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_nonscalar_memref --pto-arch=a5 -o %t.bad_nonscalar_memref.cpp > %t.bad_nonscalar_memref.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-NONSCALAR-MEMREF < %t.bad_nonscalar_memref.log
 
 // NO-DIR: Error: --op-lib-dir is required.
 // REMOVED: Unknown command line argument '--disable-oplib-lowering'
 // EMPTY-SIMD: E_OPLIB_EMPTY_BODY_FOR_SIMD
 // BAD-CORE: E_OPLIB_SIMD_INVALID_CORE_SLOT
 // BAD-LANES: E_OPLIB_SIMD_LANES_MISMATCH
+// BAD-LANES: requires pto.simd.lanes = 64, got 32
 // BAD-SIMD-ATTR: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-IR: E_OPLIB_BODY_DISALLOWED_IR
-// BAD-VEC: no matching OP-Lib entry for kind=l3_float_tile_scalar_template op=tmuls dtype=f32
+// BAD-VEC: E_OPLIB_SIMD_LANES_MISMATCH
+// BAD-VEC: requires vector<64x*> values
 // BAD-LEGACY-CAST: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MISSING-KNOBS: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-MISSING-KNOBS: pto.simd.exec_mode
@@ -100,4 +106,7 @@
 // BAD-IS-BINARY: missing required attr: pto.oplib.match.is_binary
 // BAD-MATH: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MATH: math.sin
-// BAD-VEC-INT: no matching OP-Lib entry for kind=l3_float_tile_scalar_template op=tmuls dtype=f32
+// BAD-VEC-INT: E_OPLIB_SIMD_LANES_MISMATCH
+// BAD-VEC-INT: requires vector<64x*> values
+// BAD-NONSCALAR-MEMREF: E_OPLIB_BODY_DISALLOWED_IR
+// BAD-NONSCALAR-MEMREF: must not use memref.load/store elementwise fallback

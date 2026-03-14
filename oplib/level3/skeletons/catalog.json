@@ -1,0 +1,560 @@
+{
+  "patterns": [
+    {
+      "id": "binary",
+      "template": "binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "float_binary_elementwise",
+          "kind": "l3_float_binary_elementwise_template",
+          "output": "float_binary_elementwise_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from unified float binary skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f16",
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tadd",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.addf"
+            },
+            {
+              "op": "tsub",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.subf"
+            },
+            {
+              "op": "tmul",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.mulf"
+            },
+            {
+              "op": "tdiv",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.divf"
+            },
+            {
+              "op": "tmax",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.maximumf"
+            },
+            {
+              "op": "tmin",
+              "variant_id": "tile_f16_scalar",
+              "cost": 1,
+              "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "core_op": "arith.minimumf"
+            },
+            {
+              "op": "trem",
+              "variant_id": "tile",
+              "dtypes": [
+                "f32"
+              ],
+              "core_op": "arith.remf"
+            }
+          ]
+        },
+        {
+          "family_id": "int_binary_elementwise",
+          "kind": "l3_int_binary_elementwise_template",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "variant_id_by_dtype": {
+            "i8": "tile_i8",
+            "i16": "tile_i16",
+            "i32": "tile"
+          },
+          "targets": [
+            {
+              "output": "int_binary_elementwise_i8_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+              "dtypes": [
+                "i8"
+              ]
+            },
+            {
+              "output": "int_binary_elementwise_i16_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+              "dtypes": [
+                "i16"
+              ]
+            },
+            {
+              "output": "int_binary_elementwise_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+              "dtypes": [
+                "i32"
+              ]
+            }
+          ],
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "i8",
+            "i16",
+            "i32"
+          ],
+          "ops": [
+            {
+              "op": "tand",
+              "core_op": "arith.andi"
+            },
+            {
+              "op": "tor",
+              "core_op": "arith.ori"
+            },
+            {
+              "op": "txor",
+              "core_op": "arith.xori"
+            },
+            {
+              "op": "tshl",
+              "core_op": "arith.shli"
+            },
+            {
+              "op": "tshr",
+              "core_op": "arith.shrui"
+            },
+            {
+              "op": "trem",
+              "core_op": "arith.remsi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tile_scalar",
+      "template": "tile_scalar.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "float_tile_scalar",
+          "kind": "l3_float_tile_scalar_template",
+          "output": "float_tile_scalar_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from unified float tile-scalar skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "scalar",
+            "tile"
+          ],
+          "scalar_pos": 1,
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tdivs",
+              "variant_id": "tile_scalar",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+              "operand_order": "tile_scalar",
+              "core_op": "arith.divf"
+            },
+            {
+              "op": "tdivs",
+              "variant_id": "scalar_tile",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+              "operand_order": "scalar_tile",
+              "core_op": "arith.divf"
+            },
+            {
+              "op": "trems",
+              "variant_id": "tile_scalar",
+              "core_op": "arith.remf"
+            },
+            {
+              "op": "tlrelu",
+              "variant_id": "tile_scalar",
+              "body_kind": "lrelu",
+              "core_op": "custom"
+            }
+          ]
+        },
+        {
+          "family_id": "int_tile_scalar_elementwise",
+          "kind": "l3_int_tile_scalar_elementwise_template",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "variant_id_by_dtype": {
+            "i8": "tile_scalar_i8",
+            "i16": "tile_scalar_i16",
+            "i32": "tile_scalar"
+          },
+          "targets": [
+            {
+              "output": "int_tile_scalar_elementwise_i8_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+              "dtypes": [
+                "i8"
+              ]
+            },
+            {
+              "output": "int_tile_scalar_elementwise_i16_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+              "dtypes": [
+                "i16"
+              ]
+            },
+            {
+              "output": "int_tile_scalar_elementwise_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+              "dtypes": [
+                "i32"
+              ]
+            }
+          ],
+          "arg_roles": [
+            "tile",
+            "scalar",
+            "tile"
+          ],
+          "scalar_pos": 1,
+          "dtypes": [
+            "i8",
+            "i16",
+            "i32"
+          ],
+          "ops": [
+            {
+              "op": "tands",
+              "core_op": "arith.andi"
+            },
+            {
+              "op": "tors",
+              "core_op": "arith.ori"
+            },
+            {
+              "op": "txors",
+              "core_op": "arith.xori"
+            },
+            {
+              "op": "tshls",
+              "core_op": "arith.shli"
+            },
+            {
+              "op": "tshrs",
+              "core_op": "arith.shrui"
+            },
+            {
+              "op": "trems",
+              "core_op": "arith.remsi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unary",
+      "template": "unary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "float_unary",
+          "kind": "l3_float_unary_template",
+          "output": "float_unary_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from unified float unary skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tabs",
+              "variant_id": "tile",
+              "body_kind": "abs",
+              "core_op": "arith.maximumf(arith.negf(x), x)"
+            },
+            {
+              "op": "tneg",
+              "variant_id": "tile",
+              "body_kind": "neg",
+              "core_op": "arith.negf"
+            },
+            {
+              "op": "trecip",
+              "variant_id": "tile",
+              "body_kind": "recip",
+              "core_op": "arith.divf"
+            },
+            {
+              "op": "trelu",
+              "variant_id": "tile",
+              "body_kind": "relu",
+              "core_op": "arith.maximumf"
+            }
+          ]
+        },
+        {
+          "family_id": "float_unary_math",
+          "kind": "l3_float_unary_math_template",
+          "output": "float_unary_math_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from unified float unary skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "texp",
+              "variant_id": "tile",
+              "body_kind": "exp",
+              "core_op": "math.exp"
+            },
+            {
+              "op": "tlog",
+              "variant_id": "tile",
+              "body_kind": "log",
+              "core_op": "math.log"
+            },
+            {
+              "op": "tsqrt",
+              "variant_id": "tile",
+              "body_kind": "sqrt",
+              "core_op": "math.sqrt"
+            },
+            {
+              "op": "trsqrt",
+              "variant_id": "tile",
+              "body_kind": "rsqrt",
+              "core_op": "arith.divf(math.one, math.sqrt)"
+            }
+          ]
+        },
+        {
+          "family_id": "int_unary",
+          "kind": "l3_int_unary_template",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "variant_id_by_dtype": {
+            "i8": "tile_i8",
+            "i16": "tile_i16",
+            "i32": "tile"
+          },
+          "targets": [
+            {
+              "output": "int_unary_i8_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+              "dtypes": [
+                "i8"
+              ]
+            },
+            {
+              "output": "int_unary_i16_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+              "dtypes": [
+                "i16"
+              ]
+            },
+            {
+              "output": "int_unary_templates.mlir",
+              "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+              "dtypes": [
+                "i32"
+              ]
+            }
+          ],
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "i8",
+            "i16",
+            "i32"
+          ],
+          "ops": [
+            {
+              "op": "tnot",
+              "body_kind": "not",
+              "core_op": "arith.xori"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "compare",
+      "template": "compare.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "condition",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "cmp_tile_tile",
+          "kind": "l3_cmp_tile_tile_template",
+          "output": "cmp_tile_tile_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from compare skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "passive_vectors": {
+            "f32": "dense<0x7FC00000>"
+          },
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tcmp",
+              "core_op": "arith.cmpf"
+            }
+          ],
+          "result_dtype": "i8",
+          "conditions": [
+            {
+              "mode": "EQ",
+              "variant_id": "eq",
+              "predicate": "oeq"
+            },
+            {
+              "mode": "NE",
+              "variant_id": "ne",
+              "predicate": "one"
+            },
+            {
+              "mode": "LT",
+              "variant_id": "lt",
+              "predicate": "olt"
+            },
+            {
+              "mode": "LE",
+              "variant_id": "le",
+              "predicate": "ole"
+            },
+            {
+              "mode": "GT",
+              "variant_id": "gt",
+              "predicate": "ogt"
+            },
+            {
+              "mode": "GE",
+              "variant_id": "ge",
+              "predicate": "oge"
+            }
+          ]
+        },
+        {
+          "family_id": "cmp_tile_scalar",
+          "kind": "l3_cmp_tile_scalar_template",
+          "output": "cmp_tile_scalar_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from compare skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "arg_roles": [
+            "tile",
+            "scalar",
+            "tile"
+          ],
+          "scalar_pos": 1,
+          "passive_vectors": {
+            "f32": "dense<0x7FC00000>"
+          },
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tcmps",
+              "core_op": "arith.cmpf"
+            }
+          ],
+          "result_dtype": "i8",
+          "conditions": [
+            {
+              "mode": "EQ",
+              "variant_id": "eq",
+              "predicate": "oeq"
+            },
+            {
+              "mode": "NE",
+              "variant_id": "ne",
+              "predicate": "one"
+            },
+            {
+              "mode": "LT",
+              "variant_id": "lt",
+              "predicate": "olt"
+            },
+            {
+              "mode": "LE",
+              "variant_id": "le",
+              "predicate": "ole"
+            },
+            {
+              "mode": "GT",
+              "variant_id": "gt",
+              "predicate": "ogt"
+            },
+            {
+              "mode": "GE",
+              "variant_id": "ge",
+              "predicate": "oge"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

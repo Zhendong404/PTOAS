@@ -4,6 +4,12 @@
 - 适用范围：Level-3 OP-Lib Binary Element-Wise（`tadd/tsub/tmul/tdiv/tmax/tmin`）
 - 目标读者：编写/维护 OP-Lib 模板的开发者
 
+维护说明：
+
+1. 当前 Level-3 模板主维护源位于 `oplib/level3/skeletons/`。
+2. importer-active concrete 模板位于 `oplib/level3/*.mlir`，由 `oplib/level3/generate_level3_templates.py` 统一展开生成。
+3. 新建或重构的 Level-3 模板统一使用 64-lane SIMD 向量体；即使 ABI 上保留 scalar 参数，也必须通过 `vector.splat` 等 SIMD 手段并入计算。
+
 ## 1. 先记住四条硬约束
 
 1. 对外 ABI 不变：函数签名必须是 `(!pto.tile_buf, !pto.tile_buf, !pto.tile_buf) -> ()`。

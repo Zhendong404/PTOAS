@@ -1,6 +1,7 @@
 // RUN: { ptoas %S/compare_bitwise_family_emitc.pto --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o %t.cpp 2>&1; } | FileCheck %s --check-prefix=IR
 // RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 
+// IR-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // IR-DAG: pto.oplib.instance.op = "tcmp"
 // IR-DAG: pto.oplib.instance.variant_id = "lt"
 // IR-DAG: pto.oplib.instance.op = "tsel"

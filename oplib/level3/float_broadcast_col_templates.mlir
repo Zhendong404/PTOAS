@@ -29,15 +29,15 @@ module {
     %rows = memref.dim %md, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %md, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
-      %zeroVec = arith.constant dense<0.0> : vector<32xf32>
+      %zeroVec = arith.constant dense<0.0> : vector<64xf32>
       scf.for %cidx = %c0 to %cols step %c64 {
         %remain = arith.subi %cols, %cidx : index
         %lt = arith.cmpi slt, %remain, %c64 : index
         %active = arith.select %lt, %remain, %c64 : index
-        %mask = vector.create_mask %active : vector<32xi1>
-        %colVec = vector.maskedload %m0[%c0, %cidx], %mask, %zeroVec {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32> into vector<32xf32>
+        %mask = vector.create_mask %active : vector<64xi1>
+        %colVec = vector.maskedload %m0[%c0, %cidx], %mask, %zeroVec {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
         scf.for %r = %c0 to %rows step %c1 {
-          vector.maskedstore %md[%r, %cidx], %mask, %colVec {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<32xi1>, vector<32xf32>
+          vector.maskedstore %md[%r, %cidx], %mask, %colVec {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
         }
       }
     }

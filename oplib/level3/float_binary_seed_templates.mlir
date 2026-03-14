@@ -1,15 +1,15 @@
 module {
-  func.func private @__pto_oplib_seed_l3_float_partial_binary_core(
+  func.func private @__pto_oplib_seed_l3_float_binary_elementwise_core(
       %src0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
       %src1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
       %dst: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       attributes {
-        pto.oplib.kind = "l3_float_partial_binary_template",
+        pto.oplib.kind = "l3_float_binary_elementwise_template",
         pto.oplib.entry_role = "seed",
-        pto.oplib.seed_id = "seed_l3_float_partial_binary_core",
+        pto.oplib.seed_id = "seed_l3_float_binary_elementwise_core",
         pto.oplib.seed_dtype = "f32",
         pto.oplib.seed.support_dtypes = ["f32"],
-        pto.oplib.seed.support_ops = ["tpartadd", "tpartmax", "tpartmin"],
+        pto.oplib.seed.support_ops = ["tadd", "tsub", "tmul", "tdiv", "tmax", "tmin"],
         pto.oplib.seed.core_slot = "binary_ewise_core",
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -36,22 +36,8 @@ module {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
-    %rows0 = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %rows1 = memref.dim %m1, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %rowsd = memref.dim %md, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %cols0 = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %cols1 = memref.dim %m1, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %colsd = memref.dim %md, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-
-    %rows01Lt = arith.cmpi slt, %rows0, %rows1 : index
-    %rows01 = arith.select %rows01Lt, %rows0, %rows1 : index
-    %rowsMinLt = arith.cmpi slt, %rows01, %rowsd : index
-    %rows = arith.select %rowsMinLt, %rows01, %rowsd : index
-
-    %cols01Lt = arith.cmpi slt, %cols0, %cols1 : index
-    %cols01 = arith.select %cols01Lt, %cols0, %cols1 : index
-    %colsMinLt = arith.cmpi slt, %cols01, %colsd : index
-    %cols = arith.select %colsMinLt, %cols01, %colsd : index
+    %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %zero = arith.constant dense<0.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {

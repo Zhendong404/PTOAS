@@ -131,6 +131,7 @@ static constexpr llvm::StringLiteral kErrBodyDisallowedIR =
     "E_OPLIB_BODY_DISALLOWED_IR";
 static constexpr llvm::StringLiteral kErrSimdAttrRequired =
     "E_OPLIB_SIMD_ATTR_REQUIRED";
+static constexpr int64_t kRequiredLevel3SimdLanes = 64;
 
 struct GroupInfo {
   int64_t groupId = -1;
@@ -145,6 +146,11 @@ enum class EntryRole {
 enum class TemplateArgRole {
   Tile,
   Scalar,
+};
+
+enum class Level3TemplateFamily {
+  NonScalar,
+  ScalarAbi,
 };
 
 struct MatchKey {
@@ -556,6 +562,58 @@ static bool canUseSeedRewriteFor(StringRef kind, StringRef op) {
   return false;
 }
 
+static std::optional<Level3TemplateFamily>
+classifyLevel3TemplateFamily(StringRef kind) {
+  using Family = Level3TemplateFamily;
+  return llvm::StringSwitch<std::optional<Family>>(kind)
+      // Current non-scalar-related Level-3 families in oplib/level3.
+      .Case(kOpLibKindL3BinaryTemplate, Family::NonScalar)
+      .Case("l3_float_binary_elementwise_template", Family::NonScalar)
+      .Case("l3_float_partial_binary_template", Family::NonScalar)
+      .Case("l3_float_binary_special_template", Family::NonScalar)
+      .Case("l3_float_ternary_tile_template", Family::NonScalar)
+      .Case("l3_float_unary_template", Family::NonScalar)
+      .Case("l3_float_unary_math_template", Family::NonScalar)
+      .Case("l3_reduce_row_template", Family::NonScalar)
+      .Case("l3_reduce_col_template", Family::NonScalar)
+      .Case("l3_reduce_colsum_template", Family::NonScalar)
+      .Case("l3_broadcast_row_template", Family::NonScalar)
+      .Case("l3_broadcast_col_template", Family::NonScalar)
+      .Case("l3_broadcast_row_binary_template", Family::NonScalar)
+      .Case("l3_cmp_tile_tile_template", Family::NonScalar)
+      .Case("l3_select_mask_template", Family::NonScalar)
+      .Case("l3_int_binary_elementwise_template", Family::NonScalar)
+      .Case("l3_int_unary_template", Family::NonScalar)
+      // Current ABI-explicit-scalar Level-3 families in oplib/level3.
+      .Case("l3_float_tile_scalar_template", Family::ScalarAbi)
+      .Case("l3_float_ternary_tile_scalar_template", Family::ScalarAbi)
+      .Case("l3_float_unary_scalar_template", Family::ScalarAbi)
+      .Case("l3_scalar_expand_template", Family::ScalarAbi)
+      .Case("l3_cmp_tile_scalar_template", Family::ScalarAbi)
+      .Case("l3_select_scalar_template", Family::ScalarAbi)
+      .Case("l3_int_tile_scalar_elementwise_template", Family::ScalarAbi)
+      .Default(std::nullopt);
+}
+
+static bool isLevel3TemplateKind(StringRef kind) {
+  return classifyLevel3TemplateFamily(kind).has_value();
+}
+
+static bool isNonScalarLevel3TemplateKind(StringRef kind) {
+  return classifyLevel3TemplateFamily(kind) ==
+         Level3TemplateFamily::NonScalar;
+}
+
+static bool isScalarAbiLevel3TemplateKind(StringRef kind) {
+  return classifyLevel3TemplateFamily(kind) == Level3TemplateFamily::ScalarAbi;
+}
+
+static StringRef describeLevel3TemplateFamily(StringRef kind) {
+  if (isScalarAbiLevel3TemplateKind(kind))
+    return "scalar-related";
+  return "non-scalar-related";
+}
+
 static FailureOr<SmallVector<TemplateArgRole, 4>>
 getTemplateArgRolesForKind(StringRef kind) {
   auto build = [&](std::initializer_list<TemplateArgRole> roles)
@@ -681,9 +739,8 @@ static bool isAllowedTemplateBodyOp(Operation *op) {
   if (isa<UnrealizedConversionCastOp>(op))
     return false;
 
-  // Allow scalar memref.load/store for special patterns (e.g. scalar factor
-  // extraction in row/col broadcast templates), but keep vector paths as the
-  // primary implementation style.
+  // Family-aware Level-3 contract checks run before the generic allowlist.
+  // Keep memref namespace ops available here for reinterpret_cast/subview/etc.
   if (auto load = dyn_cast<memref::LoadOp>(op))
     return !isa<VectorType>(load.getType());
   if (auto store = dyn_cast<memref::StoreOp>(op))
@@ -1064,6 +1121,14 @@ struct TemplateRegistry {
                                  Twine("unsupported pto.simd.level: ") +
                                      *levelOr);
     }
+    if (isLevel3TemplateKind(entry->kind) &&
+        *lanesOr != kRequiredLevel3SimdLanes) {
+      return emitFailureWithCode(
+          op, kErrLanesMismatch,
+          Twine("Level-3 template kind=") + entry->kind +
+              " requires pto.simd.lanes = " +
+              Twine(kRequiredLevel3SimdLanes) + ", got " + Twine(*lanesOr));
+    }
     entry->simdLevel = *levelOr;
     entry->simdLanes = *lanesOr;
     entry->hasSimdBridgeOps = hasSimdOps;
@@ -1108,15 +1173,36 @@ struct TemplateRegistry {
     int64_t firstStore = std::numeric_limits<int64_t>::max();
     int64_t coreSeq = -1;
     int coreCount = 0;
+    bool sawLevel3VectorValue = false;
     std::string inferredVldDist;
     std::string inferredVstDist;
     std::string inferredExecMode;
+    bool requiresUnifiedLevel3Simd = isLevel3TemplateKind(entry.kind);
 
     llvm::DenseMap<Operation *, int64_t> preorder;
     int64_t seq = 0;
     imported.walk([&](Operation *op) { preorder[op] = seq++; });
 
     LogicalResult status = success();
+    auto requireLevel3VectorLanes = [&](Operation *targetOp, Type ty,
+                                        StringRef position) -> bool {
+      if (!requiresUnifiedLevel3Simd)
+        return true;
+      FailureOr<int64_t> lanes = getFixedVectorLanes(ty);
+      if (failed(lanes))
+        return true;
+      sawLevel3VectorValue = true;
+      if (*lanes == kRequiredLevel3SimdLanes)
+        return true;
+      status = emitFailureWithCode(
+          targetOp, kErrLanesMismatch,
+          Twine("Level-3 template kind=") + entry.kind +
+              " requires vector<" + Twine(kRequiredLevel3SimdLanes) +
+              "x*> values, but " + position + " of op '" +
+              targetOp->getName().getStringRef() + "' uses " + Twine(*lanes) +
+              " lanes");
+      return false;
+    };
     auto requireNonEmptyTokenAttr = [&](Operation *targetOp, StringRef attrName,
                                         StringRef usage,
                                         StringRef requiredPrefix) -> bool {
@@ -1154,6 +1240,23 @@ struct TemplateRegistry {
 
       if (op == imported.getOperation())
         return;
+      for (Type resultTy : op->getResultTypes()) {
+        if (!requireLevel3VectorLanes(op, resultTy, "result"))
+          return;
+      }
+      for (Value operand : op->getOperands()) {
+        if (!requireLevel3VectorLanes(op, operand.getType(), "operand"))
+          return;
+      }
+      if ((isa<memref::LoadOp, memref::StoreOp>(op)) &&
+          isNonScalarLevel3TemplateKind(entry.kind)) {
+        status = emitFailureWithCode(
+            op, kErrBodyDisallowedIR,
+            Twine("Level-3 ") + describeLevel3TemplateFamily(entry.kind) +
+                " family kind=" + entry.kind +
+                " must not use memref.load/store elementwise fallback");
+        return;
+      }
       if (!isAllowedTemplateBodyOp(op)) {
         status = emitFailureWithCode(
             op, kErrBodyDisallowedIR,
@@ -1311,6 +1414,14 @@ struct TemplateRegistry {
 
     if (failed(status))
       return failure();
+
+    if (requiresUnifiedLevel3Simd && !sawLevel3VectorValue) {
+      return emitFailureWithCode(
+          imported.getOperation(), kErrLanesMismatch,
+          Twine("Level-3 template kind=") + entry.kind +
+              " must materialize a vector<" +
+              Twine(kRequiredLevel3SimdLanes) + "x*> SIMD body");
+    }
 
     // Canonicalization may rewrite vector.maskedload/store to vector.load/store
     // and drop op attrs. Keep function-local and enclosing-op fallback tokens
@@ -2367,6 +2478,44 @@ static LogicalResult rewriteOneGroupedOpAsCall(const PlannedOpLowering &planned)
   return success();
 }
 
+static void pruneUnusedOplibFuncs(ModuleOp module, bool debug) {
+  auto hasDirectCallUse = [&](func::FuncOp fn) -> bool {
+    bool used = false;
+    StringRef sym = fn.getSymName();
+    module.walk([&](func::CallOp call) {
+      if (call.getCallee() == sym) {
+        used = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    return used;
+  };
+
+  SmallVector<func::FuncOp, 16> funcsToErase;
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    if (!func.isPrivate())
+      continue;
+
+    const bool isOplibEntry =
+        func->hasAttr(kOpLibAttrEntryRole) || func->hasAttr(kOpLibAttrKind);
+    const bool isOplibInstance = func->hasAttr(kOpLibAttrInstVariantId);
+    if (!(isOplibEntry || isOplibInstance))
+      continue;
+    if (hasDirectCallUse(func))
+      continue;
+    funcsToErase.push_back(func);
+  }
+
+  for (func::FuncOp func : funcsToErase)
+    func.erase();
+
+  if (debug && !funcsToErase.empty()) {
+    llvm::errs() << "[op-fusion] pruned " << funcsToErase.size()
+                 << " unused OP-Lib function(s)\n";
+  }
+}
+
 struct PTOInstantiateAndLowerToLibCallPass
     : public pto::impl::PTOInstantiateAndLowerToLibCallBase<
           PTOInstantiateAndLowerToLibCallPass> {
@@ -2566,6 +2715,8 @@ struct PTOInstantiateAndLowerToLibCallPass
         return;
       }
     }
+
+    pruneUnusedOplibFuncs(module, debug);
   }
 };
 

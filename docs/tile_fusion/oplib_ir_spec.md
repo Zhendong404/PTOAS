@@ -13,7 +13,7 @@
 1. 保持 OP-Lib 对外 ABI 为 `!pto.tile_buf` 主导，不为每个 family 单独发明新的调用协议。
 2. 将模板导入、匹配、实例化、inline 从 binary-only 模型推广到多 family、可变参数模型。
 3. 明确 `pto.oplib.kind`、签名矩阵、`argN.*` 匹配元数据和 family-specific attr matching 的契约。
-4. 将模板源码统一收敛到 `oplib/level3/`，作为 Level-3 OP-Lib 唯一模板源目录。
+4. 将模板源码统一收敛到 `oplib/level3/`，并采用“单一 skeleton source + concrete 实例展开”的维护方式。
 5. 约束 A5 OP-Lib vector EmitC 的最小支持集合，只放开 4.4-4.8 当前需要的能力。
 
 本文不定义具体某个业务 op 的 skeleton；具体 op family 划分见各 change 的 proposal/design。
@@ -45,6 +45,20 @@ legacy family：
 2. 参数个数由 `kind` 决定
 3. tile-like 参数使用 `!pto.tile_buf<...>`
 4. scalar-like 参数使用 builtin scalar type，例如 `f32`、`i32`、`index`
+
+### 2.3 Level-3 skeleton source 组织方式
+
+`oplib/level3` 采用“单一维护源 + concrete 输出”的目录约定：
+
+1. skeleton source 放在 `oplib/level3/skeletons/`
+2. importer-active concrete 模板文件放在 `oplib/level3/*.mlir`
+3. 统一生成入口为 `oplib/level3/generate_level3_templates.py`
+
+约束如下：
+
+1. 同一计算模式的公共骨架只在 `skeletons/` 维护一份。
+2. `dtype`、compare condition、core op、variant 等差异通过生成展开到 concrete 实例。
+3. lowering/importer 只依赖 concrete `func.func` 与既有匹配键，不直接消费 skeleton source。
 
 ## 3. `kind` 与签名矩阵
 
@@ -206,9 +220,20 @@ Level-3 多 family 首版支持以下固定签名类别：
 5. 未列入白名单的 `math.*`，例如 `math.sin`
 6. 不在允许集合中的其他 dialect / op
 
+补充约束：
+
+1. 非标量相关 family 不允许以 `memref.load/store` 作为逐元素 fallback。
+2. ABI 上显式带 scalar 的 family 允许保留 scalar 参数，但模板体仍必须通过 `vector.splat` 或等价 SIMD 手段并入计算。
+
 ## 7. `pto.simd` 与 A5 vector 规则
 
 ### 7.1 `pto.simd` 属性
+
+Level-3 新模板统一使用 64-lane SIMD 约束：
+
+1. 数据向量必须是 `vector<64xT>`
+2. mask 向量必须与 64-lane 数据向量对应
+3. 不再为新模板新增 32-lane 前向能力
 
 模板体若使用 `pto.simd.predicate/load/store/load_pu/store_pu`，必须满足：
 
@@ -272,15 +297,19 @@ Level-3 多 family 首版支持以下固定签名类别：
 
 ## 9. 目录与测试约束
 
-Level-3 模板源码目录统一为：
+Level-3 模板目录统一为：
 
 1. `oplib/level3/`
-
+2. `oplib/level3/skeletons/` 作为 skeleton source 主维护目录
 lit 约束：
 
 1. `--op-lib-dir` 应指向 `oplib/level3/`
 2. `test/tile_fusion/oplib/` 不再维护第二份模板源
 3. 基础设施负测资源放在 `test/tile_fusion/resources/`
+
+编译性能约束：
+
+1. `PTOInstantiateAndLowerToLibCall` 在实例化后应移除 module 内未被直接调用的 imported/instantiated OP-Lib 私有函数，避免无关模板继续参与后续优化与 EmitC。
 
 ## 10. 开发建议
 
