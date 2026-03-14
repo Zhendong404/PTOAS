@@ -17,6 +17,7 @@ SKELETON_DIR = SCRIPT_DIR / "skeletons"
 SNIPPET_DIR = SCRIPT_DIR / "families" / "snippets"
 CATALOG_PATH = SKELETON_DIR / "catalog.json"
 MODULE_TEMPLATE_PATH = SKELETON_DIR / "module.tmpl.mlir"
+GENERATED_FILE_BANNER = "// AUTO-GENERATED: do not edit directly."
 
 TILE_TYPE_FMT = (
     "!pto.tile_buf<loc=vec, dtype={dtype}, rows=32, cols=32, v_row=?, "
@@ -50,6 +51,31 @@ def load_family_doc() -> dict[str, Any]:
     catalog = json.loads(load_text(CATALOG_PATH))
     ensure_catalog_sync(catalog, family_doc)
     return family_doc
+
+
+def is_generated_concrete_file(path: Path) -> bool:
+    if path.suffix != ".mlir" or not path.is_file():
+        return False
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return GENERATED_FILE_BANNER in lines[:4]
+
+
+def list_existing_generated_outputs() -> list[Path]:
+    return sorted(path for path in SCRIPT_DIR.glob("*.mlir") if is_generated_concrete_file(path))
+
+
+def find_stale_generated_outputs(outputs: dict[Path, str]) -> list[Path]:
+    expected = set(outputs)
+    return [path for path in list_existing_generated_outputs() if path not in expected]
+
+
+def validate_expected_output(path: Path, content: str) -> None:
+    unresolved = sorted(set(re.findall(r"@@[A-Z0-9_]+@@", content)))
+    if unresolved:
+        unresolved_list = ", ".join(unresolved)
+        raise ValueError(
+            f"generated output {path.relative_to(SCRIPT_DIR)} still contains unresolved placeholders: {unresolved_list}"
+        )
 
 
 def replace_all(template: str, mapping: dict[str, str]) -> str:
@@ -510,10 +536,16 @@ def render_outputs() -> dict[Path, str]:
                     "generated concrete templates synchronized from skeleton source.",
                 ),
             )
+    for path, content in outputs.items():
+        validate_expected_output(path, content)
     return outputs
 
 
 def write_outputs(outputs: dict[Path, str]) -> int:
+    stale_outputs = find_stale_generated_outputs(outputs)
+    for path in stale_outputs:
+        path.unlink()
+        print(f"removed stale {path.relative_to(SCRIPT_DIR)}")
     for path, content in outputs.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -523,6 +555,14 @@ def write_outputs(outputs: dict[Path, str]) -> int:
 
 def check_outputs(outputs: dict[Path, str]) -> int:
     failures = 0
+    stale_outputs = find_stale_generated_outputs(outputs)
+    for path in stale_outputs:
+        print(
+            "unexpected generated file: "
+            f"{path.relative_to(SCRIPT_DIR)} (remove it or regenerate with --write)",
+            file=sys.stderr,
+        )
+        failures += 1
     for path, expected in outputs.items():
         if not path.exists():
             print(f"missing generated file: {path.relative_to(SCRIPT_DIR)}", file=sys.stderr)

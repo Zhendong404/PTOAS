@@ -50,5 +50,7 @@ python3 oplib/level3/generate_level3_templates.py --check
 ```
 
 `--write` 会刷新根目录 `oplib/level3/*.mlir` concrete 模板，`--check` 会检查
-catalog / template 与已落盘 concrete 模板是否漂移。生成器启动时还会强制校验
-Family DSL、snippet contract、snippet 源与 `catalog.json` 是否保持同步。
+catalog / template 与已落盘 concrete 模板是否漂移，并报告 root 目录下多余的
+stale generated `.mlir` 文件。`--write` 会把这类 stale generated 文件一并清理，
+使根目录重新收敛到期望输出集合。生成器启动时还会强制校验 Family DSL、
+snippet contract、snippet 源与 `catalog.json` 是否保持同步。
