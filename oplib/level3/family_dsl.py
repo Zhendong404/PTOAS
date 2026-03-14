@@ -158,6 +158,7 @@ def _validate_ops(family: dict[str, Any]) -> None:
     seen: set[str] = set()
     key_names = matcher_keys_by_name(family)
     variant_basis = family["variant_axis"]["basis"]
+    require_snippet = family["status"] == "active"
     for op in ops:
         _require(isinstance(op, dict), f"family {family_name} op entry must be an object")
         name = str(op.get("name", "")).strip()
@@ -165,6 +166,16 @@ def _validate_ops(family: dict[str, Any]) -> None:
         _require(name not in seen, f"family {family_name} has duplicate op name: {name}")
         seen.add(name)
         _require(str(op.get("core_op", "")).strip(), f"family {family_name} op {name} missing core_op")
+        if "snippet" in op:
+            _require(
+                str(op.get("snippet", "")).strip(),
+                f"family {family_name} op {name} snippet must be a non-empty string when present",
+            )
+        if require_snippet and not op.get("variants"):
+            _require(
+                str(op.get("snippet", "")).strip(),
+                f"active family {family_name} op {name} requires snippet",
+            )
         variants = op.get("variants", [])
         if variants:
             _require(
@@ -189,6 +200,21 @@ def _validate_ops(family: dict[str, Any]) -> None:
                     isinstance(request_keys, dict),
                     f"family {family_name} op {name} variant {variant_id} request_keys must be an object",
                 )
+                body = variant.get("body", {})
+                _require(
+                    isinstance(body, dict),
+                    f"family {family_name} op {name} variant {variant_id} body must be an object when present",
+                )
+                if "snippet" in body:
+                    _require(
+                        str(body.get("snippet", "")).strip(),
+                        f"family {family_name} op {name} variant {variant_id} snippet must be a non-empty string",
+                    )
+                if require_snippet:
+                    _require(
+                        str(body.get("snippet", "")).strip() or str(op.get("snippet", "")).strip(),
+                        f"active family {family_name} op {name} variant {variant_id} requires snippet",
+                    )
                 if "requiredVariantId" in request_keys:
                     _require(
                         "requiredVariantId" in key_names,

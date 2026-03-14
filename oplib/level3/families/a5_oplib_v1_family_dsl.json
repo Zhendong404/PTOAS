@@ -108,6 +108,7 @@
         {
           "name": "tadd",
           "core_op": "arith.addf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -118,6 +119,7 @@
         {
           "name": "tsub",
           "core_op": "arith.subf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -128,6 +130,7 @@
         {
           "name": "tmul",
           "core_op": "arith.mulf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -138,6 +141,7 @@
         {
           "name": "tdiv",
           "core_op": "arith.divf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -148,6 +152,7 @@
         {
           "name": "tmax",
           "core_op": "arith.maximumf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -158,6 +163,7 @@
         {
           "name": "tmin",
           "core_op": "arith.minimumf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f16"
           ],
@@ -168,6 +174,7 @@
         {
           "name": "trem",
           "core_op": "arith.remf",
+          "snippet": "binary/elementwise_result.mlirfrag",
           "dtypes": [
             "f32"
           ],
@@ -270,27 +277,33 @@
       "ops": [
         {
           "name": "tand",
-          "core_op": "arith.andi"
+          "core_op": "arith.andi",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tor",
-          "core_op": "arith.ori"
+          "core_op": "arith.ori",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "txor",
-          "core_op": "arith.xori"
+          "core_op": "arith.xori",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tshl",
-          "core_op": "arith.shli"
+          "core_op": "arith.shli",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tshr",
-          "core_op": "arith.shrui"
+          "core_op": "arith.shrui",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "trem",
-          "core_op": "arith.remsi"
+          "core_op": "arith.remsi",
+          "snippet": "binary/elementwise_result.mlirfrag"
         }
       ]
     },
@@ -462,7 +475,8 @@
             {
               "id": "tile_scalar",
               "body": {
-                "operand_order": "tile_scalar"
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
               },
               "metadata": {
                 "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
@@ -474,7 +488,8 @@
             {
               "id": "scalar_tile",
               "body": {
-                "operand_order": "scalar_tile"
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
               },
               "metadata": {
                 "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
@@ -488,11 +503,13 @@
         {
           "name": "trems",
           "core_op": "arith.remf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
           "variant_id": "tile_scalar"
         },
         {
           "name": "tlrelu",
           "core_op": "custom",
+          "snippet": "tile_scalar/lrelu_result.mlirfrag",
           "variant_id": "tile_scalar",
           "body_kind": "lrelu"
         }
@@ -599,27 +616,33 @@
       "ops": [
         {
           "name": "tands",
-          "core_op": "arith.andi"
+          "core_op": "arith.andi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "tors",
-          "core_op": "arith.ori"
+          "core_op": "arith.ori",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "txors",
-          "core_op": "arith.xori"
+          "core_op": "arith.xori",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "tshls",
-          "core_op": "arith.shli"
+          "core_op": "arith.shli",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "tshrs",
-          "core_op": "arith.shrui"
+          "core_op": "arith.shrui",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "trems",
-          "core_op": "arith.remsi"
+          "core_op": "arith.remsi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         }
       ]
     },
@@ -860,24 +883,28 @@
         {
           "name": "tabs",
           "core_op": "arith.maximumf(arith.negf(x), x)",
+          "snippet": "unary/abs_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "abs"
         },
         {
           "name": "tneg",
           "core_op": "arith.negf",
+          "snippet": "unary/neg_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "neg"
         },
         {
           "name": "trecip",
           "core_op": "arith.divf",
+          "snippet": "unary/recip_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "recip"
         },
         {
           "name": "trelu",
           "core_op": "arith.maximumf",
+          "snippet": "unary/relu_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "relu"
         }
@@ -946,24 +973,28 @@
         {
           "name": "texp",
           "core_op": "math.exp",
+          "snippet": "unary/exp_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "exp"
         },
         {
           "name": "tlog",
           "core_op": "math.log",
+          "snippet": "unary/log_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "log"
         },
         {
           "name": "tsqrt",
           "core_op": "math.sqrt",
+          "snippet": "unary/sqrt_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "sqrt"
         },
         {
           "name": "trsqrt",
           "core_op": "arith.divf(math.one, math.sqrt)",
+          "snippet": "unary/rsqrt_result.mlirfrag",
           "variant_id": "tile",
           "body_kind": "rsqrt"
         }
@@ -1060,6 +1091,7 @@
         {
           "name": "tnot",
           "core_op": "arith.xori",
+          "snippet": "unary/not_result.mlirfrag",
           "body_kind": "not"
         }
       ]
@@ -1728,7 +1760,8 @@
       "ops": [
         {
           "name": "tcmp",
-          "core_op": "arith.cmpf"
+          "core_op": "arith.cmpf",
+          "snippet": "compare/cmp_result.mlirfrag"
         }
       ]
     },
@@ -1871,7 +1904,8 @@
       "ops": [
         {
           "name": "tcmps",
-          "core_op": "arith.cmpf"
+          "core_op": "arith.cmpf",
+          "snippet": "compare/cmp_result.mlirfrag"
         }
       ]
     },

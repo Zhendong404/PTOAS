@@ -1,0 +1,1 @@
+%result = math.exp %lhs : @@VECTOR_TYPE@@

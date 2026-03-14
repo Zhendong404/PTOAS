@@ -9,7 +9,7 @@
 
 - [x] 2.1 设计并落地声明式 Family DSL，覆盖 family、参数角色、dtype 轴、variant 轴、metadata 和 matcher key。
 - [x] 2.2 定义 Mixed-Body MLIR snippet 合同，分别覆盖 binary、tile-scalar、unary、ternary、compare、select、reduction、broadcast family。
-- [ ] 2.3 重构 `oplib/level3/generate_level3_templates.py` 或等价入口，使其从 Family DSL + snippet 生成 concrete `.mlir` 模板。
+- [x] 2.3 重构 `oplib/level3/generate_level3_templates.py` 或等价入口，使其从 Family DSL + snippet 生成 concrete `.mlir` 模板。
 - [ ] 2.4 保留 `--write` / `--check` 工作流，并补齐漂移检测。
 
 ## 3. 编译器消费侧改造

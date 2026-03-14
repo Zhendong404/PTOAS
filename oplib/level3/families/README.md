@@ -11,5 +11,9 @@ This directory holds the declarative Family DSL for A5 OpLib V1 authoring.
   - fixes snippet-visible SSA names, result SSA naming, and generator-owned
     responsibilities for binary, tile-scalar, unary, ternary, compare,
     select, reduction, and broadcast families
+- `snippets/`
+  - checked-in Mixed-Body MLIR snippet sources referenced from active family ops
+  - authors maintain vector-body fragments here; generator injects them into the
+    skeleton-owned loop/load/store scaffolding
 - `../family_dsl.py`
   - loader, validator, snippet-contract checker, and catalog-projection helpers
