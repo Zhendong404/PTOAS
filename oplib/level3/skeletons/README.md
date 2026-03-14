@@ -5,6 +5,11 @@
 
 ## 布局
 
+- `../families/a5_oplib_v1_family_dsl.json`
+  - A5 OpLib V1 的声明式 Family DSL，覆盖 family、参数角色、dtype 轴、variant 轴、
+    metadata 和 matcher key。
+- `../family_dsl.py`
+  - Family DSL 的 loader / validator，以及到 `catalog.json` 的投影检查。
 - `catalog.json`
   - 定义主要计算模式的 family、参数维度和 concrete 展开矩阵。
 - `module.tmpl.mlir`
@@ -29,9 +34,11 @@
 使用相邻脚本：
 
 ```bash
+python3 oplib/level3/family_dsl.py --check-catalog
 python3 oplib/level3/generate_level3_templates.py --write
 python3 oplib/level3/generate_level3_templates.py --check
 ```
 
 `--write` 会刷新根目录 `oplib/level3/*.mlir` concrete 模板，`--check` 会检查
-catalog / template 与已落盘 concrete 模板是否漂移。
+catalog / template 与已落盘 concrete 模板是否漂移。生成器启动时还会强制校验
+Family DSL 与 `catalog.json` 是否保持同步。

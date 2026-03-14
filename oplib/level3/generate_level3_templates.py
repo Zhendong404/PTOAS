@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+from family_dsl import ensure_catalog_sync, load_family_dsl
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKELETON_DIR = SCRIPT_DIR / "skeletons"
@@ -28,7 +30,9 @@ def load_text(path: Path) -> str:
 
 
 def load_catalog() -> dict:
-    return json.loads(load_text(CATALOG_PATH))
+    catalog = json.loads(load_text(CATALOG_PATH))
+    ensure_catalog_sync(catalog, load_family_dsl())
+    return catalog
 
 
 def replace_all(template: str, mapping: dict[str, str]) -> str:

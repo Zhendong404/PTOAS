@@ -1,0 +1,2020 @@
+{
+  "schema_version": "a5_oplib_v1_family_dsl/v1",
+  "patterns": [
+    {
+      "id": "binary",
+      "template": "binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "tile_scalar",
+      "template": "tile_scalar.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "unary",
+      "template": "unary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "compare",
+      "template": "compare.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "condition",
+        "variant_id"
+      ]
+    }
+  ],
+  "families": [
+    {
+      "family": "float_binary_elementwise",
+      "pattern": "binary",
+      "kind": "l3_float_binary_elementwise_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f16",
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "per_op"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "float_binary_elementwise_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from unified float binary skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tadd",
+          "core_op": "arith.addf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "tsub",
+          "core_op": "arith.subf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "tmul",
+          "core_op": "arith.mulf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "tdiv",
+          "core_op": "arith.divf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "tmax",
+          "core_op": "arith.maximumf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "tmin",
+          "core_op": "arith.minimumf",
+          "dtypes": [
+            "f16"
+          ],
+          "variant_id": "tile_f16_scalar",
+          "cost": 1,
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+        },
+        {
+          "name": "trem",
+          "core_op": "arith.remf",
+          "dtypes": [
+            "f32"
+          ],
+          "variant_id": "tile"
+        }
+      ]
+    },
+    {
+      "family": "int_binary_elementwise",
+      "pattern": "binary",
+      "kind": "l3_int_binary_elementwise_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "i8",
+          "i16",
+          "i32"
+        ],
+        "variant_id_by_dtype": {
+          "i8": "tile_i8",
+          "i16": "tile_i16",
+          "i32": "tile"
+        }
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "dtype_map"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+        "targets": [
+          {
+            "output": "int_binary_elementwise_i8_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+            "dtypes": [
+              "i8"
+            ]
+          },
+          {
+            "output": "int_binary_elementwise_i16_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+            "dtypes": [
+              "i16"
+            ]
+          },
+          {
+            "output": "int_binary_elementwise_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
+            "dtypes": [
+              "i32"
+            ]
+          }
+        ]
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "dtype_axis.variant_id_by_dtype"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tand",
+          "core_op": "arith.andi"
+        },
+        {
+          "name": "tor",
+          "core_op": "arith.ori"
+        },
+        {
+          "name": "txor",
+          "core_op": "arith.xori"
+        },
+        {
+          "name": "tshl",
+          "core_op": "arith.shli"
+        },
+        {
+          "name": "tshr",
+          "core_op": "arith.shrui"
+        },
+        {
+          "name": "trem",
+          "core_op": "arith.remsi"
+        }
+      ]
+    },
+    {
+      "family": "float_partial_binary",
+      "pattern": "binary",
+      "kind": "l3_float_partial_binary_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "tile"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tpartadd",
+          "core_op": "arith.addf"
+        },
+        {
+          "name": "tpartmax",
+          "core_op": "arith.maximumf"
+        },
+        {
+          "name": "tpartmin",
+          "core_op": "arith.minimumf"
+        },
+        {
+          "name": "tprelu",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "float_tile_scalar",
+      "pattern": "tile_scalar",
+      "kind": "l3_float_tile_scalar_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "scalar",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "per_op_variant"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "float_tile_scalar_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from unified float tile-scalar skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        },
+        {
+          "key": "requiredVariantId",
+          "location": "request_only",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tdivs",
+          "core_op": "arith.divf",
+          "variants": [
+            {
+              "id": "tile_scalar",
+              "body": {
+                "operand_order": "tile_scalar"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar"
+              }
+            },
+            {
+              "id": "scalar_tile",
+              "body": {
+                "operand_order": "scalar_tile"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile"
+              }
+            }
+          ]
+        },
+        {
+          "name": "trems",
+          "core_op": "arith.remf",
+          "variant_id": "tile_scalar"
+        },
+        {
+          "name": "tlrelu",
+          "core_op": "custom",
+          "variant_id": "tile_scalar",
+          "body_kind": "lrelu"
+        }
+      ]
+    },
+    {
+      "family": "int_tile_scalar_elementwise",
+      "pattern": "tile_scalar",
+      "kind": "l3_int_tile_scalar_elementwise_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "scalar",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "i8",
+          "i16",
+          "i32"
+        ],
+        "variant_id_by_dtype": {
+          "i8": "tile_scalar_i8",
+          "i16": "tile_scalar_i16",
+          "i32": "tile_scalar"
+        }
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "dtype_map"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+        "targets": [
+          {
+            "output": "int_tile_scalar_elementwise_i8_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+            "dtypes": [
+              "i8"
+            ]
+          },
+          {
+            "output": "int_tile_scalar_elementwise_i16_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+            "dtypes": [
+              "i16"
+            ]
+          },
+          {
+            "output": "int_tile_scalar_elementwise_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
+            "dtypes": [
+              "i32"
+            ]
+          }
+        ]
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "dtype_axis.variant_id_by_dtype"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tands",
+          "core_op": "arith.andi"
+        },
+        {
+          "name": "tors",
+          "core_op": "arith.ori"
+        },
+        {
+          "name": "txors",
+          "core_op": "arith.xori"
+        },
+        {
+          "name": "tshls",
+          "core_op": "arith.shli"
+        },
+        {
+          "name": "tshrs",
+          "core_op": "arith.shrui"
+        },
+        {
+          "name": "trems",
+          "core_op": "arith.remsi"
+        }
+      ]
+    },
+    {
+      "family": "float_ternary_tile",
+      "pattern": "binary",
+      "kind": "l3_float_ternary_tile_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src2",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "tile"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "taddc",
+          "core_op": "custom"
+        },
+        {
+          "name": "tsubc",
+          "core_op": "custom"
+        },
+        {
+          "name": "tprelu",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "float_ternary_tile_scalar",
+      "pattern": "tile_scalar",
+      "kind": "l3_float_ternary_tile_scalar_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "scalar",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "tile_scalar"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        }
+      ],
+      "ops": [
+        {
+          "name": "taddsc",
+          "core_op": "custom"
+        },
+        {
+          "name": "tsubsc",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "float_unary",
+      "pattern": "unary",
+      "kind": "l3_float_unary_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "per_op"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "float_unary_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from unified float unary skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tabs",
+          "core_op": "arith.maximumf(arith.negf(x), x)",
+          "variant_id": "tile",
+          "body_kind": "abs"
+        },
+        {
+          "name": "tneg",
+          "core_op": "arith.negf",
+          "variant_id": "tile",
+          "body_kind": "neg"
+        },
+        {
+          "name": "trecip",
+          "core_op": "arith.divf",
+          "variant_id": "tile",
+          "body_kind": "recip"
+        },
+        {
+          "name": "trelu",
+          "core_op": "arith.maximumf",
+          "variant_id": "tile",
+          "body_kind": "relu"
+        }
+      ]
+    },
+    {
+      "family": "float_unary_math",
+      "pattern": "unary",
+      "kind": "l3_float_unary_math_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "per_op"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "float_unary_math_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from unified float unary skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "texp",
+          "core_op": "math.exp",
+          "variant_id": "tile",
+          "body_kind": "exp"
+        },
+        {
+          "name": "tlog",
+          "core_op": "math.log",
+          "variant_id": "tile",
+          "body_kind": "log"
+        },
+        {
+          "name": "tsqrt",
+          "core_op": "math.sqrt",
+          "variant_id": "tile",
+          "body_kind": "sqrt"
+        },
+        {
+          "name": "trsqrt",
+          "core_op": "arith.divf(math.one, math.sqrt)",
+          "variant_id": "tile",
+          "body_kind": "rsqrt"
+        }
+      ]
+    },
+    {
+      "family": "int_unary",
+      "pattern": "unary",
+      "kind": "l3_int_unary_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "i8",
+          "i16",
+          "i32"
+        ],
+        "variant_id_by_dtype": {
+          "i8": "tile_i8",
+          "i16": "tile_i16",
+          "i32": "tile"
+        }
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "dtype_map"
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+        "targets": [
+          {
+            "output": "int_unary_i8_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+            "dtypes": [
+              "i8"
+            ]
+          },
+          {
+            "output": "int_unary_i16_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+            "dtypes": [
+              "i16"
+            ]
+          },
+          {
+            "output": "int_unary_templates.mlir",
+            "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
+            "dtypes": [
+              "i32"
+            ]
+          }
+        ]
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "dtype_axis.variant_id_by_dtype"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tnot",
+          "core_op": "arith.xori",
+          "body_kind": "not"
+        }
+      ]
+    },
+    {
+      "family": "reduce_row",
+      "pattern": "binary",
+      "kind": "l3_reduce_row_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "tmp",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "linear"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "trowsum",
+          "core_op": "custom"
+        },
+        {
+          "name": "trowmax",
+          "core_op": "custom"
+        },
+        {
+          "name": "trowmin",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "reduce_col",
+      "pattern": "unary",
+      "kind": "l3_reduce_col_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "linear"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tcolmax",
+          "core_op": "custom"
+        },
+        {
+          "name": "tcolmin",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "reduce_colsum",
+      "pattern": "binary",
+      "kind": "l3_reduce_colsum_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "tmp",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "explicit",
+        "values": [
+          {
+            "id": "linear",
+            "matcher": {
+              "isBinary": false
+            }
+          },
+          {
+            "id": "binary_tree",
+            "matcher": {
+              "isBinary": true
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "isBinary",
+          "location": "request_only",
+          "source": "variant_axis.matcher.isBinary"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tcolsum",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "broadcast_row",
+      "pattern": "unary",
+      "kind": "l3_broadcast_row_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "linear"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "trowexpand",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "broadcast_col",
+      "pattern": "unary",
+      "kind": "l3_broadcast_col_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "linear"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tcolexpand",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "broadcast_row_binary",
+      "pattern": "binary",
+      "kind": "l3_broadcast_row_binary_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "linear"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "trowexpandmul",
+          "core_op": "custom"
+        },
+        {
+          "name": "trowexpanddiv",
+          "core_op": "custom"
+        },
+        {
+          "name": "trowexpandsub",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "scalar_expand",
+      "pattern": "tile_scalar",
+      "kind": "l3_scalar_expand_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "scalar",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "scalar"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        }
+      ],
+      "ops": [
+        {
+          "name": "texpands",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "cmp_tile_tile",
+      "pattern": "compare",
+      "kind": "l3_cmp_tile_tile_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ],
+        "result_dtype": "i8",
+        "passive_vectors": {
+          "f32": "dense<0x7FC00000>"
+        }
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "condition_list",
+        "values": [
+          {
+            "id": "eq",
+            "matcher": {
+              "cmpMode": "EQ"
+            },
+            "metadata": {
+              "predicate": "oeq"
+            }
+          },
+          {
+            "id": "ne",
+            "matcher": {
+              "cmpMode": "NE"
+            },
+            "metadata": {
+              "predicate": "one"
+            }
+          },
+          {
+            "id": "lt",
+            "matcher": {
+              "cmpMode": "LT"
+            },
+            "metadata": {
+              "predicate": "olt"
+            }
+          },
+          {
+            "id": "le",
+            "matcher": {
+              "cmpMode": "LE"
+            },
+            "metadata": {
+              "predicate": "ole"
+            }
+          },
+          {
+            "id": "gt",
+            "matcher": {
+              "cmpMode": "GT"
+            },
+            "metadata": {
+              "predicate": "ogt"
+            }
+          },
+          {
+            "id": "ge",
+            "matcher": {
+              "cmpMode": "GE"
+            },
+            "metadata": {
+              "predicate": "oge"
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "cmp_tile_tile_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from compare skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "cmpMode",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.cmp_mode",
+          "source": "variant_axis.matcher.cmpMode"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tcmp",
+          "core_op": "arith.cmpf"
+        }
+      ]
+    },
+    {
+      "family": "cmp_tile_scalar",
+      "pattern": "compare",
+      "kind": "l3_cmp_tile_scalar_template",
+      "status": "active",
+      "parameter_roles": [
+        {
+          "name": "src",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "scalar",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ],
+        "result_dtype": "i8",
+        "passive_vectors": {
+          "f32": "dense<0x7FC00000>"
+        }
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "condition_list",
+        "values": [
+          {
+            "id": "eq",
+            "matcher": {
+              "cmpMode": "EQ"
+            },
+            "metadata": {
+              "predicate": "oeq"
+            }
+          },
+          {
+            "id": "ne",
+            "matcher": {
+              "cmpMode": "NE"
+            },
+            "metadata": {
+              "predicate": "one"
+            }
+          },
+          {
+            "id": "lt",
+            "matcher": {
+              "cmpMode": "LT"
+            },
+            "metadata": {
+              "predicate": "olt"
+            }
+          },
+          {
+            "id": "le",
+            "matcher": {
+              "cmpMode": "LE"
+            },
+            "metadata": {
+              "predicate": "ole"
+            }
+          },
+          {
+            "id": "gt",
+            "matcher": {
+              "cmpMode": "GT"
+            },
+            "metadata": {
+              "predicate": "ogt"
+            }
+          },
+          {
+            "id": "ge",
+            "matcher": {
+              "cmpMode": "GE"
+            },
+            "metadata": {
+              "predicate": "oge"
+            }
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant",
+        "output": "cmp_tile_scalar_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from compare skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "cmpMode",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.cmp_mode",
+          "source": "variant_axis.matcher.cmpMode"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tcmps",
+          "core_op": "arith.cmpf"
+        }
+      ]
+    },
+    {
+      "family": "select_mask",
+      "pattern": "binary",
+      "kind": "l3_select_mask_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "mask",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "mask"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tsel",
+          "core_op": "custom"
+        }
+      ]
+    },
+    {
+      "family": "select_scalar",
+      "pattern": "tile_scalar",
+      "kind": "l3_select_scalar_template",
+      "status": "reserved",
+      "parameter_roles": [
+        {
+          "name": "src0",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "src1",
+          "kind": "tile",
+          "io": "input"
+        },
+        {
+          "name": "select_mode",
+          "kind": "scalar",
+          "io": "input"
+        },
+        {
+          "name": "dst",
+          "kind": "tile",
+          "io": "output"
+        }
+      ],
+      "dtype_axis": {
+        "values": [
+          "f32"
+        ]
+      },
+      "variant_axis": {
+        "name": "variant_id",
+        "basis": "placeholder",
+        "values": [
+          {
+            "id": "scalar_mode"
+          }
+        ]
+      },
+      "metadata": {
+        "entry_role": "variant"
+      },
+      "matcher_keys": [
+        {
+          "key": "kind",
+          "location": "template_attr",
+          "attr": "pto.oplib.kind",
+          "source": "family.kind"
+        },
+        {
+          "key": "op",
+          "location": "template_attr",
+          "attr": "pto.oplib.op",
+          "source": "op.name"
+        },
+        {
+          "key": "dtype",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.dtype",
+          "source": "dtype_axis"
+        },
+        {
+          "key": "variant_id",
+          "location": "template_attr",
+          "attr": "pto.oplib.variant_id",
+          "source": "variant_axis"
+        },
+        {
+          "key": "scalarPos",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.scalar_pos",
+          "source": "parameter_roles.scalar_index"
+        }
+      ],
+      "ops": [
+        {
+          "name": "tsels",
+          "core_op": "custom"
+        }
+      ]
+    }
+  ]
+}
