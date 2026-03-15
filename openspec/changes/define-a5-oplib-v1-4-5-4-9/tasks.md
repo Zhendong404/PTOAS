@@ -25,7 +25,7 @@
 - [x] 4.2 迁移 4.5 ternary、partial binary 和激活相关 family，包括 `tprelu`、`tlrelu`。
 - [x] 4.3 迁移 4.6 reduction family：`trowsum/trowmax/trowmin/tcolsum/tcolmax/tcolmin`。
 - [x] 4.4 迁移 4.7 broadcast family：`trowexpand/tcolexpand/trowexpandmul/trowexpanddiv/trowexpandsub/texpands`。
-- [ ] 4.5 迁移 4.8 compare/select family：`tcmp/tcmps/tsel/tsels`。
+- [x] 4.5 迁移 4.8 compare/select family：`tcmp/tcmps/tsel/tsels`。
 - [ ] 4.6 迁移 4.9 bitwise family：`tand/tor/txor/tshl/tshr/tnot`。
 
 ## 5. 测试、文档与验证

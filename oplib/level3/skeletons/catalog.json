@@ -851,6 +851,73 @@
       ]
     },
     {
+      "id": "select_mask",
+      "template": "select_mask.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "select_mask",
+          "kind": "l3_select_mask_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tsel",
+              "core_op": "custom"
+            }
+          ],
+          "output": "select_mask_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from select skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+        }
+      ]
+    },
+    {
+      "id": "select_scalar",
+      "template": "select_scalar.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "select_scalar",
+          "kind": "l3_select_scalar_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "scalar",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tsels",
+              "core_op": "custom"
+            }
+          ],
+          "output": "select_scalar_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from select skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "scalar_pos": 2
+        }
+      ]
+    },
+    {
       "id": "reduce_row",
       "template": "reduce_row.instance.tmpl.mlir",
       "axes": [

@@ -193,7 +193,9 @@ def build_arg_decls(
     input_dtype: str,
     result_dtype: str | None,
     arg_tile_shapes: list[tuple[int, int] | None],
+    arg_types_by_role: dict[str, str] | None = None,
 ) -> str:
+    arg_types_by_role = arg_types_by_role or {}
     decls: list[str] = []
     tile_index = 0
     scalar_index = 0
@@ -201,19 +203,31 @@ def build_arg_decls(
         if role["kind"] == "tile":
             if role["io"] == "output":
                 name = "dst"
-                dtype = result_dtype or input_dtype
+                dtype = arg_types_by_role.get(role["name"], result_dtype or input_dtype)
                 rows, cols = arg_tile_shapes[idx] or (32, 32)
             else:
                 name = f"src{tile_index}"
-                dtype = input_dtype
+                dtype = arg_types_by_role.get(role["name"], input_dtype)
                 rows, cols = arg_tile_shapes[idx] or (32, 32)
                 tile_index += 1
             decls.append(f"      %{name}: {tile_type(dtype, rows, cols)}")
             continue
         name = "scalar" if scalar_index == 0 else f"scalar{scalar_index}"
         scalar_index += 1
-        decls.append(f"      %{name}: {scalar_type(input_dtype)}")
+        decls.append(f"      %{name}: {arg_types_by_role.get(role['name'], scalar_type(input_dtype))}")
     return ",\n".join(decls)
+
+
+def resolve_arg_type(
+    role: dict[str, Any],
+    input_dtype: str,
+    result_dtype: str | None,
+    arg_types_by_role: dict[str, str],
+) -> str:
+    if role["kind"] == "tile":
+        default_dtype = result_dtype or input_dtype if role["io"] == "output" else input_dtype
+        return arg_types_by_role.get(role["name"], default_dtype)
+    return arg_types_by_role.get(role["name"], scalar_type(input_dtype))
 
 
 def build_match_attrs(arg_roles: list[str]) -> str:
@@ -352,6 +366,7 @@ def build_snippet_mapping(
     op_info: dict[str, Any],
     dtype: str,
     result_dtype: str | None,
+    scalar_arg_type: str,
     cmp_predicate: str,
     rhs_value: str,
 ) -> dict[str, str]:
@@ -366,9 +381,11 @@ def build_snippet_mapping(
         "CORE_OP": op_info["core_op"],
         "REDUCE_KIND": reduction_kind_from_core_op(op_info["core_op"]),
         "SCALAR_TYPE": scalar_type(result_dtype or dtype),
+        "SCALAR_ARG_TYPE": scalar_arg_type,
         "VECTOR_TYPE": result_vector_ty,
         "INPUT_VECTOR_TYPE": input_vector_ty,
         "RESULT_VECTOR_TYPE": result_vector_ty,
+        "MASK_VECTOR_TYPE": mask_vector_type(),
         "CMP_PREDICATE": cmp_predicate,
         "RHS_VALUE": rhs_value,
         "SNIPPET_LHS": snippet_lhs,
@@ -431,12 +448,13 @@ def build_snippet_blocks(
     contract: dict[str, Any],
     dtype: str,
     result_dtype: str | None,
+    scalar_arg_type: str,
     cmp_predicate: str,
     rhs_value: str,
 ) -> tuple[str, str]:
     relative_path = snippet_relpath(op_info)
     setup_text, compute_text = load_snippet_sections(relative_path)
-    mapping = build_snippet_mapping(op_info, dtype, result_dtype, cmp_predicate, rhs_value)
+    mapping = build_snippet_mapping(op_info, dtype, result_dtype, scalar_arg_type, cmp_predicate, rhs_value)
     rendered_setup = replace_all(setup_text, mapping)
     rendered_compute = replace_all(compute_text, mapping)
     validate_rendered_snippet(relative_path, contract, rendered_setup, rendered_compute)
@@ -463,6 +481,10 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
     result_dtype = family.get("dtype_axis", {}).get("result_dtype")
     scalar_pos = family_scalar_index(family)
     passive_vectors = family.get("dtype_axis", {}).get("passive_vectors", {})
+    arg_types_by_role = {
+        str(name): str(type_name)
+        for name, type_name in family.get("metadata", {}).get("arg_types_by_role", {}).items()
+    }
     has_scalar_operand = any(role["kind"] == "scalar" for role in family["parameter_roles"])
     input_tile_shape = tile_shape_from_metadata(family["metadata"], "input_tile_shape")
     result_tile_shape = tile_shape_from_metadata(family["metadata"], "result_tile_shape")
@@ -473,18 +495,32 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
         result_tile_shape,
     )
     arg_roles = [role["kind"] for role in family["parameter_roles"]]
-    input_tile_shapes = [
-        shape
-        for role, shape in zip(family["parameter_roles"], arg_tile_shapes)
-        if role["kind"] == "tile" and role["io"] == "input"
-    ]
-    src0_tile_shape = input_tile_shapes[0] if input_tile_shapes else input_tile_shape
-    src1_tile_shape = input_tile_shapes[1] if len(input_tile_shapes) > 1 else src0_tile_shape
-
     for op_info in expand_ops(family):
         requested_dtypes = op_info.get("dtypes")
         op_dtypes = [dtype for dtype in dtypes if requested_dtypes is None or dtype in requested_dtypes]
         for dtype in op_dtypes:
+            arg_types = [
+                resolve_arg_type(role, dtype, result_dtype, arg_types_by_role) for role in family["parameter_roles"]
+            ]
+            tile_inputs = [
+                (shape, arg_type)
+                for role, shape, arg_type in zip(family["parameter_roles"], arg_tile_shapes, arg_types)
+                if role["kind"] == "tile" and role["io"] == "input"
+            ]
+            src0_tile_shape = tile_inputs[0][0] if tile_inputs else input_tile_shape
+            src1_tile_shape = tile_inputs[1][0] if len(tile_inputs) > 1 else src0_tile_shape
+            src2_tile_shape = tile_inputs[2][0] if len(tile_inputs) > 2 else src1_tile_shape
+            src0_dtype = tile_inputs[0][1] if tile_inputs else dtype
+            src1_dtype = tile_inputs[1][1] if len(tile_inputs) > 1 else src0_dtype
+            src2_dtype = tile_inputs[2][1] if len(tile_inputs) > 2 else src1_dtype
+            scalar_arg_type = next(
+                (
+                    arg_type
+                    for role, arg_type in zip(family["parameter_roles"], arg_types)
+                    if role["kind"] == "scalar"
+                ),
+                scalar_type(dtype),
+            )
             effective_op_info = dict(op_info)
             effective_op_info["core_op"] = op_info.get("core_op_by_dtype", {}).get(dtype, op_info["core_op"])
             for variant_info in variant_entries:
@@ -554,6 +590,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                     contract,
                     dtype,
                     result_dtype,
+                    scalar_arg_type,
                     cmp_predicate,
                     rhs_value,
                 )
@@ -571,6 +608,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                             dtype,
                             result_dtype,
                             arg_tile_shapes,
+                            arg_types_by_role,
                         ),
                         "match_attrs": build_match_attrs(arg_roles),
                         "variant_match_attrs": build_variant_match_attrs(family, variant_matcher),
@@ -590,15 +628,20 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "result_memref_type": memref_type(result_dtype or dtype, result_tile_shape[1]),
                         "input_vector_type": vector_type(dtype),
                         "result_vector_type": vector_type(result_dtype or dtype),
-                        "src0_tile_type": tile_type(dtype, *src0_tile_shape),
-                        "src1_tile_type": tile_type(dtype, *src1_tile_shape),
-                        "src0_memref_type": memref_type(dtype, src0_tile_shape[1]),
-                        "src1_memref_type": memref_type(dtype, src1_tile_shape[1]),
-                        "src0_vector_type": vector_type(dtype),
-                        "src1_vector_type": vector_type(dtype),
+                        "src0_tile_type": tile_type(src0_dtype, *src0_tile_shape),
+                        "src1_tile_type": tile_type(src1_dtype, *src1_tile_shape),
+                        "src2_tile_type": tile_type(src2_dtype, *src2_tile_shape),
+                        "src0_memref_type": memref_type(src0_dtype, src0_tile_shape[1]),
+                        "src1_memref_type": memref_type(src1_dtype, src1_tile_shape[1]),
+                        "src2_memref_type": memref_type(src2_dtype, src2_tile_shape[1]),
+                        "src0_vector_type": vector_type(src0_dtype),
+                        "src1_vector_type": vector_type(src1_dtype),
+                        "src2_vector_type": vector_type(src2_dtype),
                         "scalar_vector_type": vector_type(dtype, 1),
+                        "scalar_arg_vector_type": vector_type(scalar_arg_type),
                         "splat_shuffle_mask": splat_shuffle_mask(),
                         "scalar_type": scalar_type(result_dtype or dtype),
+                        "scalar_arg_type": scalar_arg_type,
                         "mask_vector_type": mask_vector_type(),
                         "passive_vector": passive_vector,
                         "reduce_init": reduce_init,
@@ -652,14 +695,19 @@ def render_family_output(
                     "RESULT_VECTOR_TYPE": instance["result_vector_type"],
                     "SRC0_TILE_TYPE": instance["src0_tile_type"],
                     "SRC1_TILE_TYPE": instance["src1_tile_type"],
+                    "SRC2_TILE_TYPE": instance["src2_tile_type"],
                     "SRC0_MEMREF_TYPE": instance["src0_memref_type"],
                     "SRC1_MEMREF_TYPE": instance["src1_memref_type"],
+                    "SRC2_MEMREF_TYPE": instance["src2_memref_type"],
                     "SRC0_VECTOR_TYPE": instance["src0_vector_type"],
                     "SRC1_VECTOR_TYPE": instance["src1_vector_type"],
+                    "SRC2_VECTOR_TYPE": instance["src2_vector_type"],
                     "SCALAR_VECTOR_TYPE": instance["scalar_vector_type"],
+                    "SCALAR_ARG_VECTOR_TYPE": instance["scalar_arg_vector_type"],
                     "SPLAT_SHUFFLE_MASK": instance["splat_shuffle_mask"],
                     "VECTOR_TYPE": instance["input_vector_type"],
                     "SCALAR_TYPE": instance["scalar_type"],
+                    "SCALAR_ARG_TYPE": instance["scalar_arg_type"],
                     "MASK_VECTOR_TYPE": instance["mask_vector_type"],
                     "PASSIVE_VECTOR": instance["passive_vector"],
                     "REDUCE_INIT": instance["reduce_init"],

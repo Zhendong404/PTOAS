@@ -47,6 +47,24 @@
       ]
     },
     {
+      "id": "select_mask",
+      "template": "select_mask.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "select_scalar",
+      "template": "select_scalar.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
       "id": "reduce_row",
       "template": "reduce_row.instance.tmpl.mlir",
       "axes": [
@@ -2437,9 +2455,9 @@
     },
     {
       "family": "select_mask",
-      "pattern": "binary",
+      "pattern": "select_mask",
       "kind": "l3_select_mask_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "select_mask_result",
       "parameter_roles": [
         {
@@ -2478,7 +2496,13 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "select_mask_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from select skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "arg_types_by_role": {
+          "mask": "i8"
+        }
       },
       "matcher_keys": [
         {
@@ -2509,15 +2533,16 @@
       "ops": [
         {
           "name": "tsel",
-          "core_op": "custom"
+          "core_op": "custom",
+          "snippet": "select/mask_result.mlirfrag"
         }
       ]
     },
     {
       "family": "select_scalar",
-      "pattern": "tile_scalar",
+      "pattern": "select_scalar",
       "kind": "l3_select_scalar_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "select_scalar_result",
       "parameter_roles": [
         {
@@ -2556,7 +2581,13 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "select_scalar_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from select skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "arg_types_by_role": {
+          "select_mode": "i32"
+        }
       },
       "matcher_keys": [
         {
@@ -2593,7 +2624,8 @@
       "ops": [
         {
           "name": "tsels",
-          "core_op": "custom"
+          "core_op": "custom",
+          "snippet": "select/scalar_result.mlirfrag"
         }
       ]
     }
