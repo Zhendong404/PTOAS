@@ -12,7 +12,7 @@ def build():
 
             f16 = F16Type.get(ctx)
             vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
-            ub_ty = MemRefType.get([16, 16, 16], f16, memory_space=vec)
+            ub_ty = MemRefType.get([32, 32], f16, memory_space=vec)
 
             fn_ty = func.FunctionType.get([], [])
             with InsertionPoint(m.body):
