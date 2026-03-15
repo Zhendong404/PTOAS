@@ -849,6 +849,119 @@
           ]
         }
       ]
+    },
+    {
+      "id": "reduce_row",
+      "template": "reduce_row.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "reduce_row",
+          "kind": "l3_reduce_row_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "trowsum",
+              "core_op": "arith.addf"
+            },
+            {
+              "op": "trowmax",
+              "core_op": "arith.maximumf"
+            },
+            {
+              "op": "trowmin",
+              "core_op": "arith.minimumf"
+            }
+          ],
+          "output": "reduce_row_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from reduction row skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "reduce_col",
+      "template": "reduce_col.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "reduce_col",
+          "kind": "l3_reduce_col_template",
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tcolmax",
+              "core_op": "arith.maximumf"
+            },
+            {
+              "op": "tcolmin",
+              "core_op": "arith.minimumf"
+            }
+          ],
+          "output": "reduce_col_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from reduction column skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "reduce_colsum",
+      "template": "reduce_colsum.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "reduce_colsum",
+          "kind": "l3_reduce_colsum_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tcolsum",
+              "core_op": "arith.addf"
+            }
+          ],
+          "output": "reduce_colsum_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from reduction column-sum skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
     }
   ]
 }

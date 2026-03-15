@@ -45,6 +45,33 @@
         "condition",
         "variant_id"
       ]
+    },
+    {
+      "id": "reduce_row",
+      "template": "reduce_row.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "reduce_col",
+      "template": "reduce_col.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "reduce_colsum",
+      "template": "reduce_colsum.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
     }
   ],
   "families": [
@@ -1456,9 +1483,9 @@
     },
     {
       "family": "reduce_row",
-      "pattern": "binary",
+      "pattern": "reduce_row",
       "kind": "l3_reduce_row_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "reduce_row_core",
       "parameter_roles": [
         {
@@ -1492,7 +1519,16 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "reduce_row_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from reduction row skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "result_tile_shape": {
+          "rows": 32,
+          "cols": 1
+        }
       },
       "matcher_keys": [
         {
@@ -1523,23 +1559,30 @@
       "ops": [
         {
           "name": "trowsum",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "reduction/row_result.mlirfrag"
         },
         {
           "name": "trowmax",
-          "core_op": "custom"
+          "core_op": "arith.maximumf",
+          "snippet": "reduction/row_result.mlirfrag",
+          "passive_vector": "dense<-3.40282347E+38>",
+          "reduce_init": "-3.40282347E+38"
         },
         {
           "name": "trowmin",
-          "core_op": "custom"
+          "core_op": "arith.minimumf",
+          "snippet": "reduction/row_result.mlirfrag",
+          "passive_vector": "dense<3.40282347E+38>",
+          "reduce_init": "3.40282347E+38"
         }
       ]
     },
     {
       "family": "reduce_col",
-      "pattern": "unary",
+      "pattern": "reduce_col",
       "kind": "l3_reduce_col_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "reduce_col_core",
       "parameter_roles": [
         {
@@ -1568,7 +1611,16 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "reduce_col_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from reduction column skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "result_tile_shape": {
+          "rows": 1,
+          "cols": 32
+        }
       },
       "matcher_keys": [
         {
@@ -1599,19 +1651,23 @@
       "ops": [
         {
           "name": "tcolmax",
-          "core_op": "custom"
+          "core_op": "arith.maximumf",
+          "snippet": "reduction/col_result.mlirfrag",
+          "passive_vector": "dense<-3.40282347E+38>"
         },
         {
           "name": "tcolmin",
-          "core_op": "custom"
+          "core_op": "arith.minimumf",
+          "snippet": "reduction/col_result.mlirfrag",
+          "passive_vector": "dense<3.40282347E+38>"
         }
       ]
     },
     {
       "family": "reduce_colsum",
-      "pattern": "binary",
+      "pattern": "reduce_colsum",
       "kind": "l3_reduce_colsum_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "reduce_colsum_core",
       "parameter_roles": [
         {
@@ -1646,7 +1702,7 @@
             }
           },
           {
-            "id": "binary_tree",
+            "id": "binary",
             "matcher": {
               "isBinary": true
             }
@@ -1654,7 +1710,16 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "reduce_colsum_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from reduction column-sum skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "result_tile_shape": {
+          "rows": 1,
+          "cols": 32
+        }
       },
       "matcher_keys": [
         {
@@ -1683,14 +1748,16 @@
         },
         {
           "key": "isBinary",
-          "location": "request_only",
+          "location": "template_attr",
+          "attr": "pto.oplib.match.is_binary",
           "source": "variant_axis.matcher.isBinary"
         }
       ],
       "ops": [
         {
           "name": "tcolsum",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "reduction/col_result.mlirfrag"
         }
       ]
     },

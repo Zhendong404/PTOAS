@@ -1,0 +1,1 @@
+%result = vector.reduction <@@REDUCE_KIND@@>, %lhs, %acc : @@INPUT_VECTOR_TYPE@@ into @@SCALAR_TYPE@@

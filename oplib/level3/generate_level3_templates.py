@@ -20,11 +20,11 @@ MODULE_TEMPLATE_PATH = SKELETON_DIR / "module.tmpl.mlir"
 GENERATED_FILE_BANNER = "// AUTO-GENERATED: do not edit directly."
 
 TILE_TYPE_FMT = (
-    "!pto.tile_buf<loc=vec, dtype={dtype}, rows=32, cols=32, v_row=?, "
+    "!pto.tile_buf<loc=vec, dtype={dtype}, rows={rows}, cols={cols}, v_row=?, "
     "v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>"
 )
 MEMREF_TYPE_FMT = (
-    "memref<?x?x{dtype}, strided<[32, 1], offset: 0>, #pto.address_space<vec>>"
+    "memref<?x?x{dtype}, strided<[{row_stride}, 1], offset: 0>, #pto.address_space<vec>>"
 )
 
 SETUP_BEGIN = "// SNIPPET_SETUP_BEGIN"
@@ -99,12 +99,22 @@ def lower_name(value: str) -> str:
     return value.lower()
 
 
-def tile_type(dtype: str) -> str:
-    return TILE_TYPE_FMT.format(dtype=dtype)
+def tile_type(dtype: str, rows: int = 32, cols: int = 32) -> str:
+    return TILE_TYPE_FMT.format(dtype=dtype, rows=rows, cols=cols)
 
 
 def scalar_type(dtype: str) -> str:
     return dtype
+
+
+def scalar_literal(dtype: str, value: str) -> str:
+    if value == "zero":
+        return "0.0" if dtype.startswith("f") else "0"
+    if value == "one":
+        return "1.0" if dtype.startswith("f") else "1"
+    if value == "neg_one":
+        return "-1.0" if dtype.startswith("f") else "-1"
+    raise ValueError(f"unsupported scalar literal '{value}' for dtype {dtype}")
 
 
 def vector_type(dtype: str) -> str:
@@ -115,8 +125,8 @@ def mask_vector_type() -> str:
     return "vector<64xi1>"
 
 
-def memref_type(dtype: str) -> str:
-    return MEMREF_TYPE_FMT.format(dtype=dtype)
+def memref_type(dtype: str, cols: int = 32) -> str:
+    return MEMREF_TYPE_FMT.format(dtype=dtype, row_stride=cols)
 
 
 def dense_literal(dtype: str, value: str) -> str:
@@ -135,7 +145,27 @@ def exec_mode_attr(core_op: str, dtype: str) -> str:
     return ""
 
 
-def build_arg_decls(arg_roles: list[str], input_dtype: str, result_dtype: str | None) -> str:
+def tile_shape_from_metadata(
+    metadata: dict[str, Any],
+    key: str,
+    default_rows: int = 32,
+    default_cols: int = 32,
+) -> tuple[int, int]:
+    shape = metadata.get(key)
+    if not isinstance(shape, dict):
+        return default_rows, default_cols
+    rows = int(shape.get("rows", default_rows))
+    cols = int(shape.get("cols", default_cols))
+    return rows, cols
+
+
+def build_arg_decls(
+    arg_roles: list[str],
+    input_dtype: str,
+    result_dtype: str | None,
+    input_tile_shape: tuple[int, int],
+    result_tile_shape: tuple[int, int],
+) -> str:
     decls: list[str] = []
     tile_index = 0
     scalar_index = 0
@@ -145,11 +175,13 @@ def build_arg_decls(arg_roles: list[str], input_dtype: str, result_dtype: str | 
             if is_last:
                 name = "dst"
                 dtype = result_dtype or input_dtype
+                rows, cols = result_tile_shape
             else:
                 name = f"src{tile_index}"
                 dtype = input_dtype
+                rows, cols = input_tile_shape
                 tile_index += 1
-            decls.append(f"      %{name}: {tile_type(dtype)}")
+            decls.append(f"      %{name}: {tile_type(dtype, rows, cols)}")
             continue
         name = "scalar" if scalar_index == 0 else f"scalar{scalar_index}"
         scalar_index += 1
@@ -305,6 +337,8 @@ def build_snippet_mapping(
     result_vector_ty = vector_type(result_dtype or dtype)
     return {
         "CORE_OP": op_info["core_op"],
+        "REDUCE_KIND": reduction_kind_from_core_op(op_info["core_op"]),
+        "SCALAR_TYPE": scalar_type(result_dtype or dtype),
         "VECTOR_TYPE": result_vector_ty,
         "INPUT_VECTOR_TYPE": input_vector_ty,
         "RESULT_VECTOR_TYPE": result_vector_ty,
@@ -317,6 +351,52 @@ def build_snippet_mapping(
         "ONE_LITERAL": dense_literal(result_dtype or dtype, "one"),
         "NEG_ONE_LITERAL": dense_literal(result_dtype or dtype, "neg_one"),
     }
+
+
+def reduction_kind_from_core_op(core_op: str) -> str:
+    reduce_kinds = {
+        "arith.addf": "add",
+        "arith.addi": "add",
+        "arith.maximumf": "maximumf",
+        "arith.minimumf": "minimumf",
+        "arith.maxsi": "maxsi",
+        "arith.minsi": "minsi",
+        "arith.maxui": "maxui",
+        "arith.minui": "minui",
+    }
+    return reduce_kinds.get(core_op, core_op)
+
+
+def format_mlir_attr_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return f'"{value}"'
+    raise ValueError(f"unsupported matcher attr value type: {type(value).__name__}")
+
+
+def build_variant_match_attrs(
+    family: dict[str, Any],
+    variant_matcher: dict[str, Any],
+) -> str:
+    lines: list[str] = []
+    prefix = "variant_axis.matcher."
+    for key_info in family["matcher_keys"]:
+        if key_info["location"] != "template_attr":
+            continue
+        source = str(key_info.get("source", ""))
+        if not source.startswith(prefix):
+            continue
+        matcher_key = source[len(prefix) :]
+        if matcher_key not in variant_matcher:
+            raise ValueError(
+                f"family {family['family']} variant matcher is missing key '{matcher_key}' "
+                f"for attr {key_info['attr']}"
+            )
+        lines.append(f"        {key_info['attr']} = {format_mlir_attr_value(variant_matcher[matcher_key])},")
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def build_snippet_blocks(
@@ -343,12 +423,23 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
     contract = contract_map[family["snippet_contract"]]
 
     instances: list[dict[str, str]] = []
-    conditions = family["variant_axis"].get("values", [None]) if family["variant_axis"]["basis"] == "condition_list" else [None]
+    variant_axis_basis = family["variant_axis"]["basis"]
+    if variant_axis_basis in {"condition_list", "explicit"}:
+        variant_entries = family["variant_axis"].get("values", [None])
+    else:
+        variant_entries = [None]
+    family_default_variant = None
+    if variant_axis_basis == "placeholder":
+        default_variants = family["variant_axis"].get("values", [])
+        if default_variants:
+            family_default_variant = default_variants[0]["id"]
     result_dtype = family.get("dtype_axis", {}).get("result_dtype")
     scalar_pos = family_scalar_index(family)
     passive_vectors = family.get("dtype_axis", {}).get("passive_vectors", {})
     has_scalar_operand = any(role["kind"] == "scalar" for role in family["parameter_roles"])
     arg_roles = [role["kind"] for role in family["parameter_roles"]]
+    input_tile_shape = tile_shape_from_metadata(family["metadata"], "input_tile_shape")
+    result_tile_shape = tile_shape_from_metadata(family["metadata"], "result_tile_shape")
 
     for op_info in expand_ops(family):
         requested_dtypes = op_info.get("dtypes")
@@ -356,17 +447,24 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
         for dtype in op_dtypes:
             effective_op_info = dict(op_info)
             effective_op_info["core_op"] = op_info.get("core_op_by_dtype", {}).get(dtype, op_info["core_op"])
-            for condition_info in conditions:
+            for variant_info in variant_entries:
                 condition = ""
                 cmp_predicate = ""
+                variant_matcher: dict[str, Any] = {}
                 variant_id = effective_op_info.get(
                     "variant_id",
                     family.get("dtype_axis", {}).get("variant_id_by_dtype", {}).get(dtype),
                 )
-                if isinstance(condition_info, dict):
-                    condition = condition_info["matcher"]["cmpMode"]
-                    cmp_predicate = condition_info.get("metadata", {}).get("predicate", "")
-                    variant_id = condition_info["id"]
+                if variant_id is None:
+                    variant_id = family_default_variant
+                if isinstance(variant_info, dict):
+                    variant_matcher = dict(variant_info.get("matcher", {}))
+                    if variant_axis_basis == "condition_list":
+                        condition = variant_info["matcher"]["cmpMode"]
+                        cmp_predicate = variant_info.get("metadata", {}).get("predicate", "")
+                        variant_id = variant_info["id"]
+                    elif variant_axis_basis == "explicit":
+                        variant_id = variant_info["id"]
                 if variant_id is None:
                     variant_id = lower_name(condition) if condition else lower_name(op_info["name"])
 
@@ -391,15 +489,25 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                     rhs_value = "%scalarVec"
                 elif pattern["id"] == "compare":
                     rhs_memref_cast = (
-                        f"    %m1 = pto.simd.tile_to_memref %src1 : {tile_type(dtype)} to {memref_type(dtype)}\n"
+                        f"    %m1 = pto.simd.tile_to_memref %src1 : {tile_type(dtype)} to "
+                        f"{memref_type(dtype, input_tile_shape[1])}\n"
                     )
                     rhs_load = (
                         f"          %src1v = vector.maskedload %m1[%r, %cidx], %mask, %passive "
-                        f'{{pto.simd.vld_dist = "NORM"}} : {memref_type(dtype)}, {mask_vector_type()}, '
-                        f"{vector_type(dtype)} into {vector_type(dtype)}\n"
+                        f'{{pto.simd.vld_dist = "NORM"}} : {memref_type(dtype, input_tile_shape[1])}, '
+                        f"{mask_vector_type()}, {vector_type(dtype)} into {vector_type(dtype)}\n"
                     )
                 elif pattern["id"] in {"binary", "partial_binary"}:
                     rhs_value = "%rhs"
+
+                passive_vector = op_info.get(
+                    "passive_vector_by_dtype",
+                    {},
+                ).get(dtype, op_info.get("passive_vector", passive_vectors.get(dtype, dense_literal(dtype, "zero"))))
+                reduce_init = op_info.get(
+                    "reduce_init_by_dtype",
+                    {},
+                ).get(dtype, op_info.get("reduce_init", scalar_literal(result_dtype or dtype, "zero")))
 
                 extra_setup, compute = build_snippet_blocks(
                     effective_op_info,
@@ -418,8 +526,15 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "op_name": effective_op_info["name"],
                         "variant_id": variant_id,
                         "match_dtype": dtype,
-                        "arg_decls": build_arg_decls(arg_roles, dtype, result_dtype),
+                        "arg_decls": build_arg_decls(
+                            arg_roles,
+                            dtype,
+                            result_dtype,
+                            input_tile_shape,
+                            result_tile_shape,
+                        ),
                         "match_attrs": build_match_attrs(arg_roles),
+                        "variant_match_attrs": build_variant_match_attrs(family, variant_matcher),
                         "core_op": effective_op_info["core_op"],
                         "cmp_mode": condition,
                         "cmp_predicate": cmp_predicate,
@@ -430,14 +545,16 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         ),
                         "scalar_pos": "" if scalar_pos is None else str(scalar_pos),
                         "axis_values": ", ".join(axis_values),
-                        "input_tile_type": tile_type(dtype),
-                        "result_tile_type": tile_type(result_dtype or dtype),
-                        "input_memref_type": memref_type(dtype),
-                        "result_memref_type": memref_type(result_dtype or dtype),
+                        "input_tile_type": tile_type(dtype, *input_tile_shape),
+                        "result_tile_type": tile_type(result_dtype or dtype, *result_tile_shape),
+                        "input_memref_type": memref_type(dtype, input_tile_shape[1]),
+                        "result_memref_type": memref_type(result_dtype or dtype, result_tile_shape[1]),
                         "input_vector_type": vector_type(dtype),
                         "result_vector_type": vector_type(result_dtype or dtype),
+                        "scalar_type": scalar_type(result_dtype or dtype),
                         "mask_vector_type": mask_vector_type(),
-                        "passive_vector": passive_vectors.get(dtype, dense_literal(dtype, "zero")),
+                        "passive_vector": passive_vector,
+                        "reduce_init": reduce_init,
                         "rhs_memref_cast": rhs_memref_cast,
                         "rhs_setup": rhs_setup,
                         "rhs_load": rhs_load,
@@ -474,6 +591,7 @@ def render_family_output(
                     "VARIANT_ID": instance["variant_id"],
                     "MATCH_DTYPE": instance["match_dtype"],
                     "MATCH_ATTRS": instance["match_attrs"],
+                    "VARIANT_MATCH_ATTRS": instance["variant_match_attrs"],
                     "CORE_OP": instance["core_op"],
                     "CMP_MODE": instance["cmp_mode"],
                     "CMP_PREDICATE": instance["cmp_predicate"],
@@ -486,8 +604,10 @@ def render_family_output(
                     "INPUT_VECTOR_TYPE": instance["input_vector_type"],
                     "RESULT_VECTOR_TYPE": instance["result_vector_type"],
                     "VECTOR_TYPE": instance["input_vector_type"],
+                    "SCALAR_TYPE": instance["scalar_type"],
                     "MASK_VECTOR_TYPE": instance["mask_vector_type"],
                     "PASSIVE_VECTOR": instance["passive_vector"],
+                    "REDUCE_INIT": instance["reduce_init"],
                     "RHS_MEMREF_CAST": instance["rhs_memref_cast"],
                     "RHS_SETUP": instance["rhs_setup"],
                     "RHS_LOAD": instance["rhs_load"],
