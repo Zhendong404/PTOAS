@@ -2396,7 +2396,9 @@ static void appendScalarOperandUnchecked(MatchRequest &request, Value operand) {
 
 static FailureOr<MatchRequest>
 buildCmpTileTileMatchRequest(StringRef kind, StringRef opName, Value src0,
-                             Value src1, Value dst) {
+                             Value src1, Value dst,
+                             std::optional<StringRef> requiredVariantId =
+                                 std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
   FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
   FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
@@ -2408,7 +2410,9 @@ buildCmpTileTileMatchRequest(StringRef kind, StringRef opName, Value src0,
   if (!dstIntTy || dstIntTy.getWidth() != 8)
     return failure();
 
-  MatchRequest request = createMatchRequest(kind, opName);
+  MatchRequest request = createMatchRequest(kind, opName,
+                                            /*scalarPos=*/std::nullopt,
+                                            requiredVariantId);
   appendTileOperandUnchecked(request, src0, src0InfoOr->second);
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
   appendTileOperandUnchecked(request, dst, dstInfoOr->second);
@@ -2418,7 +2422,10 @@ buildCmpTileTileMatchRequest(StringRef kind, StringRef opName, Value src0,
 
 static FailureOr<MatchRequest>
 buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
-                               Value scalar, Value dst) {
+                               Value scalar, Value dst,
+                               std::optional<int64_t> scalarPos = std::nullopt,
+                               std::optional<StringRef> requiredVariantId =
+                                   std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> srcInfoOr = getTileOperandInfo(src);
   FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
   if (failed(srcInfoOr) || failed(dstInfoOr))
@@ -2429,7 +2436,9 @@ buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
   if (!dstIntTy || dstIntTy.getWidth() != 8)
     return failure();
 
-  MatchRequest request = createMatchRequest(kind, opName, /*scalarPos=*/1);
+  MatchRequest request =
+      createMatchRequest(kind, opName, scalarPos.value_or(1),
+                         requiredVariantId);
   appendTileOperandUnchecked(request, src, srcInfoOr->second);
   appendScalarOperandUnchecked(request, scalar);
   appendTileOperandUnchecked(request, dst, dstInfoOr->second);
@@ -2439,7 +2448,9 @@ buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
 
 static FailureOr<MatchRequest>
 buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
-                            Value src0, Value src1, Value dst) {
+                            Value src0, Value src1, Value dst,
+                            std::optional<StringRef> requiredVariantId =
+                                std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> maskInfoOr = getTileOperandInfo(mask);
   FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
   FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
@@ -2454,7 +2465,9 @@ buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
       src0InfoOr->first != dstInfoOr->first)
     return failure();
 
-  MatchRequest request = createMatchRequest(kind, opName);
+  MatchRequest request = createMatchRequest(kind, opName,
+                                            /*scalarPos=*/std::nullopt,
+                                            requiredVariantId);
   appendTileOperandUnchecked(request, mask, maskInfoOr->second);
   appendTileOperandUnchecked(request, src0, src0InfoOr->second);
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
@@ -2465,7 +2478,10 @@ buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
 
 static FailureOr<MatchRequest>
 buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
-                              Value src1, Value selectMode, Value dst) {
+                              Value src1, Value selectMode, Value dst,
+                              std::optional<int64_t> scalarPos = std::nullopt,
+                              std::optional<StringRef> requiredVariantId =
+                                  std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
   FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
   FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
@@ -2477,7 +2493,9 @@ buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
       src0InfoOr->first != dstInfoOr->first)
     return failure();
 
-  MatchRequest request = createMatchRequest(kind, opName, /*scalarPos=*/2);
+  MatchRequest request =
+      createMatchRequest(kind, opName, scalarPos.value_or(2),
+                         requiredVariantId);
   appendTileOperandUnchecked(request, src0, src0InfoOr->second);
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
   appendScalarOperandUnchecked(request, selectMode);
@@ -2488,7 +2506,9 @@ buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
 
 static FailureOr<MatchRequest>
 buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
-                       Value tmp, Value dst) {
+                       Value tmp, Value dst,
+                       std::optional<StringRef> requiredVariantId =
+                           std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
   FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
   FailureOr<std::pair<Type, MatchKey>> tmpInfoOr = getTileOperandInfo(tmp);
@@ -2506,7 +2526,9 @@ buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
   if (!tmpIntTy || tmpIntTy.getWidth() != 8)
     return failure();
 
-  MatchRequest request = createMatchRequest(kind, opName);
+  MatchRequest request = createMatchRequest(kind, opName,
+                                            /*scalarPos=*/std::nullopt,
+                                            requiredVariantId);
   appendTileOperandUnchecked(request, src0, src0InfoOr->second);
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
   appendTileOperandUnchecked(request, tmp, tmpInfoOr->second);
@@ -2551,27 +2573,29 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
   if (desc.kind == "l3_cmp_tile_tile_template" && desc.operands.size() == 3) {
     requestOr = buildCmpTileTileMatchRequest(desc.kind, desc.opName,
                                              desc.operands[0], desc.operands[1],
-                                             desc.operands[2]);
+                                             desc.operands[2],
+                                             requiredVariantId);
   } else if (desc.kind == "l3_cmp_tile_scalar_template" &&
              desc.operands.size() == 3) {
     requestOr = buildCmpTileScalarMatchRequest(
         desc.kind, desc.opName, desc.operands[0], desc.operands[1],
-        desc.operands[2]);
+        desc.operands[2], desc.scalarPos, requiredVariantId);
   } else if (desc.kind == "l3_select_mask_template" &&
              desc.operands.size() == 4) {
     requestOr = buildSelectMaskMatchRequest(
         desc.kind, desc.opName, desc.operands[0], desc.operands[1],
-        desc.operands[2], desc.operands[3]);
+        desc.operands[2], desc.operands[3], requiredVariantId);
   } else if (desc.kind == "l3_select_scalar_template" &&
              desc.operands.size() == 4) {
     requestOr = buildSelectScalarMatchRequest(
         desc.kind, desc.opName, desc.operands[0], desc.operands[1],
-        desc.operands[2], desc.operands[3]);
+        desc.operands[2], desc.operands[3], desc.scalarPos,
+        requiredVariantId);
   } else if (desc.kind == "l3_float_ternary_tile_template" &&
              desc.opName == "tprelu" && desc.operands.size() == 4) {
     requestOr = buildPReluMatchRequest(desc.kind, desc.opName, desc.operands[0],
                                        desc.operands[1], desc.operands[2],
-                                       desc.operands[3]);
+                                       desc.operands[3], requiredVariantId);
   } else {
     requestOr = buildTypedMatchRequest(desc.kind, desc.opName, desc.operands,
                                        argRoles, desc.scalarPos,
