@@ -2103,6 +2103,10 @@ static FailureOr<llvm::StringRef> getA5MaskElemToken(Operation *op,
     if (auto vmstore = dyn_cast<vector::MaskedStoreOp>(op))
       return inferElemFromVecTy(
           cast<VectorType>(vmstore.getValueToStore().getType()));
+    if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+      if (auto resultVecTy = dyn_cast<VectorType>(sel.getType()))
+        return inferElemFromVecTy(resultVecTy);
+    }
 
     if (auto cmask = dyn_cast<vector::CreateMaskOp>(op))
       return inferFromMaskUsers(cmask.getOperation());
