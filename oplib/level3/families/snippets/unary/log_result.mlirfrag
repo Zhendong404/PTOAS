@@ -1,1 +1,1 @@
-%result = math.log %lhs : @@VECTOR_TYPE@@
+%result = math.log %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
