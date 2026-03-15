@@ -248,7 +248,7 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %result = math.sqrt %lhs : vector<64xf16>
+          %result = math.sqrt %lhs {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf16>
           vector.maskedstore %md[%r, %cidx], %mask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16>
         }
       }
@@ -298,7 +298,7 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %result = math.sqrt %lhs : vector<64xf32>
+          %result = math.sqrt %lhs {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
           vector.maskedstore %md[%r, %cidx], %mask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
         }
       }
@@ -349,8 +349,8 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %sqrt = math.sqrt %lhs : vector<64xf16>
-          %result = arith.divf %ones, %sqrt : vector<64xf16>
+          %sqrt = math.sqrt %lhs {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf16>
+          %result = arith.divf %ones, %sqrt {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf16>
           vector.maskedstore %md[%r, %cidx], %mask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16>
         }
       }
@@ -401,8 +401,8 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %sqrt = math.sqrt %lhs : vector<64xf32>
-          %result = arith.divf %ones, %sqrt : vector<64xf32>
+          %sqrt = math.sqrt %lhs {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
+          %result = arith.divf %ones, %sqrt {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
           vector.maskedstore %md[%r, %cidx], %mask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
         }
       }

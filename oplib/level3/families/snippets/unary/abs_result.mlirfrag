@@ -1,2 +1,2 @@
-%neg = arith.negf %lhs : @@VECTOR_TYPE@@
+%neg = arith.negf %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
 %result = arith.maximumf %neg, %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@

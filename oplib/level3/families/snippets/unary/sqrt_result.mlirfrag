@@ -1,1 +1,1 @@
-%result = math.sqrt %lhs : @@VECTOR_TYPE@@
+%result = math.sqrt %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@

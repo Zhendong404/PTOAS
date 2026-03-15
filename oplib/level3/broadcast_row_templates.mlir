@@ -43,14 +43,14 @@ module {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       %rowMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %rowVec = vector.maskedload %m0[%r, %c0], %rowMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-        %lhs = vector.shuffle %rowVec, %rowVec [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] : vector<64xf32>, vector<64xf32>
+        %rowScalar = memref.load %m0[%r, %c0] : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
+        %lhs = vector.splat %rowScalar : vector<64xf32>
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
-          %result = arith.addf %lhs, %passive : vector<64xf32>
+          %result = arith.addf %lhs, %passive {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
           vector.maskedstore %md[%r, %cidx], %mask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
         }
       }

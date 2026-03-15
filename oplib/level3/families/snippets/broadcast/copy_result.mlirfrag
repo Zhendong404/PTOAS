@@ -1,1 +1,1 @@
-%result = arith.addf %lhs, %passive : @@RESULT_VECTOR_TYPE@@
+%result = arith.addf %lhs, %passive@@EXEC_MODE_ATTR@@ : @@RESULT_VECTOR_TYPE@@

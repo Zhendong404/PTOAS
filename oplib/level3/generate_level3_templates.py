@@ -143,8 +143,25 @@ def dense_literal(dtype: str, value: str) -> str:
     raise ValueError(f"unsupported dense literal '{value}' for dtype {dtype}")
 
 
-def exec_mode_attr(core_op: str, dtype: str) -> str:
-    if dtype.startswith("f") and core_op in FLOAT_BINARY_CORE_OPS:
+EXEC_MODE_BODY_KINDS = {
+    "abs",
+    "lrelu",
+    "neg",
+    "recip",
+    "relu",
+    "rsqrt",
+    "sqrt",
+}
+
+
+def exec_mode_attr(op_info: dict[str, Any], dtype: str) -> str:
+    core_op = op_info["core_op"]
+    body_kind = op_info.get("body_kind", "")
+    if dtype.startswith("f") and (
+        any(op_name in core_op for op_name in FLOAT_BINARY_CORE_OPS)
+        or "math.sqrt" in core_op
+        or body_kind in EXEC_MODE_BODY_KINDS
+    ):
         return ' {pto.simd.exec_mode = "MODE_ZEROING"}'
     return ""
 
@@ -390,7 +407,7 @@ def build_snippet_mapping(
         "RHS_VALUE": rhs_value,
         "SNIPPET_LHS": snippet_lhs,
         "SNIPPET_RHS": snippet_rhs,
-        "EXEC_MODE_ATTR": exec_mode_attr(op_info["core_op"], dtype),
+        "EXEC_MODE_ATTR": exec_mode_attr(op_info, dtype),
         "ZERO_LITERAL": dense_literal(result_dtype or dtype, "zero"),
         "ONE_LITERAL": dense_literal(result_dtype or dtype, "one"),
         "NEG_ONE_LITERAL": dense_literal(result_dtype or dtype, "neg_one"),
