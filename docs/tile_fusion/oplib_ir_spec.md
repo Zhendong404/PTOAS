@@ -4,6 +4,10 @@
 - 生效范围：PTOAS Level-3 A5 OP-Lib lowering
 - 目标读者：PTOAS OP-Lib 维护者、模板开发者、tile fusion pass 维护者
 
+当前 A5 OpLib V1 的作者接口、manifest 对齐规则和 4.5~4.9 范围边界，优先参考
+[`docs/tile_fusion/a5_oplib_v1_authoring.md`](./a5_oplib_v1_authoring.md)。
+本文保留为 Level-3 multi-family importer / metadata 契约说明。
+
 ## 1. 目标与范围
 
 本文定义 Level-3 OP-Lib 的多 family 模板接口规范。

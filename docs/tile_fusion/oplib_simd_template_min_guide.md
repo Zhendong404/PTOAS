@@ -4,6 +4,11 @@
 - 适用范围：Level-3 OP-Lib Binary Element-Wise（`tadd/tsub/tmul/tdiv/tmax/tmin`）
 - 目标读者：编写/维护 OP-Lib 模板的开发者
 
+当前 A5 OpLib V1 的完整作者入口已经升级为 `Family DSL + snippet + manifest`。
+请先阅读
+[`docs/tile_fusion/a5_oplib_v1_authoring.md`](./a5_oplib_v1_authoring.md)；
+本文保留为 mixed IR / SIMD 模板体约束的最小补充指南，不再代表完整 V1 范围与对齐规则。
+
 维护说明：
 
 1. 当前 Level-3 模板主维护源位于 `oplib/level3/skeletons/`。
