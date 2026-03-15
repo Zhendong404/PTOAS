@@ -1,6 +1,10 @@
-// RUN: { ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 -o %t.cpp
+// RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 
-// CHECK: error: single-op lowering: manifest marks op='taddc' as deferred
+// EMITC-LABEL: __global__ AICORE void taddc_deferred(
+// EMITC: TADD(
+// EMITC: TADD(
+// EMITC-NOT: __pto_oplib_inst_
 
 module {
   func.func @taddc_deferred() {

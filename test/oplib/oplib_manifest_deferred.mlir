@@ -1,9 +1,8 @@
-// RUN: rm -rf %t.dir && mkdir -p %t.dir
-// RUN: cp %S/../../oplib/level3/cmp_tile_tile_templates.mlir %t.dir/
-// RUN: { ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%t.dir -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter=trecip_deferred -o /dev/null 2>&1 || true; } | FileCheck %s
 
-// CHECK: single-op lowering: manifest marks op='trecip' as deferred
-// CHECK: no A5 semantic source matched OP_NAME(TRECIP) or TRECIP_IMPL
+// CHECK-LABEL: func.func @trecip_deferred(
+// CHECK: pto.trecip
+// CHECK-NOT: call @__pto_oplib_inst_
 
 module {
   func.func @trecip_deferred(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>) {

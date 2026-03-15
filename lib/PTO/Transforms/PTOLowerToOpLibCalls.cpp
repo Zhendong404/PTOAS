@@ -417,6 +417,11 @@ static bool isA5OpLibV1TargetOp(Operation *op, const A5OpLibManifest &manifest) 
   return manifest.lookup(getPTOMnemonic(op)) != nullptr;
 }
 
+static bool shouldLowerViaOpLib(Operation *op, const A5OpLibManifest &manifest) {
+  const A5ManifestEntry *entry = manifest.lookup(getPTOMnemonic(op));
+  return entry && entry->status == A5ManifestStatus::Implemented;
+}
+
 static bool hasFusionGroupAttrs(Operation *op) {
   return op->hasAttr(kFusionGroupIdAttr) && op->hasAttr(kFusionOrderAttr);
 }
@@ -2604,12 +2609,10 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
   }
 
   if (manifestEntry->status == A5ManifestStatus::Deferred) {
-    op->emitError()
-        << errorPrefix << ": manifest marks op='" << opName
-        << "' as deferred"
-        << (manifestEntry->deferredReason.empty()
-                ? ""
-                : Twine(": ") + manifestEntry->deferredReason);
+    if (enableDebugLog) {
+      llvm::errs() << "[op-fusion] skip deferred manifest op from OP-Lib path: "
+                   << opName << "\n";
+    }
     return failure();
   }
 
@@ -2729,7 +2732,7 @@ struct PTOInstantiateAndLowerToLibCallPass
       for (Operation &op : block.getOperations()) {
         Operation *curOp = &op;
 
-        if (hasFusionGroupAttrs(curOp) && isA5OpLibV1TargetOp(curOp, manifest)) {
+        if (hasFusionGroupAttrs(curOp) && shouldLowerViaOpLib(curOp, manifest)) {
           auto gidAttr = curOp->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr);
           auto orderAttr = curOp->getAttrOfType<IntegerAttr>(kFusionOrderAttr);
 
@@ -2815,6 +2818,8 @@ struct PTOInstantiateAndLowerToLibCallPass
 
     func.walk([&](Operation *op) {
       if (!isA5OpLibV1TargetOp(op, manifest))
+        return;
+      if (!shouldLowerViaOpLib(op, manifest))
         return;
       if (hasFusionGroupAttrs(op))
         return;
