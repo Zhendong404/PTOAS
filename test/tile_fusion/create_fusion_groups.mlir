@@ -3,6 +3,6 @@
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-LABEL: func.func private @__pto_fused_group_0_0(
 // CHECK-SAME: attributes {pto.fusion.group_id = 0 : i64}
-// CHECK: call @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul___seed__seed_l3_float_binary_elementwise_core__tmul__f32(
+// CHECK: call @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul_tile(
 // CHECK-LABEL: func.func @flash_attention_softmax_block(
 // CHECK: call @__pto_fused_group_0_0(
