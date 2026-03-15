@@ -36,6 +36,7 @@
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringRef.h"
 #include <memory>
 #include <string>
@@ -118,13 +119,15 @@ static llvm::cl::opt<bool> opFusionDebug(
 
 static llvm::cl::opt<bool> printIRAfterAll(
     "print-ir-after-all",
-    llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines"),
+    llvm::cl::desc("Print MLIR IR after each pass in all PTOAS pass pipelines "
+                   "for user-related functions"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> printIRAfterAllFuncFilter(
     "print-ir-after-all-func-filter",
     llvm::cl::desc("When --print-ir-after-all is enabled, only print dumps for "
-                   "func.func whose symbol name contains this substring"),
+                   "func.func whose symbol name contains this substring "
+                   "(overrides the default user-related filtering)"),
     llvm::cl::value_desc("substring"),
     llvm::cl::init(""));
 
@@ -203,12 +206,77 @@ static bool parseTargetArch(llvm::StringRef archStr, PTOTargetArch &out) {
 }
 
 namespace {
-class FuncFilteredIRPrinterConfig final : public PassManager::IRPrinterConfig {
+static void printIRDumpHeader(
+    PassManager::IRPrinterConfig::PrintCallbackFn printCallback,
+    llvm::raw_ostream &out) {
+  std::string dumpText;
+  llvm::raw_string_ostream dumpStream(dumpText);
+  printCallback(dumpStream);
+  dumpStream.flush();
+
+  llvm::StringRef headerLine = dumpText;
+  if (size_t newlinePos = headerLine.find('\n'); newlinePos != std::string::npos)
+    headerLine = headerLine.take_front(newlinePos);
+  out << headerLine << "\n";
+}
+
+class SelectedFuncsIRPrinterConfig : public PassManager::IRPrinterConfig {
 public:
-  FuncFilteredIRPrinterConfig(std::string funcFilter, llvm::raw_ostream &out)
+  SelectedFuncsIRPrinterConfig(llvm::raw_ostream &out)
       : IRPrinterConfig(/*printModuleScope=*/false,
                         /*printAfterOnlyOnChange=*/false,
                         /*printAfterOnlyOnFailure=*/false),
+        out(out) {}
+
+  void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
+
+protected:
+  void printSelectedOp(Operation *op, PrintCallbackFn printCallback) {
+    printIRDumpHeader(printCallback, out);
+    op->print(out, getOpPrintingFlags());
+    out << "\n\n";
+  }
+
+  template <typename OpT, typename SelectorT>
+  static bool appendSelectedFuncs(ModuleOp moduleOp,
+                                  llvm::SmallVectorImpl<Operation *> &matchedOps,
+                                  SelectorT selector) {
+    bool added = false;
+    for (OpT funcOp : moduleOp.getOps<OpT>()) {
+      if (!selector(funcOp))
+        continue;
+      matchedOps.push_back(funcOp.getOperation());
+      added = true;
+    }
+    return added;
+  }
+
+  void printSelectedFuncs(ModuleOp moduleOp, PrintCallbackFn printCallback,
+                          llvm::function_ref<bool(func::FuncOp)> funcSelector,
+                          llvm::function_ref<bool(emitc::FuncOp)> emitcSelector) {
+    llvm::SmallVector<Operation *, 8> matchedOps;
+    bool hasMatches = appendSelectedFuncs<func::FuncOp>(moduleOp, matchedOps,
+                                                        funcSelector);
+    hasMatches |= appendSelectedFuncs<emitc::FuncOp>(moduleOp, matchedOps,
+                                                     emitcSelector);
+    if (!hasMatches)
+      return;
+
+    printIRDumpHeader(printCallback, out);
+    for (Operation *op : matchedOps) {
+      op->print(out, getOpPrintingFlags());
+      out << "\n";
+    }
+    out << "\n";
+  }
+
+  llvm::raw_ostream &out;
+};
+
+class FuncFilteredIRPrinterConfig final : public SelectedFuncsIRPrinterConfig {
+public:
+  FuncFilteredIRPrinterConfig(std::string funcFilter, llvm::raw_ostream &out)
+      : SelectedFuncsIRPrinterConfig(out),
         funcFilter(std::move(funcFilter)), out(out) {}
 
   void printBeforeIfEnabled(Pass *, Operation *, PrintCallbackFn) override {}
@@ -218,7 +286,13 @@ public:
     if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
       if (!funcOp.getSymName().contains(funcFilter))
         return;
-      printCallback(out);
+      printSelectedOp(funcOp, printCallback);
+      return;
+    }
+    if (auto emitcFuncOp = dyn_cast<emitc::FuncOp>(op)) {
+      if (!emitcFuncOp.getSymName().contains(funcFilter))
+        return;
+      printSelectedOp(emitcFuncOp, printCallback);
       return;
     }
 
@@ -226,39 +300,74 @@ public:
     if (!moduleOp)
       return;
 
-    llvm::SmallVector<func::FuncOp, 4> matchedFuncs;
-    for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
-      if (funcOp.getSymName().contains(funcFilter))
-        matchedFuncs.push_back(funcOp);
-    }
-    if (matchedFuncs.empty())
-      return;
-
-    std::string dumpText;
-    llvm::raw_string_ostream dumpStream(dumpText);
-    printCallback(dumpStream);
-    dumpStream.flush();
-
-    llvm::StringRef headerLine = dumpText;
-    if (size_t newlinePos = headerLine.find('\n'); newlinePos != std::string::npos)
-      headerLine = headerLine.take_front(newlinePos);
-    out << headerLine << "\n";
-
-    auto flags = getOpPrintingFlags().useLocalScope();
-    for (func::FuncOp funcOp : matchedFuncs) {
-      funcOp.print(out, flags);
-      out << "\n";
-    }
-    out << "\n";
+    printSelectedFuncs(
+        moduleOp, printCallback,
+        [&](func::FuncOp funcOp) {
+          return funcOp.getSymName().contains(funcFilter);
+        },
+        [&](emitc::FuncOp funcOp) {
+          return funcOp.getSymName().contains(funcFilter);
+        });
   }
 
 private:
   std::string funcFilter;
   llvm::raw_ostream &out;
 };
+
+class UserRelevantIRPrinterConfig final : public SelectedFuncsIRPrinterConfig {
+public:
+  UserRelevantIRPrinterConfig(const llvm::StringSet<> &userFuncNames,
+                              llvm::raw_ostream &out)
+      : SelectedFuncsIRPrinterConfig(out), userFuncNames(userFuncNames) {}
+
+  void printAfterIfEnabled(Pass *, Operation *op,
+                           PrintCallbackFn printCallback) override {
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (!shouldPrintFunction(funcOp))
+        return;
+      printSelectedOp(funcOp, printCallback);
+      return;
+    }
+    if (auto emitcFuncOp = dyn_cast<emitc::FuncOp>(op)) {
+      if (!shouldPrintFunction(emitcFuncOp))
+        return;
+      printSelectedOp(emitcFuncOp, printCallback);
+      return;
+    }
+
+    auto moduleOp = dyn_cast<ModuleOp>(op);
+    if (!moduleOp)
+      return;
+
+    printSelectedFuncs(
+        moduleOp, printCallback,
+        [&](func::FuncOp funcOp) { return shouldPrintFunction(funcOp); },
+        [&](emitc::FuncOp funcOp) { return shouldPrintFunction(funcOp); });
+  }
+
+private:
+  static bool shouldPrintFunctionName(llvm::StringRef symName,
+                                      const llvm::StringSet<> &userFuncNames) {
+    return userFuncNames.contains(symName) ||
+           symName.starts_with("__pto_oplib_inst_") ||
+           symName.starts_with("__pto_fused_group_");
+  }
+
+  bool shouldPrintFunction(func::FuncOp funcOp) const {
+    return shouldPrintFunctionName(funcOp.getSymName(), userFuncNames);
+  }
+
+  bool shouldPrintFunction(emitc::FuncOp funcOp) const {
+    return shouldPrintFunctionName(funcOp.getSymName(), userFuncNames);
+  }
+
+  llvm::StringSet<> userFuncNames;
+};
 } // namespace
 
-static void maybeEnablePrintIRAfterAll(PassManager &pm) {
+static void maybeEnablePrintIRAfterAll(PassManager &pm,
+                                       const llvm::StringSet<> &userFuncNames) {
   if (!printIRAfterAll)
     return;
   std::string funcFilter = printIRAfterAllFuncFilter;
@@ -270,11 +379,8 @@ static void maybeEnablePrintIRAfterAll(PassManager &pm) {
   }
 
   pm.enableIRPrinting(
-      [](Pass *, Operation *) { return false; },
-      [](Pass *, Operation *) { return true; },
-      /*printModuleScope=*/true,
-      /*printAfterOnlyOnChange=*/false,
-      /*printAfterOnlyOnFailure=*/false);
+      std::make_unique<UserRelevantIRPrinterConfig>(userFuncNames,
+                                                    llvm::errs()));
 }
 
 // --------------------------------------------------------------------------
@@ -669,6 +775,10 @@ int main(int argc, char **argv) {
     }
   }
 
+  llvm::StringSet<> inputFuncNames;
+  for (func::FuncOp funcOp : module->getOps<func::FuncOp>())
+    inputFuncNames.insert(funcOp.getSymName());
+
   PTOBuildLevel effectiveLevel = defaultBuildLevel();
   if (!parseBuildLevel(ptoBuildLevel, effectiveLevel)) {
     llvm::errs() << "Error: invalid --pto-level='" << ptoBuildLevel
@@ -742,7 +852,7 @@ int main(int argc, char **argv) {
   }
 
   PassManager preCodegenPm(&context);
-  maybeEnablePrintIRAfterAll(preCodegenPm);
+  maybeEnablePrintIRAfterAll(preCodegenPm, inputFuncNames);
 
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertCVMovPass());
   // preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOConvertToDPSPass());
@@ -761,7 +871,7 @@ int main(int argc, char **argv) {
 
   // Stage 2: remaining optimization + codegen pipeline.
   PassManager pm(&context);
-  maybeEnablePrintIRAfterAll(pm);
+  maybeEnablePrintIRAfterAll(pm, inputFuncNames);
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
@@ -828,7 +938,7 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
   PassManager codegenPm(&context);
-  maybeEnablePrintIRAfterAll(codegenPm);
+  maybeEnablePrintIRAfterAll(codegenPm, inputFuncNames);
   codegenPm.addPass(createCSEPass());
   if (effectiveArch == PTOTargetArch::A3) {
     codegenPm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));

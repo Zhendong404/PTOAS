@@ -5,4 +5,5 @@
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul_{{.*}}(
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_float_binary_elementwise_template_tadd_tile_f16_scalar(
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_float_binary_elementwise_template_tmin_tile_f16_scalar(
+// CHECK-NOT: func.func private @__pto_oplib_entry_
 // CHECK-NOT: no matching OP-Lib entry
