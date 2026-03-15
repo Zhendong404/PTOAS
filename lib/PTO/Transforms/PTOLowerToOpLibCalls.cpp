@@ -1838,6 +1838,18 @@ struct TemplateRegistry {
     return pattern == target;
   }
 
+  static bool areDegenerateMajorLayoutsCompatible(const MatchKey &pattern,
+                                                  const MatchKey &request) {
+    auto isMajorLayout = [](StringRef layout) {
+      return layout == "row_major" || layout == "col_major";
+    };
+    if (!isMajorLayout(pattern.blayout) || !isMajorLayout(request.blayout))
+      return false;
+    if (pattern.blayout == request.blayout)
+      return true;
+    return request.rows == 1 || request.cols == 1;
+  }
+
   static bool matchCommon(const TemplateEntry &entry, const MatchRequest &target) {
     if (entry.kind != target.kind)
       return false;
@@ -1858,7 +1870,8 @@ struct TemplateRegistry {
         return false;
       if (!matchDim(pattern.fractal, request.fractal))
         return false;
-      if (!matchLayout(pattern.blayout, request.blayout))
+      if (!matchLayout(pattern.blayout, request.blayout) &&
+          !areDegenerateMajorLayoutsCompatible(pattern, request))
         return false;
       if (!matchLayout(pattern.slayout, request.slayout))
         return false;
