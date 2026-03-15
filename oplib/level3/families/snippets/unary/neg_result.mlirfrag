@@ -1,1 +1,6 @@
-%result = arith.negf %lhs : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_BEGIN
+%zeroVec = arith.constant @@ZERO_LITERAL@@ : @@VECTOR_TYPE@@
+// SNIPPET_SETUP_END
+// SNIPPET_COMPUTE_BEGIN
+%result = @@CORE_OP@@ %zeroVec, %lhs : @@VECTOR_TYPE@@
+// SNIPPET_COMPUTE_END

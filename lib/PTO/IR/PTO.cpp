@@ -5119,39 +5119,86 @@ static OpLibMatchDescriptor buildScalarExpandOpLibDesc(StringRef kind,
   return desc;
 }
 
+static FailureOr<OpLibMatchDescriptor>
+buildBinaryTileOpLibDescByElemType(StringRef floatKind, StringRef intKind,
+                                   StringRef opName, Value src0, Value src1,
+                                   Value dst) {
+  Type elemTy = getElemTy(src0.getType());
+  if (isa<FloatType>(elemTy))
+    return buildBinaryTileOpLibDesc(floatKind, opName, src0, src1, dst);
+  if (isa<IntegerType>(elemTy))
+    return buildBinaryTileOpLibDesc(intKind, opName, src0, src1, dst);
+  return failure();
+}
+
+static FailureOr<OpLibMatchDescriptor>
+buildTileScalarOpLibDescByElemType(StringRef floatKind, StringRef intKind,
+                                   StringRef opName, Value src, Value scalar,
+                                   Value dst) {
+  Type elemTy = getElemTy(src.getType());
+  if (isa<FloatType>(elemTy))
+    return buildTileScalarOpLibDesc(floatKind, opName, src, scalar, dst);
+  if (isa<IntegerType>(elemTy))
+    return buildTileScalarOpLibDesc(intKind, opName, src, scalar, dst);
+  return failure();
+}
+
+static FailureOr<OpLibMatchDescriptor>
+buildUnaryTileOpLibDescByElemType(StringRef floatKind, StringRef intKind,
+                                  StringRef opName, Value src, Value dst) {
+  Type elemTy = getElemTy(src.getType());
+  if (isa<FloatType>(elemTy))
+    return buildUnaryTileOpLibDesc(floatKind, opName, src, dst);
+  if (isa<IntegerType>(elemTy))
+    return buildUnaryTileOpLibDesc(intKind, opName, src, dst);
+  return failure();
+}
+
 FailureOr<OpLibMatchDescriptor> TAbsOp::getOpLibMatchDescriptor() {
   return buildUnaryTileOpLibDesc("l3_float_unary_template", "tabs", getSrc(),
                                  getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TAddOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tadd",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tadd", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TSubOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tsub",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tsub", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TMulOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmul",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tmul", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TDivOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tdiv",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tdiv", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TMaxOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmax",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tmax", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TMinOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "tmin",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "tmin", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TPartAddOp::getOpLibMatchDescriptor() {
@@ -5170,8 +5217,9 @@ FailureOr<OpLibMatchDescriptor> TPartMinOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TNegOp::getOpLibMatchDescriptor() {
-  return buildUnaryTileOpLibDesc("l3_float_unary_template", "tneg", getSrc(),
-                                 getDst());
+  return buildUnaryTileOpLibDescByElemType("l3_float_unary_template",
+                                           "l3_int_unary_template", "tneg",
+                                           getSrc(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TRecipOp::getOpLibMatchDescriptor() {
@@ -5180,8 +5228,9 @@ FailureOr<OpLibMatchDescriptor> TRecipOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TReluOp::getOpLibMatchDescriptor() {
-  return buildUnaryTileOpLibDesc("l3_float_unary_template", "trelu", getSrc(),
-                                 getDst());
+  return buildUnaryTileOpLibDescByElemType("l3_float_unary_template",
+                                           "l3_int_unary_template", "trelu",
+                                           getSrc(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TExpOp::getOpLibMatchDescriptor() {
@@ -5210,42 +5259,57 @@ FailureOr<OpLibMatchDescriptor> TNotOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TAddSOp::getOpLibMatchDescriptor() {
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tadds",
-                                  getSrc(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tadds", getSrc(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TSubSOp::getOpLibMatchDescriptor() {
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tsubs",
-                                  getSrc(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tsubs", getSrc(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TMulSOp::getOpLibMatchDescriptor() {
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmuls",
-                                  getSrc0(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tmuls", getSrc0(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TDivSOp::getOpLibMatchDescriptor() {
-  OpLibMatchDescriptor desc = buildTileScalarOpLibDesc(
-      "l3_float_tile_scalar_template", "tdivs", getSrc(), getScalar(),
-      getDst());
+  auto descOr = buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tdivs", getSrc(), getScalar(), getDst());
+  if (failed(descOr))
+    return failure();
+  OpLibMatchDescriptor desc = *descOr;
   auto orderAttr = (*this)->getAttrOfType<StringAttr>("pto.tdivs.order");
   if (!orderAttr)
     return failure();
   StringRef order = orderAttr.getValue();
   if (order != "tile_scalar" && order != "scalar_tile")
     return failure();
-  desc.requiredVariantId = order.str();
+  std::string requiredVariant = order.str();
+  Type elemTy = getElemTy(getSrc().getType());
+  if (elemTy.isF16())
+    requiredVariant += "_f16";
+  else if (auto intTy = dyn_cast<IntegerType>(elemTy);
+           intTy && intTy.getWidth() == 16)
+    requiredVariant += "_i16";
+  desc.requiredVariantId = requiredVariant;
   return desc;
 }
 
 FailureOr<OpLibMatchDescriptor> TMaxSOp::getOpLibMatchDescriptor() {
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmaxs",
-                                  getSrc(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tmaxs", getSrc(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TMinSOp::getOpLibMatchDescriptor() {
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "tmins",
-                                  getSrc(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "tmins", getSrc(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TAddCOp::getOpLibMatchDescriptor() {
@@ -5284,17 +5348,16 @@ FailureOr<OpLibMatchDescriptor> TPReluOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TRemOp::getOpLibMatchDescriptor() {
-  if (!isa<FloatType>(getElemTy(getSrc0().getType())))
-    return failure();
-  return buildBinaryTileOpLibDesc("l3_float_binary_elementwise_template", "trem",
-                                  getSrc0(), getSrc1(), getDst());
+  return buildBinaryTileOpLibDescByElemType(
+      "l3_float_binary_elementwise_template",
+      "l3_int_binary_elementwise_template", "trem", getSrc0(), getSrc1(),
+      getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TRemSOp::getOpLibMatchDescriptor() {
-  if (!isa<FloatType>(getElemTy(getSrc().getType())))
-    return failure();
-  return buildTileScalarOpLibDesc("l3_float_tile_scalar_template", "trems",
-                                  getSrc(), getScalar(), getDst());
+  return buildTileScalarOpLibDescByElemType(
+      "l3_float_tile_scalar_template", "l3_int_tile_scalar_elementwise_template",
+      "trems", getSrc(), getScalar(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TCmpOp::getOpLibMatchDescriptor() {

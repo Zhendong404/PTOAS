@@ -70,7 +70,7 @@
       },
       "variant_axis": {
         "name": "variant_id",
-        "basis": "per_op"
+        "basis": "dtype_map"
       },
       "metadata": {
         "entry_role": "variant",
@@ -109,76 +109,158 @@
           "name": "tadd",
           "core_op": "arith.addf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "tsub",
           "core_op": "arith.subf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "tmul",
           "core_op": "arith.mulf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "tdiv",
           "core_op": "arith.divf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "tmax",
           "core_op": "arith.maximumf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "tmin",
           "core_op": "arith.minimumf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f16"
-          ],
-          "variant_id": "tile_f16_scalar",
           "cost": 1,
-          "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+          "variants": [
+            {
+              "id": "tile_f16_scalar",
+              "dtypes": [
+                "f16"
+              ],
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{dtype}_scalar"
+              }
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         },
         {
           "name": "trem",
           "core_op": "arith.remf",
           "snippet": "binary/elementwise_result.mlirfrag",
-          "dtypes": [
-            "f32"
-          ],
-          "variant_id": "tile"
+          "variants": [
+            {
+              "id": "tile_f16",
+              "dtypes": [
+                "f16"
+              ]
+            },
+            {
+              "id": "tile",
+              "dtypes": [
+                "f32"
+              ]
+            }
+          ]
         }
       ]
     },
@@ -276,6 +358,40 @@
       ],
       "ops": [
         {
+          "name": "tadd",
+          "core_op": "arith.addi",
+          "snippet": "binary/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tsub",
+          "core_op": "arith.subi",
+          "snippet": "binary/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tmul",
+          "core_op": "arith.muli",
+          "snippet": "binary/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tdiv",
+          "core_op": "arith.divsi",
+          "snippet": "binary/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
+        },
+        {
+          "name": "tmax",
+          "core_op": "arith.maxsi",
+          "snippet": "binary/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tmin",
+          "core_op": "arith.minsi",
+          "snippet": "binary/elementwise_result.mlirfrag"
+        },
+        {
           "name": "tand",
           "core_op": "arith.andi",
           "snippet": "binary/elementwise_result.mlirfrag"
@@ -303,7 +419,11 @@
         {
           "name": "trem",
           "core_op": "arith.remsi",
-          "snippet": "binary/elementwise_result.mlirfrag"
+          "snippet": "binary/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
         }
       ]
     },
@@ -332,6 +452,7 @@
       ],
       "dtype_axis": {
         "values": [
+          "f16",
           "f32"
         ]
       },
@@ -416,13 +537,18 @@
         }
       ],
       "dtype_axis": {
+        "variant_id_by_dtype": {
+          "f16": "tile_scalar_f16",
+          "f32": "tile_scalar"
+        },
         "values": [
+          "f16",
           "f32"
         ]
       },
       "variant_axis": {
         "name": "variant_id",
-        "basis": "per_op_variant"
+        "basis": "dtype_map"
       },
       "metadata": {
         "entry_role": "variant",
@@ -453,7 +579,7 @@
           "key": "variant_id",
           "location": "template_attr",
           "attr": "pto.oplib.variant_id",
-          "source": "variant_axis"
+          "source": "dtype_axis.variant_id_by_dtype"
         },
         {
           "key": "scalarPos",
@@ -469,11 +595,61 @@
       ],
       "ops": [
         {
+          "name": "tadds",
+          "core_op": "arith.addf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tsubs",
+          "core_op": "arith.subf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tmuls",
+          "core_op": "arith.mulf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
           "name": "tdivs",
           "core_op": "arith.divf",
           "variants": [
             {
+              "id": "tile_scalar_f16",
+              "dtypes": [
+                "f16"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_f16"
+              }
+            },
+            {
+              "id": "scalar_tile_f16",
+              "dtypes": [
+                "f16"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_f16"
+              }
+            },
+            {
               "id": "tile_scalar",
+              "dtypes": [
+                "f32"
+              ],
               "body": {
                 "operand_order": "tile_scalar",
                 "snippet": "tile_scalar/elementwise_result.mlirfrag"
@@ -487,6 +663,9 @@
             },
             {
               "id": "scalar_tile",
+              "dtypes": [
+                "f32"
+              ],
               "body": {
                 "operand_order": "scalar_tile",
                 "snippet": "tile_scalar/elementwise_result.mlirfrag"
@@ -501,16 +680,24 @@
           ]
         },
         {
+          "name": "tmaxs",
+          "core_op": "arith.maximumf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tmins",
+          "core_op": "arith.minimumf",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
           "name": "trems",
           "core_op": "arith.remf",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag",
-          "variant_id": "tile_scalar"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
         },
         {
           "name": "tlrelu",
           "core_op": "custom",
           "snippet": "tile_scalar/lrelu_result.mlirfrag",
-          "variant_id": "tile_scalar",
           "body_kind": "lrelu"
         }
       ]
@@ -611,9 +798,117 @@
           "location": "template_attr",
           "attr": "pto.oplib.match.scalar_pos",
           "source": "parameter_roles.scalar_index"
+        },
+        {
+          "key": "requiredVariantId",
+          "location": "request_only",
+          "source": "variant_axis"
         }
       ],
       "ops": [
+        {
+          "name": "tadds",
+          "core_op": "arith.addi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tsubs",
+          "core_op": "arith.subi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tmuls",
+          "core_op": "arith.muli",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+        },
+        {
+          "name": "tdivs",
+          "core_op": "arith.divsi",
+          "variants": [
+            {
+              "id": "tile_scalar_i16",
+              "dtypes": [
+                "i16"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_i16"
+              }
+            },
+            {
+              "id": "scalar_tile_i16",
+              "dtypes": [
+                "i16"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_i16"
+              }
+            },
+            {
+              "id": "tile_scalar",
+              "dtypes": [
+                "i32"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar"
+              }
+            },
+            {
+              "id": "scalar_tile",
+              "dtypes": [
+                "i32"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile"
+              }
+            }
+          ]
+        },
+        {
+          "name": "tmaxs",
+          "core_op": "arith.maxsi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i8",
+            "i32"
+          ]
+        },
+        {
+          "name": "tmins",
+          "core_op": "arith.minsi",
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i8",
+            "i32"
+          ]
+        },
         {
           "name": "tands",
           "core_op": "arith.andi",
@@ -642,7 +937,11 @@
         {
           "name": "trems",
           "core_op": "arith.remsi",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
         }
       ]
     },
@@ -676,6 +975,7 @@
       ],
       "dtype_axis": {
         "values": [
+          "f16",
           "f32"
         ]
       },
@@ -840,12 +1140,17 @@
       ],
       "dtype_axis": {
         "values": [
+          "f16",
           "f32"
-        ]
+        ],
+        "variant_id_by_dtype": {
+          "f16": "tile_f16",
+          "f32": "tile"
+        }
       },
       "variant_axis": {
         "name": "variant_id",
-        "basis": "per_op"
+        "basis": "dtype_map"
       },
       "metadata": {
         "entry_role": "variant",
@@ -876,7 +1181,7 @@
           "key": "variant_id",
           "location": "template_attr",
           "attr": "pto.oplib.variant_id",
-          "source": "variant_axis"
+          "source": "dtype_axis.variant_id_by_dtype"
         }
       ],
       "ops": [
@@ -884,28 +1189,24 @@
           "name": "tabs",
           "core_op": "arith.maximumf(arith.negf(x), x)",
           "snippet": "unary/abs_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "abs"
         },
         {
           "name": "tneg",
-          "core_op": "arith.negf",
+          "core_op": "arith.subf",
           "snippet": "unary/neg_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "neg"
         },
         {
           "name": "trecip",
           "core_op": "arith.divf",
           "snippet": "unary/recip_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "recip"
         },
         {
           "name": "trelu",
           "core_op": "arith.maximumf",
           "snippet": "unary/relu_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "relu"
         }
       ]
@@ -930,12 +1231,17 @@
       ],
       "dtype_axis": {
         "values": [
+          "f16",
           "f32"
-        ]
+        ],
+        "variant_id_by_dtype": {
+          "f16": "tile_f16",
+          "f32": "tile"
+        }
       },
       "variant_axis": {
         "name": "variant_id",
-        "basis": "per_op"
+        "basis": "dtype_map"
       },
       "metadata": {
         "entry_role": "variant",
@@ -966,7 +1272,7 @@
           "key": "variant_id",
           "location": "template_attr",
           "attr": "pto.oplib.variant_id",
-          "source": "variant_axis"
+          "source": "dtype_axis.variant_id_by_dtype"
         }
       ],
       "ops": [
@@ -974,28 +1280,24 @@
           "name": "texp",
           "core_op": "math.exp",
           "snippet": "unary/exp_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "exp"
         },
         {
           "name": "tlog",
           "core_op": "math.log",
           "snippet": "unary/log_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "log"
         },
         {
           "name": "tsqrt",
           "core_op": "math.sqrt",
           "snippet": "unary/sqrt_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "sqrt"
         },
         {
           "name": "trsqrt",
           "core_op": "arith.divf(math.one, math.sqrt)",
           "snippet": "unary/rsqrt_result.mlirfrag",
-          "variant_id": "tile",
           "body_kind": "rsqrt"
         }
       ]
@@ -1088,6 +1390,25 @@
         }
       ],
       "ops": [
+        {
+          "name": "tneg",
+          "core_op": "arith.subi",
+          "snippet": "unary/neg_result.mlirfrag",
+          "body_kind": "neg",
+          "dtypes": [
+            "i8",
+            "i32"
+          ]
+        },
+        {
+          "name": "trelu",
+          "core_op": "arith.maxsi",
+          "snippet": "unary/relu_result.mlirfrag",
+          "body_kind": "relu",
+          "dtypes": [
+            "i32"
+          ]
+        },
         {
           "name": "tnot",
           "core_op": "arith.xori",

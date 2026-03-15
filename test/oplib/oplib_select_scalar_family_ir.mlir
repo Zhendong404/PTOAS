@@ -1,8 +1,13 @@
-// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+// RUN: rm -rf %t.dir && mkdir -p %t.dir
+// RUN: mkdir -p %t.dir/families
+// RUN: cp %S/resources/good_select_scalar_template.mlir %t.dir/
+// RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.dir/families/
+// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%t.dir --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-DAG: pto.oplib.instance.kind = "l3_select_scalar_template"
 // CHECK-DAG: pto.oplib.instance.op = "tsels"
+// CHECK-DAG: pto.oplib.instance.dtype = "f32"
 // CHECK-DAG: pto.oplib.instance.variant_id = "scalar_mode"
 // CHECK: call @__pto_oplib_inst_l3_select_scalar_template_tsels_scalar_mode(
 

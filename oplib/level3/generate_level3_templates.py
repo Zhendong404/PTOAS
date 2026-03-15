@@ -214,6 +214,10 @@ def expand_ops(family: dict[str, Any]) -> list[dict[str, Any]]:
             entry = dict(op)
             entry.pop("variants", None)
             entry["variant_id"] = variant["id"]
+            for key, value in variant.items():
+                if key in {"id", "body", "metadata", "request_keys"}:
+                    continue
+                entry[key] = value
             body = variant.get("body", {})
             entry.update(body)
             metadata = variant.get("metadata", {})
@@ -347,12 +351,16 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
     arg_roles = [role["kind"] for role in family["parameter_roles"]]
 
     for op_info in expand_ops(family):
-        op_dtypes = op_info.get("dtypes", dtypes)
+        requested_dtypes = op_info.get("dtypes")
+        op_dtypes = [dtype for dtype in dtypes if requested_dtypes is None or dtype in requested_dtypes]
         for dtype in op_dtypes:
             for condition_info in conditions:
                 condition = ""
                 cmp_predicate = ""
-                variant_id = family.get("dtype_axis", {}).get("variant_id_by_dtype", {}).get(dtype, op_info.get("variant_id"))
+                variant_id = op_info.get(
+                    "variant_id",
+                    family.get("dtype_axis", {}).get("variant_id_by_dtype", {}).get(dtype),
+                )
                 if isinstance(condition_info, dict):
                     condition = condition_info["matcher"]["cmpMode"]
                     cmp_predicate = condition_info.get("metadata", {}).get("predicate", "")
