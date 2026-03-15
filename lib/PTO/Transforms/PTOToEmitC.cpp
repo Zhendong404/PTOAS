@@ -2772,6 +2772,7 @@ struct OplibMemRefLoadToEmitC : public OpConversionPattern<memref::LoadOp> {
   matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto baseTy = dyn_cast<MemRefType>(op.getMemRef().getType());
+    Value memref = peelUnrealized(adaptor.getMemref());
     auto linearIndexOr = getA5LinearizedIndex(
         rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
         "memref.load");
@@ -2784,7 +2785,7 @@ struct OplibMemRefLoadToEmitC : public OpConversionPattern<memref::LoadOp> {
 
     auto call = rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{dstTy}, "ptoas_memref_load",
-        ValueRange{adaptor.getMemref(), *linearIndexOr}, ArrayAttr{},
+        ValueRange{memref, *linearIndexOr}, ArrayAttr{},
         ArrayAttr{});
     rewriter.replaceOp(op, call.getResult(0));
     return success();
@@ -2798,6 +2799,7 @@ struct OplibMemRefStoreToEmitC : public OpConversionPattern<memref::StoreOp> {
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto baseTy = dyn_cast<MemRefType>(op.getMemRef().getType());
+    Value memref = peelUnrealized(adaptor.getMemref());
     auto linearIndexOr = getA5LinearizedIndex(
         rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
         "memref.store");
@@ -2806,7 +2808,7 @@ struct OplibMemRefStoreToEmitC : public OpConversionPattern<memref::StoreOp> {
 
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "ptoas_memref_store",
-        ValueRange{adaptor.getMemref(), *linearIndexOr, adaptor.getValue()},
+        ValueRange{memref, *linearIndexOr, adaptor.getValue()},
         ArrayAttr{}, ArrayAttr{});
     rewriter.eraseOp(op);
     return success();
@@ -2826,6 +2828,7 @@ struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
       return failure();
 
     auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    Value base = peelUnrealized(adaptor.getBase());
     auto linearIndexOr =
         getA5LinearizedIndex(rewriter, op.getOperation(), adaptor.getIndices(),
                              baseTy, "vector.load");
@@ -2850,7 +2853,7 @@ struct OplibVectorLoadToEmitC : public OpConversionPattern<vector::LoadOp> {
          emitc::OpaqueAttr::get(ctx, *vldDistOr)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
                                          ValueRange{regVar.getResult(),
-                                                    adaptor.getBase(),
+                                                    base,
                                                     *linearIndexOr},
                                          args, ArrayAttr{});
     rewriter.replaceOp(op, regVar.getResult());
@@ -2944,6 +2947,7 @@ struct OplibVectorMaskedLoadToEmitC
       return failure();
 
     auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    Value base = peelUnrealized(adaptor.getBase());
     auto linearIndexOr = getA5LinearizedIndex(
         rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
         "vector.maskedload");
@@ -2970,7 +2974,7 @@ struct OplibVectorMaskedLoadToEmitC
          emitc::OpaqueAttr::get(ctx, *vldDistOr)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vlds",
                                          ValueRange{regVar.getResult(),
-                                                    adaptor.getBase(),
+                                                    base,
                                                     *linearIndexOr},
                                          args, ArrayAttr{});
     rewriter.replaceOp(op, regVar.getResult());
@@ -2992,6 +2996,7 @@ struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
       return failure();
 
     auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    Value base = peelUnrealized(adaptor.getBase());
     auto linearIndexOr =
         getA5LinearizedIndex(rewriter, op.getOperation(), adaptor.getIndices(),
                              baseTy, "vector.store");
@@ -3018,7 +3023,7 @@ struct OplibVectorStoreToEmitC : public OpConversionPattern<vector::StoreOp> {
          rewriter.getIndexAttr(3)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vsts",
                                          ValueRange{adaptor.getValueToStore(),
-                                                    adaptor.getBase(),
+                                                    base,
                                                     *linearIndexOr,
                                                     *predOr},
                                          args, ArrayAttr{});
@@ -3042,6 +3047,7 @@ struct OplibVectorMaskedStoreToEmitC
       return failure();
 
     auto baseTy = dyn_cast<MemRefType>(op.getBase().getType());
+    Value base = peelUnrealized(adaptor.getBase());
     auto linearIndexOr = getA5LinearizedIndex(
         rewriter, op.getOperation(), adaptor.getIndices(), baseTy,
         "vector.maskedstore");
@@ -3073,7 +3079,7 @@ struct OplibVectorMaskedStoreToEmitC
          rewriter.getIndexAttr(3)});
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "vsts",
                                          ValueRange{adaptor.getValueToStore(),
-                                                    adaptor.getBase(),
+                                                    base,
                                                     *linearIndexOr,
                                                     mask},
                                          args, ArrayAttr{});
@@ -10308,6 +10314,21 @@ struct EmitPTOManualPass
           return ot.getValue().ends_with("*");
         return false;
       };
+      auto canLowerMemrefCarrierCast = [](Type srcTy, Type dstTy) -> bool {
+        auto srcMem = dyn_cast<MemRefType>(srcTy);
+        auto dstMem = dyn_cast<MemRefType>(dstTy);
+        if (!srcMem || !dstMem)
+          return false;
+        if (srcMem.getRank() != dstMem.getRank())
+          return false;
+        if (srcMem.getMemorySpace() != dstMem.getMemorySpace())
+          return false;
+        auto srcInt = dyn_cast<IntegerType>(srcMem.getElementType());
+        auto dstInt = dyn_cast<IntegerType>(dstMem.getElementType());
+        if (!srcInt || !dstInt)
+          return false;
+        return srcInt.getWidth() == dstInt.getWidth();
+      };
       // Prefer inserting tile.data() extraction after the tile has been bound
       // via TASSIGN(tile, addr). Without this, we can end up emitting C++ like:
       //   Tile ... t; auto *p = t.data(); TASSIGN(t, addr);
@@ -10473,6 +10494,49 @@ struct EmitPTOManualPass
         output.replaceAllUsesWith(c.getResult());
         markErase(cast.getOperation());
         return;
+      }
+
+      if (canLowerMemrefCarrierCast(inTy, outTy)) {
+        Type convertedOutTy = typeConverter.convertType(outTy);
+        Type convertedInTy = typeConverter.convertType(inTy);
+        if (convertedOutTy && convertedInTy && isEmitCPtrLikeTy(convertedOutTy) &&
+            isEmitCPtrLikeTy(convertedInTy)) {
+          OpBuilder builder(cast);
+          if (auto srcBridge = input.getDefiningOp<UnrealizedConversionCastOp>()) {
+            if (srcBridge->getNumOperands() == 1 && srcBridge->getNumResults() == 1) {
+              Value ptrInput = srcBridge.getOperand(0);
+              if (isEmitCPtrLikeTy(ptrInput.getType())) {
+                Value replacement = ptrInput;
+                if (replacement.getType() != convertedOutTy)
+                  replacement =
+                      builder.create<emitc::CastOp>(cast.getLoc(), convertedOutTy,
+                                                    replacement);
+                output.replaceAllUsesWith(replacement);
+                markErase(cast.getOperation());
+                if (input.use_empty())
+                  markErase(srcBridge.getOperation());
+                return;
+              }
+            }
+          }
+          if (convertedInTy == convertedOutTy) {
+            auto bridge = builder.create<UnrealizedConversionCastOp>(
+                cast.getLoc(), TypeRange{convertedOutTy}, ValueRange{input});
+            output.replaceAllUsesWith(bridge.getResult(0));
+            markErase(cast.getOperation());
+            return;
+          }
+          if (auto outOpaque = dyn_cast<emitc::OpaqueType>(convertedOutTy)) {
+            auto templateArgs = builder.getArrayAttr(
+                {emitc::OpaqueAttr::get(ctx, outOpaque.getValue())});
+            auto rc = builder.create<emitc::CallOpaqueOp>(
+                cast.getLoc(), convertedOutTy, "reinterpret_cast", ArrayAttr{},
+                templateArgs, ValueRange{input});
+            output.replaceAllUsesWith(rc.getResult(0));
+            markErase(cast.getOperation());
+            return;
+          }
+        }
       }
 
       cast.emitError() << "cannot lower unrealized_conversion_cast(" << inTy

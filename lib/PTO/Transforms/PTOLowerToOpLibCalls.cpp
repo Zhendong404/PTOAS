@@ -658,6 +658,24 @@ static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
                          tileTy.getMemorySpace());
 }
 
+static bool areIntegerCarrierTypesCompatible(Type lhs, Type rhs) {
+  auto lhsInt = dyn_cast<IntegerType>(lhs);
+  auto rhsInt = dyn_cast<IntegerType>(rhs);
+  if (!lhsInt || !rhsInt)
+    return false;
+  return lhsInt.getWidth() == rhsInt.getWidth();
+}
+
+static bool canRemapSimdBridgeViaCarrierCast(MemRefType actualTy,
+                                             MemRefType templateTy) {
+  if (actualTy.getRank() != templateTy.getRank())
+    return false;
+  if (actualTy.getMemorySpace() != templateTy.getMemorySpace())
+    return false;
+  return areIntegerCarrierTypesCompatible(actualTy.getElementType(),
+                                          templateTy.getElementType());
+}
+
 static std::string dtypeToString(Type ty) {
   return pto::getOpLibDTypeName(ty);
 }
@@ -2080,6 +2098,7 @@ struct TemplateRegistry {
           return failure();
         }
 
+        auto templateMemTy = dyn_cast<MemRefType>(bridge.getDst().getType());
         if (auto mappedTileTy = dyn_cast<pto::TileBufType>(mappedSrc.getType())) {
           FailureOr<MemRefType> inferredTyOr =
               inferSimdBridgeMemRefType(mappedTileTy, module.getContext());
@@ -2091,14 +2110,23 @@ struct TemplateRegistry {
             return failure();
           }
 
+          auto inferredTy = *inferredTyOr;
           auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
-              bridge.getLoc(), *inferredTyOr, mappedSrc);
-          mapping.map(bridge.getDst(), newBridge.getDst());
+              bridge.getLoc(), inferredTy, mappedSrc);
+          if (templateMemTy && inferredTy != templateMemTy &&
+              canRemapSimdBridgeViaCarrierCast(inferredTy, templateMemTy)) {
+            auto cast = bodyBuilder.create<UnrealizedConversionCastOp>(
+                bridge.getLoc(), TypeRange{templateMemTy},
+                ValueRange{newBridge.getDst()});
+            mapping.map(bridge.getDst(), cast.getResult(0));
+          } else {
+            mapping.map(bridge.getDst(), newBridge.getDst());
+          }
           continue;
         }
 
         auto mappedMemTy = dyn_cast<MemRefType>(mappedSrc.getType());
-        auto dstMemTy = dyn_cast<MemRefType>(bridge.getDst().getType());
+        auto dstMemTy = templateMemTy;
         if (!mappedMemTy || !dstMemTy) {
           (void)emitFailureWithCode(
               loc, kErrLayout,
@@ -2107,8 +2135,7 @@ struct TemplateRegistry {
           return failure();
         }
 
-        if (mappedMemTy.getRank() != dstMemTy.getRank() ||
-            mappedMemTy.getElementType() != dstMemTy.getElementType()) {
+        if (mappedMemTy.getRank() != dstMemTy.getRank()) {
           (void)emitFailureWithCode(
               loc, kErrLayout,
               Twine("incompatible memref remap for simd.tile_to_memref in instance @") +
@@ -2121,7 +2148,20 @@ struct TemplateRegistry {
         // re-introducing unrealized casts for shape-only differences.
         auto newBridge = bodyBuilder.create<pto::SimdTileToMemrefOp>(
             bridge.getLoc(), mappedMemTy, mappedSrc);
-        mapping.map(bridge.getDst(), newBridge.getDst());
+        if (mappedMemTy.getElementType() == dstMemTy.getElementType()) {
+          mapping.map(bridge.getDst(), newBridge.getDst());
+          continue;
+        }
+        if (!canRemapSimdBridgeViaCarrierCast(mappedMemTy, dstMemTy)) {
+          (void)emitFailureWithCode(
+              loc, kErrLayout,
+              Twine("incompatible memref remap for simd.tile_to_memref in instance @") +
+                  inst.getSymName());
+          return failure();
+        }
+        auto cast = bodyBuilder.create<UnrealizedConversionCastOp>(
+            bridge.getLoc(), TypeRange{dstMemTy}, ValueRange{newBridge.getDst()});
+        mapping.map(bridge.getDst(), cast.getResult(0));
         continue;
       }
 
