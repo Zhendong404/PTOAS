@@ -261,6 +261,66 @@
       ]
     },
     {
+      "id": "partial_binary",
+      "template": "partial_binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "float_partial_binary",
+          "kind": "l3_float_partial_binary_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "i8",
+            "i16",
+            "i32",
+            "f16",
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tpartadd",
+              "core_op": "arith.addf"
+            },
+            {
+              "op": "tpartmax",
+              "core_op": "arith.maximumf"
+            },
+            {
+              "op": "tpartmin",
+              "core_op": "arith.minimumf"
+            },
+            {
+              "op": "tprelu",
+              "core_op": "arith.mulf",
+              "body_kind": "prelu",
+              "dtypes": [
+                "f16",
+                "f32"
+              ]
+            }
+          ],
+          "output": "float_partial_binary_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from unified partial-binary skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
+          "variant_id_by_dtype": {
+            "i8": "tile_i8",
+            "i16": "tile_i16",
+            "i32": "tile_i32",
+            "f16": "tile_f16",
+            "f32": "tile_f32"
+          }
+        }
+      ]
+    },
+    {
       "id": "tile_scalar",
       "template": "tile_scalar.instance.tmpl.mlir",
       "axes": [

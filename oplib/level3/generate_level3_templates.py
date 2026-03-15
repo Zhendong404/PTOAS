@@ -354,10 +354,12 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
         requested_dtypes = op_info.get("dtypes")
         op_dtypes = [dtype for dtype in dtypes if requested_dtypes is None or dtype in requested_dtypes]
         for dtype in op_dtypes:
+            effective_op_info = dict(op_info)
+            effective_op_info["core_op"] = op_info.get("core_op_by_dtype", {}).get(dtype, op_info["core_op"])
             for condition_info in conditions:
                 condition = ""
                 cmp_predicate = ""
-                variant_id = op_info.get(
+                variant_id = effective_op_info.get(
                     "variant_id",
                     family.get("dtype_axis", {}).get("variant_id_by_dtype", {}).get(dtype),
                 )
@@ -370,11 +372,11 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
 
                 cost = int(op_info.get("cost", family["metadata"].get("cost", 10)))
                 priority = int(op_info.get("priority", family["metadata"].get("priority", 0)))
-                func_name = build_func_name(pattern, family, op_info, variant_id, dtype)
+                func_name = build_func_name(pattern, family, effective_op_info, variant_id, dtype)
 
                 axis_values = [
                     f"dtype={dtype}",
-                    f"core_op={op_info['core_op']}",
+                    f"core_op={effective_op_info['core_op']}",
                     f"variant_id={variant_id}",
                 ]
                 if condition:
@@ -396,11 +398,11 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         f'{{pto.simd.vld_dist = "NORM"}} : {memref_type(dtype)}, {mask_vector_type()}, '
                         f"{vector_type(dtype)} into {vector_type(dtype)}\n"
                     )
-                elif pattern["id"] == "binary":
+                elif pattern["id"] in {"binary", "partial_binary"}:
                     rhs_value = "%rhs"
 
                 extra_setup, compute = build_snippet_blocks(
-                    op_info,
+                    effective_op_info,
                     contract,
                     dtype,
                     result_dtype,
@@ -413,12 +415,12 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "family_id": family["family"],
                         "func_name": func_name,
                         "kind": family["kind"],
-                        "op_name": op_info["name"],
+                        "op_name": effective_op_info["name"],
                         "variant_id": variant_id,
                         "match_dtype": dtype,
                         "arg_decls": build_arg_decls(arg_roles, dtype, result_dtype),
                         "match_attrs": build_match_attrs(arg_roles),
-                        "core_op": op_info["core_op"],
+                        "core_op": effective_op_info["core_op"],
                         "cmp_mode": condition,
                         "cmp_predicate": cmp_predicate,
                         "scalar_pos_attr": (

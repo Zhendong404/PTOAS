@@ -5343,8 +5343,8 @@ FailureOr<OpLibMatchDescriptor> TPReluOp::getOpLibMatchDescriptor() {
   auto tmpITy = dyn_cast<IntegerType>(getElemTy(getTmp().getType()));
   if (!tmpITy || tmpITy.getWidth() != 8)
     return failure();
-  return buildTernaryTileOpLibDesc("l3_float_ternary_tile_template", "tprelu",
-                                   getSrc0(), getSrc1(), getTmp(), getDst());
+  return buildBinaryTileOpLibDesc("l3_float_partial_binary_template", "tprelu",
+                                  getSrc0(), getSrc1(), getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TRemOp::getOpLibMatchDescriptor() {

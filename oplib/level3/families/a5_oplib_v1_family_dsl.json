@@ -11,6 +11,15 @@
       ]
     },
     {
+      "id": "partial_binary",
+      "template": "partial_binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
       "id": "tile_scalar",
       "template": "tile_scalar.instance.tmpl.mlir",
       "axes": [
@@ -429,9 +438,9 @@
     },
     {
       "family": "float_partial_binary",
-      "pattern": "binary",
+      "pattern": "partial_binary",
       "kind": "l3_float_partial_binary_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "binary_result",
       "parameter_roles": [
         {
@@ -452,21 +461,29 @@
       ],
       "dtype_axis": {
         "values": [
+          "i8",
+          "i16",
+          "i32",
           "f16",
           "f32"
-        ]
+        ],
+        "variant_id_by_dtype": {
+          "i8": "tile_i8",
+          "i16": "tile_i16",
+          "i32": "tile_i32",
+          "f16": "tile_f16",
+          "f32": "tile_f32"
+        }
       },
       "variant_axis": {
         "name": "variant_id",
-        "basis": "placeholder",
-        "values": [
-          {
-            "id": "tile"
-          }
-        ]
+        "basis": "dtype_map"
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "float_partial_binary_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from unified partial-binary skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{dtype}"
       },
       "matcher_keys": [
         {
@@ -491,25 +508,49 @@
           "key": "variant_id",
           "location": "template_attr",
           "attr": "pto.oplib.variant_id",
-          "source": "variant_axis"
+          "source": "dtype_axis.variant_id_by_dtype"
         }
       ],
       "ops": [
         {
           "name": "tpartadd",
-          "core_op": "arith.addf"
+          "core_op": "arith.addf",
+          "core_op_by_dtype": {
+            "i8": "arith.addi",
+            "i16": "arith.addi",
+            "i32": "arith.addi"
+          },
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tpartmax",
-          "core_op": "arith.maximumf"
+          "core_op": "arith.maximumf",
+          "core_op_by_dtype": {
+            "i8": "arith.maxsi",
+            "i16": "arith.maxsi",
+            "i32": "arith.maxsi"
+          },
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tpartmin",
-          "core_op": "arith.minimumf"
+          "core_op": "arith.minimumf",
+          "core_op_by_dtype": {
+            "i8": "arith.minsi",
+            "i16": "arith.minsi",
+            "i32": "arith.minsi"
+          },
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tprelu",
-          "core_op": "custom"
+          "core_op": "arith.mulf",
+          "snippet": "partial_binary/prelu_result.mlirfrag",
+          "body_kind": "prelu",
+          "dtypes": [
+            "f16",
+            "f32"
+          ]
         }
       ]
     },
@@ -1024,10 +1065,6 @@
         },
         {
           "name": "tsubc",
-          "core_op": "custom"
-        },
-        {
-          "name": "tprelu",
           "core_op": "custom"
         }
       ]
