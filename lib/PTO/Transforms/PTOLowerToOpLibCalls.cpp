@@ -865,6 +865,19 @@ static bool isVectorFloatBinaryArith(Operation *op) {
   return isa<VectorType>(op->getResult(0).getType());
 }
 
+static bool opRequiresExplicitExecMode(StringRef kind, StringRef op) {
+  if (kind == kOpLibKindL3BinaryTemplate ||
+      kind == "l3_float_binary_elementwise_template") {
+    return op == "tadd" || op == "tsub" || op == "tmul" || op == "tdiv" ||
+           op == "tmax" || op == "tmin";
+  }
+  if (kind == "l3_float_unary_template")
+    return op == "trecip" || op == "trelu";
+  if (kind == "l3_float_tile_scalar_template")
+    return op == "tdivs";
+  return false;
+}
+
 static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
   auto vecTy = dyn_cast<VectorType>(ty);
   if (!vecTy || vecTy.isScalable())
@@ -1295,6 +1308,9 @@ struct TemplateRegistry {
                                  "template body must not be empty");
     }
 
+    bool requireExplicitExecMode =
+        opRequiresExplicitExecMode(entry.kind, entry.op);
+
     FunctionType fnTy = imported.getFunctionType();
     for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), entry.argRoles)) {
       if (role == TemplateArgRole::Scalar) {
@@ -1438,7 +1454,8 @@ struct TemplateRegistry {
         }
       }
 
-      if (isVectorFloatBinaryArith(op)) {
+      if (isVectorFloatBinaryArith(op) &&
+          (requireExplicitExecMode || op->hasAttr(kSimdExecModeAttr))) {
         if (!requireNonEmptyTokenAttr(op, kSimdExecModeAttr,
                                       "vector float binary arith op",
                                       /*requiredPrefix=*/"MODE_"))

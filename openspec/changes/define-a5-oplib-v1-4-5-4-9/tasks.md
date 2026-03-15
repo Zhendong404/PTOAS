@@ -15,7 +15,7 @@
 ## 3. 编译器消费侧改造
 
 - [x] 3.1 更新 `PTOLowerToOpLibCalls`，使其继续消费 concrete 模板，同时支持新的 family 划分和 manifest 驱动的 in-scope / deferred 语义。
-- [ ] 3.2 更新 `PTOValidateSimdIR`，为新生成模型补齐 family 级约束和失败诊断。
+- [x] 3.2 更新 `PTOValidateSimdIR`，为新生成模型补齐 family 级约束和失败诊断。
 - [ ] 3.3 更新 `PTOToEmitC`，补足 4.5~4.9 in-scope family 所需的 A5 vector EmitC 覆盖。
 - [ ] 3.4 确保 `kind/op/dtype/variant_id/cmpMode/scalarPos/requiredVariantId/isBinary` 的实例选择语义保持兼容。
 
