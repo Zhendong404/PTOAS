@@ -10329,6 +10329,10 @@ struct EmitPTOManualPass
           return false;
         return srcInt.getWidth() == dstInt.getWidth();
       };
+      auto isRegTensorOpaqueTy = [](Type ty) -> bool {
+        auto opaqueTy = dyn_cast<emitc::OpaqueType>(ty);
+        return opaqueTy && opaqueTy.getValue().starts_with("RegTensor<");
+      };
       // Prefer inserting tile.data() extraction after the tile has been bound
       // via TASSIGN(tile, addr). Without this, we can end up emitting C++ like:
       //   Tile ... t; auto *p = t.data(); TASSIGN(t, addr);
@@ -10539,6 +10543,29 @@ struct EmitPTOManualPass
         }
       }
 
+      // Deferred bridge cleanup:
+      // In A5 vector lowering, SCFToEmitC may still keep loop/result handles as
+      // vector-typed emitc.variable while the data path has already converted to
+      // RegTensor<...>. Leave these bridge casts in place for Step A1.5 to
+      // canonicalize as a whole handle rewrite.
+      if (isa<VectorType>(inTy) && isRegTensorOpaqueTy(outTy) &&
+          input.getDefiningOp<emitc::VariableOp>()) {
+        return;
+      }
+      if (isRegTensorOpaqueTy(inTy) && isa<VectorType>(outTy)) {
+        bool onlyUsedByVectorVarAssign =
+            llvm::all_of(output.getUsers(), [&](Operation *user) {
+              auto assign = dyn_cast<emitc::AssignOp>(user);
+              if (!assign || assign.getOperand(1) != output)
+                return false;
+              return isa_and_nonnull<emitc::VariableOp>(
+                         assign.getOperand(0).getDefiningOp()) &&
+                     isa<VectorType>(assign.getOperand(0).getType());
+            });
+        if (onlyUsedByVectorVarAssign)
+          return;
+      }
+
       cast.emitError() << "cannot lower unrealized_conversion_cast(" << inTy
                        << " -> " << outTy << ") to emitc.cast";
       castCleanupFailed = true;
@@ -10578,6 +10605,151 @@ struct EmitPTOManualPass
 
     if (castCleanupFailed)
       return signalPassFailure();
+
+    // --- Step A1.5: Canonicalize vector-typed emitc.variable handles that
+    // actually carry converted A5 RegTensor values through unrealized casts.
+    //
+    // SCFToEmitC may keep loop-carried/result temporaries as vector-typed
+    // variables, while A5 vector lowering has already converted the data path to
+    // RegTensor<...>. This leaves a handle pattern like:
+    //   %vecVar = emitc.variable : vector<...>
+    //   %reg = unrealized_conversion_cast %vecVar : vector -> RegTensor
+    //   ...
+    //   %vec = unrealized_conversion_cast %newReg : RegTensor -> vector
+    //   emitc.assign %vecVar, %vec
+    // Fold the whole handle to a converted emitc.variable<RegTensor<...>>.
+    {
+      SmallVector<emitc::VariableOp> varsToCanonicalize;
+      mop.walk([&](emitc::VariableOp varOp) {
+        if (!isa<VectorType>(varOp.getResult().getType()))
+          return;
+        Type convertedTy = typeConverter.convertType(varOp.getResult().getType());
+        auto opaqueTy = dyn_cast_or_null<emitc::OpaqueType>(convertedTy);
+        if (!opaqueTy || !opaqueTy.getValue().starts_with("RegTensor<"))
+          return;
+        varsToCanonicalize.push_back(varOp);
+      });
+
+      SmallVector<Operation *> opsToErase;
+      SmallPtrSet<Operation *, 32> opsToEraseSet;
+      auto markCanonicalizeErase = [&](Operation *op) {
+        if (op && opsToEraseSet.insert(op).second)
+          opsToErase.push_back(op);
+      };
+
+      for (emitc::VariableOp varOp : varsToCanonicalize) {
+        if (!varOp || !varOp->getBlock())
+          continue;
+
+        Value oldVar = varOp.getResult();
+        Type newVarTy = typeConverter.convertType(oldVar.getType());
+        if (!newVarTy)
+          continue;
+
+        bool canCanonicalize = true;
+        for (OpOperand &use : llvm::make_early_inc_range(oldVar.getUses())) {
+          Operation *user = use.getOwner();
+          if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
+            if (cast->getNumOperands() != 1 || cast->getNumResults() != 1 ||
+                cast.getOperand(0) != oldVar ||
+                cast.getResult(0).getType() != newVarTy) {
+              canCanonicalize = false;
+              break;
+            }
+            continue;
+          }
+
+          if (auto assign = dyn_cast<emitc::AssignOp>(user)) {
+            if (assign.getOperand(0) != oldVar) {
+              canCanonicalize = false;
+              break;
+            }
+
+            Value assigned = assign.getOperand(1);
+            if (assigned.getType() == newVarTy)
+              continue;
+
+            auto srcCast = assigned.getDefiningOp<UnrealizedConversionCastOp>();
+            if (!srcCast || srcCast->getNumOperands() != 1 ||
+                srcCast->getNumResults() != 1 ||
+                srcCast.getResult(0) != assigned ||
+                srcCast.getOperand(0).getType() != newVarTy) {
+              canCanonicalize = false;
+              break;
+            }
+            continue;
+          }
+
+          canCanonicalize = false;
+          break;
+        }
+
+        if (!canCanonicalize)
+          continue;
+
+        OpBuilder b(varOp);
+        auto newVar = b.create<emitc::VariableOp>(
+            varOp.getLoc(), newVarTy, emitc::OpaqueAttr::get(ctx, ""));
+
+        for (OpOperand &use : llvm::make_early_inc_range(oldVar.getUses())) {
+          Operation *user = use.getOwner();
+          if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
+            cast.getResult(0).replaceAllUsesWith(newVar.getResult());
+            markCanonicalizeErase(cast.getOperation());
+            continue;
+          }
+
+          auto assign = cast<emitc::AssignOp>(user);
+          Value assigned = assign.getOperand(1);
+          if (auto srcCast = assigned.getDefiningOp<UnrealizedConversionCastOp>()) {
+            assigned = srcCast.getOperand(0);
+            if (srcCast.getResult(0).use_empty())
+              markCanonicalizeErase(srcCast.getOperation());
+          }
+
+          OpBuilder assignBuilder(assign);
+          assignBuilder.create<emitc::AssignOp>(assign.getLoc(), newVar.getResult(),
+                                                assigned);
+          markCanonicalizeErase(assign.getOperation());
+        }
+
+        markCanonicalizeErase(varOp.getOperation());
+      }
+
+      for (Operation *op : opsToErase)
+        if (op && op->getBlock())
+          op->erase();
+    }
+
+    // Step A1.5 can make deferred RegTensor<->vector bridge casts dead after
+    // rewriting the variable handle. Prune them before continuing.
+    {
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        SmallVector<UnrealizedConversionCastOp, 16> deadOrIdentity;
+        mop.walk([&](UnrealizedConversionCastOp cast) {
+          if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+            return;
+          Value in = cast.getOperand(0);
+          Value out = cast.getResult(0);
+          if (out.use_empty()) {
+            deadOrIdentity.push_back(cast);
+            return;
+          }
+          if (in.getType() == out.getType()) {
+            out.replaceAllUsesWith(in);
+            deadOrIdentity.push_back(cast);
+          }
+        });
+        for (UnrealizedConversionCastOp cast : deadOrIdentity) {
+          if (cast && cast->getBlock()) {
+            cast.erase();
+            changed = true;
+          }
+        }
+      }
+    }
 
     // --- Step A2: Sink casts of emitc.variable "reads" to their use sites ---
     //
