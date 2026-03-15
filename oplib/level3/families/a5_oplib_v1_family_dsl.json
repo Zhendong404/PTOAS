@@ -72,6 +72,42 @@
         "core_op",
         "variant_id"
       ]
+    },
+    {
+      "id": "broadcast_row",
+      "template": "broadcast_row.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "broadcast_col",
+      "template": "broadcast_col.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "broadcast_row_binary",
+      "template": "broadcast_row_binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
+    },
+    {
+      "id": "scalar_expand",
+      "template": "scalar_expand.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ]
     }
   ],
   "families": [
@@ -1017,7 +1053,7 @@
       "family": "float_ternary_tile",
       "pattern": "binary",
       "kind": "l3_float_ternary_tile_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "ternary_tile_result",
       "parameter_roles": [
         {
@@ -1180,7 +1216,8 @@
         },
         {
           "name": "tsubsc",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "broadcast/scalar_expand_result.mlirfrag"
         }
       ]
     },
@@ -1763,9 +1800,9 @@
     },
     {
       "family": "broadcast_row",
-      "pattern": "unary",
+      "pattern": "broadcast_row",
       "kind": "l3_broadcast_row_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "broadcast_row_core",
       "parameter_roles": [
         {
@@ -1794,7 +1831,20 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "broadcast_row_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from broadcast-row skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "input_tile_shape": {
+          "rows": 32,
+          "cols": 1
+        },
+        "result_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        }
       },
       "matcher_keys": [
         {
@@ -1825,15 +1875,16 @@
       "ops": [
         {
           "name": "trowexpand",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "broadcast/copy_result.mlirfrag"
         }
       ]
     },
     {
       "family": "broadcast_col",
-      "pattern": "unary",
+      "pattern": "broadcast_col",
       "kind": "l3_broadcast_col_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "broadcast_col_core",
       "parameter_roles": [
         {
@@ -1862,7 +1913,20 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "broadcast_col_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from broadcast-column skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "input_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        },
+        "result_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        }
       },
       "matcher_keys": [
         {
@@ -1893,15 +1957,16 @@
       "ops": [
         {
           "name": "tcolexpand",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "broadcast/copy_result.mlirfrag"
         }
       ]
     },
     {
       "family": "broadcast_row_binary",
-      "pattern": "binary",
+      "pattern": "broadcast_row_binary",
       "kind": "l3_broadcast_row_binary_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "broadcast_row_binary_result",
       "parameter_roles": [
         {
@@ -1935,7 +2000,30 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "broadcast_row_binary_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from broadcast-row-binary skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "input_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        },
+        "result_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        },
+        "tile_shapes_by_role": {
+          "src0": {
+            "rows": 32,
+            "cols": 32
+          },
+          "src1": {
+            "rows": 32,
+            "cols": 1
+          }
+        }
       },
       "matcher_keys": [
         {
@@ -1966,23 +2054,26 @@
       "ops": [
         {
           "name": "trowexpandmul",
-          "core_op": "custom"
+          "core_op": "arith.mulf",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "trowexpanddiv",
-          "core_op": "custom"
+          "core_op": "arith.divf",
+          "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "trowexpandsub",
-          "core_op": "custom"
+          "core_op": "arith.subf",
+          "snippet": "binary/elementwise_result.mlirfrag"
         }
       ]
     },
     {
       "family": "scalar_expand",
-      "pattern": "tile_scalar",
+      "pattern": "scalar_expand",
       "kind": "l3_scalar_expand_template",
-      "status": "reserved",
+      "status": "active",
       "snippet_contract": "scalar_expand_result",
       "parameter_roles": [
         {
@@ -2011,7 +2102,16 @@
         ]
       },
       "metadata": {
-        "entry_role": "variant"
+        "entry_role": "variant",
+        "output": "scalar_expand_templates.mlir",
+        "output_role": "importer-active concrete templates synchronized from scalar-expand skeleton source.",
+        "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+        "cost": 1,
+        "priority": 1,
+        "result_tile_shape": {
+          "rows": 32,
+          "cols": 32
+        }
       },
       "matcher_keys": [
         {
@@ -2048,7 +2148,8 @@
       "ops": [
         {
           "name": "texpands",
-          "core_op": "custom"
+          "core_op": "arith.addf",
+          "snippet": "broadcast/scalar_expand_result.mlirfrag"
         }
       ]
     },

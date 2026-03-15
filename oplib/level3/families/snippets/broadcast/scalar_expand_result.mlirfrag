@@ -1,0 +1,1 @@
+%result = arith.addf %scalarVec, %passive : @@RESULT_VECTOR_TYPE@@

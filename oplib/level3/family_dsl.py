@@ -100,6 +100,11 @@ def role_signature(parameter_roles: list[dict[str, Any]]) -> list[str]:
     return [role["kind"] for role in parameter_roles]
 
 
+def family_has_generated_output(family: dict[str, Any]) -> bool:
+    metadata = family.get("metadata", {})
+    return bool(metadata.get("output")) or bool(metadata.get("targets"))
+
+
 def matcher_keys_by_name(family: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {entry["key"]: entry for entry in family["matcher_keys"]}
 
@@ -158,7 +163,7 @@ def _validate_ops(family: dict[str, Any]) -> None:
     seen: set[str] = set()
     key_names = matcher_keys_by_name(family)
     variant_basis = family["variant_axis"]["basis"]
-    require_snippet = family["status"] == "active"
+    require_snippet = family["status"] == "active" and family_has_generated_output(family)
     for op in ops:
         _require(isinstance(op, dict), f"family {family_name} op entry must be an object")
         name = str(op.get("name", "")).strip()
@@ -456,12 +461,6 @@ def validate_family_dsl(
             str(metadata.get("entry_role", "")).strip() == "variant",
             f"family {family_name} metadata.entry_role must be variant",
         )
-        if status == "active":
-            _require(
-                bool(metadata.get("output")) or bool(metadata.get("targets")),
-                f"active family {family_name} requires output or targets metadata",
-            )
-
         has_scalar = scalar_index(roles) is not None
         _validate_matcher_keys(family, has_scalar)
         _validate_ops(family)
@@ -494,7 +493,7 @@ def project_catalog_from_family_dsl(
     }
 
     for family in doc["families"]:
-        if family["status"] != "active":
+        if family["status"] != "active" or not family_has_generated_output(family):
             continue
         dtype_axis = family["dtype_axis"]
         metadata = family["metadata"]

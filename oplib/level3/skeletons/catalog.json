@@ -962,6 +962,148 @@
           "priority": 1
         }
       ]
+    },
+    {
+      "id": "broadcast_row",
+      "template": "broadcast_row.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "broadcast_row",
+          "kind": "l3_broadcast_row_template",
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "trowexpand",
+              "core_op": "arith.addf"
+            }
+          ],
+          "output": "broadcast_row_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from broadcast-row skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "broadcast_col",
+      "template": "broadcast_col.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "broadcast_col",
+          "kind": "l3_broadcast_col_template",
+          "arg_roles": [
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "tcolexpand",
+              "core_op": "arith.addf"
+            }
+          ],
+          "output": "broadcast_col_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from broadcast-column skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "broadcast_row_binary",
+      "template": "broadcast_row_binary.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "broadcast_row_binary",
+          "kind": "l3_broadcast_row_binary_template",
+          "arg_roles": [
+            "tile",
+            "tile",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "trowexpandmul",
+              "core_op": "arith.mulf"
+            },
+            {
+              "op": "trowexpanddiv",
+              "core_op": "arith.divf"
+            },
+            {
+              "op": "trowexpandsub",
+              "core_op": "arith.subf"
+            }
+          ],
+          "output": "broadcast_row_binary_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from broadcast-row-binary skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "id": "scalar_expand",
+      "template": "scalar_expand.instance.tmpl.mlir",
+      "axes": [
+        "dtype",
+        "core_op",
+        "variant_id"
+      ],
+      "families": [
+        {
+          "family_id": "scalar_expand",
+          "kind": "l3_scalar_expand_template",
+          "arg_roles": [
+            "scalar",
+            "tile"
+          ],
+          "dtypes": [
+            "f32"
+          ],
+          "ops": [
+            {
+              "op": "texpands",
+              "core_op": "arith.addf"
+            }
+          ],
+          "output": "scalar_expand_templates.mlir",
+          "output_role": "importer-active concrete templates synchronized from scalar-expand skeleton source.",
+          "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
+          "cost": 1,
+          "priority": 1,
+          "scalar_pos": 0
+        }
+      ]
     }
   ]
 }

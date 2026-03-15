@@ -117,16 +117,20 @@ def scalar_literal(dtype: str, value: str) -> str:
     raise ValueError(f"unsupported scalar literal '{value}' for dtype {dtype}")
 
 
-def vector_type(dtype: str) -> str:
-    return f"vector<64x{dtype}>"
+def vector_type(dtype: str, lanes: int = 64) -> str:
+    return f"vector<{lanes}x{dtype}>"
 
 
-def mask_vector_type() -> str:
-    return "vector<64xi1>"
+def mask_vector_type(lanes: int = 64) -> str:
+    return f"vector<{lanes}xi1>"
 
 
 def memref_type(dtype: str, cols: int = 32) -> str:
     return MEMREF_TYPE_FMT.format(dtype=dtype, row_stride=cols)
+
+
+def splat_shuffle_mask(lanes: int = 64, source_lane: int = 0) -> str:
+    return ", ".join(str(source_lane) for _ in range(lanes))
 
 
 def dense_literal(dtype: str, value: str) -> str:
@@ -159,27 +163,50 @@ def tile_shape_from_metadata(
     return rows, cols
 
 
-def build_arg_decls(
-    arg_roles: list[str],
-    input_dtype: str,
-    result_dtype: str | None,
+def build_arg_tile_shapes(
+    parameter_roles: list[dict[str, Any]],
+    metadata: dict[str, Any],
     input_tile_shape: tuple[int, int],
     result_tile_shape: tuple[int, int],
+) -> list[tuple[int, int] | None]:
+    shape_by_role = metadata.get("tile_shapes_by_role", {})
+    arg_tile_shapes: list[tuple[int, int] | None] = []
+    for role in parameter_roles:
+        if role["kind"] != "tile":
+            arg_tile_shapes.append(None)
+            continue
+        if role["io"] == "output":
+            arg_tile_shapes.append(result_tile_shape)
+            continue
+        custom_shape = shape_by_role.get(role["name"], {})
+        if isinstance(custom_shape, dict):
+            rows = int(custom_shape.get("rows", input_tile_shape[0]))
+            cols = int(custom_shape.get("cols", input_tile_shape[1]))
+            arg_tile_shapes.append((rows, cols))
+            continue
+        arg_tile_shapes.append(input_tile_shape)
+    return arg_tile_shapes
+
+
+def build_arg_decls(
+    parameter_roles: list[dict[str, Any]],
+    input_dtype: str,
+    result_dtype: str | None,
+    arg_tile_shapes: list[tuple[int, int] | None],
 ) -> str:
     decls: list[str] = []
     tile_index = 0
     scalar_index = 0
-    for idx, role in enumerate(arg_roles):
-        is_last = idx == len(arg_roles) - 1
-        if role == "tile":
-            if is_last:
+    for idx, role in enumerate(parameter_roles):
+        if role["kind"] == "tile":
+            if role["io"] == "output":
                 name = "dst"
                 dtype = result_dtype or input_dtype
-                rows, cols = result_tile_shape
+                rows, cols = arg_tile_shapes[idx] or (32, 32)
             else:
                 name = f"src{tile_index}"
                 dtype = input_dtype
-                rows, cols = input_tile_shape
+                rows, cols = arg_tile_shapes[idx] or (32, 32)
                 tile_index += 1
             decls.append(f"      %{name}: {tile_type(dtype, rows, cols)}")
             continue
@@ -437,9 +464,22 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
     scalar_pos = family_scalar_index(family)
     passive_vectors = family.get("dtype_axis", {}).get("passive_vectors", {})
     has_scalar_operand = any(role["kind"] == "scalar" for role in family["parameter_roles"])
-    arg_roles = [role["kind"] for role in family["parameter_roles"]]
     input_tile_shape = tile_shape_from_metadata(family["metadata"], "input_tile_shape")
     result_tile_shape = tile_shape_from_metadata(family["metadata"], "result_tile_shape")
+    arg_tile_shapes = build_arg_tile_shapes(
+        family["parameter_roles"],
+        family["metadata"],
+        input_tile_shape,
+        result_tile_shape,
+    )
+    arg_roles = [role["kind"] for role in family["parameter_roles"]]
+    input_tile_shapes = [
+        shape
+        for role, shape in zip(family["parameter_roles"], arg_tile_shapes)
+        if role["kind"] == "tile" and role["io"] == "input"
+    ]
+    src0_tile_shape = input_tile_shapes[0] if input_tile_shapes else input_tile_shape
+    src1_tile_shape = input_tile_shapes[1] if len(input_tile_shapes) > 1 else src0_tile_shape
 
     for op_info in expand_ops(family):
         requested_dtypes = op_info.get("dtypes")
@@ -527,11 +567,10 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "variant_id": variant_id,
                         "match_dtype": dtype,
                         "arg_decls": build_arg_decls(
-                            arg_roles,
+                            family["parameter_roles"],
                             dtype,
                             result_dtype,
-                            input_tile_shape,
-                            result_tile_shape,
+                            arg_tile_shapes,
                         ),
                         "match_attrs": build_match_attrs(arg_roles),
                         "variant_match_attrs": build_variant_match_attrs(family, variant_matcher),
@@ -551,6 +590,14 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "result_memref_type": memref_type(result_dtype or dtype, result_tile_shape[1]),
                         "input_vector_type": vector_type(dtype),
                         "result_vector_type": vector_type(result_dtype or dtype),
+                        "src0_tile_type": tile_type(dtype, *src0_tile_shape),
+                        "src1_tile_type": tile_type(dtype, *src1_tile_shape),
+                        "src0_memref_type": memref_type(dtype, src0_tile_shape[1]),
+                        "src1_memref_type": memref_type(dtype, src1_tile_shape[1]),
+                        "src0_vector_type": vector_type(dtype),
+                        "src1_vector_type": vector_type(dtype),
+                        "scalar_vector_type": vector_type(dtype, 1),
+                        "splat_shuffle_mask": splat_shuffle_mask(),
                         "scalar_type": scalar_type(result_dtype or dtype),
                         "mask_vector_type": mask_vector_type(),
                         "passive_vector": passive_vector,
@@ -603,6 +650,14 @@ def render_family_output(
                     "RESULT_MEMREF_TYPE": instance["result_memref_type"],
                     "INPUT_VECTOR_TYPE": instance["input_vector_type"],
                     "RESULT_VECTOR_TYPE": instance["result_vector_type"],
+                    "SRC0_TILE_TYPE": instance["src0_tile_type"],
+                    "SRC1_TILE_TYPE": instance["src1_tile_type"],
+                    "SRC0_MEMREF_TYPE": instance["src0_memref_type"],
+                    "SRC1_MEMREF_TYPE": instance["src1_memref_type"],
+                    "SRC0_VECTOR_TYPE": instance["src0_vector_type"],
+                    "SRC1_VECTOR_TYPE": instance["src1_vector_type"],
+                    "SCALAR_VECTOR_TYPE": instance["scalar_vector_type"],
+                    "SPLAT_SHUFFLE_MASK": instance["splat_shuffle_mask"],
                     "VECTOR_TYPE": instance["input_vector_type"],
                     "SCALAR_TYPE": instance["scalar_type"],
                     "MASK_VECTOR_TYPE": instance["mask_vector_type"],
