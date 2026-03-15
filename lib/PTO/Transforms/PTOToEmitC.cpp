@@ -3393,8 +3393,19 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 };
 
 static std::string buildEmitCFloatLiteral(FloatAttr floatAttr) {
+  const APFloat &value = floatAttr.getValue();
+  if (value.isNaN())
+    return floatAttr.getType().isF64() ? "__builtin_nan(\"\")"
+                                       : "__builtin_nanf(\"\")";
+  if (value.isInfinity()) {
+    const bool isNegative = value.isNegative();
+    if (floatAttr.getType().isF64())
+      return isNegative ? "(-__builtin_inf())" : "__builtin_inf()";
+    return isNegative ? "(-__builtin_inff())" : "__builtin_inff()";
+  }
+
   SmallString<32> valStr;
-  floatAttr.getValue().toString(valStr);
+  value.toString(valStr);
   llvm::StringRef s(valStr);
   const bool hasFloatMarker =
       s.contains('.') || s.contains('e') || s.contains('E') ||
