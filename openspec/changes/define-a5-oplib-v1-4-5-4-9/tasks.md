@@ -26,7 +26,7 @@
 - [x] 4.3 迁移 4.6 reduction family：`trowsum/trowmax/trowmin/tcolsum/tcolmax/tcolmin`。
 - [x] 4.4 迁移 4.7 broadcast family：`trowexpand/tcolexpand/trowexpandmul/trowexpanddiv/trowexpandsub/texpands`。
 - [x] 4.5 迁移 4.8 compare/select family：`tcmp/tcmps/tsel/tsels`。
-- [ ] 4.6 迁移 4.9 bitwise family：`tand/tor/txor/tshl/tshr/tnot`。
+- [x] 4.6 迁移 4.9 bitwise family：`tand/tor/txor/tshl/tshr/tnot`。
 
 ## 5. 测试、文档与验证
 
