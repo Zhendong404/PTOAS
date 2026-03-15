@@ -32,6 +32,6 @@
 
 - [x] 5.1 为每个 4.5~4.9 family 补齐至少一条 positive lit 回归。
 - [x] 5.2 为 Family DSL、manifest、template import、lowering 失败路径补齐 negative 回归。
-- [ ] 5.3 增加 `implemented` op 必有 concrete 模板与 lowering 用例的对齐测试。
+- [x] 5.3 增加 `implemented` op 必有 concrete 模板与 lowering 用例的对齐测试。
 - [ ] 5.4 运行 `openspec validate`、模板生成检查和至少一轮 `test/oplib` / `test/tile_fusion` 相关 lit 回归。
 - [ ] 5.5 更新 `docs/tile_fusion/` 或等价文档，说明 A5 OpLib V1 的作者接口、manifest 对齐和 4.5~4.9 范围边界。
