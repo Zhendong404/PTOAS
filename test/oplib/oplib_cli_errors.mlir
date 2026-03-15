@@ -74,11 +74,6 @@
 // RUN: cp %S/resources/bad_vector_int_unsupported_template.txt %t.bad_vec_int/bad.mlir
 // RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_vec_int --pto-arch=a5 -o %t.bad_vec_int.cpp > %t.bad_vec_int.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-VEC-INT < %t.bad_vec_int.log
-// RUN: rm -rf %t.bad_nonscalar_memref && mkdir -p %t.bad_nonscalar_memref
-// RUN: cp %S/resources/bad_non_scalar_memref_fallback_template.txt %t.bad_nonscalar_memref/bad.mlir
-// RUN: ! ptoas %S/softmax_chain.pto --op-lib-dir=%t.bad_nonscalar_memref --pto-arch=a5 -o %t.bad_nonscalar_memref.cpp > %t.bad_nonscalar_memref.log 2>&1
-// RUN: FileCheck %s --check-prefix=BAD-NONSCALAR-MEMREF < %t.bad_nonscalar_memref.log
-
 // NO-DIR: Error: --op-lib-dir is required.
 // REMOVED: Unknown command line argument '--disable-oplib-lowering'
 // EMPTY-SIMD: E_OPLIB_EMPTY_BODY_FOR_SIMD
@@ -108,5 +103,3 @@
 // BAD-MATH: math.sin
 // BAD-VEC-INT: E_OPLIB_SIMD_LANES_MISMATCH
 // BAD-VEC-INT: requires vector<64x*> values
-// BAD-NONSCALAR-MEMREF: E_OPLIB_BODY_DISALLOWED_IR
-// BAD-NONSCALAR-MEMREF: must not use memref.load/store elementwise fallback

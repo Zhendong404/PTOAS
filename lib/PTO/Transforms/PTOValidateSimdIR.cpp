@@ -234,17 +234,6 @@ static bool isLevel3TemplateKind(StringRef kind) {
   return classifyLevel3TemplateFamily(kind).has_value();
 }
 
-static bool isNonScalarLevel3TemplateKind(StringRef kind) {
-  return classifyLevel3TemplateFamily(kind) ==
-         Level3TemplateFamily::NonScalar;
-}
-
-static StringRef describeLevel3TemplateFamily(StringRef kind) {
-  if (classifyLevel3TemplateFamily(kind) == Level3TemplateFamily::ScalarAbi)
-    return "scalar-related";
-  return "non-scalar-related";
-}
-
 static FailureOr<SmallVector<TemplateArgRole, 4>>
 getTemplateArgRolesForKind(StringRef kind) {
   auto build = [&](std::initializer_list<TemplateArgRole> roles)
@@ -799,16 +788,6 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
     for (Value operand : op->getOperands()) {
       if (!requireLevel3VectorLanes(op, operand.getType(), "operand"))
         return;
-    }
-
-    if ((isa<memref::LoadOp, memref::StoreOp>(op)) &&
-        isNonScalarLevel3TemplateKind(kind)) {
-      status = emitCodeError(
-          op, kErrBodyDisallowedIR,
-          Twine("Level-3 ") + describeLevel3TemplateFamily(kind) +
-              " family kind=" + kind +
-              " must not use memref.load/store elementwise fallback");
-      return;
     }
 
     if (!isAllowedTemplateBodyOp(op)) {

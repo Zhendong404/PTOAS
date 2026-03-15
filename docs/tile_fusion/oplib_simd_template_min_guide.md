@@ -119,7 +119,7 @@ pto.simd.vec_scope {
 | 2 | 模板体非空 | 函数非 external 且 body 非空 | `E_OPLIB_EMPTY_BODY_FOR_SIMD` |
 | 3 | dtype 范围 | 仅 `f16/f32` | `E_OPLIB_SIMD_UNSUPPORTED_DTYPE` |
 | 4 | layout 范围 | 仅 `row_major` | `E_OPLIB_SIMD_UNSUPPORTED_LAYOUT` |
-| 5 | IR allowlist | 仅使用约定可用 IR | `E_OPLIB_BODY_DISALLOWED_IR` |
+| 5 | IR allowlist | 仅使用约定可用 IR；`memref.load/store` 虽允许导入，但建议仅在确有必要时使用 | `E_OPLIB_BODY_DISALLOWED_IR` |
 | 6 | 核心槽位唯一性 | 恰好一个 `pto.simd.core_slot = "binary_ewise_core"` | `E_OPLIB_SIMD_INVALID_CORE_SLOT` |
 | 7 | 核心 op 类型 | 必须是 `arith.addf/subf/mulf/divf/maximumf/minimumf` 之一 | `E_OPLIB_SIMD_INVALID_CORE_SLOT` |
 | 8 | `pto.simd` 属性（按需） | 使用 `pto.simd.predicate/load/store/load_pu/store_pu` 时，必须有 `pto.simd.level/lanes` | `E_OPLIB_SIMD_ATTR_REQUIRED` |
