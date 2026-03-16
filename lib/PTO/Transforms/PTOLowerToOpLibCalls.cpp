@@ -251,6 +251,9 @@ struct MatchRequest {
   SmallVector<Type, 4> argTypes;
   SmallVector<Value, 4> operands;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
+  std::optional<std::string> operandOrder;
+  std::optional<int64_t> fullTilePos;
+  std::optional<int64_t> rowBroadcastPos;
   std::optional<int64_t> scalarPos;
   std::optional<std::string> cmpMode;
   std::optional<bool> isBinary;
@@ -2630,6 +2633,80 @@ buildSelectScalarMatchRequest(StringRef kind, StringRef opName, Value src0,
   return request;
 }
 
+static bool isKnownStaticDim(int64_t dim) { return dim >= 0; }
+
+static bool isFullTileRole(const MatchKey &src, const MatchKey &dst) {
+  return isKnownStaticDim(src.rows) && isKnownStaticDim(src.cols) &&
+         isKnownStaticDim(dst.rows) && isKnownStaticDim(dst.cols) &&
+         src.rows == dst.rows && src.cols == dst.cols;
+}
+
+static bool isRowBroadcastRole(const MatchKey &src, const MatchKey &dst) {
+  return isKnownStaticDim(src.rows) && isKnownStaticDim(src.cols) &&
+         isKnownStaticDim(dst.rows) && src.rows == dst.rows && src.cols == 1;
+}
+
+static std::optional<std::pair<int64_t, int64_t>>
+inferRowBroadcastOperandPositions(const MatchKey &src0, const MatchKey &src1,
+                                  const MatchKey &dst) {
+  const bool src0Full = isFullTileRole(src0, dst);
+  const bool src1Full = isFullTileRole(src1, dst);
+  const bool src0Row = isRowBroadcastRole(src0, dst);
+  const bool src1Row = isRowBroadcastRole(src1, dst);
+  if (src0Full && src1Row)
+    return std::make_pair(0, 1);
+  if (src1Full && src0Row)
+    return std::make_pair(1, 0);
+  return std::nullopt;
+}
+
+static FailureOr<MatchRequest>
+buildRowBroadcastBinaryMatchRequest(
+    StringRef kind, StringRef opName, Value src0, Value src1, Value dst,
+    std::optional<int64_t> fullTilePos = std::nullopt,
+    std::optional<int64_t> rowBroadcastPos = std::nullopt,
+    std::optional<StringRef> requiredVariantId = std::nullopt) {
+  FailureOr<std::pair<Type, MatchKey>> src0InfoOr = getTileOperandInfo(src0);
+  FailureOr<std::pair<Type, MatchKey>> src1InfoOr = getTileOperandInfo(src1);
+  FailureOr<std::pair<Type, MatchKey>> dstInfoOr = getTileOperandInfo(dst);
+  if (failed(src0InfoOr) || failed(src1InfoOr) || failed(dstInfoOr))
+    return failure();
+  if (src0InfoOr->first != src1InfoOr->first ||
+      src0InfoOr->first != dstInfoOr->first)
+    return failure();
+
+  const std::pair<Type, MatchKey> srcInfos[] = {*src0InfoOr, *src1InfoOr};
+  Value srcValues[] = {src0, src1};
+  if (!fullTilePos || !rowBroadcastPos) {
+    auto inferred = inferRowBroadcastOperandPositions(srcInfos[0].second,
+                                                      srcInfos[1].second,
+                                                      dstInfoOr->second);
+    if (!inferred)
+      return failure();
+    fullTilePos = inferred->first;
+    rowBroadcastPos = inferred->second;
+  }
+  if (*fullTilePos == *rowBroadcastPos || *fullTilePos < 0 ||
+      *fullTilePos > 1 || *rowBroadcastPos < 0 || *rowBroadcastPos > 1)
+    return failure();
+  if (!isFullTileRole(srcInfos[*fullTilePos].second, dstInfoOr->second) ||
+      !isRowBroadcastRole(srcInfos[*rowBroadcastPos].second, dstInfoOr->second))
+    return failure();
+
+  MatchRequest request = createMatchRequest(kind, opName,
+                                            /*scalarPos=*/std::nullopt,
+                                            requiredVariantId);
+  appendTileOperandUnchecked(request, srcValues[*fullTilePos],
+                             srcInfos[*fullTilePos].second);
+  appendTileOperandUnchecked(request, srcValues[*rowBroadcastPos],
+                             srcInfos[*rowBroadcastPos].second);
+  appendTileOperandUnchecked(request, dst, dstInfoOr->second);
+  request.dtype = dtypeToString(src0InfoOr->first);
+  request.fullTilePos = *fullTilePos;
+  request.rowBroadcastPos = *rowBroadcastPos;
+  return request;
+}
+
 static FailureOr<MatchRequest>
 buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
                        Value tmp, Value dst,
@@ -2717,6 +2794,18 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
         desc.kind, desc.opName, desc.operands[0], desc.operands[1],
         desc.operands[2], desc.operands[3], desc.scalarPos,
         requiredVariantId);
+  } else if (desc.kind == "l3_broadcast_row_binary_template" &&
+             desc.operands.size() == 3) {
+    requestOr = buildRowBroadcastBinaryMatchRequest(
+        desc.kind, desc.opName, desc.operands[0], desc.operands[1],
+        desc.operands[2], desc.fullTilePos, desc.rowBroadcastPos,
+        requiredVariantId);
+    if (failed(requestOr)) {
+      op->emitOpError("broadcast_row_binary family requires exactly one "
+                      "dst-shaped input and one row-broadcast input before "
+                      "template matching");
+      return failure();
+    }
   } else if (desc.kind == "l3_float_ternary_tile_template" &&
              desc.opName == "tprelu" && desc.operands.size() == 4) {
     requestOr = buildPReluMatchRequest(desc.kind, desc.opName, desc.operands[0],
@@ -2732,6 +2821,12 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
 
   if (desc.cmpMode)
     requestOr->cmpMode = *desc.cmpMode;
+  if (desc.operandOrder)
+    requestOr->operandOrder = *desc.operandOrder;
+  if (desc.fullTilePos)
+    requestOr->fullTilePos = *desc.fullTilePos;
+  if (desc.rowBroadcastPos)
+    requestOr->rowBroadcastPos = *desc.rowBroadcastPos;
   if (desc.isBinary)
     requestOr->isBinary = *desc.isBinary;
   return *requestOr;
@@ -2739,6 +2834,81 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
 
 static FailureOr<MatchRequest> buildMatchRequest(Operation *op) {
   return buildMatchRequestFromInterface(op);
+}
+
+static LogicalResult validateFamilyLogicRequest(const MatchRequest &request,
+                                                Location loc) {
+  if (request.op == "tdivs") {
+    if (!request.operandOrder ||
+        (*request.operandOrder != "tile_scalar" &&
+         *request.operandOrder != "scalar_tile")) {
+      mlir::emitError(loc)
+          << "tile_scalar family logic lost operand_order before template "
+             "normalization";
+      return failure();
+    }
+  }
+
+  if (request.kind == "l3_broadcast_row_binary_template") {
+    if (!request.fullTilePos || !request.rowBroadcastPos ||
+        *request.fullTilePos == *request.rowBroadcastPos) {
+      mlir::emitError(loc)
+          << "broadcast_row_binary family logic lost full-tile vs "
+             "row-broadcast roles before matcher selection";
+      return failure();
+    }
+  }
+
+  if (request.kind == "l3_reduce_colsum_template") {
+    if (!request.isBinary || !request.requiredVariantId) {
+      mlir::emitError(loc)
+          << "reduce_colsum family logic requires both isBinary and "
+             "requiredVariantId";
+      return failure();
+    }
+    StringRef expectedVariant = *request.isBinary ? "binary" : "linear";
+    if (*request.requiredVariantId != expectedVariant) {
+      mlir::emitError(loc)
+          << "reduce_colsum family logic mismatch: expected variant_id="
+          << expectedVariant << " for isBinary="
+          << (*request.isBinary ? "true" : "false");
+      return failure();
+    }
+  }
+
+  return success();
+}
+
+static LogicalResult validateSelectedFamilyLogic(const MatchRequest &request,
+                                                 const SelectedVariant &selected,
+                                                 Location loc) {
+  if (request.requiredVariantId &&
+      selected.variantId != *request.requiredVariantId) {
+    mlir::emitError(loc)
+        << "template selection collapsed required variant_id="
+        << *request.requiredVariantId << " to " << selected.variantId;
+    return failure();
+  }
+
+  if (request.op == "tdivs" && request.operandOrder &&
+      !StringRef(selected.variantId).starts_with(*request.operandOrder)) {
+    mlir::emitError(loc)
+        << "tile_scalar family logic collapsed operand_order="
+        << *request.operandOrder << " to variant_id=" << selected.variantId;
+    return failure();
+  }
+
+  if (request.kind == "l3_reduce_colsum_template" && request.isBinary) {
+    StringRef expectedVariant = *request.isBinary ? "binary" : "linear";
+    if (selected.variantId != expectedVariant) {
+      mlir::emitError(loc)
+          << "reduce_colsum variant semantics collapsed to variant_id="
+          << selected.variantId << " while expecting " << expectedVariant;
+      return failure();
+    }
+  }
+
+  return success();
 }
 
 static FailureOr<PlannedOpLowering>
@@ -2775,6 +2945,13 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
   }
 
   const MatchRequest &request = *requestOr;
+  if (failed(validateFamilyLogicRequest(request, op->getLoc()))) {
+    op->emitError() << errorPrefix
+                    << ": family-logic request validation failed for "
+                    << formatManifestEntrySummary(opName, *manifestEntry);
+    return failure();
+  }
+
   FailureOr<SelectedVariant> selectedOr =
       registry.selectVariantFor(request, op->getLoc());
   if (failed(selectedOr)) {
@@ -2782,6 +2959,13 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
                     << ": manifest-implemented " << formatManifestEntrySummary(opName, *manifestEntry)
                     << " has no OP-Lib candidate for op=" << request.op
                     << " dtype=" << request.dtype;
+    return failure();
+  }
+
+  if (failed(validateSelectedFamilyLogic(request, *selectedOr, op->getLoc()))) {
+    op->emitError() << errorPrefix
+                    << ": family-logic selection validation failed for "
+                    << formatManifestEntrySummary(opName, *manifestEntry);
     return failure();
   }
 

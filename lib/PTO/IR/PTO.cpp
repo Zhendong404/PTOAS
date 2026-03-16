@@ -5331,6 +5331,7 @@ FailureOr<OpLibMatchDescriptor> TDivSOp::getOpLibMatchDescriptor() {
   if (order != "tile_scalar" && order != "scalar_tile")
     return failure();
   std::string requiredVariant = order.str();
+  desc.operandOrder = order.str();
   Type elemTy = getElemTy(getSrc().getType());
   if (elemTy.isF16())
     requiredVariant += "_f16";
@@ -5524,6 +5525,7 @@ FailureOr<OpLibMatchDescriptor> TColSumOp::getOpLibMatchDescriptor() {
   OpLibMatchDescriptor desc = buildBinaryTileOpLibDesc(
       "l3_reduce_colsum_template", "tcolsum", getSrc(), tmp, getDst());
   desc.isBinary = getIsBinary();
+  desc.requiredVariantId = getIsBinary() ? "binary" : "linear";
   return desc;
 }
 

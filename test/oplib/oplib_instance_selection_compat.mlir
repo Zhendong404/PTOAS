@@ -5,6 +5,7 @@
 // RUN: cp %S/../../oplib/level3/select_mask_templates.mlir %t.dir/
 // RUN: cp %S/../../oplib/level3/select_scalar_templates.mlir %t.dir/
 // RUN: cp %S/resources/good_reduce_colsum_templates.mlir %t.dir/
+// RUN: cp %S/../../oplib/level3/broadcast_row_binary_templates.mlir %t.dir/
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.dir/families/
 // RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%t.dir --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
@@ -17,16 +18,19 @@
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_select_scalar_template_tsels_scalar_mode(
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_reduce_colsum_template_tcolsum_linear(
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_reduce_colsum_template_tcolsum_binary(
+// CHECK-DAG: func.func private @__pto_oplib_inst_l3_broadcast_row_binary_template_trowexpandmul_linear(
 // CHECK-DAG: pto.oplib.instance.kind = "l3_float_tile_scalar_template"
 // CHECK-DAG: pto.oplib.instance.kind = "l3_cmp_tile_scalar_template"
 // CHECK-DAG: pto.oplib.instance.kind = "l3_select_mask_template"
 // CHECK-DAG: pto.oplib.instance.kind = "l3_select_scalar_template"
 // CHECK-DAG: pto.oplib.instance.kind = "l3_reduce_colsum_template"
+// CHECK-DAG: pto.oplib.instance.kind = "l3_broadcast_row_binary_template"
 // CHECK-DAG: pto.oplib.instance.op = "tdivs"
 // CHECK-DAG: pto.oplib.instance.op = "tcmps"
 // CHECK-DAG: pto.oplib.instance.op = "tsel"
 // CHECK-DAG: pto.oplib.instance.op = "tsels"
 // CHECK-DAG: pto.oplib.instance.op = "tcolsum"
+// CHECK-DAG: pto.oplib.instance.op = "trowexpandmul"
 // CHECK-DAG: pto.oplib.instance.dtype = "f32"
 // CHECK-DAG: pto.oplib.instance.variant_id = "tile_scalar"
 // CHECK-DAG: pto.oplib.instance.variant_id = "scalar_tile"
@@ -44,6 +48,8 @@
 // CHECK: call @__pto_oplib_inst_l3_select_scalar_template_tsels_scalar_mode(
 // CHECK: call @__pto_oplib_inst_l3_reduce_colsum_template_tcolsum_linear(
 // CHECK: call @__pto_oplib_inst_l3_reduce_colsum_template_tcolsum_binary(
+// CHECK: call @__pto_oplib_inst_l3_broadcast_row_binary_template_trowexpandmul_linear(
+// CHECK: call @__pto_oplib_inst_l3_broadcast_row_binary_template_trowexpandmul_linear(
 
 module {
   func.func @instance_selection_compat() {
@@ -53,6 +59,7 @@ module {
     %src0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %src1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %row = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %dst0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %dst1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %cmpDst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
@@ -61,6 +68,8 @@ module {
     %selDst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %colLinear = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %colBinary = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %rowDst0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %rowDst1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tdivs ins(%src0, %cst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32) outs(%dst0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tdivs ins(%cst, %src0 : f32, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
@@ -73,6 +82,8 @@ module {
 
     pto.tcolsum ins(%src0, %tmp {isBinary = false} : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%colLinear : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tcolsum ins(%src0, %tmp {isBinary = true} : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%colBinary : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.trowexpandmul ins(%src0, %row : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%rowDst0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.trowexpandmul ins(%row, %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%rowDst1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     return
   }
 }

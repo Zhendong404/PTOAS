@@ -1,8 +1,8 @@
 ## 1. Matcher 与契约基础
 
-- [ ] 1.1 审查 `compare/select`、`tile_scalar`、`broadcast_row_binary`、`reduce_colsum` 当前 family DSL、template metadata 和 lowering descriptor，列出已丢失的语义角色 / variant 信息
-- [ ] 1.2 调整 `MatchRequest` 或等价 descriptor 构造逻辑，使其在模板归一化前保留 scalar 方向、full-tile vs row-broadcast 角色以及 `binary` variant 语义
-- [ ] 1.3 为 template 选择路径补充 family-logic 级断言或检查，防止语义角色在 matcher 阶段被静默折叠
+- [x] 1.1 审查 `compare/select`、`tile_scalar`、`broadcast_row_binary`、`reduce_colsum` 当前 family DSL、template metadata 和 lowering descriptor，列出已丢失的语义角色 / variant 信息
+- [x] 1.2 调整 `MatchRequest` 或等价 descriptor 构造逻辑，使其在模板归一化前保留 scalar 方向、full-tile vs row-broadcast 角色以及 `binary` variant 语义
+- [x] 1.3 为 template 选择路径补充 family-logic 级断言或检查，防止语义角色在 matcher 阶段被静默折叠
 
 ## 2. Compare/Select Mask 契约
 
