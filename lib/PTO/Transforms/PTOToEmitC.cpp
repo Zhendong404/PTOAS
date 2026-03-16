@@ -8794,6 +8794,10 @@ public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::CmpIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()) || isa<VectorType>(op.getLhs().getType()) ||
+        isa<VectorType>(op.getRhs().getType()))
+      return failure();
+
     auto loc = op.getLoc();
 
     // 将 arith.cmpi 转换为 emitc.cmp
