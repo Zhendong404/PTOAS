@@ -5062,6 +5062,53 @@ static OpLibMatchDescriptor buildBinaryTileOpLibDesc(StringRef kind,
   return desc;
 }
 
+static bool isSameTileShape(Type lhs, Type rhs) {
+  if (!isPTOShapedLike(lhs) || !isPTOShapedLike(rhs))
+    return false;
+  return getShapeVec(lhs) == getShapeVec(rhs);
+}
+
+static bool isRowBroadcastShapeForDst(Type srcTy, Type dstTy) {
+  if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
+    return false;
+  SmallVector<int64_t> srcShape = getShapeVec(srcTy);
+  SmallVector<int64_t> dstShape = getShapeVec(dstTy);
+  if (srcShape.size() != 2 || dstShape.size() != 2)
+    return false;
+  return srcShape[0] == dstShape[0] && srcShape[1] == 1;
+}
+
+static FailureOr<OpLibMatchDescriptor>
+buildBroadcastRowBinaryOpLibDesc(StringRef opName, Value src0, Value src1,
+                                 Value dst) {
+  Type src0Ty = src0.getType();
+  Type src1Ty = src1.getType();
+  Type dstTy = dst.getType();
+  if (!isPTOShapedLike(src0Ty) || !isPTOShapedLike(src1Ty) ||
+      !isPTOShapedLike(dstTy))
+    return failure();
+  if (getElemTy(src0Ty) != getElemTy(src1Ty) || getElemTy(src0Ty) != getElemTy(dstTy))
+    return failure();
+
+  OpLibMatchDescriptor desc = buildBinaryTileOpLibDesc(
+      "l3_broadcast_row_binary_template", opName, src0, src1, dst);
+  const bool src0Full = isSameTileShape(src0Ty, dstTy);
+  const bool src1Full = isSameTileShape(src1Ty, dstTy);
+  const bool src0Row = isRowBroadcastShapeForDst(src0Ty, dstTy);
+  const bool src1Row = isRowBroadcastShapeForDst(src1Ty, dstTy);
+  if (src0Full && src1Row) {
+    desc.fullTilePos = 0;
+    desc.rowBroadcastPos = 1;
+    return desc;
+  }
+  if (src1Full && src0Row) {
+    desc.fullTilePos = 1;
+    desc.rowBroadcastPos = 0;
+    return desc;
+  }
+  return failure();
+}
+
 static constexpr llvm::StringLiteral kCanonicalByteMaskContract =
     "byte_mask_canonical_v1";
 
@@ -5545,21 +5592,18 @@ FailureOr<OpLibMatchDescriptor> TColExpandOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandMulOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
-                                  "trowexpandmul", getSrc0(), getSrc1(),
-                                  getDst());
+  return buildBroadcastRowBinaryOpLibDesc("trowexpandmul", getSrc0(), getSrc1(),
+                                          getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandDivOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
-                                  "trowexpanddiv", getSrc0(), getSrc1(),
-                                  getDst());
+  return buildBroadcastRowBinaryOpLibDesc("trowexpanddiv", getSrc0(), getSrc1(),
+                                          getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandSubOp::getOpLibMatchDescriptor() {
-  return buildBinaryTileOpLibDesc("l3_broadcast_row_binary_template",
-                                  "trowexpandsub", getSrc0(), getSrc1(),
-                                  getDst());
+  return buildBroadcastRowBinaryOpLibDesc("trowexpandsub", getSrc0(), getSrc1(),
+                                          getDst());
 }
 
 FailureOr<OpLibMatchDescriptor> TExpandsOp::getOpLibMatchDescriptor() {

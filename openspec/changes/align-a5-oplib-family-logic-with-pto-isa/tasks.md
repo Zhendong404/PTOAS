@@ -12,9 +12,9 @@
 
 ## 3. Direction-Sensitive Family 对齐
 
-- [ ] 3.1 调整 `tile_scalar` family 的 lowering / template 选择，确保 `scalarPos` 或等价语义不会因 `vector.splat` 统一骨架而丢失
-- [ ] 3.2 调整 `broadcast_row_binary` family 的 matcher 与模板 contract，使其能区分“与 `dst` 同 shape 的 operand”和“row-broadcast operand”，并覆盖顺序敏感 op
-- [ ] 3.3 补充 `tdivs`、`trowexpanddiv`、`trowexpandsub` 等 direction-sensitive 用例的 smoke 和 negative 回归，验证反向输入不会被错误拒绝或错误归一化
+- [x] 3.1 调整 `tile_scalar` family 的 lowering / template 选择，确保 `scalarPos` 或等价语义不会因 `vector.splat` 统一骨架而丢失
+- [x] 3.2 调整 `broadcast_row_binary` family 的 matcher 与模板 contract，使其能区分“与 `dst` 同 shape 的 operand”和“row-broadcast operand”，并覆盖顺序敏感 op
+- [x] 3.3 补充 `tdivs`、`trowexpanddiv`、`trowexpandsub` 等 direction-sensitive 用例的 smoke 和 negative 回归，验证反向输入不会被错误拒绝或错误归一化
 
 ## 4. Reduction Variant 语义
 

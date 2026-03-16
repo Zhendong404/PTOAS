@@ -12,6 +12,9 @@
         pto.oplib.cost = @@COST@@ : i64,
         pto.oplib.priority = @@PRIORITY@@ : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : @@SRC0_TILE_TYPE@@ to @@SRC0_MEMREF_TYPE@@
     %m1 = pto.simd.tile_to_memref %src1 : @@SRC1_TILE_TYPE@@ to @@SRC1_MEMREF_TYPE@@
     %md = pto.simd.tile_to_memref %dst : @@RESULT_TILE_TYPE@@ to @@RESULT_MEMREF_TYPE@@

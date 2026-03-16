@@ -13,6 +13,8 @@
         pto.oplib.cost = @@COST@@ : i64,
         pto.oplib.priority = @@PRIORITY@@ : i64
       } {
+    // variant_id / scalar_pos preserve external operand direction before this
+    // canonical tile + splat-scalar skeleton is selected.
     %m0 = pto.simd.tile_to_memref %src0 : @@INPUT_TILE_TYPE@@ to @@INPUT_MEMREF_TYPE@@
     %md = pto.simd.tile_to_memref %dst : @@RESULT_TILE_TYPE@@ to @@RESULT_MEMREF_TYPE@@
 
