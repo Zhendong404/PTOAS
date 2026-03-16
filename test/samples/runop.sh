@@ -12,26 +12,30 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync}"
+PTOAS_JOBS="${PTOAS_JOBS:-}"
 ENABLE_BC=0
 
 usage() {
   cat <<EOF
 Usage:
-  $0 [--enablebc] -t <name>   # e.g. -t Shls  -> run all .py in folder Shls
-  $0 [--enablebc] all         # traverse every subfolder, run all .py under each
-  $0 --enablebc               # alias for: $0 --enablebc all
+  $0 [--enablebc] [--jobs N] -t <name>   # e.g. -t Shls  -> run all .py in folder Shls
+  $0 [--enablebc] [--jobs N] all         # traverse every subfolder, run all .py under each
+  $0 --enablebc [--jobs N]               # alias for: $0 --enablebc all
 
 Env:
   PTOAS_BIN   # path to ptoas executable (optional)
   PTOBC_BIN   # path to ptobc executable (optional)
   PYTHON_BIN  # python executable to run samples (optional)
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
+  PTOAS_LOG_DIR  # where per-case logs go (optional; defaults to ${PTOAS_OUT_DIR}_log)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync)
+  PTOAS_JOBS  # max parallel sample directories for 'all' mode (default: auto-detect CPU count)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
+  --jobs N    # max parallel sample directories for 'all' mode
 EOF
   exit 1
 }
@@ -105,13 +109,48 @@ resolve_ptobc_bin() {
   return 1
 }
 
+print_failure_excerpt() {
+  local log_path="$1"
+  local excerpt=""
+
+  [[ -f "${log_path}" ]] || return 0
+
+  excerpt="$(grep -E -i 'error:|fatal:|undefined reference|undefined symbol|undeclared identifier|exception|traceback|failed' "${log_path}" | tail -n 5 || true)"
+  if [[ -z "${excerpt}" ]]; then
+    excerpt="$(tail -n 10 "${log_path}" 2>/dev/null || true)"
+  fi
+
+  printf '%s' "${excerpt}"
+}
+
+detect_parallel_jobs() {
+  local jobs="${PTOAS_JOBS}"
+
+  if [[ -z "${jobs}" ]]; then
+    if command -v nproc >/dev/null 2>&1; then
+      jobs="$(nproc)"
+    else
+      jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ -z "${jobs}" || ! "${jobs}" =~ ^[0-9]+$ || "${jobs}" -lt 1 ]]; then
+    jobs=1
+  fi
+
+  printf '%s\n' "${jobs}"
+}
+
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
-  local dir ptoas ptobc python out_subdir
+  local dir ptoas ptobc python out_subdir log_root log_subdir
   dir="${BASE_DIR}/${A}"
   out_subdir="${out_dir}/${A}"
+  log_root="${PTOAS_LOG_DIR:-$(dirname -- "${out_dir}")/$(basename -- "${out_dir}")_log}"
+  log_subdir="${log_root}/${A}"
   mkdir -p "${out_subdir}"
+  mkdir -p "${log_subdir}"
 
   ptoas="$(resolve_ptoas_bin)"
   ptobc="$(resolve_ptobc_bin)"
@@ -178,6 +217,7 @@ process_one_dir() {
 
   # Run every .py file in this directory (no requirement that name matches folder).
   local f mlir ptobc_file decoded_pto cpp base overall=0
+  local python_log ptoas_log ptobc_encode_log ptobc_decode_log
   for f in "$dir"/*.py; do
     [[ -f "$f" ]] || continue
     base="$(basename "$f" .py)"
@@ -239,13 +279,17 @@ process_one_dir() {
     fi
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
+    python_log="${log_subdir}/${base}-python.log"
+    ptoas_log="${log_subdir}/${base}-ptoas.log"
+    ptobc_encode_log="${log_subdir}/${base}-ptobc-encode.log"
+    ptobc_decode_log="${log_subdir}/${base}-ptobc-decode.log"
 
-    if ! "$python" "$f" > "$mlir"; then
+    if ! "$python" "$f" >"$mlir" 2>"${python_log}"; then
       if [[ $expect_fail -eq 1 ]]; then
         echo -e "${A}(${base}.py)\tXFAIL\tpython failed as expected"
         continue
       fi
-      echo -e "${A}(${base}.py)\tFAIL\tpython failed: ${base}.py"
+      echo -e "${A}(${base}.py)\tFAIL\tpython failed: ${base}.py\t${python_log}"
       overall=1
       continue
     fi
@@ -255,21 +299,21 @@ process_one_dir() {
     decoded_pto="${out_subdir}/${base}-roundtrip.pto"
     if [[ $use_ptobc_roundtrip -eq 1 ]]; then
       # Allow generic escape for ops that are not yet in the compact v0 opcode table.
-      if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$mlir" -o "$ptobc_file" >/dev/null 2>&1; then
+      if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$mlir" -o "$ptobc_file" >"${ptobc_encode_log}" 2>&1; then
         if [[ $expect_fail -eq 1 ]]; then
           echo -e "${A}(${base}.py)\tXFAIL\tptobc encode failed as expected"
           continue
         fi
-        echo -e "${A}(${base}.py)\tFAIL\tptobc encode failed: $(basename "$mlir")"
+        echo -e "${A}(${base}.py)\tFAIL\tptobc encode failed: $(basename "$mlir")\t${ptobc_encode_log}"
         overall=1
         continue
       fi
-      if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >/dev/null 2>&1; then
+      if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >"${ptobc_decode_log}" 2>&1; then
         if [[ $expect_fail -eq 1 ]]; then
           echo -e "${A}(${base}.py)\tXFAIL\tptobc decode failed as expected"
           continue
         fi
-        echo -e "${A}(${base}.py)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")"
+        echo -e "${A}(${base}.py)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")\t${ptobc_decode_log}"
         overall=1
         continue
       fi
@@ -278,7 +322,6 @@ process_one_dir() {
 
     # Write output via -o to avoid mixing debug prints with generated C++.
     local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-    local ptoas_log="${out_subdir}/${base}-ptoas.log"
     if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
       if [[ $expect_fail -eq 1 ]]; then
         if [[ "$base" == "test_intercore_sync_a3_missing_setffts" ]]; then
@@ -291,7 +334,7 @@ process_one_dir() {
         echo -e "${A}(${base}.py)\tXFAIL\tptoas failed as expected"
         continue
       fi
-      echo -e "${A}(${base}.py)\tFAIL\tptoas failed: $(basename "$mlir")"
+      echo -e "${A}(${base}.py)\tFAIL\tptoas failed: $(basename "$mlir")\t${ptoas_log}"
       overall=1
       continue
     fi
@@ -649,6 +692,9 @@ PY
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
       local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
+      ptoas_log="${log_subdir}/${base}-ptoas.log"
+      ptobc_encode_log="${log_subdir}/${base}-ptobc-encode.log"
+      ptobc_decode_log="${log_subdir}/${base}-ptobc-decode.log"
 
       # TODO(ptobc): decode of this regression currently fails with
       # "operand value_id out of range" when scf.if returns tile-like values.
@@ -660,13 +706,13 @@ PY
 
       if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
-        if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then
-          echo -e "${A}(${base}.pto)\tFAIL\tptobc encode failed: $(basename "$f")"
+        if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >"${ptobc_encode_log}" 2>&1; then
+          echo -e "${A}(${base}.pto)\tFAIL\tptobc encode failed: $(basename "$f")\t${ptobc_encode_log}"
           overall=1
           continue
         fi
-        if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >/dev/null 2>&1; then
-          echo -e "${A}(${base}.pto)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")"
+        if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >"${ptobc_decode_log}" 2>&1; then
+          echo -e "${A}(${base}.pto)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")\t${ptobc_decode_log}"
           overall=1
           continue
         fi
@@ -674,8 +720,8 @@ PY
       fi
 
       local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-      if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
-        echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
+      if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
+        echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")\t${ptoas_log}"
         overall=1
         continue
       fi
@@ -735,8 +781,61 @@ PY
   return $overall
 }
 
+print_summary_from_results() {
+  local results_file="$1"
+  local show_header="${2:-1}"
+  local ok=0
+  local fail=0
+  local skip=0
+  local line name status message log_path excerpt
+  local -a fail_lines=()
+  local -a fail_logs=()
+
+  if [[ "${show_header}" == "1" ]]; then
+    echo "========== SUMMARY =========="
+  fi
+
+  while IFS=$'\t' read -r name status message log_path; do
+    [[ -n "${name}" ]] || continue
+    printf "%-12s %-4s %s\n" "${name}" "${status}" "${message}"
+    case "${status}" in
+      OK) ok=$((ok + 1)) ;;
+      FAIL)
+        fail=$((fail + 1))
+        fail_lines+=("$(printf "%-12s %-4s %s" "${name}" "${status}" "${message}")")
+        fail_logs+=("${log_path:-}")
+        ;;
+      SKIP) skip=$((skip + 1)) ;;
+    esac
+  done < <(sort "${results_file}")
+
+  echo "-----------------------------"
+  printf "OK=%d  FAIL=%d  SKIP=%d\n" "${ok}" "${fail}" "${skip}"
+  if [[ ${fail} -gt 0 ]]; then
+    echo "---------- FAIL CASES --------"
+    for ((i=0; i<${#fail_lines[@]}; ++i)); do
+      echo "${fail_lines[i]}"
+      log_path="${fail_logs[i]}"
+      if [[ -n "${log_path}" ]]; then
+        echo "log: ${log_path}"
+        excerpt="$(print_failure_excerpt "${log_path}")"
+        if [[ -n "${excerpt}" ]]; then
+          while IFS= read -r line; do
+            [[ -n "${line}" ]] || continue
+            echo "reason: ${line}"
+          done <<< "${excerpt}"
+        fi
+      fi
+    done
+  fi
+  echo "============================="
+
+  [[ ${fail} -eq 0 ]]
+}
+
 run_all() {
-  local results tmp out_dir
+  local tmp out_dir jobs
+  local -a targets=()
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"
@@ -744,40 +843,93 @@ run_all() {
     mkdir -p "${out_dir}"
   fi
 
+  jobs="$(detect_parallel_jobs)"
   echo "PTOAS_OUT_DIR=${out_dir}"
+  echo "PTOAS_JOBS=${jobs}"
 
   tmp="$(mktemp -t ptoas.runop.XXXXXX)"
   for d in "${BASE_DIR}"/*/; do
     [[ -d "$d" ]] || continue
-    process_one_dir "$(basename "$d")" "$out_dir" >>"$tmp"
+    targets+=("$(basename "$d")")
   done
 
-  echo "========== SUMMARY =========="
-  sort "$tmp" | awk -F'\t' '
-    BEGIN { ok=0; fail=0; skip=0; }
-    {
-      printf "%-12s %-4s %s\n", $1, $2, $3;
-      if ($2=="OK") ok++;
-      else if ($2=="FAIL") fail++;
-      else if ($2=="SKIP") skip++;
-    }
-    END {
-      print "-----------------------------";
-      printf "OK=%d  FAIL=%d  SKIP=%d\n", ok, fail, skip;
-      print "=============================";
-      exit (fail==0 ? 0 : 1);
-    }'
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    print_summary_from_results "$tmp" 1
+    return 0
+  fi
+
+  if [[ "${jobs}" -le 1 || ${#targets[@]} -le 1 ]]; then
+    local target
+    for target in "${targets[@]}"; do
+      process_one_dir "${target}" "$out_dir" >>"$tmp"
+    done
+    print_summary_from_results "$tmp" 1
+    return 0
+  fi
+
+  local -a pids=()
+  local -a result_files=()
+  local target result_file
+  for target in "${targets[@]}"; do
+    result_file="$(mktemp -t "ptoas.runop.${target}.XXXXXX")"
+    result_files+=("${result_file}")
+    (
+      process_one_dir "${target}" "$out_dir"
+    ) >"${result_file}" &
+    pids+=("$!")
+
+    while [[ ${#pids[@]} -ge ${jobs} ]]; do
+      local idx
+      for idx in "${!pids[@]}"; do
+        if ! kill -0 "${pids[idx]}" 2>/dev/null; then
+          wait "${pids[idx]}"
+          unset 'pids[idx]'
+        fi
+      done
+      pids=("${pids[@]}")
+      [[ ${#pids[@]} -ge ${jobs} ]] && sleep 0.1
+    done
+  done
+
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+
+  for result_file in "${result_files[@]}"; do
+    cat "${result_file}" >>"${tmp}"
+    rm -f "${result_file}"
+  done
+
+  print_summary_from_results "$tmp" 1
 }
 
 # -----------------------------------------------------------------------------
 # CLI flags
 # -----------------------------------------------------------------------------
 positional_args=()
-for arg in "$@"; do
-  case "$arg" in
-    --enablebc) ENABLE_BC=1 ;;
-    -h|--help) usage ;;
-    *) positional_args+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --enablebc)
+      ENABLE_BC=1
+      shift
+      ;;
+    --jobs)
+      [[ $# -ge 2 ]] || usage
+      PTOAS_JOBS="$2"
+      shift 2
+      ;;
+    --jobs=*)
+      PTOAS_JOBS="${1#--jobs=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      positional_args+=("$1")
+      shift
+      ;;
   esac
 done
 set -- "${positional_args[@]}"
@@ -797,8 +949,9 @@ elif [[ $# -eq 2 && "$1" == "-t" ]]; then
     mkdir -p "${out_dir}"
   fi
   echo "PTOAS_OUT_DIR=${out_dir}"
-  echo "========== SUMMARY =========="
-  process_one_dir "$A" "$out_dir" | awk -F'\t' '{ printf "%-12s %-4s %s\n", $1, $2, $3 }'
+  tmp="$(mktemp -t ptoas.runop.XXXXXX)"
+  process_one_dir "$A" "$out_dir" >"$tmp"
+  print_summary_from_results "$tmp" 1
 else
   usage
 fi
