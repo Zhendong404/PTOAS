@@ -1,8 +1,8 @@
 ## 1. Manifest 对齐
 
-- [ ] 1.1 审查并修正 `oplib/level3/families/a5_oplib_v1_manifest.yaml` 中已确认失真的条目，至少覆盖 `trecip`、bitwise family 的 `dtype_support` 和异常 `key_constraints`
-- [ ] 1.2 更新 manifest 生成或校验逻辑，使其能识别同级 `pto-isa/include/pto/common/pto_instr.hpp` 的公共 API 语义和 `tests/npu/a5/src/st/testcase/` 的 A5 ST 证据
-- [ ] 1.3 为 `implemented` / `deferred` 分类补充结构化校验，明确区分“原生 A5 `_IMPL`”、“公共 API 语义重写”和“仍缺少可采纳语义”
+- [x] 1.1 审查并修正 `oplib/level3/families/a5_oplib_v1_manifest.yaml` 中已确认失真的条目，至少覆盖 `trecip`、bitwise family 的 `dtype_support` 和异常 `key_constraints`
+- [x] 1.2 更新 manifest 生成或校验逻辑，使其能识别同级 `pto-isa/include/pto/common/pto_instr.hpp` 的公共 API 语义和 `tests/npu/a5/src/st/testcase/` 的 A5 ST 证据
+- [x] 1.3 为 `implemented` / `deferred` 分类补充结构化校验，明确区分“原生 A5 `_IMPL`”、“公共 API 语义重写”和“仍缺少可采纳语义”
 
 ## 2. Family 模板补齐
 

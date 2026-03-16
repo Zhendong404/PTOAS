@@ -2,6 +2,7 @@
   "schema_version": "a5_oplib_v1_manifest/v1",
   "generated_from": {
     "manual_path": "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md",
+    "common_api_header": "include/pto/common/pto_instr.hpp",
     "a5_include_dir": "include/pto/npu/a5",
     "a5_test_dir": "tests/npu/a5/src/st/testcase"
   },
@@ -99,7 +100,7 @@
     "status_rules": {
       "implemented": [
         "operator must belong to the fixed 4.5-4.9 in-scope set",
-        "one or more A5 semantic source headers must be discoverable under include/pto/npu/a5",
+        "one or more approved semantic evidence paths must be discoverable under include/pto/npu/a5 or include/pto/common/pto_instr.hpp",
         "dtype_support must be non-empty",
         "key_constraints must be non-empty",
         "semantic_source_paths must be non-empty",
@@ -110,6 +111,21 @@
         "deferred_reason must be non-empty",
         "the snapshot must keep semantic source evidence when available",
         "implemented-only guarantees are not claimed"
+      ]
+    },
+    "classification_rules": {
+      "native_a5_impl": [
+        "implemented status is justified by a discoverable A5 OP_NAME(...) or *_IMPL definition under include/pto/npu/a5",
+        "semantic_source_paths and header_paths must retain the native A5 header evidence"
+      ],
+      "public_api_rewrite": [
+        "implemented status is justified by an approved include/pto/common/pto_instr.hpp rewrite to an already supported A5 semantic target",
+        "manifest must retain both the public API rewrite path and the target A5 semantic evidence",
+        "A5 ST testcase evidence must remain discoverable under tests/npu/a5/src/st/testcase"
+      ],
+      "missing_accepted_semantics": [
+        "deferred status is used when no native A5 _IMPL exists and the current change has not approved the public API path as an OpLib semantic rewrite",
+        "deferred entries should keep public API evidence when it exists, so the missing boundary stays explicit"
       ]
     }
   },
@@ -796,14 +812,18 @@
       "a5_status": "deferred",
       "dtype_support": [],
       "key_constraints": [
-        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred"
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
       ],
       "semantic_source_paths": [
-        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2254"
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2254",
+        "include/pto/common/pto_instr.hpp:325"
       ],
-      "header_paths": [],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
       "test_paths": [],
-      "deferred_reason": "no A5 semantic source matched OP_NAME(TADDC) or TADDC_IMPL under include/pto/npu/a5"
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TADDC_IMPL/OP_NAME(TADDC) and this change does not approve OpLib decomposition semantics"
     },
     {
       "op": "tsubc",
@@ -815,14 +835,18 @@
       "a5_status": "deferred",
       "dtype_support": [],
       "key_constraints": [
-        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred"
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
       ],
       "semantic_source_paths": [
-        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2312"
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2312",
+        "include/pto/common/pto_instr.hpp:333"
       ],
-      "header_paths": [],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
       "test_paths": [],
-      "deferred_reason": "no A5 semantic source matched OP_NAME(TSUBC) or TSUBC_IMPL under include/pto/npu/a5"
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TSUBC_IMPL/OP_NAME(TSUBC) and this change does not approve OpLib decomposition semantics"
     },
     {
       "op": "taddsc",
@@ -834,14 +858,18 @@
       "a5_status": "deferred",
       "dtype_support": [],
       "key_constraints": [
-        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred"
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
       ],
       "semantic_source_paths": [
-        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2370"
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2370",
+        "include/pto/common/pto_instr.hpp:1287"
       ],
-      "header_paths": [],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
       "test_paths": [],
-      "deferred_reason": "no A5 semantic source matched OP_NAME(TADDSC) or TADDSC_IMPL under include/pto/npu/a5"
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TADDSC_IMPL/OP_NAME(TADDSC) and this change does not approve OpLib decomposition semantics"
     },
     {
       "op": "tsubsc",
@@ -853,14 +881,18 @@
       "a5_status": "deferred",
       "dtype_support": [],
       "key_constraints": [
-        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred"
+        "A5 OpLib V1 reserves a ternary family slot even when A5 implementation is deferred",
+        "public API entry exists, but no native A5 _IMPL or approved semantic rewrite is available for OpLib V1"
       ],
       "semantic_source_paths": [
-        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2424"
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2424",
+        "include/pto/common/pto_instr.hpp:1296"
       ],
-      "header_paths": [],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp"
+      ],
       "test_paths": [],
-      "deferred_reason": "no A5 semantic source matched OP_NAME(TSUBSC) or TSUBSC_IMPL under include/pto/npu/a5"
+      "deferred_reason": "public API exists in include/pto/common/pto_instr.hpp, but A5 has no native TSUBSC_IMPL/OP_NAME(TSUBSC) and this change does not approve OpLib decomposition semantics"
     },
     {
       "op": "tabs",
@@ -1063,20 +1095,36 @@
       "manual_section_title": "Vector Arithmetic Operations",
       "manual_heading": "Elementwise Reciprocal",
       "family": "unary",
-      "a5_status": "deferred",
-      "dtype_support": [],
+      "a5_status": "implemented",
+      "dtype_support": [
+        "f16",
+        "f32",
+        "i16",
+        "i32",
+        "i8",
+        "u16",
+        "u32",
+        "u8"
+      ],
       "key_constraints": [
         "A5 implementation targets vector / UB tiles",
+        "public API rewrites TRECIP(dst, src) to TDIVS(dst, 1, src)",
+        "TDIVS rewrite inherits tile-scalar dtype legality from include/pto/npu/a5/TDivS.hpp",
         "src and dst valid regions must stay aligned"
       ],
       "semantic_source_paths": [
-        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2791"
+        "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2791",
+        "include/pto/common/pto_instr.hpp:296",
+        "include/pto/npu/a5/TDivS.hpp:104"
       ],
-      "header_paths": [],
+      "header_paths": [
+        "include/pto/common/pto_instr.hpp",
+        "include/pto/npu/a5/TDivS.hpp"
+      ],
       "test_paths": [
         "tests/npu/a5/src/st/testcase/trecip"
       ],
-      "deferred_reason": "no A5 semantic source matched OP_NAME(TRECIP) or TRECIP_IMPL under include/pto/npu/a5"
+      "deferred_reason": ""
     },
     {
       "op": "trelu",
@@ -1784,11 +1832,11 @@
       "family": "bitwise_binary",
       "a5_status": "implemented",
       "dtype_support": [
-        "bf16",
-        "f16",
-        "f32",
+        "i16",
         "i32",
         "i8",
+        "u16",
+        "u32",
         "u8"
       ],
       "key_constraints": [
@@ -1823,9 +1871,6 @@
       "family": "bitwise_binary",
       "a5_status": "implemented",
       "dtype_support": [
-        "bf16",
-        "f16",
-        "f32",
         "i16",
         "i32",
         "i8",
@@ -1834,7 +1879,6 @@
         "u8"
       ],
       "key_constraints": [
-        "BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository for the full text of the License. */ #ifndef PTO_UTILS_H #define PTO_UTILS_H #include <pto/common/type.hpp> namespace pto { const uint32_t VECTOR_REG_WIDTH = 256; const uint32_t VECTOR_REG_WIDTH_2XVL = 512; constexpr uint32_t SHIFT_MX_ADDR = 4; enum class DistVST { DIST_NORM_B8, DIST_NORM_B16, DIST_NORM_B32, DIST_ONEPT_B8, DIST_ONEPT_B16, DIST_ONEPT_B32, DIST_PK_B16, DIST_PK_B32, DIST_INTLV_B8, DIST_INTLV_B16, DIST_PK_B64, DIST_INTLV_B32, DIST_PK4_B32, DIST_MRG4CHN_B8, DIST_MRG2CHN_B8, DIST_MRG2CHN_B16, DIST_NORM, DIST_ONEPT }; template <typename T, DistVST dist> PTO_INTERNAL constexpr DistVST GetDistVst() { if constexpr (dist == DistVST::DIST_NORM) { static_assert(SupportBytes<T, 1, 2, 4>(),",
         "Fix: TOR has invalid data type.",
         "Fix: TOR input tile src0 valid shape mismatch with output tile dst shape.",
         "Fix: TOR input tile src0, src1 and dst tile data type mismatch.",
@@ -1866,9 +1910,6 @@
       "family": "bitwise_binary",
       "a5_status": "implemented",
       "dtype_support": [
-        "bf16",
-        "f16",
-        "f32",
         "i16",
         "i32",
         "i8",
@@ -1982,8 +2023,6 @@
       "family": "bitwise_unary",
       "a5_status": "implemented",
       "dtype_support": [
-        "f16",
-        "f32",
         "i16",
         "i32",
         "i8",
