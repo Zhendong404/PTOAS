@@ -15,12 +15,18 @@
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.no_candidate/families/
 // RUN: ! ptoas %S/compare_family.pto --enable-op-fusion --op-lib-dir=%t.no_candidate --pto-arch=a5 -o %t.no_candidate.cpp > %t.no_candidate.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-NO-CANDIDATE < %t.no_candidate.log
+// RUN: rm -rf %t.bad_rewrite && mkdir -p %t.bad_rewrite/families
+// RUN: cp %S/../../oplib/level3/float_unary_templates.mlir %t.bad_rewrite/
+// RUN: cp %S/resources/bad_manifest_trecip_deferred.json %t.bad_rewrite/families/a5_oplib_v1_manifest.yaml
+// RUN: ! ptoas %S/compare_family.pto --enable-op-fusion --op-lib-dir=%t.bad_rewrite --pto-arch=a5 -o %t.bad_rewrite.cpp > %t.bad_rewrite.log 2>&1
+// RUN: FileCheck %s --check-prefix=BAD-REWRITE-STATE < %t.bad_rewrite.log
 
 // BAD-FAMILY-DSL: family DSL requires a non-empty 'patterns' list
 // BAD-MANIFEST: A5 OpLib V1 manifest
 // BAD-MANIFEST: has unexpected schema_version 'broken_manifest/v0'
 // BAD-TEMPLATE-IMPORT: invalid OP-Lib signature for kind=l3_float_unary_template
-// BAD-NO-CANDIDATE: manifest-implemented op has no OP-Lib candidate for op=tcmp dtype=f32
+// BAD-NO-CANDIDATE: manifest-implemented op='tcmp' family=compare_tile_tile classification=native_a5_impl has no OP-Lib candidate for op=tcmp dtype=f32
+// BAD-REWRITE-STATE: keeps approved public_api_rewrite op 'trecip' deferred; expected implemented
 
 module {
 }

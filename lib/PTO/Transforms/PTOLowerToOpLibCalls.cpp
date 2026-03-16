@@ -148,9 +148,17 @@ enum class A5ManifestStatus {
   Deferred,
 };
 
+enum class A5ManifestSemanticClass {
+  NativeA5Impl,
+  PublicApiRewrite,
+  MissingAcceptedSemantics,
+};
+
 struct A5ManifestEntry {
   std::string family;
   A5ManifestStatus status = A5ManifestStatus::Deferred;
+  A5ManifestSemanticClass semanticClass =
+      A5ManifestSemanticClass::MissingAcceptedSemantics;
   std::string deferredReason;
 };
 
@@ -257,6 +265,35 @@ static StringRef getPTOMnemonic(Operation *op) {
   return fullName.drop_front(dot + 1);
 }
 
+static std::optional<StringRef> getApprovedPublicApiRewriteTarget(StringRef opName) {
+  if (opName == "trecip")
+    return StringRef("TDIVS");
+  return std::nullopt;
+}
+
+static StringRef stringifyManifestSemanticClass(A5ManifestSemanticClass semanticClass) {
+  switch (semanticClass) {
+  case A5ManifestSemanticClass::NativeA5Impl:
+    return "native_a5_impl";
+  case A5ManifestSemanticClass::PublicApiRewrite:
+    return "public_api_rewrite";
+  case A5ManifestSemanticClass::MissingAcceptedSemantics:
+    return "missing_accepted_semantics";
+  }
+  llvm_unreachable("unsupported A5 manifest semantic class");
+}
+
+static std::string formatManifestEntrySummary(StringRef opName,
+                                              const A5ManifestEntry &entry) {
+  std::string summary =
+      (Twine("op='") + opName + "' family=" + entry.family + " classification=" +
+       stringifyManifestSemanticClass(entry.semanticClass))
+          .str();
+  if (entry.status == A5ManifestStatus::Deferred && !entry.deferredReason.empty())
+    summary = (summary + " deferred_reason=\"" + entry.deferredReason + "\"");
+  return summary;
+}
+
 static llvm::Expected<A5OpLibManifest> loadA5OpLibManifest(StringRef path) {
   auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
   if (!bufferOrErr) {
@@ -327,6 +364,7 @@ static llvm::Expected<A5OpLibManifest> loadA5OpLibManifest(StringRef path) {
     }
 
     it->second.family = family->str();
+    const std::string opNameStr = opName->str();
     if (*status == "implemented") {
       it->second.status = A5ManifestStatus::Implemented;
     } else if (*status == "deferred") {
@@ -340,6 +378,57 @@ static llvm::Expected<A5OpLibManifest> loadA5OpLibManifest(StringRef path) {
 
     if (auto deferredReason = entryObj->getString("deferred_reason"))
       it->second.deferredReason = deferredReason->str();
+
+    auto hasPathWithPrefix = [&](StringRef key,
+                                 StringRef prefix) -> bool {
+      auto *paths = entryObj->getArray(key);
+      if (!paths)
+        return false;
+      for (const llvm::json::Value &pathValue : *paths) {
+        auto pathStr = pathValue.getAsString();
+        if (pathStr && pathStr->starts_with(prefix))
+          return true;
+      }
+      return false;
+    };
+
+    const bool hasPublicApiEvidence =
+        hasPathWithPrefix("header_paths", "include/pto/common/pto_instr.hpp") ||
+        hasPathWithPrefix("semantic_source_paths",
+                          "include/pto/common/pto_instr.hpp:");
+    const std::optional<StringRef> approvedRewriteTarget =
+        getApprovedPublicApiRewriteTarget(opNameStr);
+
+    if (approvedRewriteTarget && hasPublicApiEvidence) {
+      it->second.semanticClass = A5ManifestSemanticClass::PublicApiRewrite;
+    } else if (it->second.status == A5ManifestStatus::Implemented) {
+      it->second.semanticClass = A5ManifestSemanticClass::NativeA5Impl;
+    } else {
+      it->second.semanticClass =
+          A5ManifestSemanticClass::MissingAcceptedSemantics;
+    }
+
+    if (it->second.status == A5ManifestStatus::Implemented &&
+        !it->second.deferredReason.empty()) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' marks implemented op '%s' with non-empty deferred_reason",
+          path.data(), opName->data());
+    }
+    if (it->second.status == A5ManifestStatus::Deferred &&
+        it->second.deferredReason.empty()) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' marks deferred op '%s' with empty deferred_reason",
+          path.data(), opName->data());
+    }
+    if (approvedRewriteTarget && hasPublicApiEvidence &&
+        it->second.status != A5ManifestStatus::Implemented) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "A5 OpLib V1 manifest '%s' keeps approved public_api_rewrite op '%s' deferred; expected implemented",
+          path.data(), opName->data());
+    }
   }
 
   return manifest;
@@ -2667,15 +2756,16 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
   if (manifestEntry->status == A5ManifestStatus::Deferred) {
     if (enableDebugLog) {
       llvm::errs() << "[op-fusion] skip deferred manifest op from OP-Lib path: "
-                   << opName << "\n";
+                   << formatManifestEntrySummary(opName, *manifestEntry) << "\n";
     }
     return failure();
   }
 
   FailureOr<MatchRequest> requestOr = buildMatchRequest(op);
   if (failed(requestOr)) {
-    op->emitError() << errorPrefix << ": manifest-implemented op='" << opName
-                    << "' failed to build MatchRequest from interface metadata";
+    op->emitError() << errorPrefix << ": manifest-implemented "
+                    << formatManifestEntrySummary(opName, *manifestEntry)
+                    << " failed to build MatchRequest from interface metadata";
     return failure();
   }
 
@@ -2689,8 +2779,9 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
       registry.selectVariantFor(request, op->getLoc());
   if (failed(selectedOr)) {
     op->emitError() << errorPrefix
-                    << ": manifest-implemented op has no OP-Lib candidate for op="
-                    << request.op << " dtype=" << request.dtype;
+                    << ": manifest-implemented " << formatManifestEntrySummary(opName, *manifestEntry)
+                    << " has no OP-Lib candidate for op=" << request.op
+                    << " dtype=" << request.dtype;
     return failure();
   }
 
@@ -2699,7 +2790,8 @@ planOneOpLowering(Operation *op, const A5OpLibManifest &manifest,
   if (failed(instanceOr)) {
     op->emitError()
         << errorPrefix
-        << ": failed to instantiate OP-Lib candidate for manifest-implemented op="
+        << ": failed to instantiate OP-Lib candidate for manifest-implemented "
+        << formatManifestEntrySummary(opName, *manifestEntry) << " op="
         << request.op << " dtype=" << request.dtype;
     return failure();
   }
@@ -2917,7 +3009,8 @@ struct PTOInstantiateAndLowerToLibCallPass
         return;
       op->emitError()
           << "OP-Lib lowering is required for manifest-implemented PTO IR 4.5~4.9 "
-             "op, but this op was not lowered";
+             "op, but this op was not lowered: "
+          << formatManifestEntrySummary(getPTOMnemonic(op), *manifestEntry);
       hasFailure = true;
     });
     return failure(hasFailure);
