@@ -10885,6 +10885,26 @@ struct EmitPTOManualPass
         return;
       }
       if (isRegTensorOpaqueTy(inTy) && isa<VectorType>(outTy)) {
+        bool onlyUsedByRoundTripBridges = true;
+        for (Operation *user : llvm::make_early_inc_range(output.getUsers())) {
+          auto bridge = dyn_cast<UnrealizedConversionCastOp>(user);
+          if (!bridge || bridge->getNumOperands() != 1 ||
+              bridge->getNumResults() != 1 || bridge.getOperand(0) != output ||
+              bridge.getResult(0).getType() != inTy) {
+            onlyUsedByRoundTripBridges = false;
+            break;
+          }
+        }
+        if (onlyUsedByRoundTripBridges) {
+          for (Operation *user : llvm::make_early_inc_range(output.getUsers())) {
+            auto bridge = mlir::cast<UnrealizedConversionCastOp>(user);
+            bridge.getResult(0).replaceAllUsesWith(input);
+            markErase(bridge.getOperation());
+          }
+          markErase(cast.getOperation());
+          return;
+        }
+
         bool onlyUsedByVectorVarAssign =
             llvm::all_of(output.getUsers(), [&](Operation *user) {
               auto assign = dyn_cast<emitc::AssignOp>(user);
