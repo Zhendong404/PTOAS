@@ -15,7 +15,6 @@ def build():
 
             tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
             tile_view_32 = pto.PartitionTensorViewType.get([32, 32], f32, ctx)
-            tile_view_32_1 = pto.PartitionTensorViewType.get([32, 1], f32, ctx)
             vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
@@ -24,7 +23,6 @@ def build():
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
-            tile_buf_32_1 = pto.TileBufType.get([32, 1], f32, vec, [32, 1], cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
@@ -41,17 +39,17 @@ def build():
 
                 # %0/%1/%2 = pto.make_tensor_view %arg?, shape=[%c32,%c32] strides=[%c32,%c1]
                 tv0 = pto.MakeTensorViewOp(tv2_f32, arg0, [c32, c32], [c32, c1]).result
-                tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c32, c1], [c1, c1]).result
+                tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c32, c32], [c32, c1]).result
                 tv2 = pto.MakeTensorViewOp(tv2_f32, arg2, [c32, c32], [c32, c1]).result
 
                 # %3/%4/%8 = pto.subview %tv, offsets=[%c0,%c0], sizes=[32,32]
                 # Replaced the immediate numbers with constants (c0 and c32)
                 sv0 = pto.PartitionViewOp(tile_view_32, tv0, offsets=[c0, c0], sizes=[c32, c32]).result
-                sv1 = pto.PartitionViewOp(tile_view_32_1, tv1, offsets=[c0, c0], sizes=[c32, c1]).result
+                sv1 = pto.PartitionViewOp(tile_view_32, tv1, offsets=[c0, c0], sizes=[c32, c32]).result
 
                 # %5/%6/%7 = pto.alloc_tile : <32x32xf32>
                 tb0 = pto.AllocTileOp(tile_buf_32).result
-                tb1 = pto.AllocTileOp(tile_buf_32_1).result
+                tb1 = pto.AllocTileOp(tile_buf_32).result
                 tb2 = pto.AllocTileOp(tile_buf_32).result
 
                 # pto.load_dps_tb ins(%sv) outs(%tb)
