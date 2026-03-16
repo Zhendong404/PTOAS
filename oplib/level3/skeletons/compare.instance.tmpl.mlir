@@ -23,6 +23,10 @@
     %cols = memref.dim %m0, %c1 : @@INPUT_MEMREF_TYPE@@
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@INPUT_VECTOR_TYPE@@
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : @@RESULT_VECTOR_TYPE@@
       %oneI8 = arith.constant dense<1> : @@RESULT_VECTOR_TYPE@@
 @@RHS_SETUP@@      scf.for %r = %c0 to %rows step %c1 {

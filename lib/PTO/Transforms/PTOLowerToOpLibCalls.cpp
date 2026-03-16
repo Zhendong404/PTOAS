@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 
@@ -75,6 +76,8 @@ static constexpr llvm::StringLiteral kOpLibAttrMatchCmpMode =
     "pto.oplib.match.cmp_mode";
 static constexpr llvm::StringLiteral kOpLibAttrMatchIsBinary =
     "pto.oplib.match.is_binary";
+static constexpr llvm::StringLiteral kCanonicalByteMaskContract =
+    "byte_mask_canonical_v1";
 static constexpr llvm::StringLiteral kOpLibAttrCost = "pto.oplib.cost";
 static constexpr llvm::StringLiteral kOpLibAttrPriority = "pto.oplib.priority";
 static constexpr llvm::StringLiteral kOpLibAttrSync = "pto.oplib.sync";
@@ -251,6 +254,7 @@ struct MatchRequest {
   SmallVector<Type, 4> argTypes;
   SmallVector<Value, 4> operands;
   SmallVector<std::optional<MatchKey>, 4> argMatches;
+  std::optional<std::string> maskContract;
   std::optional<std::string> operandOrder;
   std::optional<int64_t> fullTilePos;
   std::optional<int64_t> rowBroadcastPos;
@@ -2546,6 +2550,7 @@ buildCmpTileTileMatchRequest(StringRef kind, StringRef opName, Value src0,
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
   appendTileOperandUnchecked(request, dst, dstInfoOr->second);
   request.dtype = dtypeToString(src0InfoOr->first);
+  request.maskContract = kCanonicalByteMaskContract.str();
   return request;
 }
 
@@ -2572,12 +2577,78 @@ buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
   appendScalarOperandUnchecked(request, scalar);
   appendTileOperandUnchecked(request, dst, dstInfoOr->second);
   request.dtype = dtypeToString(srcInfoOr->first);
+  request.maskContract = kCanonicalByteMaskContract.str();
   return request;
 }
 
+static bool writesToBufferValue(Operation *op, Value buffer) {
+  if (auto memEffects = dyn_cast<MemoryEffectOpInterface>(op)) {
+    SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+    memEffects.getEffects(effects);
+    for (const auto &effect : effects) {
+      if (effect.getValue() == buffer &&
+          isa<MemoryEffects::Write>(effect.getEffect()))
+        return true;
+    }
+  }
+  auto iface = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
+  if (!iface)
+    return false;
+  return llvm::is_contained(iface.getDpsInits(), buffer);
+}
+
+static bool isApprovedCanonicalByteMaskProducer(Operation *op, Value buffer) {
+  if (auto cmp = dyn_cast<pto::TCmpOp>(op))
+    return cmp.getDst() == buffer;
+  if (auto cmps = dyn_cast<pto::TCmpSOp>(op))
+    return cmps.getDst() == buffer;
+  auto call = dyn_cast<func::CallOp>(op);
+  if (!call || call.getNumOperands() == 0)
+    return false;
+  if (call.getOperand(call.getNumOperands() - 1) != buffer)
+    return false;
+
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  if (!module)
+    return false;
+  auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
+  if (!callee)
+    return false;
+
+  auto kindAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrInstKind);
+  auto opAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp);
+  if (!kindAttr || !opAttr)
+    return false;
+
+  return (kindAttr.getValue() == "l3_cmp_tile_tile_template" ||
+          kindAttr.getValue() == "l3_cmp_tile_scalar_template") &&
+         (opAttr.getValue() == "tcmp" || opAttr.getValue() == "tcmps");
+}
+
+static bool writesApprovedCanonicalByteMask(Value buffer, Operation *op) {
+  if (isApprovedCanonicalByteMaskProducer(op, buffer))
+    return true;
+  return false;
+}
+
+static Operation *findLastWriterBeforeUserInBlock(Value buffer, Operation *user) {
+  Block *block = user->getBlock();
+  if (!block)
+    return nullptr;
+  Operation *lastWriter = nullptr;
+  for (Operation &candidate : *block) {
+    if (&candidate == user)
+      break;
+    if (writesApprovedCanonicalByteMask(buffer, &candidate) ||
+        writesToBufferValue(&candidate, buffer))
+      lastWriter = &candidate;
+  }
+  return lastWriter;
+}
+
 static FailureOr<MatchRequest>
-buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
-                            Value src0, Value src1, Value dst,
+buildSelectMaskMatchRequest(Operation *consumer, StringRef kind, StringRef opName,
+                            Value mask, Value src0, Value src1, Value dst,
                             std::optional<StringRef> requiredVariantId =
                                 std::nullopt) {
   FailureOr<std::pair<Type, MatchKey>> maskInfoOr = getTileOperandInfo(mask);
@@ -2588,11 +2659,29 @@ buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
       failed(dstInfoOr))
     return failure();
   auto maskIntTy = dyn_cast<IntegerType>(maskInfoOr->first);
-  if (!maskIntTy || maskIntTy.getWidth() != 8)
+  if (!maskIntTy || maskIntTy.getWidth() != 8) {
+    if (consumer) {
+      consumer->emitOpError(
+          "select mask must use the approved compare/select byte-mask "
+          "contract with 8-bit mask lanes");
+    }
     return failure();
+  }
   if (src0InfoOr->first != src1InfoOr->first ||
       src0InfoOr->first != dstInfoOr->first)
     return failure();
+
+  Operation *lastWriter =
+      consumer ? findLastWriterBeforeUserInBlock(mask, consumer) : nullptr;
+  if (!lastWriter || !isApprovedCanonicalByteMaskProducer(lastWriter, mask)) {
+    if (consumer) {
+      consumer->emitOpError(
+          "select mask input does not satisfy the approved byte-mask "
+          "contract; require the most recent in-block writer to be "
+          "tcmp/tcmps with no intervening writes");
+    }
+    return failure();
+  }
 
   MatchRequest request = createMatchRequest(kind, opName,
                                             /*scalarPos=*/std::nullopt,
@@ -2602,6 +2691,7 @@ buildSelectMaskMatchRequest(StringRef kind, StringRef opName, Value mask,
   appendTileOperandUnchecked(request, src1, src1InfoOr->second);
   appendTileOperandUnchecked(request, dst, dstInfoOr->second);
   request.dtype = dtypeToString(src0InfoOr->first);
+  request.maskContract = kCanonicalByteMaskContract.str();
   return request;
 }
 
@@ -2786,7 +2876,7 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
   } else if (desc.kind == "l3_select_mask_template" &&
              desc.operands.size() == 4) {
     requestOr = buildSelectMaskMatchRequest(
-        desc.kind, desc.opName, desc.operands[0], desc.operands[1],
+        op, desc.kind, desc.opName, desc.operands[0], desc.operands[1],
         desc.operands[2], desc.operands[3], requiredVariantId);
   } else if (desc.kind == "l3_select_scalar_template" &&
              desc.operands.size() == 4) {
@@ -2821,6 +2911,8 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
 
   if (desc.cmpMode)
     requestOr->cmpMode = *desc.cmpMode;
+  if (desc.maskContract)
+    requestOr->maskContract = *desc.maskContract;
   if (desc.operandOrder)
     requestOr->operandOrder = *desc.operandOrder;
   if (desc.fullTilePos)
@@ -2838,6 +2930,17 @@ static FailureOr<MatchRequest> buildMatchRequest(Operation *op) {
 
 static LogicalResult validateFamilyLogicRequest(const MatchRequest &request,
                                                 Location loc) {
+  if ((request.kind == "l3_cmp_tile_tile_template" ||
+       request.kind == "l3_cmp_tile_scalar_template" ||
+       request.kind == "l3_select_mask_template") &&
+      (!request.maskContract ||
+       *request.maskContract != kCanonicalByteMaskContract)) {
+    mlir::emitError(loc)
+        << "compare/select family logic requires mask_contract="
+        << kCanonicalByteMaskContract;
+    return failure();
+  }
+
   if (request.op == "tdivs") {
     if (!request.operandOrder ||
         (*request.operandOrder != "tile_scalar" &&

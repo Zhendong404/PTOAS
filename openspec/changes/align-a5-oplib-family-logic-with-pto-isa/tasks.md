@@ -6,9 +6,9 @@
 
 ## 2. Compare/Select Mask 契约
 
-- [ ] 2.1 为 `tcmp`、`tcmps`、`tsel`、`tsels` 明确并落地 byte-mask canonical form 的模板契约，包括 `0 == false`、`nonzero == true` 和 tail lane 约束
-- [ ] 2.2 调整 compare/select lowering，使其只在输入满足已批准的 byte-mask contract 时进入 OpLib path，并对不满足契约的情况给出确定性失败
-- [ ] 2.3 补充 `test/oplib/` 回归，覆盖 compare-to-select round-trip、非 0/1 mask byte 解释，以及非法 mask 输入的 negative case
+- [x] 2.1 为 `tcmp`、`tcmps`、`tsel`、`tsels` 明确并落地 byte-mask canonical form 的模板契约，包括 `0 == false`、`nonzero == true` 和 tail lane 约束
+- [x] 2.2 调整 compare/select lowering，使其只在输入满足已批准的 byte-mask contract 时进入 OpLib path，并对不满足契约的情况给出确定性失败
+- [x] 2.3 补充 `test/oplib/` 回归，覆盖 compare-to-select round-trip、非 0/1 mask byte 解释，以及非法 mask 输入的 negative case
 
 ## 3. Direction-Sensitive Family 对齐
 

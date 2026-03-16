@@ -43,6 +43,10 @@ struct OpLibMatchDescriptor {
   //   from wildcard template arg matches alone;
   // - reduce_colsum binary semantics must keep both isBinary and an explicit
   //   variant pin to avoid collapsing to linear.
+  // - compare/select canonical byte-mask form needs an explicit contract marker
+  //   so lowering can distinguish approved mask producers/consumers from
+  //   arbitrary integer tiles.
+  std::optional<std::string> maskContract;
   std::optional<std::string> operandOrder;
   std::optional<int64_t> fullTilePos;
   std::optional<int64_t> rowBroadcastPos;

@@ -5062,6 +5062,9 @@ static OpLibMatchDescriptor buildBinaryTileOpLibDesc(StringRef kind,
   return desc;
 }
 
+static constexpr llvm::StringLiteral kCanonicalByteMaskContract =
+    "byte_mask_canonical_v1";
+
 static OpLibMatchDescriptor buildTileScalarOpLibDesc(StringRef kind,
                                                      StringRef opName, Value src,
                                                      Value scalar, Value dst,
@@ -5408,6 +5411,7 @@ FailureOr<OpLibMatchDescriptor> TCmpOp::getOpLibMatchDescriptor() {
     return failure();
   OpLibMatchDescriptor desc = buildBinaryTileOpLibDesc(
       "l3_cmp_tile_tile_template", "tcmp", getSrc0(), getSrc1(), getDst());
+  desc.maskContract = kCanonicalByteMaskContract.str();
   if (auto cmpModeAttr = getCmpModeAttr())
     desc.cmpMode = getOpLibCmpModeName(cmpModeAttr.getValue());
   else
@@ -5421,6 +5425,7 @@ FailureOr<OpLibMatchDescriptor> TCmpSOp::getOpLibMatchDescriptor() {
     return failure();
   OpLibMatchDescriptor desc = buildTileScalarOpLibDesc(
       "l3_cmp_tile_scalar_template", "tcmps", getSrc(), getScalar(), getDst());
+  desc.maskContract = kCanonicalByteMaskContract.str();
   if (auto cmpModeAttr = getCmpModeAttr())
     desc.cmpMode = getOpLibCmpModeName(cmpModeAttr.getValue());
   else

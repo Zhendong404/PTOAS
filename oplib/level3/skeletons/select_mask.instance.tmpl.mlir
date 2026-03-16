@@ -23,6 +23,11 @@
     %rows = memref.dim %m1, %c0 : @@SRC1_MEMREF_TYPE@@
     %cols = memref.dim %m1, %c1 : @@SRC1_MEMREF_TYPE@@
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : @@SRC0_VECTOR_TYPE@@
       %zeroMask = arith.constant dense<0> : @@SRC0_VECTOR_TYPE@@
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@RESULT_VECTOR_TYPE@@
