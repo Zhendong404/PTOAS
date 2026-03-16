@@ -9,6 +9,7 @@
         pto.oplib.variant_id = "@@VARIANT_ID@@",
         pto.oplib.match.dtype = "@@MATCH_DTYPE@@",
 @@MATCH_ATTRS@@
+@@EXTRA_TEMPLATE_ATTRS@@
         pto.oplib.cost = @@COST@@ : i64,
         pto.oplib.priority = @@PRIORITY@@ : i64
       } {

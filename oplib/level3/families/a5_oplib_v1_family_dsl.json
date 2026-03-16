@@ -1594,7 +1594,13 @@
           "name": "trecip",
           "core_op": "arith.divf",
           "snippet": "unary/recip_result.mlirfrag",
-          "body_kind": "recip"
+          "body_kind": "recip",
+          "metadata": {
+            "template_attrs": {
+              "pto.oplib.semantic_origin": "public_api_rewrite",
+              "pto.oplib.semantic_equivalent": "TDIVS(dst, 1, src)"
+            }
+          }
         },
         {
           "name": "trelu",

@@ -28,6 +28,7 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -78,6 +79,7 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
@@ -130,6 +132,7 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -180,6 +183,7 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64

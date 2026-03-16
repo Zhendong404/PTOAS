@@ -324,6 +324,27 @@ def build_match_attrs(arg_roles: list[str]) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def build_extra_template_attrs(op_info: dict[str, Any]) -> str:
+    metadata = op_info.get("metadata", {})
+    template_attrs = metadata.get("template_attrs", {})
+    if not isinstance(template_attrs, dict):
+        raise ValueError(
+            f"template_attrs for op {op_info.get('name', '<unknown>')} must be a dict"
+        )
+
+    lines: list[str] = []
+    for attr_name, attr_value in template_attrs.items():
+        if isinstance(attr_value, bool):
+            literal = "true" if attr_value else "false"
+        elif isinstance(attr_value, int):
+            literal = f"{attr_value} : i64"
+        else:
+            escaped = str(attr_value).replace("\\", "\\\\").replace('"', '\\"')
+            literal = f'"{escaped}"'
+        lines.append(f"        {attr_name} = {literal},")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def build_func_name(
     pattern: dict[str, Any],
     family: dict[str, Any],
@@ -690,6 +711,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                             arg_types_by_role,
                         ),
                         "match_attrs": build_match_attrs(arg_roles),
+                        "extra_template_attrs": build_extra_template_attrs(effective_op_info),
                         "variant_match_attrs": build_variant_match_attrs(family, variant_matcher),
                         "core_op": effective_op_info["core_op"],
                         "cmp_mode": condition,
@@ -760,6 +782,7 @@ def render_family_output(
                     "VARIANT_ID": instance["variant_id"],
                     "MATCH_DTYPE": instance["match_dtype"],
                     "MATCH_ATTRS": instance["match_attrs"],
+                    "EXTRA_TEMPLATE_ATTRS": instance["extra_template_attrs"],
                     "VARIANT_MATCH_ATTRS": instance["variant_match_attrs"],
                     "CORE_OP": instance["core_op"],
                     "CMP_MODE": instance["cmp_mode"],

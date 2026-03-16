@@ -28,6 +28,7 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -78,6 +79,7 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
@@ -130,6 +132,7 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -180,6 +183,7 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
@@ -232,6 +236,9 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+        pto.oplib.semantic_origin = "public_api_rewrite",
+        pto.oplib.semantic_equivalent = "TDIVS(dst, 1, src)",
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -282,6 +289,9 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
+        pto.oplib.semantic_origin = "public_api_rewrite",
+        pto.oplib.semantic_equivalent = "TDIVS(dst, 1, src)",
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
@@ -334,6 +344,7 @@ module {
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
 
+
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
       } {
@@ -384,6 +395,7 @@ module {
         pto.oplib.match.arg1.blayout = "row_major",
         pto.oplib.match.arg1.slayout = "any",
         pto.oplib.match.arg1.fractal = -1 : i64,
+
 
         pto.oplib.cost = 10 : i64,
         pto.oplib.priority = 0 : i64
