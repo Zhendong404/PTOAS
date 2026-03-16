@@ -37,6 +37,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
@@ -97,6 +100,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
@@ -157,6 +163,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
@@ -217,6 +226,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
@@ -277,6 +289,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
@@ -337,6 +352,9 @@ module {
         pto.oplib.cost = 1 : i64,
         pto.oplib.priority = 1 : i64
       } {
+    // %src0 is the canonical full-tile operand and %src1 is the canonical
+    // row-broadcast operand; lowering may reorder external operands to satisfy
+    // this family contract.
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %m1 = pto.simd.tile_to_memref %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>
     %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>

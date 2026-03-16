@@ -49,6 +49,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -111,6 +115,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -173,6 +181,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -235,6 +247,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -297,6 +313,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -359,6 +379,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -421,6 +445,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -483,6 +511,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -545,6 +577,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -607,6 +643,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -669,6 +709,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -731,6 +775,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -793,6 +841,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -855,6 +907,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -917,6 +973,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -979,6 +1039,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1041,6 +1105,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1103,6 +1171,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1165,6 +1237,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1227,6 +1303,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1289,6 +1369,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1351,6 +1435,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1413,6 +1501,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1475,6 +1567,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1537,6 +1633,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1599,6 +1699,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1661,6 +1765,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1723,6 +1831,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1785,6 +1897,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1847,6 +1963,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1909,6 +2029,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -1971,6 +2095,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2033,6 +2161,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2095,6 +2227,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2157,6 +2293,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2219,6 +2359,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2281,6 +2425,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2343,6 +2491,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2405,6 +2557,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2467,6 +2623,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2529,6 +2689,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2591,6 +2755,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2653,6 +2821,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2715,6 +2887,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2777,6 +2953,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2839,6 +3019,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2901,6 +3085,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
@@ -2963,6 +3151,10 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
+      // Canonical byte-mask contract:
+      // - active false lanes materialize as 0
+      // - active true lanes materialize as nonzero (currently 1)
+      // - tail lanes are zero-filled under %mask and remain unobservable
       %zeroI8 = arith.constant dense<0> : vector<64xi8>
       %oneI8 = arith.constant dense<1> : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {

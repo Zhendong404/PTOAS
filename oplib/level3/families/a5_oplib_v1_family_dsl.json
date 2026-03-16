@@ -2117,12 +2117,6 @@
             "matcher": {
               "isBinary": false
             }
-          },
-          {
-            "id": "binary",
-            "matcher": {
-              "isBinary": true
-            }
           }
         ]
       },

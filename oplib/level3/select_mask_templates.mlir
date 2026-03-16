@@ -54,6 +54,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0.0> : vector<64xf16>
@@ -123,6 +128,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0.0> : vector<64xf32>
@@ -192,6 +202,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi16>
@@ -261,6 +276,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi32>
@@ -330,6 +350,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi8>
@@ -399,6 +424,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi16>
@@ -468,6 +498,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi32>
@@ -537,6 +572,11 @@ module {
     %rows = memref.dim %m1, %c0 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
+      // Canonical byte-mask contract:
+      // - active lane 0 => false
+      // - active lane nonzero => true
+      // - tail lanes load as zero via %laneMask/%passiveMask and must not
+      //   affect the selected value
       %passiveMask = arith.constant dense<0> : vector<64xi8>
       %zeroMask = arith.constant dense<0> : vector<64xi8>
       %passive = arith.constant dense<0> : vector<64xi8>

@@ -18,9 +18,9 @@
 
 ## 4. Reduction Variant 语义
 
-- [ ] 4.1 评估当前 `reduce_colsum` skeleton 是否足以表达 `variant_id=binary` 的 `tmp` / staged accumulation 语义，并形成实现或收缩结论
-- [ ] 4.2 若可表达，则为 `tcolsum(binary)` 实现独立 variant contract；若不可表达，则同步收缩 manifest、template metadata 和 lowering，使 `binary` 不再标记为 implemented
-- [ ] 4.3 补充 `tcolsum(linear)` / `tcolsum(binary)` 的选择与门禁回归，确保 `binary` 不会静默回落到 `linear`
+- [x] 4.1 评估当前 `reduce_colsum` skeleton 是否足以表达 `variant_id=binary` 的 `tmp` / staged accumulation 语义，并形成实现或收缩结论
+- [x] 4.2 若可表达，则为 `tcolsum(binary)` 实现独立 variant contract；若不可表达，则同步收缩 manifest、template metadata 和 lowering，使 `binary` 不再标记为 implemented
+- [x] 4.3 补充 `tcolsum(linear)` / `tcolsum(binary)` 的选择与门禁回归，确保 `binary` 不会静默回落到 `linear`
 
 ## 5. 文档与验证
 

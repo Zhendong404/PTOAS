@@ -2831,6 +2831,13 @@ buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
 }
 
 static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
+  if (auto colsum = dyn_cast<pto::TColSumOp>(op); colsum && colsum.getIsBinary()) {
+    op->emitOpError(
+        "reduce_colsum variant_id=binary is not implemented in OP-Lib; "
+        "refuse to fall back to linear");
+    return failure();
+  }
+
   auto iface = dyn_cast<pto::OpLibOpInterface>(op);
   if (!iface)
     return failure();
