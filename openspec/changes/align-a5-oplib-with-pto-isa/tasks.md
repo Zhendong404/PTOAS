@@ -14,7 +14,7 @@
 ## 3. Lowering 与一致性门禁
 
 - [x] 3.1 调整 `PTOLowerToOpLibCalls` 相关逻辑，使 manifest 状态、template 选择和 deferred 诊断与新分类规则一致
-- [ ] 3.2 升级 `test/oplib/check_implemented_op_alignment.py` 或新增检查脚本，使其能校验 implemented op 的 dtype 级覆盖，而不只是“至少一个模板”
+- [x] 3.2 升级 `test/oplib/check_implemented_op_alignment.py` 或新增检查脚本，使其能校验 implemented op 的 dtype 级覆盖，而不只是“至少一个模板”
 - [ ] 3.3 补充对 `trecip`、compare/select、reduction、broadcast、scalar-expand、bitwise 关键 family 的 lowering use case，确保新 dtype / variant 能进入 OP-Lib path
 
 ## 4. 回归、文档与收尾
