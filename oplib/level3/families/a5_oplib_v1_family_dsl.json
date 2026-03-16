@@ -154,6 +154,7 @@
       ],
       "dtype_axis": {
         "values": [
+          "bf16",
           "f16",
           "f32"
         ]
@@ -202,6 +203,12 @@
           "cost": 1,
           "variants": [
             {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
               "id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -224,6 +231,12 @@
           "snippet": "binary/elementwise_result.mlirfrag",
           "cost": 1,
           "variants": [
+            {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
             {
               "id": "tile_f16_scalar",
               "dtypes": [
@@ -248,6 +261,12 @@
           "cost": 1,
           "variants": [
             {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
               "id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -270,6 +289,12 @@
           "snippet": "binary/elementwise_result.mlirfrag",
           "cost": 1,
           "variants": [
+            {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
             {
               "id": "tile_f16_scalar",
               "dtypes": [
@@ -294,6 +319,12 @@
           "cost": 1,
           "variants": [
             {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
               "id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -316,6 +347,12 @@
           "snippet": "binary/elementwise_result.mlirfrag",
           "cost": 1,
           "variants": [
+            {
+              "id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
             {
               "id": "tile_f16_scalar",
               "dtypes": [
@@ -381,12 +418,18 @@
         "values": [
           "i8",
           "i16",
-          "i32"
+          "i32",
+          "u8",
+          "u16",
+          "u32"
         ],
         "variant_id_by_dtype": {
           "i8": "tile_i8",
           "i16": "tile_i16",
-          "i32": "tile"
+          "i32": "tile",
+          "u8": "tile_u8",
+          "u16": "tile_u16",
+          "u32": "tile_u32"
         }
       },
       "variant_axis": {
@@ -401,21 +444,24 @@
             "output": "int_binary_elementwise_i8_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
             "dtypes": [
-              "i8"
+              "i8",
+              "u8"
             ]
           },
           {
             "output": "int_binary_elementwise_i16_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
             "dtypes": [
-              "i16"
+              "i16",
+              "u16"
             ]
           },
           {
             "output": "int_binary_elementwise_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
             "dtypes": [
-              "i32"
+              "i32",
+              "u32"
             ]
           }
         ]
@@ -466,19 +512,38 @@
           "name": "tdiv",
           "core_op": "arith.divsi",
           "snippet": "binary/elementwise_result.mlirfrag",
+          "core_op_by_dtype": {
+            "u8": "arith.divui",
+            "u16": "arith.divui",
+            "u32": "arith.divui"
+          },
           "dtypes": [
+            "i8",
             "i16",
-            "i32"
+            "i32",
+            "u8",
+            "u16",
+            "u32"
           ]
         },
         {
           "name": "tmax",
           "core_op": "arith.maxsi",
+          "core_op_by_dtype": {
+            "u8": "arith.maxui",
+            "u16": "arith.maxui",
+            "u32": "arith.maxui"
+          },
           "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
           "name": "tmin",
           "core_op": "arith.minsi",
+          "core_op_by_dtype": {
+            "u8": "arith.minui",
+            "u16": "arith.minui",
+            "u32": "arith.minui"
+          },
           "snippet": "binary/elementwise_result.mlirfrag"
         },
         {
@@ -510,9 +575,15 @@
           "name": "trem",
           "core_op": "arith.remsi",
           "snippet": "binary/elementwise_result.mlirfrag",
+          "core_op_by_dtype": {
+            "u16": "arith.remui",
+            "u32": "arith.remui"
+          },
           "dtypes": [
             "i16",
-            "i32"
+            "i32",
+            "u16",
+            "u32"
           ]
         }
       ]
@@ -545,6 +616,10 @@
           "i8",
           "i16",
           "i32",
+          "u8",
+          "u16",
+          "u32",
+          "bf16",
           "f16",
           "f32"
         ],
@@ -552,6 +627,10 @@
           "i8": "tile_i8",
           "i16": "tile_i16",
           "i32": "tile_i32",
+          "u8": "tile_u8",
+          "u16": "tile_u16",
+          "u32": "tile_u32",
+          "bf16": "tile_bf16",
           "f16": "tile_f16",
           "f32": "tile_f32"
         }
@@ -599,7 +678,10 @@
           "core_op_by_dtype": {
             "i8": "arith.addi",
             "i16": "arith.addi",
-            "i32": "arith.addi"
+            "i32": "arith.addi",
+            "u8": "arith.addi",
+            "u16": "arith.addi",
+            "u32": "arith.addi"
           },
           "snippet": "binary/elementwise_result.mlirfrag"
         },
@@ -609,7 +691,10 @@
           "core_op_by_dtype": {
             "i8": "arith.maxsi",
             "i16": "arith.maxsi",
-            "i32": "arith.maxsi"
+            "i32": "arith.maxsi",
+            "u8": "arith.maxui",
+            "u16": "arith.maxui",
+            "u32": "arith.maxui"
           },
           "snippet": "binary/elementwise_result.mlirfrag"
         },
@@ -619,7 +704,10 @@
           "core_op_by_dtype": {
             "i8": "arith.minsi",
             "i16": "arith.minsi",
-            "i32": "arith.minsi"
+            "i32": "arith.minsi",
+            "u8": "arith.minui",
+            "u16": "arith.minui",
+            "u32": "arith.minui"
           },
           "snippet": "binary/elementwise_result.mlirfrag"
         },
@@ -660,10 +748,12 @@
       ],
       "dtype_axis": {
         "variant_id_by_dtype": {
+          "bf16": "tile_scalar_bf16",
           "f16": "tile_scalar_f16",
           "f32": "tile_scalar"
         },
         "values": [
+          "bf16",
           "f16",
           "f32"
         ]
@@ -724,7 +814,11 @@
         {
           "name": "tsubs",
           "core_op": "arith.subf",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "f16",
+            "f32"
+          ]
         },
         {
           "name": "tmuls",
@@ -820,7 +914,11 @@
           "name": "tlrelu",
           "core_op": "custom",
           "snippet": "tile_scalar/lrelu_result.mlirfrag",
-          "body_kind": "lrelu"
+          "body_kind": "lrelu",
+          "dtypes": [
+            "f16",
+            "f32"
+          ]
         }
       ]
     },
@@ -851,12 +949,18 @@
         "values": [
           "i8",
           "i16",
-          "i32"
+          "i32",
+          "u8",
+          "u16",
+          "u32"
         ],
         "variant_id_by_dtype": {
           "i8": "tile_scalar_i8",
           "i16": "tile_scalar_i16",
-          "i32": "tile_scalar"
+          "i32": "tile_scalar",
+          "u8": "tile_scalar_u8",
+          "u16": "tile_scalar_u16",
+          "u32": "tile_scalar_u32"
         }
       },
       "variant_axis": {
@@ -871,21 +975,24 @@
             "output": "int_tile_scalar_elementwise_i8_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
             "dtypes": [
-              "i8"
+              "i8",
+              "u8"
             ]
           },
           {
             "output": "int_tile_scalar_elementwise_i16_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
             "dtypes": [
-              "i16"
+              "i16",
+              "u16"
             ]
           },
           {
             "output": "int_tile_scalar_elementwise_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
             "dtypes": [
-              "i32"
+              "i32",
+              "u32"
             ]
           }
         ]
@@ -931,22 +1038,66 @@
         {
           "name": "tadds",
           "core_op": "arith.addi",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
         },
         {
           "name": "tsubs",
           "core_op": "arith.subi",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
         },
         {
           "name": "tmuls",
           "core_op": "arith.muli",
-          "snippet": "tile_scalar/elementwise_result.mlirfrag"
+          "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "dtypes": [
+            "i16",
+            "i32"
+          ]
         },
         {
           "name": "tdivs",
           "core_op": "arith.divsi",
           "variants": [
+            {
+              "id": "tile_scalar_i8",
+              "dtypes": [
+                "i8"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_i8"
+              }
+            },
+            {
+              "id": "scalar_tile_i8",
+              "dtypes": [
+                "i8"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_i8"
+              }
+            },
             {
               "id": "tile_scalar_i16",
               "dtypes": [
@@ -980,6 +1131,82 @@
               }
             },
             {
+              "id": "tile_scalar_u8",
+              "dtypes": [
+                "u8"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u8": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_u8"
+              }
+            },
+            {
+              "id": "scalar_tile_u8",
+              "dtypes": [
+                "u8"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u8": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_u8"
+              }
+            },
+            {
+              "id": "tile_scalar_u16",
+              "dtypes": [
+                "u16"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u16": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_u16"
+              }
+            },
+            {
+              "id": "scalar_tile_u16",
+              "dtypes": [
+                "u16"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u16": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_u16"
+              }
+            },
+            {
               "id": "tile_scalar",
               "dtypes": [
                 "i32"
@@ -1010,6 +1237,44 @@
               "request_keys": {
                 "requiredVariantId": "scalar_tile"
               }
+            },
+            {
+              "id": "tile_scalar_u32",
+              "dtypes": [
+                "u32"
+              ],
+              "body": {
+                "operand_order": "tile_scalar",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u32": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "tile_scalar_u32"
+              }
+            },
+            {
+              "id": "scalar_tile_u32",
+              "dtypes": [
+                "u32"
+              ],
+              "body": {
+                "operand_order": "scalar_tile",
+                "snippet": "tile_scalar/elementwise_result.mlirfrag"
+              },
+              "metadata": {
+                "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+              },
+              "core_op_by_dtype": {
+                "u32": "arith.divui"
+              },
+              "request_keys": {
+                "requiredVariantId": "scalar_tile_u32"
+              }
             }
           ]
         },
@@ -1017,19 +1282,21 @@
           "name": "tmaxs",
           "core_op": "arith.maxsi",
           "snippet": "tile_scalar/elementwise_result.mlirfrag",
-          "dtypes": [
-            "i8",
-            "i32"
-          ]
+          "core_op_by_dtype": {
+            "u8": "arith.maxui",
+            "u16": "arith.maxui",
+            "u32": "arith.maxui"
+          }
         },
         {
           "name": "tmins",
           "core_op": "arith.minsi",
           "snippet": "tile_scalar/elementwise_result.mlirfrag",
-          "dtypes": [
-            "i8",
-            "i32"
-          ]
+          "core_op_by_dtype": {
+            "u8": "arith.minui",
+            "u16": "arith.minui",
+            "u32": "arith.minui"
+          }
         },
         {
           "name": "tands",
@@ -1060,9 +1327,15 @@
           "name": "trems",
           "core_op": "arith.remsi",
           "snippet": "tile_scalar/elementwise_result.mlirfrag",
+          "core_op_by_dtype": {
+            "u16": "arith.remui",
+            "u32": "arith.remui"
+          },
           "dtypes": [
             "i16",
-            "i32"
+            "i32",
+            "u16",
+            "u32"
           ]
         }
       ]
@@ -1444,12 +1717,18 @@
         "values": [
           "i8",
           "i16",
-          "i32"
+          "i32",
+          "u8",
+          "u16",
+          "u32"
         ],
         "variant_id_by_dtype": {
           "i8": "tile_i8",
           "i16": "tile_i16",
-          "i32": "tile"
+          "i32": "tile",
+          "u8": "tile_u8",
+          "u16": "tile_u16",
+          "u32": "tile_u32"
         }
       },
       "variant_axis": {
@@ -1464,21 +1743,24 @@
             "output": "int_unary_i8_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
             "dtypes": [
-              "i8"
+              "i8",
+              "u8"
             ]
           },
           {
             "output": "int_unary_i16_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
             "dtypes": [
-              "i16"
+              "i16",
+              "u16"
             ]
           },
           {
             "output": "int_unary_templates.mlir",
             "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
             "dtypes": [
-              "i32"
+              "i32",
+              "u32"
             ]
           }
         ]
@@ -1533,7 +1815,15 @@
           "name": "tnot",
           "core_op": "arith.xori",
           "snippet": "unary/not_result.mlirfrag",
-          "body_kind": "not"
+          "body_kind": "not",
+          "dtypes": [
+            "i8",
+            "i16",
+            "i32",
+            "u8",
+            "u16",
+            "u32"
+          ]
         }
       ]
     },

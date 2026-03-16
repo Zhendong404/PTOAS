@@ -18,6 +18,7 @@
             "tile"
           ],
           "dtypes": [
+            "bf16",
             "f16",
             "f32"
           ],
@@ -26,6 +27,15 @@
               "op": "tadd",
               "core_op": "arith.addf",
               "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
+              "op": "tadd",
+              "core_op": "arith.addf",
+              "cost": 1,
               "variant_id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -45,6 +55,15 @@
               "op": "tsub",
               "core_op": "arith.subf",
               "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
+              "op": "tsub",
+              "core_op": "arith.subf",
+              "cost": 1,
               "variant_id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -64,6 +83,15 @@
               "op": "tmul",
               "core_op": "arith.mulf",
               "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
+              "op": "tmul",
+              "core_op": "arith.mulf",
+              "cost": 1,
               "variant_id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -83,6 +111,15 @@
               "op": "tdiv",
               "core_op": "arith.divf",
               "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
+              "op": "tdiv",
+              "core_op": "arith.divf",
+              "cost": 1,
               "variant_id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -102,6 +139,15 @@
               "op": "tmax",
               "core_op": "arith.maximumf",
               "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
+              ]
+            },
+            {
+              "op": "tmax",
+              "core_op": "arith.maximumf",
+              "cost": 1,
               "variant_id": "tile_f16_scalar",
               "dtypes": [
                 "f16"
@@ -115,6 +161,15 @@
               "variant_id": "tile",
               "dtypes": [
                 "f32"
+              ]
+            },
+            {
+              "op": "tmin",
+              "core_op": "arith.minimumf",
+              "cost": 1,
+              "variant_id": "tile_bf16",
+              "dtypes": [
+                "bf16"
               ]
             },
             {
@@ -168,7 +223,10 @@
           "dtypes": [
             "i8",
             "i16",
-            "i32"
+            "i32",
+            "u8",
+            "u16",
+            "u32"
           ],
           "ops": [
             {
@@ -187,8 +245,12 @@
               "op": "tdiv",
               "core_op": "arith.divsi",
               "dtypes": [
+                "i8",
                 "i16",
-                "i32"
+                "i32",
+                "u8",
+                "u16",
+                "u32"
               ]
             },
             {
@@ -224,7 +286,9 @@
               "core_op": "arith.remsi",
               "dtypes": [
                 "i16",
-                "i32"
+                "i32",
+                "u16",
+                "u32"
               ]
             }
           ],
@@ -234,28 +298,34 @@
               "output": "int_binary_elementwise_i8_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
               "dtypes": [
-                "i8"
+                "i8",
+                "u8"
               ]
             },
             {
               "output": "int_binary_elementwise_i16_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
               "dtypes": [
-                "i16"
+                "i16",
+                "u16"
               ]
             },
             {
               "output": "int_binary_elementwise_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int binary skeleton source.",
               "dtypes": [
-                "i32"
+                "i32",
+                "u32"
               ]
             }
           ],
           "variant_id_by_dtype": {
             "i8": "tile_i8",
             "i16": "tile_i16",
-            "i32": "tile"
+            "i32": "tile",
+            "u8": "tile_u8",
+            "u16": "tile_u16",
+            "u32": "tile_u32"
           }
         }
       ]
@@ -281,6 +351,10 @@
             "i8",
             "i16",
             "i32",
+            "u8",
+            "u16",
+            "u32",
+            "bf16",
             "f16",
             "f32"
           ],
@@ -314,6 +388,10 @@
             "i8": "tile_i8",
             "i16": "tile_i16",
             "i32": "tile_i32",
+            "u8": "tile_u8",
+            "u16": "tile_u16",
+            "u32": "tile_u32",
+            "bf16": "tile_bf16",
             "f16": "tile_f16",
             "f32": "tile_f32"
           }
@@ -338,6 +416,7 @@
             "tile"
           ],
           "dtypes": [
+            "bf16",
             "f16",
             "f32"
           ],
@@ -348,7 +427,11 @@
             },
             {
               "op": "tsubs",
-              "core_op": "arith.subf"
+              "core_op": "arith.subf",
+              "dtypes": [
+                "f16",
+                "f32"
+              ]
             },
             {
               "op": "tmuls",
@@ -409,13 +492,18 @@
             {
               "op": "tlrelu",
               "core_op": "custom",
-              "body_kind": "lrelu"
+              "body_kind": "lrelu",
+              "dtypes": [
+                "f16",
+                "f32"
+              ]
             }
           ],
           "output": "float_tile_scalar_templates.mlir",
           "output_role": "importer-active concrete templates synchronized from unified float tile-scalar skeleton source.",
           "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
           "variant_id_by_dtype": {
+            "bf16": "tile_scalar_bf16",
             "f16": "tile_scalar_f16",
             "f32": "tile_scalar"
           },
@@ -432,20 +520,55 @@
           "dtypes": [
             "i8",
             "i16",
-            "i32"
+            "i32",
+            "u8",
+            "u16",
+            "u32"
           ],
           "ops": [
             {
               "op": "tadds",
-              "core_op": "arith.addi"
+              "core_op": "arith.addi",
+              "dtypes": [
+                "i16",
+                "i32"
+              ]
             },
             {
               "op": "tsubs",
-              "core_op": "arith.subi"
+              "core_op": "arith.subi",
+              "dtypes": [
+                "i16",
+                "i32"
+              ]
             },
             {
               "op": "tmuls",
-              "core_op": "arith.muli"
+              "core_op": "arith.muli",
+              "dtypes": [
+                "i16",
+                "i32"
+              ]
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "tile_scalar_i8",
+              "dtypes": [
+                "i8"
+              ],
+              "operand_order": "tile_scalar",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "scalar_tile_i8",
+              "dtypes": [
+                "i8"
+              ],
+              "operand_order": "scalar_tile",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
             },
             {
               "op": "tdivs",
@@ -463,6 +586,46 @@
               "variant_id": "scalar_tile_i16",
               "dtypes": [
                 "i16"
+              ],
+              "operand_order": "scalar_tile",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "tile_scalar_u8",
+              "dtypes": [
+                "u8"
+              ],
+              "operand_order": "tile_scalar",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "scalar_tile_u8",
+              "dtypes": [
+                "u8"
+              ],
+              "operand_order": "scalar_tile",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "tile_scalar_u16",
+              "dtypes": [
+                "u16"
+              ],
+              "operand_order": "tile_scalar",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "scalar_tile_u16",
+              "dtypes": [
+                "u16"
               ],
               "operand_order": "scalar_tile",
               "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
@@ -488,20 +651,32 @@
               "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
             },
             {
-              "op": "tmaxs",
-              "core_op": "arith.maxsi",
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "tile_scalar_u32",
               "dtypes": [
-                "i8",
-                "i32"
-              ]
+                "u32"
+              ],
+              "operand_order": "tile_scalar",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tdivs",
+              "core_op": "arith.divsi",
+              "variant_id": "scalar_tile_u32",
+              "dtypes": [
+                "u32"
+              ],
+              "operand_order": "scalar_tile",
+              "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}"
+            },
+            {
+              "op": "tmaxs",
+              "core_op": "arith.maxsi"
             },
             {
               "op": "tmins",
-              "core_op": "arith.minsi",
-              "dtypes": [
-                "i8",
-                "i32"
-              ]
+              "core_op": "arith.minsi"
             },
             {
               "op": "tands",
@@ -528,7 +703,9 @@
               "core_op": "arith.remsi",
               "dtypes": [
                 "i16",
-                "i32"
+                "i32",
+                "u16",
+                "u32"
               ]
             }
           ],
@@ -538,28 +715,34 @@
               "output": "int_tile_scalar_elementwise_i8_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
               "dtypes": [
-                "i8"
+                "i8",
+                "u8"
               ]
             },
             {
               "output": "int_tile_scalar_elementwise_i16_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
               "dtypes": [
-                "i16"
+                "i16",
+                "u16"
               ]
             },
             {
               "output": "int_tile_scalar_elementwise_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int tile-scalar skeleton source.",
               "dtypes": [
-                "i32"
+                "i32",
+                "u32"
               ]
             }
           ],
           "variant_id_by_dtype": {
             "i8": "tile_scalar_i8",
             "i16": "tile_scalar_i16",
-            "i32": "tile_scalar"
+            "i32": "tile_scalar",
+            "u8": "tile_scalar_u8",
+            "u16": "tile_scalar_u16",
+            "u32": "tile_scalar_u32"
           },
           "scalar_pos": 1
         }
@@ -666,7 +849,10 @@
           "dtypes": [
             "i8",
             "i16",
-            "i32"
+            "i32",
+            "u8",
+            "u16",
+            "u32"
           ],
           "ops": [
             {
@@ -689,7 +875,15 @@
             {
               "op": "tnot",
               "core_op": "arith.xori",
-              "body_kind": "not"
+              "body_kind": "not",
+              "dtypes": [
+                "i8",
+                "i16",
+                "i32",
+                "u8",
+                "u16",
+                "u32"
+              ]
             }
           ],
           "func_name_format": "__pto_oplib_variant_{op}_{dtype}",
@@ -698,28 +892,34 @@
               "output": "int_unary_i8_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
               "dtypes": [
-                "i8"
+                "i8",
+                "u8"
               ]
             },
             {
               "output": "int_unary_i16_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
               "dtypes": [
-                "i16"
+                "i16",
+                "u16"
               ]
             },
             {
               "output": "int_unary_templates.mlir",
               "output_role": "importer-active concrete templates synchronized from unified int unary skeleton source.",
               "dtypes": [
-                "i32"
+                "i32",
+                "u32"
               ]
             }
           ],
           "variant_id_by_dtype": {
             "i8": "tile_i8",
             "i16": "tile_i16",
-            "i32": "tile"
+            "i32": "tile",
+            "u8": "tile_u8",
+            "u16": "tile_u16",
+            "u32": "tile_u32"
           }
         }
       ]
