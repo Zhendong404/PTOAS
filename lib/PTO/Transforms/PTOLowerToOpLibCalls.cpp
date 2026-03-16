@@ -515,7 +515,16 @@ static bool isA5OpLibV1TargetOp(Operation *op, const A5OpLibManifest &manifest) 
 
 static bool shouldLowerViaOpLib(Operation *op, const A5OpLibManifest &manifest) {
   const A5ManifestEntry *entry = manifest.lookup(getPTOMnemonic(op));
-  return entry && entry->status == A5ManifestStatus::Implemented;
+  if (!entry || entry->status != A5ManifestStatus::Implemented)
+    return false;
+
+  // A5 manifest marks tcolsum as implemented, but OP-Lib currently only
+  // covers the linear variant. Preserve the native lowering path for the
+  // binary form until a dedicated OP-Lib variant exists.
+  if (auto colsum = dyn_cast<pto::TColSumOp>(op); colsum && colsum.getIsBinary())
+    return false;
+
+  return true;
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -2581,71 +2590,6 @@ buildCmpTileScalarMatchRequest(StringRef kind, StringRef opName, Value src,
   return request;
 }
 
-static bool writesToBufferValue(Operation *op, Value buffer) {
-  if (auto memEffects = dyn_cast<MemoryEffectOpInterface>(op)) {
-    SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-    memEffects.getEffects(effects);
-    for (const auto &effect : effects) {
-      if (effect.getValue() == buffer &&
-          isa<MemoryEffects::Write>(effect.getEffect()))
-        return true;
-    }
-  }
-  auto iface = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
-  if (!iface)
-    return false;
-  return llvm::is_contained(iface.getDpsInits(), buffer);
-}
-
-static bool isApprovedCanonicalByteMaskProducer(Operation *op, Value buffer) {
-  if (auto cmp = dyn_cast<pto::TCmpOp>(op))
-    return cmp.getDst() == buffer;
-  if (auto cmps = dyn_cast<pto::TCmpSOp>(op))
-    return cmps.getDst() == buffer;
-  auto call = dyn_cast<func::CallOp>(op);
-  if (!call || call.getNumOperands() == 0)
-    return false;
-  if (call.getOperand(call.getNumOperands() - 1) != buffer)
-    return false;
-
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  if (!module)
-    return false;
-  auto callee = module.lookupSymbol<func::FuncOp>(call.getCallee());
-  if (!callee)
-    return false;
-
-  auto kindAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrInstKind);
-  auto opAttr = callee->getAttrOfType<StringAttr>(kOpLibAttrInstOp);
-  if (!kindAttr || !opAttr)
-    return false;
-
-  return (kindAttr.getValue() == "l3_cmp_tile_tile_template" ||
-          kindAttr.getValue() == "l3_cmp_tile_scalar_template") &&
-         (opAttr.getValue() == "tcmp" || opAttr.getValue() == "tcmps");
-}
-
-static bool writesApprovedCanonicalByteMask(Value buffer, Operation *op) {
-  if (isApprovedCanonicalByteMaskProducer(op, buffer))
-    return true;
-  return false;
-}
-
-static Operation *findLastWriterBeforeUserInBlock(Value buffer, Operation *user) {
-  Block *block = user->getBlock();
-  if (!block)
-    return nullptr;
-  Operation *lastWriter = nullptr;
-  for (Operation &candidate : *block) {
-    if (&candidate == user)
-      break;
-    if (writesApprovedCanonicalByteMask(buffer, &candidate) ||
-        writesToBufferValue(&candidate, buffer))
-      lastWriter = &candidate;
-  }
-  return lastWriter;
-}
-
 static FailureOr<MatchRequest>
 buildSelectMaskMatchRequest(Operation *consumer, StringRef kind, StringRef opName,
                             Value mask, Value src0, Value src1, Value dst,
@@ -2670,18 +2614,6 @@ buildSelectMaskMatchRequest(Operation *consumer, StringRef kind, StringRef opNam
   if (src0InfoOr->first != src1InfoOr->first ||
       src0InfoOr->first != dstInfoOr->first)
     return failure();
-
-  Operation *lastWriter =
-      consumer ? findLastWriterBeforeUserInBlock(mask, consumer) : nullptr;
-  if (!lastWriter || !isApprovedCanonicalByteMaskProducer(lastWriter, mask)) {
-    if (consumer) {
-      consumer->emitOpError(
-          "select mask input does not satisfy the approved byte-mask "
-          "contract; require the most recent in-block writer to be "
-          "tcmp/tcmps with no intervening writes");
-    }
-    return failure();
-  }
 
   MatchRequest request = createMatchRequest(kind, opName,
                                             /*scalarPos=*/std::nullopt,
@@ -2831,13 +2763,6 @@ buildPReluMatchRequest(StringRef kind, StringRef opName, Value src0, Value src1,
 }
 
 static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
-  if (auto colsum = dyn_cast<pto::TColSumOp>(op); colsum && colsum.getIsBinary()) {
-    op->emitOpError(
-        "reduce_colsum variant_id=binary is not implemented in OP-Lib; "
-        "refuse to fall back to linear");
-    return failure();
-  }
-
   auto iface = dyn_cast<pto::OpLibOpInterface>(op);
   if (!iface)
     return failure();
@@ -3299,7 +3224,8 @@ struct PTOInstantiateAndLowerToLibCallPass
     func.walk([&](Operation *op) {
       const A5ManifestEntry *manifestEntry = manifest.lookup(getPTOMnemonic(op));
       if (!manifestEntry ||
-          manifestEntry->status != A5ManifestStatus::Implemented)
+          manifestEntry->status != A5ManifestStatus::Implemented ||
+          !shouldLowerViaOpLib(op, manifest))
         return;
       op->emitError()
           << "OP-Lib lowering is required for manifest-implemented PTO IR 4.5~4.9 "

@@ -1,10 +1,10 @@
-// RUN: ! ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o /dev/null > %t.log 2>&1
-// RUN: FileCheck %s --check-prefix=BAD-MASK < %t.log
+// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
-// BAD-MASK: select mask input does not satisfy the approved byte-mask contract; require the most recent in-block writer to be tcmp/tcmps with no intervening writes
+// CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
+// CHECK: call @__pto_oplib_inst_l3_select_mask_template_tsel_mask(
 
 module {
-  func.func @reject_unproven_mask(%in0: !pto.ptr<f32>, %in1: !pto.ptr<f32>, %mask0: !pto.ptr<ui8>, %out0: !pto.ptr<f32>) {
+  func.func @allow_external_mask_tile(%in0: !pto.ptr<f32>, %in1: !pto.ptr<f32>, %mask0: !pto.ptr<ui8>, %out0: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c32 = arith.constant 32 : index
