@@ -12,14 +12,15 @@ PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync}"
+PTOAS_JOBS="${PTOAS_JOBS:-}"
 ENABLE_BC=0
 
 usage() {
   cat <<EOF
 Usage:
-  $0 [--enablebc] -t <name>   # e.g. -t Shls  -> run all .py in folder Shls
-  $0 [--enablebc] all         # traverse every subfolder, run all .py under each
-  $0 --enablebc               # alias for: $0 --enablebc all
+  $0 [--enablebc] [--jobs N] -t <name>   # e.g. -t Shls  -> run all .py in folder Shls
+  $0 [--enablebc] [--jobs N] all         # traverse every subfolder, run all .py under each
+  $0 --enablebc [--jobs N]               # alias for: $0 --enablebc all
 
 Env:
   PTOAS_BIN   # path to ptoas executable (optional)
@@ -30,9 +31,11 @@ Env:
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync)
+  PTOAS_JOBS  # max parallel sample directories for 'all' mode (default: auto-detect CPU count)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
+  --jobs N    # max parallel sample directories for 'all' mode
 EOF
   exit 1
 }
@@ -118,6 +121,24 @@ print_failure_excerpt() {
   fi
 
   printf '%s' "${excerpt}"
+}
+
+detect_parallel_jobs() {
+  local jobs="${PTOAS_JOBS}"
+
+  if [[ -z "${jobs}" ]]; then
+    if command -v nproc >/dev/null 2>&1; then
+      jobs="$(nproc)"
+    else
+      jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    fi
+  fi
+
+  if [[ -z "${jobs}" || ! "${jobs}" =~ ^[0-9]+$ || "${jobs}" -lt 1 ]]; then
+    jobs=1
+  fi
+
+  printf '%s\n' "${jobs}"
 }
 
 process_one_dir() {
@@ -705,7 +726,8 @@ print_summary_from_results() {
 }
 
 run_all() {
-  local results tmp out_dir
+  local tmp out_dir jobs
+  local -a targets=()
   out_dir="${PTOAS_OUT_DIR}"
   if [[ -z "${out_dir}" ]]; then
     out_dir="$(mktemp -d -t ptoas.samples.XXXXXX)"
@@ -713,13 +735,64 @@ run_all() {
     mkdir -p "${out_dir}"
   fi
 
+  jobs="$(detect_parallel_jobs)"
   echo "PTOAS_OUT_DIR=${out_dir}"
+  echo "PTOAS_JOBS=${jobs}"
 
   tmp="$(mktemp -t ptoas.runop.XXXXXX)"
   for d in "${BASE_DIR}"/*/; do
     [[ -d "$d" ]] || continue
-    process_one_dir "$(basename "$d")" "$out_dir" >>"$tmp"
+    targets+=("$(basename "$d")")
   done
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    print_summary_from_results "$tmp" 1
+    return 0
+  fi
+
+  if [[ "${jobs}" -le 1 || ${#targets[@]} -le 1 ]]; then
+    local target
+    for target in "${targets[@]}"; do
+      process_one_dir "${target}" "$out_dir" >>"$tmp"
+    done
+    print_summary_from_results "$tmp" 1
+    return 0
+  fi
+
+  local -a pids=()
+  local -a result_files=()
+  local target result_file
+  for target in "${targets[@]}"; do
+    result_file="$(mktemp -t "ptoas.runop.${target}.XXXXXX")"
+    result_files+=("${result_file}")
+    (
+      process_one_dir "${target}" "$out_dir"
+    ) >"${result_file}" &
+    pids+=("$!")
+
+    while [[ ${#pids[@]} -ge ${jobs} ]]; do
+      local idx
+      for idx in "${!pids[@]}"; do
+        if ! kill -0 "${pids[idx]}" 2>/dev/null; then
+          wait "${pids[idx]}"
+          unset 'pids[idx]'
+        fi
+      done
+      pids=("${pids[@]}")
+      [[ ${#pids[@]} -ge ${jobs} ]] && sleep 0.1
+    done
+  done
+
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+
+  for result_file in "${result_files[@]}"; do
+    cat "${result_file}" >>"${tmp}"
+    rm -f "${result_file}"
+  done
+
   print_summary_from_results "$tmp" 1
 }
 
@@ -727,11 +800,28 @@ run_all() {
 # CLI flags
 # -----------------------------------------------------------------------------
 positional_args=()
-for arg in "$@"; do
-  case "$arg" in
-    --enablebc) ENABLE_BC=1 ;;
-    -h|--help) usage ;;
-    *) positional_args+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --enablebc)
+      ENABLE_BC=1
+      shift
+      ;;
+    --jobs)
+      [[ $# -ge 2 ]] || usage
+      PTOAS_JOBS="$2"
+      shift 2
+      ;;
+    --jobs=*)
+      PTOAS_JOBS="${1#--jobs=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      positional_args+=("$1")
+      shift
+      ;;
   esac
 done
 set -- "${positional_args[@]}"
