@@ -50,4 +50,23 @@ def PTO_DpsInitOpInterface : OpInterface<"PTO_DpsInitOpInterface"> {
   }];
 }
 
+// OPLib lowering interface: each supported op exports enough metadata to build
+// a MatchRequest without pass-local dyn_cast dispatch.
+def OpLibOpInterface : OpInterface<"OpLibOpInterface"> {
+  let description = [{
+    Interface for PTO ops participating in OP-Lib lowering. Implementors expose
+    template keys, operand roles/order, and optional match fields so lowering
+    can construct a MatchRequest in a data-driven way.
+  }];
+  let cppNamespace = "::mlir::pto";
+  let methods = [
+    InterfaceMethod<
+      "Build OP-Lib match descriptor for this op.",
+      "::mlir::FailureOr<::mlir::pto::OpLibMatchDescriptor>",
+      "getOpLibMatchDescriptor",
+      (ins)
+    >
+  ];
+}
+
 #endif // MLIR_DIALECT_PTO_IR_PTOINTERFACES

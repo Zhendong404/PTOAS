@@ -40,6 +40,9 @@ def PTODpsType :
 def PtrOrMemRef :
   AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
 
+def TileBufOrMemRef :
+  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
+
 def ScalarPtrOrMemRef :
   TypeConstraint<
     CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
@@ -1259,6 +1262,194 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
+//===----------------------------------------------------------------------===//
+// SIMD Bridge Ops (tile -> simd lane semantics inside OP-Lib bodies)
+//===----------------------------------------------------------------------===//
+
+def SimdVecScopeOp : PTO_Op<"simd.vec_scope", [SingleBlock, NoTerminator]> {
+  let summary = "Annotate a region that must execute under __VEC_SCOPE__.";
+  let description = [{
+    This op is a codegen marker for A5 OP-Lib mixed IR.
+    During EmitC lowering it is converted to:
+      __VEC_SCOPE__ {
+        ...
+      }
+    The region should typically contain 1D/2D hardware loops and vector
+    arithmetic/memory instructions.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$body attr-dict";
+}
+
+def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
+  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
+  let description = [{
+    This op is the canonical bridge marker for OP-Lib templates to expose a
+    memref view from tile-like values while keeping external ABI as
+    !pto.tile_buf.
+    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
+    memref bridge type.
+    After memref-world lowering, src may already be memref and this op remains
+    as a marker for backend lowering (EmitC) to materialize tile data access.
+  }];
+
+  let arguments = (ins
+    TileBufOrMemRef:$src
+  );
+
+  let results = (outs
+    AnyMemRef:$dst
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `to` type($dst)
+  }];
+}
+
+def SimdPredicateOp : PTO_Op<"simd.predicate", [Pure]> {
+  let summary = "Build SIMD lane predicate mask from active lane count.";
+
+  let arguments = (ins
+    Index:$active_count
+  );
+
+  let results = (outs
+    AnyVector:$mask
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $active_count attr-dict `:` type($active_count) `->` type($mask)
+  }];
+}
+
+def SimdLoadOp : PTO_Op<"simd.load"> {
+  let summary = "Masked SIMD load from a linear memref offset.";
+
+  let arguments = (ins
+    AnyMemRef:$src,
+    Index:$offset,
+    AnyVector:$mask
+  );
+
+  let results = (outs
+    AnyVector:$value
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value)
+  }];
+}
+
+def SimdStoreOp : PTO_Op<"simd.store"> {
+  let summary = "Masked SIMD store to a linear memref offset.";
+
+  let arguments = (ins
+    AnyVector:$value,
+    AnyMemRef:$dst,
+    Index:$offset,
+    AnyVector:$mask
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask)
+  }];
+}
+
+def SimdLoadPUOp : PTO_Op<"simd.load_pu"> {
+  let summary = "Masked SIMD load with post-update offset.";
+
+  let arguments = (ins
+    AnyMemRef:$src,
+    Index:$offset,
+    AnyVector:$mask,
+    I64Attr:$step
+  );
+
+  let results = (outs
+    AnyVector:$value,
+    Index:$next_offset
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src `,` $offset `,` $mask attr-dict `:` type($src) `,` type($offset) `,` type($mask) `->` type($value) `,` type($next_offset)
+  }];
+}
+
+def SimdStorePUOp : PTO_Op<"simd.store_pu"> {
+  let summary = "Masked SIMD store with post-update offset.";
+
+  let arguments = (ins
+    AnyVector:$value,
+    AnyMemRef:$dst,
+    Index:$offset,
+    AnyVector:$mask,
+    I64Attr:$step
+  );
+
+  let results = (outs
+    Index:$next_offset
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $dst `,` $offset `,` $mask attr-dict `:` type($value) `,` type($dst) `,` type($offset) `,` type($mask) `->` type($next_offset)
+  }];
+}
+
+def SimdReductionOp : PTO_Op<"simd.reduction", [
+    Pure,
+    AllTypesMatch<["operand", "result"]>
+  ]> {
+  let summary = "A5 SIMD reduction marker that preserves vector result form.";
+  let description = [{
+    This op is an OP-Lib codegen marker for A5 hardware reduction instructions
+    whose architectural result stays in a vector register.
+    Unlike `vector.reduction`, this op does not force the IR into scalar result
+    semantics before EmitC lowering.
+  }];
+
+  let arguments = (ins
+    AnyVector:$operand,
+    StrAttr:$kind
+  );
+
+  let results = (outs
+    AnyVector:$result
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `<` $kind `>` `,` $operand attr-dict `:` type($operand) `->` type($result)
+  }];
+}
+
+// High-Level Mov: 值语义
+def MovOp : PTO_Op<"mov", [
+    SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile -> !pto.tile)
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
+  let summary = "Move data between Cube and Vector domains.";
+  
+  let arguments = (ins AnyType:$src);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+}
 
 //===----------------------------------------------------------------------===//
 // FFT Configuration Operation
@@ -1434,6 +1625,7 @@ def MScatterOp : PTO_TOp<"mscatter", [
 def TAbsOp : PTO_TOp<"tabs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise absolute value of a tile ";
@@ -1466,6 +1658,7 @@ def TAbsOp : PTO_TOp<"tabs", [
 def TAddOp : PTO_TOp<"tadd", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise add of two tiles ";
@@ -1503,6 +1696,7 @@ def TAddOp : PTO_TOp<"tadd", [
 def TAddCOp : PTO_TOp<"taddc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise ternary add of tiles ";
@@ -1537,6 +1731,7 @@ def TAddCOp : PTO_TOp<"taddc", [
 def TAddSOp : PTO_TOp<"tadds", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise add a scalar to a tile ";
@@ -1570,6 +1765,7 @@ def TAddSOp : PTO_TOp<"tadds", [
 def TAddSCOp : PTO_TOp<"taddsc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "dst = src0 + scalar + src1 ";
@@ -1599,6 +1795,7 @@ def TAddSCOp : PTO_TOp<"taddsc", [
 def TAndOp : PTO_TOp<"tand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TAND(dst, src0, src1) bitwise-and on tiles";
@@ -1622,6 +1819,7 @@ def TAndOp : PTO_TOp<"tand", [
 def TAndSOp : PTO_TOp<"tands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TANDS(dst, src, scalar) bitwise-and tile with scalar";
@@ -1675,6 +1873,7 @@ def TCIOp : PTO_TOp<"tci", [
 def TCmpOp : PTO_TOp<"tcmp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Compare two tiles and write a packed predicate mask";
@@ -1710,6 +1909,7 @@ def TCmpOp : PTO_TOp<"tcmp", [
 def TCmpSOp : PTO_TOp<"tcmps", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Compare scalar value against a tile and write a packed predicate mask";
@@ -1741,6 +1941,7 @@ def TCmpSOp : PTO_TOp<"tcmps", [
 def TColExpandOp : PTO_TOp<"tcolexpand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Broadcast src(0, j) to all rows in column j ";
@@ -1856,6 +2057,7 @@ def TColExpandMinOp : PTO_TOp<"tcolexpandmin", [
 def TColMaxOp : PTO_TOp<"tcolmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Reduce each column by taking the maximum across rows ";
@@ -1884,6 +2086,7 @@ def TColMaxOp : PTO_TOp<"tcolmax", [
 def TColMinOp : PTO_TOp<"tcolmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Reduce each column by taking the minimum across rows ";
@@ -1912,6 +2115,7 @@ def TColMinOp : PTO_TOp<"tcolmin", [
 def TColSumOp : PTO_TOp<"tcolsum", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Reduce each column by summing across rows (tilebuf-based, explicit tmp)";
@@ -1969,6 +2173,7 @@ def TCvtOp : PTO_TOp<"tcvt", [
 def TDivOp : PTO_TOp<"tdiv", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise division of two tiles (tilebuf, DPS)";
@@ -2003,6 +2208,7 @@ def TDivOp : PTO_TOp<"tdiv", [
 def TDivSOp : PTO_TOp<"tdivs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise division with a scalar (tilebuf, DPS)";
@@ -2029,6 +2235,7 @@ def TDivSOp : PTO_TOp<"tdivs", [
 def TExpOp : PTO_TOp<"texp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise exponential (tilebuf, DPS)";
@@ -2057,6 +2264,7 @@ def TExpOp : PTO_TOp<"texp", [
 def TExpandsOp : PTO_TOp<"texpands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Broadcast scalar into dst (tilebuf, DPS)";
@@ -2310,6 +2518,7 @@ def TGatherBOp : PTO_TOp<"tgatherb", [
 def TLogOp : PTO_TOp<"tlog", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise natural logarithm (tilebuf, DPS)";
@@ -2338,6 +2547,7 @@ def TLogOp : PTO_TOp<"tlog", [
 def TLReluOp : PTO_TOp<"tlrelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Leaky ReLU with a scalar slope (tilebuf, DPS)";
@@ -2367,6 +2577,7 @@ def TLReluOp : PTO_TOp<"tlrelu", [
 def TMaxOp : PTO_TOp<"tmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise maximum of two tiles (tilebuf, DPS)";
@@ -2396,6 +2607,7 @@ def TMaxOp : PTO_TOp<"tmax", [
 def TMaxSOp : PTO_TOp<"tmaxs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise max of a tile and a scalar (tilebuf, DPS)";
@@ -2425,6 +2637,7 @@ def TMaxSOp : PTO_TOp<"tmaxs", [
 def TMinOp : PTO_TOp<"tmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise minimum of two tiles (tilebuf, DPS)";
@@ -2454,6 +2667,7 @@ def TMinOp : PTO_TOp<"tmin", [
 def TMinSOp : PTO_TOp<"tmins", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Elementwise minimum of a tile and a scalar (tilebuf, DPS)";
@@ -2547,6 +2761,7 @@ def TMrgSortOp: PTO_TOp<"tmrgsort", [
 def TMulOp: PTO_TOp<"tmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TMUL: Elementwise multiply of two tiles.";
@@ -2580,6 +2795,7 @@ def TMulOp: PTO_TOp<"tmul", [
 def TMulSOp: PTO_TOp<"tmuls", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TMULS: Elementwise multiply a tile by a scalar.";
@@ -2612,6 +2828,7 @@ def TMulSOp: PTO_TOp<"tmuls", [
 def TNegOp: PTO_TOp<"tneg", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TNEG: Elementwise negation of a tile.";
@@ -2643,6 +2860,7 @@ def TNegOp: PTO_TOp<"tneg", [
 def TNotOp: PTO_TOp<"tnot", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TNOT: Elementwise bitwise NOT of a tile.";
@@ -2674,6 +2892,7 @@ def TNotOp: PTO_TOp<"tnot", [
 def TOrOp: PTO_TOp<"tor", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TOR: Elementwise bitwise OR of two tiles.";
@@ -2706,6 +2925,7 @@ def TOrOp: PTO_TOp<"tor", [
 def TOrSOp: PTO_TOp<"tors", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TORS: Elementwise bitwise OR of a tile and a scalar.";
@@ -2738,6 +2958,7 @@ def TOrSOp: PTO_TOp<"tors", [
 def TPartAddOp: PTO_TOp<"tpartadd", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TPARTADD: Partial elementwise add with implementation-defined handling of mismatched valid regions.";
@@ -2770,6 +2991,7 @@ def TPartAddOp: PTO_TOp<"tpartadd", [
 def TPartMaxOp: PTO_TOp<"tpartmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Partial elementwise max with implementation-defined handling of mismatched valid regions.";
@@ -2802,6 +3024,7 @@ def TPartMaxOp: PTO_TOp<"tpartmax", [
 def TPartMinOp: PTO_TOp<"tpartmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Partial elementwise min with implementation-defined handling of mismatched valid regions.";
@@ -2834,6 +3057,7 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
 def TPReluOp: PTO_TOp<"tprelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TPRELU: Elementwise PReLU (parametric ReLU) with a per-element slope tile.";
@@ -2871,6 +3095,7 @@ def TPReluOp: PTO_TOp<"tprelu", [
 def TRecipOp: PTO_TOp<"trecip", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TRECIP: Elementwise reciprocal of a tile.";
@@ -2902,6 +3127,7 @@ def TRecipOp: PTO_TOp<"trecip", [
 def TReluOp: PTO_TOp<"trelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TRELU: Elementwise ReLU of a tile.";
@@ -2933,6 +3159,7 @@ def TReluOp: PTO_TOp<"trelu", [
 def TRemOp: PTO_TOp<"trem", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TREM: Elementwise remainder of two tiles.";
@@ -2965,6 +3192,7 @@ def TRemOp: PTO_TOp<"trem", [
 def TRemSOp: PTO_TOp<"trems", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TREMS: Elementwise remainder with a scalar";
@@ -3025,6 +3253,7 @@ def TReshapeOp: PTO_TOp<"treshape", [
 def TRowExpandOp: PTO_TOp<"trowexpand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPAND: Broadcast the first element of each source row across the destination row.";
@@ -3056,6 +3285,7 @@ def TRowExpandOp: PTO_TOp<"trowexpand", [
 def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
@@ -3088,6 +3318,7 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDMUL: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
@@ -3120,6 +3351,7 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a per-row scalar vector src1 from each row of src0.";
@@ -3152,6 +3384,7 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 def TRowMaxOp: PTO_TOp<"trowmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWMAX: Reduce each row by taking the maximum across columns.";
@@ -3184,6 +3417,7 @@ def TRowMaxOp: PTO_TOp<"trowmax", [
 def TRowMinOp: PTO_TOp<"trowmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWMIN: Reduce each row by taking the minimum across columns.";
@@ -3216,6 +3450,7 @@ def TRowMinOp: PTO_TOp<"trowmin", [
 def TRowSumOp: PTO_TOp<"trowsum", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWSUM: Reduce each row by summing across columns.";
@@ -3248,6 +3483,7 @@ def TRowSumOp: PTO_TOp<"trowsum", [
 def TRsqrtOp: PTO_TOp<"trsqrt", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TRSQRT: Elementwise reciprocal square root.";
@@ -3329,6 +3565,7 @@ def TScatterOp: PTO_TOp<"tscatter", [
 def TSelOp: PTO_TOp<"tsel", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSEL: Select between two tiles using a mask tile (per-element selection).";
@@ -3362,6 +3599,7 @@ def TSelOp: PTO_TOp<"tsel", [
 def TSelSOp: PTO_TOp<"tsels", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSELS: Select one of two source tiles using a scalar selectMode (global select).";
@@ -3395,6 +3633,7 @@ def TSelSOp: PTO_TOp<"tsels", [
 def TShlOp: PTO_TOp<"tshl", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSHL: Elementwise shift-left of two tiles.";
@@ -3427,6 +3666,7 @@ def TShlOp: PTO_TOp<"tshl", [
 def TShrOp: PTO_TOp<"tshr", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSHR: Elementwise shift-right of two tiles.";
@@ -3459,6 +3699,7 @@ def TShrOp: PTO_TOp<"tshr", [
 def TShlSOp : PTO_TOp<"tshls", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSHLS: Elementwise shift-left of a tile by a scalar (shift count).";
@@ -3483,6 +3724,7 @@ def TShlSOp : PTO_TOp<"tshls", [
 def TShrSOp : PTO_TOp<"tshrs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSHRS: Elementwise shift-right of a tile by a scalar (shift count).";
@@ -3541,7 +3783,8 @@ def TSort32Op: PTO_TOp<"tsort32", [
 
 def TSqrtOp: PTO_TOp<"tsqrt", [
   PTO_DpsInitOpInterface,
-  OpPipeInterface,  
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSQRT: Elementwise square root.";
@@ -3602,6 +3845,7 @@ def TStoreFPOp: PTO_TOp<"tstore_fp", [
 def TSubOp: PTO_TOp<"tsub", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSUB: Elementwise subtract of two tiles.";
@@ -3634,6 +3878,7 @@ def TSubOp: PTO_TOp<"tsub", [
 def TSubCOp: PTO_TOp<"tsubc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSUBC: Elementwise ternary op: src0 - src1 + src2.";
@@ -3670,6 +3915,7 @@ def TSubCOp: PTO_TOp<"tsubc", [
 def TSubSOp: PTO_TOp<"tsubs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSUBS: Elementwise subtract a scalar from a tile.";
@@ -3704,6 +3950,7 @@ def TSubSOp: PTO_TOp<"tsubs", [
 def TSubSCOp: PTO_TOp<"tsubsc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSUBSC: Elementwise fused op: src0 - scalar + src1.";
@@ -3740,6 +3987,7 @@ def TSubSCOp: PTO_TOp<"tsubsc", [
 def TXorSOp: PTO_TOp<"txors", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TXORS: Elementwise bitwise XOR of a tile and a scalar.";
@@ -3801,6 +4049,7 @@ def TSyncOp: PTO_TOp<"tsync", [
 def TXorOp: PTO_TOp<"txor", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
+  DeclareOpInterfaceMethods<OpLibOpInterface>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TXOR: Elementwise bitwise XOR of two tiles.";

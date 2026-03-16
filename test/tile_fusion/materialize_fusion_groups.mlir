@@ -1,0 +1,16 @@
+// RUN: { ptoas %S/../oplib/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+
+// CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
+// CHECK-LABEL: func.func private @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul_tile(
+// CHECK-SAME: pto.oplib.instance.from_seed = false
+// CHECK-SAME: pto.oplib.instance.op = "tmul"
+// CHECK-LABEL: func.func private @__pto_oplib_inst_l3_float_binary_elementwise_template_tadd_tile(
+// CHECK-SAME: pto.oplib.instance.from_seed = false
+// CHECK-SAME: pto.oplib.instance.op = "tadd"
+// CHECK-LABEL: func.func private @__pto_fused_group_1_1(
+// CHECK-COUNT-3: call @__pto_oplib_inst_l3_float_binary_elementwise_template_tadd_tile(
+// CHECK-LABEL: func.func private @__pto_fused_group_0_0(
+// CHECK-COUNT-3: call @__pto_oplib_inst_l3_float_binary_elementwise_template_tmul_tile(
+// CHECK-LABEL: func.func @flash_attention_softmax_block(
+// CHECK: call @__pto_fused_group_0_0(
+// CHECK: call @__pto_fused_group_1_1(
