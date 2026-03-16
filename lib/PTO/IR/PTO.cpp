@@ -5592,18 +5592,39 @@ FailureOr<OpLibMatchDescriptor> TColExpandOp::getOpLibMatchDescriptor() {
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandMulOp::getOpLibMatchDescriptor() {
-  return buildBroadcastRowBinaryOpLibDesc("trowexpandmul", getSrc0(), getSrc1(),
-                                          getDst());
+  auto descOr =
+      buildBroadcastRowBinaryOpLibDesc("trowexpandmul", getSrc0(), getSrc1(),
+                                       getDst());
+  if (failed(descOr)) {
+    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
+                "input and one row-broadcast input before template matching");
+    return failure();
+  }
+  return *descOr;
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandDivOp::getOpLibMatchDescriptor() {
-  return buildBroadcastRowBinaryOpLibDesc("trowexpanddiv", getSrc0(), getSrc1(),
-                                          getDst());
+  auto descOr =
+      buildBroadcastRowBinaryOpLibDesc("trowexpanddiv", getSrc0(), getSrc1(),
+                                       getDst());
+  if (failed(descOr)) {
+    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
+                "input and one row-broadcast input before template matching");
+    return failure();
+  }
+  return *descOr;
 }
 
 FailureOr<OpLibMatchDescriptor> TRowExpandSubOp::getOpLibMatchDescriptor() {
-  return buildBroadcastRowBinaryOpLibDesc("trowexpandsub", getSrc0(), getSrc1(),
-                                          getDst());
+  auto descOr =
+      buildBroadcastRowBinaryOpLibDesc("trowexpandsub", getSrc0(), getSrc1(),
+                                       getDst());
+  if (failed(descOr)) {
+    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
+                "input and one row-broadcast input before template matching");
+    return failure();
+  }
+  return *descOr;
 }
 
 FailureOr<OpLibMatchDescriptor> TExpandsOp::getOpLibMatchDescriptor() {
