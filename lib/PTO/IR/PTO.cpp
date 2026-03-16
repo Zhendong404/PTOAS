@@ -5142,6 +5142,15 @@ buildBroadcastRowBinaryOpLibDesc(StringRef opName, Value src0, Value src1,
     desc.rowBroadcastPos = 0;
     return desc;
   }
+  // Some frontends materialize the row source as a full tile and rely on the
+  // op semantics to read only the first element of each row. Preserve the
+  // legacy src0/src1 order in that case so lowering can still instantiate the
+  // broadcast_row_binary template against the concrete full/full signature.
+  if (src0Full && src1Full) {
+    desc.fullTilePos = 0;
+    desc.rowBroadcastPos = 1;
+    return desc;
+  }
   return failure();
 }
 
@@ -5632,8 +5641,8 @@ FailureOr<OpLibMatchDescriptor> TRowExpandMulOp::getOpLibMatchDescriptor() {
       buildBroadcastRowBinaryOpLibDesc("trowexpandmul", getSrc0(), getSrc1(),
                                        getDst());
   if (failed(descOr)) {
-    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
-                "input and one row-broadcast input before template matching");
+    emitOpError("broadcast_row_binary family requires at least one dst-shaped "
+                "input and a row-source operand before template matching");
     return failure();
   }
   return *descOr;
@@ -5644,8 +5653,8 @@ FailureOr<OpLibMatchDescriptor> TRowExpandDivOp::getOpLibMatchDescriptor() {
       buildBroadcastRowBinaryOpLibDesc("trowexpanddiv", getSrc0(), getSrc1(),
                                        getDst());
   if (failed(descOr)) {
-    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
-                "input and one row-broadcast input before template matching");
+    emitOpError("broadcast_row_binary family requires at least one dst-shaped "
+                "input and a row-source operand before template matching");
     return failure();
   }
   return *descOr;
@@ -5656,8 +5665,8 @@ FailureOr<OpLibMatchDescriptor> TRowExpandSubOp::getOpLibMatchDescriptor() {
       buildBroadcastRowBinaryOpLibDesc("trowexpandsub", getSrc0(), getSrc1(),
                                        getDst());
   if (failed(descOr)) {
-    emitOpError("broadcast_row_binary family requires exactly one dst-shaped "
-                "input and one row-broadcast input before template matching");
+    emitOpError("broadcast_row_binary family requires at least one dst-shaped "
+                "input and a row-source operand before template matching");
     return failure();
   }
   return *descOr;

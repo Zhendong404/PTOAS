@@ -2668,6 +2668,10 @@ static bool isRowBroadcastRole(const MatchKey &src, const MatchKey &dst) {
          isKnownStaticDim(dst.rows) && src.rows == dst.rows && src.cols == 1;
 }
 
+static bool isRowSourceRole(const MatchKey &src, const MatchKey &dst) {
+  return isRowBroadcastRole(src, dst) || isFullTileRole(src, dst);
+}
+
 static std::optional<std::pair<int64_t, int64_t>>
 inferRowBroadcastOperandPositions(const MatchKey &src0, const MatchKey &src1,
                                   const MatchKey &dst) {
@@ -2679,6 +2683,8 @@ inferRowBroadcastOperandPositions(const MatchKey &src0, const MatchKey &src1,
     return std::make_pair(0, 1);
   if (src1Full && src0Row)
     return std::make_pair(1, 0);
+  if (src0Full && src1Full)
+    return std::make_pair(0, 1);
   return std::nullopt;
 }
 
@@ -2712,7 +2718,7 @@ buildRowBroadcastBinaryMatchRequest(
       *fullTilePos > 1 || *rowBroadcastPos < 0 || *rowBroadcastPos > 1)
     return failure();
   if (!isFullTileRole(srcInfos[*fullTilePos].second, dstInfoOr->second) ||
-      !isRowBroadcastRole(srcInfos[*rowBroadcastPos].second, dstInfoOr->second))
+      !isRowSourceRole(srcInfos[*rowBroadcastPos].second, dstInfoOr->second))
     return failure();
 
   MatchRequest request = createMatchRequest(kind, opName,
@@ -2823,8 +2829,8 @@ static FailureOr<MatchRequest> buildMatchRequestFromInterface(Operation *op) {
         desc.operands[2], desc.fullTilePos, desc.rowBroadcastPos,
         requiredVariantId);
     if (failed(requestOr)) {
-      op->emitOpError("broadcast_row_binary family requires exactly one "
-                      "dst-shaped input and one row-broadcast input before "
+      op->emitOpError("broadcast_row_binary family requires at least one "
+                      "dst-shaped input and a row-source operand before "
                       "template matching");
       return failure();
     }
@@ -2889,7 +2895,7 @@ static LogicalResult validateFamilyLogicRequest(const MatchRequest &request,
         *request.fullTilePos == *request.rowBroadcastPos) {
       mlir::emitError(loc)
           << "broadcast_row_binary family logic lost full-tile vs "
-             "row-broadcast roles before matcher selection";
+             "row-source roles before matcher selection";
       return failure();
     }
   }

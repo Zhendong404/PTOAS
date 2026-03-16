@@ -23,6 +23,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "Utils.h" // 假设包含一些通用的工具函数
 
@@ -37,6 +38,11 @@ namespace pto {
 #define GEN_PASS_DEF_PTOVIEWTOMEMREF
 
 namespace {
+
+llvm::cl::opt<bool> viewToMemrefDebug(
+    "pto-view-to-memref-debug",
+    llvm::cl::desc("Enable verbose debug logging for PTO view-to-memref lowering"),
+    llvm::cl::init(false));
 
 // =============================================================================
 // Helper: Metadata Backtracking (核心机制)
@@ -2707,8 +2713,8 @@ struct PTOViewToMemrefPass
       }
     }
     
-    // Debug Output
-    dumpPretty(mod.getOperation(), llvm::errs());
+    if (viewToMemrefDebug)
+      dumpPretty(mod.getOperation(), llvm::errs());
   }
 };
 

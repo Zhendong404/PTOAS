@@ -46,7 +46,10 @@ namespace {
 struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSyncPass> {
   
   void runOnOperation() override {
-    llvm::errs() << "\n// === [PTOInsertSync] Start === //\n";
+    const bool phaseDebug =
+        isInsertSyncDebugEnabled(InsertSyncDebugLevel::Phase);
+    if (phaseDebug)
+      llvm::errs() << "\n// === [PTOInsertSync] Start === //\n";
     func::FuncOp func = getOperation();
     if (func->hasAttr("pto.oplib.kind") ||
         func->hasAttr("pto.oplib.instance.variant_id") ||
@@ -86,47 +89,54 @@ struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSy
     // 如果 IR 太简单，直接跳过
     if (syncIR.size() <= 1) return;
     
-    dumpInsertSyncPhase("After Translator", syncIR, syncOpsStorage,
-                        func.getOperation());
+    if (phaseDebug)
+      dumpInsertSyncPhase("After Translator", syncIR, syncOpsStorage,
+                          func.getOperation());
  
     // 2. Analyzer: 依赖分析与插入逻辑 Sync
     InsertSyncAnalysis analyzer(syncIR, memAnalyzer, syncOpsStorage, func,
                                 SyncAnalysisMode::NORMALSYNC);
     analyzer.Run(/*insertBarAllAtLast=*/true);
  
-    dumpInsertSyncPhase("After Analysis", syncIR, syncOpsStorage,
-                        func.getOperation());
+    if (phaseDebug)
+      dumpInsertSyncPhase("After Analysis", syncIR, syncOpsStorage,
+                          func.getOperation());
  
     // [NEW] 3. Optimization: Sync Motion
     // 将不必要的 Wait 提至 Loop 外，将不必要的 Set 沉降到 Loop 后
     MoveSyncState syncMove(syncIR, syncOpsStorage);
     syncMove.Run(); // 执行优化
  
-    dumpInsertSyncPhase("After Sync Motion", syncIR, syncOpsStorage,
-                        func.getOperation());
+    if (phaseDebug)
+      dumpInsertSyncPhase("After Sync Motion", syncIR, syncOpsStorage,
+                          func.getOperation());
  
     // 4. [NEW] Optimization 2: Remove Redundant Sync
     // 消除由于 Motion 或 Analysis 产生的冗余同步对
     RemoveRedundantSync removeRedundant(syncIR, syncOpsStorage, SyncAnalysisMode::NORMALSYNC);
     removeRedundant.Run();
  
-    dumpInsertSyncPhase("After Remove Redundant Sync", syncIR, syncOpsStorage,
-                        func.getOperation());
+    if (phaseDebug)
+      dumpInsertSyncPhase("After Remove Redundant Sync", syncIR, syncOpsStorage,
+                          func.getOperation());
     
     SyncEventIdAllocation eventIdAllocation(syncIR, syncOpsStorage);
     eventIdAllocation.Allocate();
  
-    dumpInsertSyncPhase("After EventId Allocation", syncIR, syncOpsStorage,
-                        func.getOperation());
+    if (phaseDebug)
+      dumpInsertSyncPhase("After EventId Allocation", syncIR, syncOpsStorage,
+                          func.getOperation());
  
     SyncCodegen codegen(syncIR, func, SyncAnalysisMode::NORMALSYNC);
     codegen.Run();
  
     // 6. 最终结果打印
-    llvm::errs() << "\n// === [PTOInsertSync] Final Result === //\n";
-    func.print(llvm::errs());
-    llvm::errs() << "\n\n";
-    llvm::errs() << "// === [PTOInsertSync] End === //\n";
+    if (phaseDebug) {
+      llvm::errs() << "\n// === [PTOInsertSync] Final Result === //\n";
+      func.print(llvm::errs());
+      llvm::errs() << "\n\n";
+      llvm::errs() << "// === [PTOInsertSync] End === //\n";
+    }
   }
 };
  

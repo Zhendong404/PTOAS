@@ -40,6 +40,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"                   
@@ -59,6 +60,15 @@ namespace mlir {
 
 using namespace mlir;
 using namespace mlir::pto;
+
+namespace {
+
+llvm::cl::opt<bool> emitCDebug(
+    "pto-emitc-debug",
+    llvm::cl::desc("Enable verbose debug logging for PTOToEmitC lowering"),
+    llvm::cl::init(false));
+
+} // namespace
 
 static const char *addrSpaceQualifier(pto::AddressSpace as) {
   switch (as) {
@@ -453,13 +463,16 @@ public:
     // 3. MemRef 转换 (Debug 重点)
     // ---------------------------------------------------------
     addConversion([this, Ctx](MemRefType type) -> std::optional<Type> {
-      llvm::errs() << "[Debug] Converting MemRef: " << type << "\n";
+      if (emitCDebug)
+        llvm::errs() << "[Debug] Converting MemRef: " << type << "\n";
 
       // A. 转换元素类型
       Type elemType = type.getElementType();
       Type newElemType = convertType(elemType); 
       if (!newElemType) {
-        llvm::errs() << "  [Error] Failed to convert element type: " << elemType << "\n";
+        if (emitCDebug)
+          llvm::errs() << "  [Error] Failed to convert element type: "
+                       << elemType << "\n";
         return std::nullopt;
       }
       
@@ -468,7 +481,9 @@ public:
       if (auto opq = dyn_cast<emitc::OpaqueType>(newElemType)) {
         elemTypeStr = opq.getValue().str();
       } else {
-         llvm::errs() << "  [Error] Converted element type is not OpaqueType: " << newElemType << "\n";
+         if (emitCDebug)
+           llvm::errs() << "  [Error] Converted element type is not OpaqueType: "
+                        << newElemType << "\n";
          return std::nullopt;
       }
 
@@ -481,12 +496,15 @@ public:
       } else if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(memorySpace)) {
          qualifier = addrSpaceQualifier(ptoAttr.getAddressSpace());
       } else {
-         llvm::errs() << "  [Warning] Unknown MemorySpace Attribute type: " << memorySpace << "\n";
+         if (emitCDebug)
+           llvm::errs() << "  [Warning] Unknown MemorySpace Attribute type: "
+                        << memorySpace << "\n";
          qualifier = "__gm__"; // Fallback
       }
 
       std::string finalTypeStr = qualifier + " " + elemTypeStr;
-      llvm::errs() << "  [Success] -> " << finalTypeStr << "*\n";
+      if (emitCDebug)
+        llvm::errs() << "  [Success] -> " << finalTypeStr << "*\n";
       
       return emitc::PointerType::get(emitc::OpaqueType::get(Ctx, finalTypeStr));
     });
@@ -9869,7 +9887,8 @@ struct EmitPTOManualPass
   }
 
 	  void runOnOperation() override {
-	    llvm::errs() << "DEBUG: Start PTOToEmitC Pass\n";
+	    if (emitCDebug)
+	      llvm::errs() << "DEBUG: Start PTOToEmitC Pass\n";
 	    MLIRContext *ctx = &getContext();
 	    ModuleOp mop = getOperation();
 

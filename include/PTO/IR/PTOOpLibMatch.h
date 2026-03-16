@@ -39,8 +39,9 @@ struct OpLibMatchDescriptor {
   //   contract itself;
   // - tile_scalar direction-sensitive ops need operandOrder in addition to the
   //   normalized scalarPos;
-  // - broadcast_row_binary cannot recover full-tile vs row-broadcast roles
-  //   from wildcard template arg matches alone;
+  // - broadcast_row_binary cannot recover full-tile vs row-source roles from
+  //   wildcard template arg matches alone, including the legacy full/full
+  //   fallback where src1 contributes only the first element of each row;
   // - reduce_colsum binary semantics must keep both isBinary and an explicit
   //   variant pin to avoid collapsing to linear.
   // - compare/select canonical byte-mask form needs an explicit contract marker

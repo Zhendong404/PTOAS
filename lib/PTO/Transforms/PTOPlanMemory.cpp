@@ -14,6 +14,7 @@
 #include "AllocToPointerCast.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "pto-plan-memory"
@@ -30,6 +31,11 @@ using namespace mlir;
 using namespace pto;
 
 namespace {
+
+llvm::cl::opt<bool> planMemoryDebug(
+    "pto-plan-memory-debug",
+    llvm::cl::desc("Enable verbose debug logging for PTO plan-memory pass"),
+    llvm::cl::init(false));
 
 // bool isReusableCastOp(pto::VCastOp &castOp, Value output, Value input) {
 //   auto rank = dyn_cast<MemRefType>(output.getType()).getRank();
@@ -2000,9 +2006,11 @@ void PlanMemoryPass::runOnOperation() {
       return signalPassFailure();
     }
   }
-  llvm::errs() << "end PTO plan Mem!\n";
-  auto op = getOperation();
-  op->dump();
+  if (planMemoryDebug) {
+    llvm::errs() << "end PTO plan Mem!\n";
+    auto op = getOperation();
+    op->dump();
+  }
 }
 
 std::unique_ptr<Pass>
