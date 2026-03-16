@@ -142,11 +142,11 @@ def scalar_type(dtype: str) -> str:
 
 def scalar_literal(dtype: str, value: str) -> str:
     if value == "zero":
-        return "0.0" if dtype.startswith("f") else "0"
+        return "0.0" if is_float_dtype(dtype) else "0"
     if value == "one":
-        return "1.0" if dtype.startswith("f") else "1"
+        return "1.0" if is_float_dtype(dtype) else "1"
     if value == "neg_one":
-        return "-1.0" if dtype.startswith("f") else "-1"
+        return "-1.0" if is_float_dtype(dtype) else "-1"
     raise ValueError(f"unsupported scalar literal '{value}' for dtype {dtype}")
 
 
@@ -168,11 +168,11 @@ def splat_shuffle_mask(lanes: int = 64, source_lane: int = 0) -> str:
 
 def dense_literal(dtype: str, value: str) -> str:
     if value == "zero":
-        return "dense<0.0>" if dtype.startswith("f") else "dense<0>"
+        return "dense<0.0>" if is_float_dtype(dtype) else "dense<0>"
     if value == "one":
-        return "dense<1.0>" if dtype.startswith("f") else "dense<1>"
+        return "dense<1.0>" if is_float_dtype(dtype) else "dense<1>"
     if value == "neg_one":
-        return "dense<-1.0>" if dtype.startswith("f") else "dense<-1>"
+        return "dense<-1.0>" if is_float_dtype(dtype) else "dense<-1>"
     raise ValueError(f"unsupported dense literal '{value}' for dtype {dtype}")
 
 
@@ -215,7 +215,7 @@ EXEC_MODE_BODY_KINDS = {
 def exec_mode_attr(op_info: dict[str, Any], dtype: str) -> str:
     core_op = op_info["core_op"]
     body_kind = op_info.get("body_kind", "")
-    if dtype.startswith("f") and (
+    if is_float_dtype(dtype) and (
         any(op_name in core_op for op_name in FLOAT_BINARY_CORE_OPS)
         or "math.exp" in core_op
         or "math.log" in core_op
