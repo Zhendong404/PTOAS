@@ -19,6 +19,36 @@
 
 ## 4. 回归、文档与收尾
 
-- [ ] 4.1 补充或更新 `test/oplib/` lit 回归，覆盖 manifest 纠偏、family dtype 扩展、deferred 诊断和 `trecip` 对齐行为
-- [ ] 4.2 更新 `docs/tile_fusion/a5_oplib_v1_authoring.md` 及相关文档，说明新的语义证据来源、implemented/deferred 规则和 decomposition 边界
-- [ ] 4.3 运行并记录本 change 相关验证，包括 generator 校验、implemented-op 对齐检查，以及聚焦 `test/oplib` 的 lit 回归
+- [x] 4.1 补充或更新 `test/oplib/` lit 回归，覆盖 manifest 纠偏、family dtype 扩展、deferred 诊断和 `trecip` 对齐行为
+- [x] 4.2 更新 `docs/tile_fusion/a5_oplib_v1_authoring.md` 及相关文档，说明新的语义证据来源、implemented/deferred 规则和 decomposition 边界
+- [x] 4.3 运行并记录本 change 相关验证，包括 generator 校验、implemented-op 对齐检查，以及聚焦 `test/oplib` 的 lit 回归
+
+## Validation Notes
+
+### 2026-03-16
+
+```bash
+python3 oplib/level3/generate_level3_templates.py --check
+python3 test/oplib/check_a5_manifest_semantics.py \
+  --manifest oplib/level3/families/a5_oplib_v1_manifest.yaml
+python3 test/oplib/check_implemented_op_alignment.py \
+  --manifest test/oplib/resources/implemented_op_alignment_subset.json \
+  --template-dir oplib/level3 \
+  --test-dir test/oplib
+llvm-lit -sv \
+  test/oplib/oplib_manifest_semantic_alignment.mlir \
+  test/oplib/oplib_compare_select_integer_dtypes.mlir \
+  test/oplib/oplib_reduction_broadcast_dtype_coverage.mlir \
+  test/oplib/oplib_arith_bitwise_dtype_coverage.mlir \
+  test/oplib/oplib_manifest_deferred.mlir \
+  test/oplib/oplib_trecip_public_api_rewrite.mlir \
+  test/oplib/oplib_key_family_dtype_lowering_smoke.mlir \
+  test/oplib/oplib_v1_negative_regressions.mlir
+```
+
+记录：
+
+1. `generate_level3_templates.py --check` 通过，新增 family dtype/variant 轴对应 concrete 模板已保持同步。
+2. `check_a5_manifest_semantics.py` 通过，当前 manifest 分类统计为 `native_a5_impl=48`、`public_api_rewrite=1`、`missing_accepted_semantics=4`。
+3. `check_implemented_op_alignment.py` 通过，subset manifest 上的 implemented op 已满足 dtype 级 concrete template 与 lowering use case 对齐。
+4. 聚焦 `test/oplib` 的 8 个 lit 回归全部通过，覆盖 manifest 语义、family dtype 扩展、deferred 诊断、`trecip` 对齐行为和关键 family lowering smoke。

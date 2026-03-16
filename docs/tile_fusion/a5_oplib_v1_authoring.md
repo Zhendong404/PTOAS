@@ -108,30 +108,54 @@ generator 固定负责：
 
 ## 4. Manifest 对齐规则
 
-manifest 中每个 in-scope op 只能是两种状态之一：
+manifest 仍然只允许两种外部状态：
 
 1. `implemented`
 2. `deferred`
 
-使用规则固定如下：
+但作者和 lowering 侧必须进一步区分语义来源，而不能再把 `implemented` 简化成“有模板即可”。
 
-### 4.1 `implemented`
+### 4.1 语义证据来源
+
+A5 OpLib V1 当前承认三类语义证据，优先级如下：
+
+1. `include/pto/npu/a5/*.hpp` 中的 A5 原生语义，例如 `*_IMPL`、`OP_NAME(...)`
+2. `include/pto/common/pto_instr.hpp` 中已经稳定的公共 API 重写语义
+3. `tests/npu/a5/src/st/testcase/` 中可确认的 A5 ST 用例
+
+manifest 校验与作者决策都必须基于这三类证据，而不能只看 A5 原生头文件。
+
+### 4.2 `implemented`
 
 若某个 op 在 manifest 中标记为 `implemented`，则必须同时满足：
 
 1. 该 op 属于固定 4.5~4.9 in-scope 集合
-2. generator 必须能产出至少一个 concrete 模板候选
-3. lowering 必须按 concrete 模板完成实例选择、实例创建和 call rewrite
-4. 必须存在对应回归，防止“manifest 已实现但模板/测试静默掉队”
+2. 其语义来源属于以下两类之一：
+   `native_a5_impl` 或已批准的 `public_api_rewrite`
+3. manifest 中声明的每个 `dtype_support` 都必须能在 concrete 模板中找到对应覆盖，而不是仅“至少有一个模板”
+4. lowering 必须能基于 manifest + template registry 为这些 dtype 完成实例选择、实例创建和 call rewrite
+5. 必须存在对应回归，防止“manifest 已实现但 dtype / variant 级模板或 lowering 静默掉队”
 
-### 4.2 `deferred`
+当前唯一已批准的 `public_api_rewrite` 是 `trecip`：
+
+1. `pto/common/pto_instr.hpp` 将其稳定重写为 `TDIVS(dst, 1, src)` 语义
+2. manifest 应保持 `implemented`
+3. OpLib template / matcher / lowering 允许按该等价语义进入 implemented 集
+
+### 4.3 `deferred`
 
 若某个 op 在 manifest 中标记为 `deferred`，则必须同时满足：
 
 1. 仍然保留在 manifest 中
 2. `deferred_reason` 非空
-3. lowering 对该 op 给出确定性失败
+3. lowering 对该 op 给出确定性失败，并在诊断中保留 `deferred_reason`
 4. 不能通过“暂时没有模板”来静默缺位
+
+当前 `taddc`、`tsubc`、`taddsc`、`tsubsc` 仍属于这种情况：
+
+1. 它们可以在 EmitC 路径通过 decomposition 保持行为
+2. 但由于缺少被当前 change 接受的 A5 implemented 语义来源，不能因此自动进入 OpLib implemented 集
+3. 若未来要把 decomposition 提升为 OpLib implemented 语义，必须单独补文档、模板和回归
 
 ## 5. Lowering 与 matcher 契约
 
@@ -163,8 +187,9 @@ A5 OpLib V1 不改变 importer 合约，只改变作者维护方式。
 3. 修改 Family DSL、snippet 合同或 family snippet。
 4. 运行 generator / Family DSL 校验。
 5. 生成并检查 concrete `.mlir`。
-6. 补对应 positive / negative / 对齐测试。
-7. 再检查 lowering、tile fusion、EmitC 的相关回归。
+6. 同步确认 manifest 的 `a5_status`、`dtype_support`、`deferred_reason` 与当前语义证据一致。
+7. 补对应 positive / negative / 对齐测试。
+8. 再检查 lowering、tile fusion、EmitC 的相关回归。
 
 常用命令：
 
@@ -172,12 +197,28 @@ A5 OpLib V1 不改变 importer 合约，只改变作者维护方式。
 python3 oplib/level3/family_dsl.py --check-snippet-contracts
 python3 oplib/level3/family_dsl.py --check-catalog
 python3 oplib/level3/generate_level3_templates.py --check
+python3 test/oplib/check_a5_manifest_semantics.py \
+  --manifest=oplib/level3/families/a5_oplib_v1_manifest.yaml
 python3 test/oplib/check_implemented_op_alignment.py \
-  --manifest=oplib/level3/families/a5_oplib_v1_manifest.yaml \
+  --manifest=test/oplib/resources/implemented_op_alignment_subset.json \
   --template-dir=oplib/level3 \
   --test-dir=test/oplib
-llvm-lit -sv test/oplib test/tile_fusion
+llvm-lit -sv \
+  test/oplib/oplib_manifest_semantic_alignment.mlir \
+  test/oplib/oplib_compare_select_integer_dtypes.mlir \
+  test/oplib/oplib_reduction_broadcast_dtype_coverage.mlir \
+  test/oplib/oplib_arith_bitwise_dtype_coverage.mlir \
+  test/oplib/oplib_manifest_deferred.mlir \
+  test/oplib/oplib_trecip_public_api_rewrite.mlir \
+  test/oplib/oplib_key_family_dtype_lowering_smoke.mlir \
+  test/oplib/oplib_v1_negative_regressions.mlir
 ```
+
+说明：
+
+1. `check_a5_manifest_semantics.py` 负责校验 manifest 与同级 `pto-isa` 语义证据是否一致，包括 `native_a5_impl`、`public_api_rewrite` 和 `missing_accepted_semantics` 三类。
+2. `check_implemented_op_alignment.py` 现阶段按 dtype 粒度工作，但默认使用仓内维护的 subset manifest 做门禁，避免把尚未补齐 lowering use case 的 implemented 全量快照直接绑死。
+3. 全量 implemented 集的 dtype / lowering 覆盖应继续通过 family 专项 lit 和 smoke 回归逐步补齐。
 
 ## 7. 文档与实现边界
 
