@@ -2196,10 +2196,18 @@
       ],
       "dtype_axis": {
         "values": [
-          "f32"
+          "f16",
+          "f32",
+          "i16",
+          "i32",
+          "i8",
+          "u16",
+          "u32",
+          "u8"
         ],
         "result_dtype": "i8",
         "passive_vectors": {
+          "f16": "dense<0x7E00>",
           "f32": "dense<0x7FC00000>"
         }
       },
@@ -2211,54 +2219,36 @@
             "id": "eq",
             "matcher": {
               "cmpMode": "EQ"
-            },
-            "metadata": {
-              "predicate": "oeq"
             }
           },
           {
             "id": "ne",
             "matcher": {
               "cmpMode": "NE"
-            },
-            "metadata": {
-              "predicate": "one"
             }
           },
           {
             "id": "lt",
             "matcher": {
               "cmpMode": "LT"
-            },
-            "metadata": {
-              "predicate": "olt"
             }
           },
           {
             "id": "le",
             "matcher": {
               "cmpMode": "LE"
-            },
-            "metadata": {
-              "predicate": "ole"
             }
           },
           {
             "id": "gt",
             "matcher": {
               "cmpMode": "GT"
-            },
-            "metadata": {
-              "predicate": "ogt"
             }
           },
           {
             "id": "ge",
             "matcher": {
               "cmpMode": "GE"
-            },
-            "metadata": {
-              "predicate": "oge"
             }
           }
         ]
@@ -2334,10 +2324,18 @@
       ],
       "dtype_axis": {
         "values": [
-          "f32"
+          "f16",
+          "f32",
+          "i16",
+          "i32",
+          "i8",
+          "u16",
+          "u32",
+          "u8"
         ],
         "result_dtype": "i8",
         "passive_vectors": {
+          "f16": "dense<0x7E00>",
           "f32": "dense<0x7FC00000>"
         }
       },
@@ -2349,54 +2347,36 @@
             "id": "eq",
             "matcher": {
               "cmpMode": "EQ"
-            },
-            "metadata": {
-              "predicate": "oeq"
             }
           },
           {
             "id": "ne",
             "matcher": {
               "cmpMode": "NE"
-            },
-            "metadata": {
-              "predicate": "one"
             }
           },
           {
             "id": "lt",
             "matcher": {
               "cmpMode": "LT"
-            },
-            "metadata": {
-              "predicate": "olt"
             }
           },
           {
             "id": "le",
             "matcher": {
               "cmpMode": "LE"
-            },
-            "metadata": {
-              "predicate": "ole"
             }
           },
           {
             "id": "gt",
             "matcher": {
               "cmpMode": "GT"
-            },
-            "metadata": {
-              "predicate": "ogt"
             }
           },
           {
             "id": "ge",
             "matcher": {
               "cmpMode": "GE"
-            },
-            "metadata": {
-              "predicate": "oge"
             }
           }
         ]
@@ -2483,7 +2463,14 @@
       ],
       "dtype_axis": {
         "values": [
-          "f32"
+          "f16",
+          "f32",
+          "i16",
+          "i32",
+          "i8",
+          "u16",
+          "u32",
+          "u8"
         ]
       },
       "variant_axis": {
@@ -2568,7 +2555,14 @@
       ],
       "dtype_axis": {
         "values": [
-          "f32"
+          "f16",
+          "f32",
+          "i16",
+          "i32",
+          "i8",
+          "u16",
+          "u32",
+          "u8"
         ]
       },
       "variant_axis": {

@@ -742,7 +742,14 @@
             "tile"
           ],
           "dtypes": [
-            "f32"
+            "f16",
+            "f32",
+            "i16",
+            "i32",
+            "i8",
+            "u16",
+            "u32",
+            "u8"
           ],
           "ops": [
             {
@@ -755,38 +762,33 @@
           "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
           "result_dtype": "i8",
           "passive_vectors": {
+            "f16": "dense<0x7E00>",
             "f32": "dense<0x7FC00000>"
           },
           "conditions": [
             {
               "mode": "EQ",
-              "variant_id": "eq",
-              "predicate": "oeq"
+              "variant_id": "eq"
             },
             {
               "mode": "NE",
-              "variant_id": "ne",
-              "predicate": "one"
+              "variant_id": "ne"
             },
             {
               "mode": "LT",
-              "variant_id": "lt",
-              "predicate": "olt"
+              "variant_id": "lt"
             },
             {
               "mode": "LE",
-              "variant_id": "le",
-              "predicate": "ole"
+              "variant_id": "le"
             },
             {
               "mode": "GT",
-              "variant_id": "gt",
-              "predicate": "ogt"
+              "variant_id": "gt"
             },
             {
               "mode": "GE",
-              "variant_id": "ge",
-              "predicate": "oge"
+              "variant_id": "ge"
             }
           ]
         },
@@ -799,7 +801,14 @@
             "tile"
           ],
           "dtypes": [
-            "f32"
+            "f16",
+            "f32",
+            "i16",
+            "i32",
+            "i8",
+            "u16",
+            "u32",
+            "u8"
           ],
           "ops": [
             {
@@ -812,39 +821,34 @@
           "func_name_format": "__pto_oplib_variant_{op}_{variant_id}_{dtype}",
           "result_dtype": "i8",
           "passive_vectors": {
+            "f16": "dense<0x7E00>",
             "f32": "dense<0x7FC00000>"
           },
           "scalar_pos": 1,
           "conditions": [
             {
               "mode": "EQ",
-              "variant_id": "eq",
-              "predicate": "oeq"
+              "variant_id": "eq"
             },
             {
               "mode": "NE",
-              "variant_id": "ne",
-              "predicate": "one"
+              "variant_id": "ne"
             },
             {
               "mode": "LT",
-              "variant_id": "lt",
-              "predicate": "olt"
+              "variant_id": "lt"
             },
             {
               "mode": "LE",
-              "variant_id": "le",
-              "predicate": "ole"
+              "variant_id": "le"
             },
             {
               "mode": "GT",
-              "variant_id": "gt",
-              "predicate": "ogt"
+              "variant_id": "gt"
             },
             {
               "mode": "GE",
-              "variant_id": "ge",
-              "predicate": "oge"
+              "variant_id": "ge"
             }
           ]
         }
@@ -869,7 +873,14 @@
             "tile"
           ],
           "dtypes": [
-            "f32"
+            "f16",
+            "f32",
+            "i16",
+            "i32",
+            "i8",
+            "u16",
+            "u32",
+            "u8"
           ],
           "ops": [
             {
@@ -902,7 +913,14 @@
             "tile"
           ],
           "dtypes": [
-            "f32"
+            "f16",
+            "f32",
+            "i16",
+            "i32",
+            "i8",
+            "u16",
+            "u32",
+            "u8"
           ],
           "ops": [
             {

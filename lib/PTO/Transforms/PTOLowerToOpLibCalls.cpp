@@ -1204,7 +1204,8 @@ struct TemplateRegistry {
       return failure();
     }
 
-    std::string uniqueKey = entry->kind + "|" + *opOr + "|" + *variantIdOr;
+    std::string uniqueKey =
+        entry->kind + "|" + *opOr + "|" + *variantIdOr + "|" + *dtypeOr;
     if (!variantIds.insert(uniqueKey).second) {
       imported.emitError() << "duplicate variant_id under op=" << *opOr
                            << ": " << *variantIdOr;

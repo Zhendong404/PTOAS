@@ -41,6 +41,33 @@ FLOAT_BINARY_CORE_OPS = {
     "arith.minimumf",
 }
 
+FLOAT_COMPARE_PREDICATES = {
+    "EQ": "oeq",
+    "NE": "one",
+    "LT": "olt",
+    "LE": "ole",
+    "GT": "ogt",
+    "GE": "oge",
+}
+
+SIGNED_INT_COMPARE_PREDICATES = {
+    "EQ": "eq",
+    "NE": "ne",
+    "LT": "slt",
+    "LE": "sle",
+    "GT": "sgt",
+    "GE": "sge",
+}
+
+UNSIGNED_INT_COMPARE_PREDICATES = {
+    "EQ": "eq",
+    "NE": "ne",
+    "LT": "ult",
+    "LE": "ule",
+    "GT": "ugt",
+    "GE": "uge",
+}
+
 
 def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -99,12 +126,18 @@ def lower_name(value: str) -> str:
     return value.lower()
 
 
+def carrier_ir_dtype(dtype: str) -> str:
+    if dtype.startswith("u") and dtype[1:].isdigit():
+        return f"i{dtype[1:]}"
+    return dtype
+
+
 def tile_type(dtype: str, rows: int = 32, cols: int = 32) -> str:
-    return TILE_TYPE_FMT.format(dtype=dtype, rows=rows, cols=cols)
+    return TILE_TYPE_FMT.format(dtype=carrier_ir_dtype(dtype), rows=rows, cols=cols)
 
 
 def scalar_type(dtype: str) -> str:
-    return dtype
+    return carrier_ir_dtype(dtype)
 
 
 def scalar_literal(dtype: str, value: str) -> str:
@@ -118,7 +151,7 @@ def scalar_literal(dtype: str, value: str) -> str:
 
 
 def vector_type(dtype: str, lanes: int = 64) -> str:
-    return f"vector<{lanes}x{dtype}>"
+    return f"vector<{lanes}x{carrier_ir_dtype(dtype)}>"
 
 
 def mask_vector_type(lanes: int = 64) -> str:
@@ -126,7 +159,7 @@ def mask_vector_type(lanes: int = 64) -> str:
 
 
 def memref_type(dtype: str, cols: int = 32) -> str:
-    return MEMREF_TYPE_FMT.format(dtype=dtype, row_stride=cols)
+    return MEMREF_TYPE_FMT.format(dtype=carrier_ir_dtype(dtype), row_stride=cols)
 
 
 def splat_shuffle_mask(lanes: int = 64, source_lane: int = 0) -> str:
@@ -141,6 +174,31 @@ def dense_literal(dtype: str, value: str) -> str:
     if value == "neg_one":
         return "dense<-1.0>" if dtype.startswith("f") else "dense<-1>"
     raise ValueError(f"unsupported dense literal '{value}' for dtype {dtype}")
+
+
+def is_float_dtype(dtype: str) -> bool:
+    return dtype.startswith("f") or dtype == "bf16"
+
+
+def is_unsigned_dtype(dtype: str) -> bool:
+    return dtype.startswith("u")
+
+
+def resolve_compare_core_op(dtype: str) -> str:
+    return "arith.cmpf" if is_float_dtype(dtype) else "arith.cmpi"
+
+
+def resolve_compare_predicate(dtype: str, cmp_mode: str) -> str:
+    cmp_mode = cmp_mode.upper()
+    if is_float_dtype(dtype):
+        predicate_map = FLOAT_COMPARE_PREDICATES
+    elif is_unsigned_dtype(dtype):
+        predicate_map = UNSIGNED_INT_COMPARE_PREDICATES
+    else:
+        predicate_map = SIGNED_INT_COMPARE_PREDICATES
+    if cmp_mode not in predicate_map:
+        raise ValueError(f"unsupported compare mode '{cmp_mode}' for dtype {dtype}")
+    return predicate_map[cmp_mode]
 
 
 EXEC_MODE_BODY_KINDS = {
@@ -159,6 +217,8 @@ def exec_mode_attr(op_info: dict[str, Any], dtype: str) -> str:
     body_kind = op_info.get("body_kind", "")
     if dtype.startswith("f") and (
         any(op_name in core_op for op_name in FLOAT_BINARY_CORE_OPS)
+        or "math.exp" in core_op
+        or "math.log" in core_op
         or "math.sqrt" in core_op
         or body_kind in EXEC_MODE_BODY_KINDS
     ):
@@ -540,6 +600,8 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
             )
             effective_op_info = dict(op_info)
             effective_op_info["core_op"] = op_info.get("core_op_by_dtype", {}).get(dtype, op_info["core_op"])
+            if pattern["id"] == "compare":
+                effective_op_info["core_op"] = resolve_compare_core_op(dtype)
             for variant_info in variant_entries:
                 condition = ""
                 cmp_predicate = ""
@@ -554,7 +616,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                     variant_matcher = dict(variant_info.get("matcher", {}))
                     if variant_axis_basis == "condition_list":
                         condition = variant_info["matcher"]["cmpMode"]
-                        cmp_predicate = variant_info.get("metadata", {}).get("predicate", "")
+                        cmp_predicate = resolve_compare_predicate(dtype, condition)
                         variant_id = variant_info["id"]
                     elif variant_axis_basis == "explicit":
                         variant_id = variant_info["id"]

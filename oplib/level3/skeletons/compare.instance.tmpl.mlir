@@ -32,7 +32,7 @@
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : @@MASK_VECTOR_TYPE@@
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : @@INPUT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@INPUT_VECTOR_TYPE@@ into @@INPUT_VECTOR_TYPE@@
-@@RHS_LOAD@@          %cmp = arith.cmpf @@CMP_PREDICATE@@, %lhs, @@RHS_VALUE@@ : @@INPUT_VECTOR_TYPE@@
+@@RHS_LOAD@@          %cmp = @@CORE_OP@@ @@CMP_PREDICATE@@, %lhs, @@RHS_VALUE@@ : @@INPUT_VECTOR_TYPE@@
           vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : @@RESULT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@RESULT_VECTOR_TYPE@@
           vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : @@RESULT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@RESULT_VECTOR_TYPE@@
         }

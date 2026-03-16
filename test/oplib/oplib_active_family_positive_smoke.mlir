@@ -10,6 +10,7 @@ module {
   // CHECK-DAG: call @__pto_oplib_inst_l3_float_tile_scalar_template_tadds{{.*}}(
   // CHECK-DAG: call @__pto_oplib_inst_l3_int_tile_scalar_elementwise_template_tdivs{{.*}}(
   // CHECK-DAG: call @__pto_oplib_inst_l3_float_unary_template_trelu{{.*}}(
+  // CHECK-DAG: call @__pto_oplib_inst_l3_float_unary_template_trecip{{.*}}(
   // CHECK-DAG: call @__pto_oplib_inst_l3_float_unary_math_template_texp{{.*}}(
   // CHECK-DAG: call @__pto_oplib_inst_l3_int_unary_template_tnot{{.*}}(
   // CHECK-DAG: call @__pto_oplib_inst_l3_reduce_row_template_trowsum_linear(
@@ -58,6 +59,7 @@ module {
     pto.tadds ins(%f16_a, %f16_scale : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f16) outs(%f16_b : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tdivs ins(%i32_a, %i32_shift : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, i32) outs(%i32_c : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.trelu ins(%f32_c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%f32_a : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.trecip ins(%f32_a : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%f32_c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.texp ins(%f32_a : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%f32_b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tnot ins(%i32_c : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%i32_a : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 

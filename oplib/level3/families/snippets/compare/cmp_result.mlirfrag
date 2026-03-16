@@ -1,1 +1,1 @@
-%cmp = arith.cmpf @@CMP_PREDICATE@@, %lhs, @@RHS_VALUE@@ : @@INPUT_VECTOR_TYPE@@
+%cmp = @@CORE_OP@@ @@CMP_PREDICATE@@, %lhs, @@RHS_VALUE@@ : @@INPUT_VECTOR_TYPE@@

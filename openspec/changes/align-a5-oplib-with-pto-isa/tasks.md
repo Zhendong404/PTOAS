@@ -6,7 +6,7 @@
 
 ## 2. Family 模板补齐
 
-- [ ] 2.1 扩展 compare/select family 的 generator / template 轴，补齐 `tcmp`、`tcmps`、`tsel`、`tsels` 的非 `f32` dtype 覆盖
+- [x] 2.1 扩展 compare/select family 的 generator / template 轴，补齐 `tcmp`、`tcmps`、`tsel`、`tsels` 的非 `f32` dtype 覆盖
 - [ ] 2.2 扩展 reduction、broadcast 和 scalar-expand family，至少补齐 `trowsum` / `trowmax` / `trowmin` 的 `f16`，以及 `tcolsum` / `tcolmax` / `tcolmin`、`trowexpand` / `tcolexpand`、`texpands` 的 A5 真实 dtype 集
 - [ ] 2.3 扩展 arithmetic / tile-scalar / bitwise family 的 `bf16`、unsigned 和缺失的整型 variant，并确保模板 metadata 不再声明 A5 不支持的 dtype
 - [ ] 2.4 评估 `trecip` 的 OpLib 接入方式，若采用公共 API 等价语义，补齐对应 template / matcher / metadata；对 ternary 四个 OP 保持显式 deferred
