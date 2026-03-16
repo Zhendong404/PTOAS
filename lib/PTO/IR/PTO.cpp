@@ -3448,6 +3448,12 @@ static LogicalResult verifySimdValueVector(Operation *op, Type valueTy,
   return success();
 }
 
+static bool isSupportedSimdReductionKind(StringRef kind) {
+  return kind == "add" || kind == "maximumf" || kind == "minimumf" ||
+         kind == "maxsi" || kind == "minsi" || kind == "maxui" ||
+         kind == "minui";
+}
+
 static LogicalResult
 computeExpectedTileBufMemrefStrides(TileBufType tileTy,
                                     SmallVectorImpl<int64_t> &expectedStrides) {
@@ -3760,6 +3766,41 @@ mlir::LogicalResult mlir::pto::SimdStorePUOp::verify() {
   auto valueVec = cast<VectorType>(getValue().getType());
   if (valueVec.getElementType() != memTy.getElementType())
     return emitOpError("expects memref element type to match value vector element type");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdReductionOp::verify() {
+  auto srcTy = dyn_cast<VectorType>(getOperand().getType());
+  if (!srcTy || srcTy.isScalable())
+    return emitOpError("expects fixed-width vector operand type");
+
+  auto dstTy = dyn_cast<VectorType>(getResult().getType());
+  if (!dstTy || dstTy.isScalable())
+    return emitOpError("expects fixed-width vector result type");
+  if (srcTy != dstTy)
+    return emitOpError("expects operand and result vector types to match");
+
+  Type elemTy = srcTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return emitOpError("expects vector element type to be integer or float");
+
+  StringRef kind = getKind();
+  if (!isSupportedSimdReductionKind(kind)) {
+    return emitOpError()
+           << "unsupported reduction kind '" << kind
+           << "'; expected add, maximumf, minimumf, maxsi, minsi, maxui, or minui";
+  }
+
+  if ((kind == "maximumf" || kind == "minimumf") && !elemTy.isa<FloatType>())
+    return emitOpError("expects floating-point vector element type for maximumf/minimumf");
+
+  if ((kind == "maxsi" || kind == "minsi" || kind == "maxui" ||
+       kind == "minui") &&
+      !elemTy.isSignlessInteger()) {
+    return emitOpError(
+        "expects signless integer vector element type for integer reduction kinds");
+  }
+
   return success();
 }
 //===----------------------------------------------------------------------===//

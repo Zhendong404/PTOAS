@@ -1444,6 +1444,34 @@ def SimdStorePUOp : PTO_Op<"simd.store_pu"> {
   }];
 }
 
+def SimdReductionOp : PTO_Op<"simd.reduction", [
+    Pure,
+    AllTypesMatch<["operand", "result"]>
+  ]> {
+  let summary = "A5 SIMD reduction marker that preserves vector result form.";
+  let description = [{
+    This op is an OP-Lib codegen marker for A5 hardware reduction instructions
+    whose architectural result stays in a vector register.
+    Unlike `vector.reduction`, this op does not force the IR into scalar result
+    semantics before EmitC lowering.
+  }];
+
+  let arguments = (ins
+    AnyVector:$operand,
+    StrAttr:$kind
+  );
+
+  let results = (outs
+    AnyVector:$result
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `<` $kind `>` `,` $operand attr-dict `:` type($operand) `->` type($result)
+  }];
+}
+
 // High-Level Mov: 值语义
 def MovOp : PTO_Op<"mov", [
     SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile -> !pto.tile)

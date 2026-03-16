@@ -20,21 +20,20 @@
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : @@INPUT_MEMREF_TYPE@@
     %cols = memref.dim %m0, %c1 : @@INPUT_MEMREF_TYPE@@
-    %init = arith.constant @@REDUCE_INIT@@ : @@SCALAR_TYPE@@
     pto.simd.vec_scope {
+      %initVec = arith.constant @@PASSIVE_VECTOR@@ : @@INPUT_VECTOR_TYPE@@
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@INPUT_VECTOR_TYPE@@
       %outMask = vector.create_mask %c1 : @@MASK_VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %init) -> (@@SCALAR_TYPE@@) {
+        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (@@INPUT_VECTOR_TYPE@@) {
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : @@MASK_VECTOR_TYPE@@
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : @@INPUT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@INPUT_VECTOR_TYPE@@ into @@INPUT_VECTOR_TYPE@@
-@@COMPUTE@@          scf.yield %result : @@SCALAR_TYPE@@
+@@COMPUTE@@          scf.yield %result : @@INPUT_VECTOR_TYPE@@
         }
-        %outVec = vector.splat %reduced : @@INPUT_VECTOR_TYPE@@
-        vector.maskedstore %md[%r, %c0], %outMask, %outVec {pto.simd.vst_dist = "DIST_NORM"} : @@RESULT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@INPUT_VECTOR_TYPE@@
+        vector.maskedstore %md[%r, %c0], %outMask, %reduced {pto.simd.vst_dist = "DIST_NORM"} : @@RESULT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@INPUT_VECTOR_TYPE@@
       }
     }
     return

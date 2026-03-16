@@ -146,6 +146,8 @@ static bool isAllowedTemplateBodyOp(Operation *op) {
     return true;
   if (isa<pto::SimdTileToMemrefOp>(op))
     return true;
+  if (isa<pto::SimdReductionOp>(op))
+    return true;
   if (isSimdBridgeOp(op))
     return true;
   if (isa<UnrealizedConversionCastOp>(op))

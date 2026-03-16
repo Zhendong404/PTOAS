@@ -2472,6 +2472,16 @@ getA5ReductionCallee(vector::CombiningKind kind, Type elemTy) {
   }
 }
 
+static FailureOr<llvm::StringRef> getA5SimdReductionCallee(StringRef kind) {
+  if (kind == "add")
+    return llvm::StringRef("vcadd");
+  if (kind == "maximumf" || kind == "maxsi" || kind == "maxui")
+    return llvm::StringRef("vcmax");
+  if (kind == "minimumf" || kind == "minsi" || kind == "minui")
+    return llvm::StringRef("vcmin");
+  return failure();
+}
+
 template <typename ArithOp>
 struct OplibVectorUnaryToEmitC : public OpConversionPattern<ArithOp> {
   using OpConversionPattern<ArithOp>::OpConversionPattern;
@@ -2761,6 +2771,55 @@ struct OplibVectorReductionToEmitC
         op.getLoc(), TypeRange{dstTy}, *calleeOr, operands, ArrayAttr{},
         ArrayAttr{});
     rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
+};
+
+struct SimdReductionToEmitC : public OpConversionPattern<pto::SimdReductionOp> {
+  using OpConversionPattern<pto::SimdReductionOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::SimdReductionOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getOperand().getType());
+    if (!vecTy)
+      return failure();
+    if (failed(
+            validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    auto calleeOr = getA5SimdReductionCallee(op.getKind());
+    if (failed(calleeOr)) {
+      op.emitError() << "A5 OP-Lib vector lowering unsupported: simd reduction kind '"
+                     << op.getKind() << "'";
+      return failure();
+    }
+
+    Type regTy = this->getTypeConverter()->convertType(op.getType());
+    if (!regTy)
+      return failure();
+
+    Value pred = tryRemapMaskFromUnaryMaskedLoadUse(op, rewriter);
+    if (!pred) {
+      auto predOr =
+          buildA5Predicate(rewriter, op.getLoc(), op.getOperation(), vecTy,
+                           op->getName().getStringRef());
+      if (failed(predOr))
+        return failure();
+      pred = *predOr;
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto regVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), regTy, emitc::OpaqueAttr::get(ctx, ""));
+    auto args = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2),
+         emitc::OpaqueAttr::get(ctx, "MODE_ZEROING")});
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, *calleeOr,
+        ValueRange{regVar.getResult(), adaptor.getOperand(), pred}, args,
+        ArrayAttr{});
+    rewriter.replaceOp(op, regVar.getResult());
     return success();
   }
 };
@@ -9489,6 +9548,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                OplibVectorUnaryToEmitC<math::RsqrtOp>,
                OplibVectorCmpFToEmitC, OplibVectorCmpIToEmitC,
                OplibVectorSelectToEmitC<arith::SelectOp>,
+               SimdReductionToEmitC,
                OplibVectorReductionToEmitC,
                OplibVectorIntBinaryToEmitC<arith::AndIOp>,
                OplibVectorIntBinaryToEmitC<arith::OrIOp>,
@@ -9953,6 +10013,24 @@ struct EmitPTOManualPass
               failed(validateA5OplibVectorType(red.getOperation(), vecTy,
                                                "vector.reduction"))) {
             hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto simdRed = dyn_cast<pto::SimdReductionOp>(op)) {
+          auto vecTy = dyn_cast<VectorType>(simdRed.getOperand().getType());
+          if (!vecTy ||
+              failed(validateA5OplibVectorType(simdRed.getOperation(), vecTy,
+                                               "pto.simd.reduction"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          if (failed(getA5SimdReductionCallee(simdRed.getKind()))) {
+            hasUnsupportedA5Vector = true;
+            simdRed.emitError()
+                << "A5 OP-Lib vector lowering unsupported: simd reduction kind '"
+                << simdRed.getKind() << "'";
             return WalkResult::interrupt();
           }
           return WalkResult::advance();

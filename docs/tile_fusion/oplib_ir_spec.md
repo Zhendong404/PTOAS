@@ -208,10 +208,11 @@ Level-3 多 family 首版支持以下固定签名类别：
 5. `pto.simd.tile_to_memref`
 6. `pto.simd.vec_scope`
 7. `pto.simd.predicate/load/store/load_pu/store_pu`
-8. `math.exp`
-9. `math.log`
-10. `math.sqrt`
-11. `math.rsqrt`
+8. `pto.simd.reduction`
+9. `math.exp`
+10. `math.log`
+11. `math.sqrt`
+12. `math.rsqrt`
 
 ### 6.2 明确不允许
 
@@ -271,9 +272,10 @@ Level-3 新模板统一使用 64-lane SIMD 约束：
 4. `math.exp/log/sqrt/rsqrt`
 5. vector compare
 6. vector select
-7. vector reduction
-8. integer vector load/store legality检查
-9. integer vector bitwise / shift lowering
+7. `pto.simd.reduction`（直接映射 A5 reduce 指令，结果保持向量形态）
+8. `vector.reduction`（保留兼容路径，必要时经 helper 转标量）
+9. integer vector load/store legality检查
+10. integer vector bitwise / shift lowering
 
 动态 shape 仅覆盖动态 valid shape，不扩展到动态 physical tile shape。
 

@@ -45,22 +45,22 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %init = arith.constant 0.0 : f32
     pto.simd.vec_scope {
+      %initVec = arith.constant dense<0.0> : vector<64xf32>
       %passive = arith.constant dense<0.0> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %init) -> (f32) {
+        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %result = vector.reduction <add>, %lhs, %acc : vector<64xf32> into f32
-          scf.yield %result : f32
+          %partial = pto.simd.reduction <"add">, %lhs : vector<64xf32> -> vector<64xf32>
+          %result = arith.addf %partial, %acc {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
+          scf.yield %result : vector<64xf32>
         }
-        %outVec = vector.splat %reduced : vector<64xf32>
-        vector.maskedstore %md[%r, %c0], %outMask, %outVec {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
+        vector.maskedstore %md[%r, %c0], %outMask, %reduced {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
       }
     }
     return
@@ -105,22 +105,22 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %init = arith.constant -3.40282347E+38 : f32
     pto.simd.vec_scope {
+      %initVec = arith.constant dense<-3.40282347E+38> : vector<64xf32>
       %passive = arith.constant dense<-3.40282347E+38> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %init) -> (f32) {
+        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %result = vector.reduction <maximumf>, %lhs, %acc : vector<64xf32> into f32
-          scf.yield %result : f32
+          %partial = pto.simd.reduction <"maximumf">, %lhs : vector<64xf32> -> vector<64xf32>
+          %result = arith.maximumf %partial, %acc {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
+          scf.yield %result : vector<64xf32>
         }
-        %outVec = vector.splat %reduced : vector<64xf32>
-        vector.maskedstore %md[%r, %c0], %outMask, %outVec {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
+        vector.maskedstore %md[%r, %c0], %outMask, %reduced {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
       }
     }
     return
@@ -165,22 +165,22 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %init = arith.constant 3.40282347E+38 : f32
     pto.simd.vec_scope {
+      %initVec = arith.constant dense<3.40282347E+38> : vector<64xf32>
       %passive = arith.constant dense<3.40282347E+38> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %init) -> (f32) {
+        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %result = vector.reduction <minimumf>, %lhs, %acc : vector<64xf32> into f32
-          scf.yield %result : f32
+          %partial = pto.simd.reduction <"minimumf">, %lhs : vector<64xf32> -> vector<64xf32>
+          %result = arith.minimumf %partial, %acc {pto.simd.exec_mode = "MODE_ZEROING"} : vector<64xf32>
+          scf.yield %result : vector<64xf32>
         }
-        %outVec = vector.splat %reduced : vector<64xf32>
-        vector.maskedstore %md[%r, %c0], %outMask, %outVec {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
+        vector.maskedstore %md[%r, %c0], %outMask, %reduced {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf32, strided<[1, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32>
       }
     }
     return
