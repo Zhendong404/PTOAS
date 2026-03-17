@@ -95,7 +95,8 @@ static bool isBinaryFloatCore(Operation *op) {
 }
 
 static bool isBinaryIntCore(Operation *op) {
-  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op);
+  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp,
+             arith::DivSIOp, arith::DivUIOp>(op);
 }
 
 static bool isBinaryCore(Operation *op) {
@@ -942,7 +943,7 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
     if (!isBinaryCore(op)) {
       status = emitCodeError(
           op, kErrCoreSlot,
-          "core_slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli");
+          "core_slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli/divsi/divui");
       return;
     }
     if (op->getNumResults() != 1) {

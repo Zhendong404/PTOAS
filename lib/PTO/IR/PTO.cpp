@@ -699,6 +699,13 @@ std::string mlir::pto::getOpLibDTypeName(Type type) {
   std::string text;
   llvm::raw_string_ostream os(text);
   type.print(os);
+  StringRef printed = text;
+  // OP-Lib template metadata uses `u16/u32/u8` keys while PTO IR prints
+  // unsigned integer element types as `ui16/ui32/ui8`.
+  if (printed.starts_with("ui"))
+    return ("u" + printed.drop_front(2)).str();
+  if (printed.starts_with("si"))
+    return ("i" + printed.drop_front(2)).str();
   return os.str();
 }
 
@@ -1472,8 +1479,8 @@ LogicalResult mlir::pto::TDivOp::verify() {
   if (elem0 != elem1 || elem0 != elemd)
     return emitOpError("src0/src1/dst element type must match");
 
-  if (!elem0.isF16() && !elem0.isF32())
-    return emitOpError("only supports f16/f32 element type");
+  if (!elem0.isF16() && !elem0.isF32() && !isa<IntegerType>(elem0))
+    return emitOpError("only supports integer/f16/f32 element type");
   if (getShapeVec(src0Ty) != getShapeVec(src1Ty) || getShapeVec(src0Ty) != getShapeVec(dstTy))
     return emitOpError("src0/dst shape mismatch");
 
@@ -1919,12 +1926,16 @@ mlir::LogicalResult mlir::pto::TMaxOp::verify() {
 
 mlir::LogicalResult mlir::pto::TMaxSOp::verify() {
   Type src0Ty = getSrc().getType();
+  Type scalarTy = getScalar().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(src0Ty) || !isPTOShapedLike(dstTy))
     return emitOpError() << "expects PTO shaped-like types for src/dst";
 
-  if (getElemTy(src0Ty) != getElemTy(dstTy))
+  Type elemTy = getElemTy(src0Ty);
+  if (elemTy != getElemTy(dstTy))
     return emitOpError() << "expects src0/dst to have the same element type";
+  if (scalarTy != elemTy)
+    return emitOpError() << "expects scalar type to match tile element type";
 
   auto s0 = getShapeVec(src0Ty);
   auto d = getShapeVec(dstTy);
@@ -1973,12 +1984,16 @@ mlir::LogicalResult mlir::pto::TMinOp::verify() {
 
 mlir::LogicalResult mlir::pto::TMinSOp::verify() {
   Type srcTy = getSrc().getType();
+  Type scalarTy = getScalar().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
     return emitOpError() << "expects PTO shaped-like src/dst";
 
-  if (getElemTy(srcTy) != getElemTy(dstTy))
+  Type elemTy = getElemTy(srcTy);
+  if (elemTy != getElemTy(dstTy))
     return emitOpError() << "expects src/dst to have the same element type";
+  if (scalarTy != elemTy)
+    return emitOpError() << "expects scalar type to match tile element type";
 
   auto s = getShapeVec(srcTy);
   auto d = getShapeVec(dstTy);

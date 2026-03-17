@@ -709,8 +709,10 @@ static FailureOr<MemRefType> inferSimdBridgeMemRefType(pto::TileBufType tileTy,
   ArrayRef<int64_t> validShape = tileTy.getValidShape();
   if (validShape.size() == memShape.size()) {
     for (unsigned i = 0; i < validShape.size(); ++i) {
-      memShape[i] =
-          validShape[i] < 0 ? ShapedType::kDynamic : validShape[i];
+      // Keep OP-Lib bridge memrefs as static whenever the physical tile shape is
+      // static. This lets canonicalization fold template-local memref.dim users
+      // inside imported SIMD bodies instead of leaving illegal dynamic shape IR.
+      memShape[i] = validShape[i] < 0 ? physicalShape[i] : validShape[i];
     }
   }
 
@@ -785,6 +787,10 @@ static bool areIntegerCarrierTypesCompatible(Type lhs, Type rhs) {
   return lhsInt.getWidth() == rhsInt.getWidth();
 }
 
+static bool canRemapScalarViaCarrierCast(Type actualTy, Type templateTy) {
+  return areIntegerCarrierTypesCompatible(actualTy, templateTy);
+}
+
 static bool canRemapSimdBridgeViaCarrierCast(MemRefType actualTy,
                                              MemRefType templateTy) {
   if (actualTy.getRank() != templateTy.getRank())
@@ -793,6 +799,12 @@ static bool canRemapSimdBridgeViaCarrierCast(MemRefType actualTy,
     return false;
   return areIntegerCarrierTypesCompatible(actualTy.getElementType(),
                                           templateTy.getElementType());
+}
+
+static MemRefType remapMemRefToTemplateCarrier(MemRefType actualTy,
+                                               MemRefType templateTy) {
+  return MemRefType::get(actualTy.getShape(), templateTy.getElementType(),
+                         actualTy.getLayout(), actualTy.getMemorySpace());
 }
 
 static std::string dtypeToString(Type ty) {
@@ -985,7 +997,8 @@ static bool isBinaryFloatCore(Operation *op) {
 }
 
 static bool isBinaryIntCore(Operation *op) {
-  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op);
+  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp,
+             arith::DivSIOp, arith::DivUIOp>(op);
 }
 
 static bool isBinaryCore(Operation *op) {
@@ -1711,7 +1724,7 @@ struct TemplateRegistry {
       if (!isBinaryCore(op)) {
         status = emitFailureWithCode(
             op, kErrCoreSlot,
-            "core slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli");
+            "core slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli/divsi/divui");
         return;
       }
       if (op->getNumResults() != 1) {
@@ -2249,8 +2262,22 @@ struct TemplateRegistry {
     Block *dstEntry = inst.addEntryBlock();
     OpBuilder bodyBuilder = OpBuilder::atBlockBegin(dstEntry);
     IRMapping mapping;
-    for (auto [srcArg, dstArg] :
-         llvm::zip(srcEntry.getArguments(), dstEntry->getArguments())) {
+    for (auto [srcArg, dstArg, role] : llvm::zip(
+             srcEntry.getArguments(), dstEntry->getArguments(),
+             selected.entry->argRoles)) {
+      if (srcArg.getType() == dstArg.getType()) {
+        mapping.map(srcArg, dstArg);
+        continue;
+      }
+
+      if (role == TemplateArgRole::Scalar &&
+          canRemapScalarViaCarrierCast(dstArg.getType(), srcArg.getType())) {
+        auto cast = bodyBuilder.create<UnrealizedConversionCastOp>(
+            loc, TypeRange{srcArg.getType()}, ValueRange{dstArg});
+        mapping.map(srcArg, cast.getResult(0));
+        continue;
+      }
+
       mapping.map(srcArg, dstArg);
     }
 
@@ -2282,8 +2309,10 @@ struct TemplateRegistry {
               bridge.getLoc(), inferredTy, mappedSrc);
           if (templateMemTy && inferredTy != templateMemTy &&
               canRemapSimdBridgeViaCarrierCast(inferredTy, templateMemTy)) {
+            auto carrierTy =
+                remapMemRefToTemplateCarrier(inferredTy, templateMemTy);
             auto cast = bodyBuilder.create<UnrealizedConversionCastOp>(
-                bridge.getLoc(), TypeRange{templateMemTy},
+                bridge.getLoc(), TypeRange{carrierTy},
                 ValueRange{newBridge.getDst()});
             mapping.map(bridge.getDst(), cast.getResult(0));
           } else {
@@ -2326,8 +2355,10 @@ struct TemplateRegistry {
                   inst.getSymName());
           return failure();
         }
+        auto carrierTy = remapMemRefToTemplateCarrier(mappedMemTy, dstMemTy);
         auto cast = bodyBuilder.create<UnrealizedConversionCastOp>(
-            bridge.getLoc(), TypeRange{dstMemTy}, ValueRange{newBridge.getDst()});
+            bridge.getLoc(), TypeRange{carrierTy},
+            ValueRange{newBridge.getDst()});
         mapping.map(bridge.getDst(), cast.getResult(0));
         continue;
       }
@@ -2418,7 +2449,12 @@ struct TemplateRegistry {
         else
           newCore = b.create<arith::MulFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tdiv") {
-        newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
+        if (isa<arith::DivUIOp>(core))
+          newCore = b.create<arith::DivUIOp>(core->getLoc(), lhs, rhs);
+        else if (isa<arith::DivSIOp>(core))
+          newCore = b.create<arith::DivSIOp>(core->getLoc(), lhs, rhs);
+        else
+          newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tmax" || selected.op == "tpartmax" ||
                  selected.op == "tmaxs" || selected.op == "trowmax" ||
                  selected.op == "tcolmax") {

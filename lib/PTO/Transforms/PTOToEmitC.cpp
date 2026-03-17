@@ -2509,6 +2509,24 @@ template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::SubIOp>() {
 template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MulIOp>() {
   return "vmul";
 }
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::DivSIOp>() {
+  return "vdiv";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::DivUIOp>() {
+  return "vdiv";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MaxSIOp>() {
+  return "vmax";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MaxUIOp>() {
+  return "vmax";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MinSIOp>() {
+  return "vmin";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MinUIOp>() {
+  return "vmin";
+}
 template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::AndIOp>() {
   return "vand";
 }
@@ -9879,6 +9897,12 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                OplibVectorIntBinaryToEmitC<arith::AddIOp>,
                OplibVectorIntBinaryToEmitC<arith::SubIOp>,
                OplibVectorIntBinaryToEmitC<arith::MulIOp>,
+               OplibVectorIntBinaryToEmitC<arith::DivSIOp>,
+               OplibVectorIntBinaryToEmitC<arith::DivUIOp>,
+               OplibVectorIntBinaryToEmitC<arith::MaxSIOp>,
+               OplibVectorIntBinaryToEmitC<arith::MaxUIOp>,
+               OplibVectorIntBinaryToEmitC<arith::MinSIOp>,
+               OplibVectorIntBinaryToEmitC<arith::MinUIOp>,
                OplibVectorUnaryToEmitC<arith::NegFOp>,
                OplibVectorUnaryToEmitC<math::AbsFOp>,
                OplibVectorUnaryToEmitC<math::ExpOp>,
@@ -10283,6 +10307,72 @@ struct EmitPTOManualPass
               vecTy &&
               failed(validateA5OplibVectorType(muli.getOperation(), vecTy,
                                                "arith.muli"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto divsi = dyn_cast<arith::DivSIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(divsi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(divsi.getOperation(), vecTy,
+                                               "arith.divsi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto divui = dyn_cast<arith::DivUIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(divui.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(divui.getOperation(), vecTy,
+                                               "arith.divui"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto maxsi = dyn_cast<arith::MaxSIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(maxsi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(maxsi.getOperation(), vecTy,
+                                               "arith.maxsi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto maxui = dyn_cast<arith::MaxUIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(maxui.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(maxui.getOperation(), vecTy,
+                                               "arith.maxui"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto minsi = dyn_cast<arith::MinSIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(minsi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(minsi.getOperation(), vecTy,
+                                               "arith.minsi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto minui = dyn_cast<arith::MinUIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(minui.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(minui.getOperation(), vecTy,
+                                               "arith.minui"))) {
             hasUnsupportedA5Vector = true;
             return WalkResult::interrupt();
           }

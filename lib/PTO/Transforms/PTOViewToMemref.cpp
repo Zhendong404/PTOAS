@@ -2317,26 +2317,12 @@ struct PTOViewToMemrefPass
       for (auto op : maxsops) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-
-        Value src = op.getSrc();
-        Value scalar = op.getScalar();
-        Value dst = op.getDst();
-
-        auto srcTy = dyn_cast<MemRefType>(src.getType());
-        auto scalarTy = dyn_cast<FloatType>(scalar.getType());
-        auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        if (!srcTy || !scalarTy || !dstTy) {
-          op.emitError("ins/outs are not memref yet");
-          signalPassFailure();
-          return;
-        }
-
         rewriter.replaceOpWithNewOp<pto::TMaxSOp>(
             op,
             TypeRange{},
-            src,
-            scalar,
-            dst);
+            op.getSrc(),
+            op.getScalar(),
+            op.getDst());
       }
 
       SmallVector<mlir::pto::TMinOp, 8> minops;
@@ -2373,26 +2359,12 @@ struct PTOViewToMemrefPass
       for (auto op : minsops) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-
-        Value src = op.getSrc();
-        Value scalar = op.getScalar();
-        Value dst = op.getDst();
-
-        auto srcTy = dyn_cast<MemRefType>(src.getType());
-        auto scalarTy = dyn_cast<FloatType>(scalar.getType());
-        auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        if (!srcTy || !scalarTy || !dstTy) {
-          op.emitError("ins/outs are not memref yet");
-          signalPassFailure();
-          return;
-        }
-
         rewriter.replaceOpWithNewOp<pto::TMinSOp>(
             op,
             TypeRange{},
-            src,
-            scalar,
-            dst);
+            op.getSrc(),
+            op.getScalar(),
+            op.getDst());
       }
 
       SmallVector<mlir::pto::TMovFPOp, 8> movfpops;

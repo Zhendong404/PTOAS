@@ -2643,7 +2643,7 @@ def TMaxSOp : PTO_TOp<"tmaxs", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    AnyType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2703,7 +2703,7 @@ def TMinSOp : PTO_TOp<"tmins", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    AnyType:$scalar,
     PTODpsType:$dst
   );
 
