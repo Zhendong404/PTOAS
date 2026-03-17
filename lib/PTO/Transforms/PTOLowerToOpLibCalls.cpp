@@ -513,9 +513,23 @@ static bool isA5OpLibV1TargetOp(Operation *op, const A5OpLibManifest &manifest) 
   return manifest.lookup(getPTOMnemonic(op)) != nullptr;
 }
 
+static bool isTileFusionOpLibAllowlisted(StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Cases("tadd", "tsub", "tmul", "tdiv", "tmax", "tmin", true)
+      .Cases("tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins", true)
+      .Default(false);
+}
+
 static bool shouldLowerViaOpLib(Operation *op, const A5OpLibManifest &manifest) {
-  const A5ManifestEntry *entry = manifest.lookup(getPTOMnemonic(op));
+  StringRef opName = getPTOMnemonic(op);
+  const A5ManifestEntry *entry = manifest.lookup(opName);
   if (!entry || entry->status != A5ManifestStatus::Implemented)
+    return false;
+
+  // Temporarily keep OP-Lib lowering scoped to the 12 tile-fusion arithmetic
+  // ops so grouped/single-op behavior stays aligned while other ops fall back
+  // to the pre-existing non-OP-Lib lowering path.
+  if (!isTileFusionOpLibAllowlisted(opName))
     return false;
 
   // A5 manifest marks tcolsum as implemented, but OP-Lib currently only

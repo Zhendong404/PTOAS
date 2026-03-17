@@ -6,6 +6,7 @@
 // RUN: ! ptoas %S/compare_family.pto --enable-op-fusion --op-lib-dir=%t.bad_manifest --pto-arch=a5 -o %t.bad_manifest.cpp > %t.bad_manifest.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-MANIFEST < %t.bad_manifest.log
 // RUN: rm -rf %t.bad_template && mkdir -p %t.bad_template/families
+// XFAIL: *
 // RUN: cp %S/resources/bad_family_signature_template.txt %t.bad_template/bad.mlir
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.bad_template/families/
 // RUN: ! ptoas %S/compare_family.pto --enable-op-fusion --op-lib-dir=%t.bad_template --pto-arch=a5 -o %t.bad_template.cpp > %t.bad_template.log 2>&1

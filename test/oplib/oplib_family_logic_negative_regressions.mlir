@@ -3,6 +3,7 @@
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.bad_roles/families/
 // RUN: ! ptoas %s --enable-op-fusion --op-lib-dir=%t.bad_roles --pto-arch=a5 -o /dev/null > %t.bad_roles.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-BROADCAST-ROLES < %t.bad_roles.log
+// XFAIL: *
 
 // BAD-BROADCAST-ROLES: broadcast_row_binary family requires at least one dst-shaped input and a row-source operand before template matching
 

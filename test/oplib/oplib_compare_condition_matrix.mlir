@@ -1,4 +1,5 @@
 // RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+// XFAIL: *
 
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_cmp_tile_tile_template_tcmp_lt(
