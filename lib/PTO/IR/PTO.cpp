@@ -2468,12 +2468,16 @@ mlir::LogicalResult mlir::pto::TMulOp::verify() {
 
 mlir::LogicalResult mlir::pto::TMulSOp::verify() {
   Type srcTy = getSrc0().getType();
+  Type scalarTy = getScalar().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
     return emitOpError() << "expects PTO shaped-like src/dst";
 
-  if (getElemTy(srcTy) != getElemTy(dstTy))
+  Type elemTy = getElemTy(srcTy);
+  if (elemTy != getElemTy(dstTy))
     return emitOpError() << "expects src/dst to have the same element type";
+  if (scalarTy != elemTy)
+    return emitOpError() << "expects scalar type to match tile element type";
 
   auto s = getShapeVec(srcTy);
   auto d = getShapeVec(dstTy);

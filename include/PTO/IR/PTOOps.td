@@ -2831,7 +2831,7 @@ def TMulSOp: PTO_TOp<"tmuls", [
 
   let arguments = (ins
     PTODpsType:$src0,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 

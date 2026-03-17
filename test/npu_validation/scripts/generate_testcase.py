@@ -274,6 +274,18 @@ def _find_repo_root(start: Path) -> Optional[Path]:
     return None
 
 
+def _find_source_sample_root(repo_root: Path, sample_dir_name: str) -> Optional[Path]:
+    search_roots = [
+        repo_root / "test" / "samples",
+        repo_root / "test" / "pto_isa_st",
+    ]
+    for root in search_roots:
+        candidate = root / sample_dir_name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _resolve_sample_root(input_cpp: Path) -> Path:
     parent = input_cpp.parent
     if parent.name == "npu_validation":
@@ -284,14 +296,16 @@ def _resolve_sample_root(input_cpp: Path) -> Path:
         candidate = parent
 
     # Generated kernels usually live under build/output/<SampleDir>/..., while
-    # custom golden/compare assets live under test/samples/<SampleDir>/.
+    # custom golden/compare assets may live under:
+    #   - test/samples/<SampleDir>/
+    #   - test/pto_isa_st/<SampleDir>/
     # Prefer the source sample directory when it exists so testcase generation
     # can reuse those checked-in assets.
     repo_root = _find_repo_root(input_cpp.resolve())
     if repo_root is not None:
         sample_dir_name = candidate.name
-        source_sample_root = repo_root / "test" / "samples" / sample_dir_name
-        if source_sample_root.is_dir():
+        source_sample_root = _find_source_sample_root(repo_root, sample_dir_name)
+        if source_sample_root is not None:
             return source_sample_root
 
     return candidate
@@ -1012,10 +1026,15 @@ def generate_testcase(
     init_ptrs = [p for p in params if p["kind"] == "ptr"]
     output_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] == "output"]
 
-    ptr_elem_counts = {p["name"]: logical_elem_count for p in params if p["kind"] == "ptr"}
     inferred_counts = _infer_gm_pointer_elem_counts(raw_kernel_for_analysis, pointer_param_names)
-    for name, cnt in inferred_counts.items():
-        ptr_elem_counts[name] = max(ptr_elem_counts.get(name, logical_elem_count), cnt)
+    ptr_elem_counts = {}
+    for p in params:
+        if p["kind"] != "ptr":
+            continue
+        # Prefer per-pointer GlobalTensor/stride inference when available.
+        # Falling back to a single kernel-level logical_elem_count can
+        # over-allocate mismatched binary operands such as 16x64 + 16x32.
+        ptr_elem_counts[p["name"]] = inferred_counts.get(p["name"], logical_elem_count)
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
