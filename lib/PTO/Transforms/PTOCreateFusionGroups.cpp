@@ -7,6 +7,8 @@
 
 #include <functional>
 
+#include "llvm/ADT/StringSwitch.h"
+
 namespace mlir {
 namespace pto {
 #define GEN_PASS_DEF_PTOCREATEFUSIONGROUPS
@@ -18,41 +20,59 @@ using namespace mlir;
 
 namespace {
 
-static bool isFusibleBinaryOp(Operation *op) {
-  return isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-             pto::TMinOp>(op);
+struct FusibleOpInfo {
+  Operation *op = nullptr;
+  Value dst;
+  SmallVector<Value, 4> inputs;
+  SmallVector<Value, 4> tileInputs;
+};
+
+static bool isSupportedFusionOpName(StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Cases("tmul", "tdiv", "tadd", "tsub", "tmax", "tmin", true)
+      .Cases("tmuls", "tdivs", "tadds", "tsubs", "tmaxs", "tmins", true)
+      .Default(false);
 }
 
-static Value getBinaryDst(Operation *op) {
-  if (auto mul = dyn_cast<pto::TMulOp>(op))
-    return mul.getDst();
-  if (auto div = dyn_cast<pto::TDivOp>(op))
-    return div.getDst();
-  if (auto add = dyn_cast<pto::TAddOp>(op))
-    return add.getDst();
-  if (auto sub = dyn_cast<pto::TSubOp>(op))
-    return sub.getDst();
-  if (auto max = dyn_cast<pto::TMaxOp>(op))
-    return max.getDst();
-  if (auto min = dyn_cast<pto::TMinOp>(op))
-    return min.getDst();
-  return {};
-}
+static FailureOr<FusibleOpInfo> getFusibleOpInfo(Operation *op) {
+  auto oplibIface = dyn_cast<pto::OpLibOpInterface>(op);
+  auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
+  if (!oplibIface || !dpsIface)
+    return failure();
 
-static SmallVector<Value, 2> getBinarySrcs(Operation *op) {
-  if (auto mul = dyn_cast<pto::TMulOp>(op))
-    return {mul.getSrc0(), mul.getSrc1()};
-  if (auto div = dyn_cast<pto::TDivOp>(op))
-    return {div.getSrc0(), div.getSrc1()};
-  if (auto add = dyn_cast<pto::TAddOp>(op))
-    return {add.getSrc0(), add.getSrc1()};
-  if (auto sub = dyn_cast<pto::TSubOp>(op))
-    return {sub.getSrc0(), sub.getSrc1()};
-  if (auto max = dyn_cast<pto::TMaxOp>(op))
-    return {max.getSrc0(), max.getSrc1()};
-  if (auto min = dyn_cast<pto::TMinOp>(op))
-    return {min.getSrc0(), min.getSrc1()};
-  return {};
+  FailureOr<pto::OpLibMatchDescriptor> descOr =
+      oplibIface.getOpLibMatchDescriptor();
+  if (failed(descOr))
+    return failure();
+
+  const pto::OpLibMatchDescriptor &desc = *descOr;
+  if (!isSupportedFusionOpName(desc.opName) || desc.operands.size() < 2 ||
+      desc.operands.size() != desc.operandRoles.size())
+    return failure();
+
+  OperandRange dpsInits = dpsIface.getDpsInits();
+  if (dpsInits.size() != 1)
+    return failure();
+
+  Value dst = dpsInits.front();
+  if (desc.operands.back() != dst)
+    return failure();
+  if (desc.operandRoles.back() != static_cast<int64_t>(pto::OpLibArgRole::Tile))
+    return failure();
+
+  FusibleOpInfo info;
+  info.op = op;
+  info.dst = dst;
+  info.inputs.append(ArrayRef<Value>(desc.operands).drop_back().begin(),
+                     ArrayRef<Value>(desc.operands).drop_back().end());
+
+  for (auto [input, role] :
+       llvm::zip(info.inputs, ArrayRef<int64_t>(desc.operandRoles).drop_back())) {
+    if (role == static_cast<int64_t>(pto::OpLibArgRole::Tile))
+      info.tileInputs.push_back(input);
+  }
+
+  return info;
 }
 
 struct PTOCreateFusionGroupsPass
@@ -67,7 +87,7 @@ struct PTOCreateFusionGroupsPass
 
     std::function<void(Region &)> processRegion = [&](Region &region) {
       for (Block &block : region.getBlocks()) {
-        SmallVector<Operation *, 8> chain;
+        SmallVector<FusibleOpInfo, 8> chain;
 
         auto flushChain = [&]() {
           if (chain.size() < 2) {
@@ -77,7 +97,7 @@ struct PTOCreateFusionGroupsPass
           int64_t gid = nextGroupId++;
           for (auto it : llvm::enumerate(chain)) {
             int64_t idx = static_cast<int64_t>(it.index());
-            Operation *op = it.value();
+            Operation *op = it.value().op;
             op->setAttr("pto.fusion.group_id",
                         IntegerAttr::get(IntegerType::get(ctx, 64), gid));
             op->setAttr("pto.fusion.order",
@@ -88,28 +108,30 @@ struct PTOCreateFusionGroupsPass
 
         for (Operation &op : block.getOperations()) {
           Operation *cur = &op;
+          FailureOr<FusibleOpInfo> curInfoOr = getFusibleOpInfo(cur);
 
-          if (!isFusibleBinaryOp(cur)) {
+          if (failed(curInfoOr)) {
             flushChain();
             for (Region &nested : cur->getRegions())
               processRegion(nested);
             continue;
           }
 
+          FusibleOpInfo curInfo = *curInfoOr;
+
           if (chain.empty()) {
-            chain.push_back(cur);
+            chain.push_back(std::move(curInfo));
             continue;
           }
 
-          Value prevDst = getBinaryDst(chain.back());
-          SmallVector<Value, 2> curSrcs = getBinarySrcs(cur);
-          bool dependsOnPrev = llvm::is_contained(curSrcs, prevDst);
+          Value prevDst = chain.back().dst;
+          bool dependsOnPrev = llvm::is_contained(curInfo.tileInputs, prevDst);
           if (!dependsOnPrev) {
             flushChain();
-            chain.push_back(cur);
+            chain.push_back(std::move(curInfo));
             continue;
           }
-          chain.push_back(cur);
+          chain.push_back(std::move(curInfo));
         }
         flushChain();
       }

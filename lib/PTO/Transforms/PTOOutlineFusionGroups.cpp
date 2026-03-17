@@ -5,12 +5,14 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 
 #include <string>
 
@@ -33,10 +35,10 @@ struct GroupInfo {
   SmallVector<Operation *, 8> ops;
 };
 
-struct BinaryOpInterface {
-  Value src0;
-  Value src1;
+struct FusibleOpInfo {
+  Operation *op = nullptr;
   Value dst;
+  SmallVector<Value, 4> inputs;
 };
 
 struct GroupInterface {
@@ -46,26 +48,45 @@ struct GroupInterface {
   SmallVector<Value, 8> callArgs;
 };
 
-static bool isSupportedFusionOp(Operation *op) {
-  return isa<pto::TMulOp, pto::TDivOp, pto::TAddOp, pto::TSubOp, pto::TMaxOp,
-             pto::TMinOp, pto::TRemOp, pto::TRemSOp, pto::TPReluOp,
-             pto::TLReluOp>(op);
+static bool isSupportedFusionOpName(StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Cases("tmul", "tdiv", "tadd", "tsub", "tmax", "tmin", true)
+      .Cases("tmuls", "tdivs", "tadds", "tsubs", "tmaxs", "tmins", true)
+      .Default(false);
 }
 
-static FailureOr<BinaryOpInterface> getBinaryOpInterface(Operation *op) {
-  if (auto mul = dyn_cast<pto::TMulOp>(op))
-    return BinaryOpInterface{mul.getSrc0(), mul.getSrc1(), mul.getDst()};
-  if (auto div = dyn_cast<pto::TDivOp>(op))
-    return BinaryOpInterface{div.getSrc0(), div.getSrc1(), div.getDst()};
-  if (auto add = dyn_cast<pto::TAddOp>(op))
-    return BinaryOpInterface{add.getSrc0(), add.getSrc1(), add.getDst()};
-  if (auto sub = dyn_cast<pto::TSubOp>(op))
-    return BinaryOpInterface{sub.getSrc0(), sub.getSrc1(), sub.getDst()};
-  if (auto max = dyn_cast<pto::TMaxOp>(op))
-    return BinaryOpInterface{max.getSrc0(), max.getSrc1(), max.getDst()};
-  if (auto min = dyn_cast<pto::TMinOp>(op))
-    return BinaryOpInterface{min.getSrc0(), min.getSrc1(), min.getDst()};
-  return failure();
+static FailureOr<FusibleOpInfo> getFusibleOpInfo(Operation *op) {
+  auto oplibIface = dyn_cast<pto::OpLibOpInterface>(op);
+  auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(op);
+  if (!oplibIface || !dpsIface)
+    return failure();
+
+  FailureOr<pto::OpLibMatchDescriptor> descOr =
+      oplibIface.getOpLibMatchDescriptor();
+  if (failed(descOr))
+    return failure();
+
+  const pto::OpLibMatchDescriptor &desc = *descOr;
+  if (!isSupportedFusionOpName(desc.opName) || desc.operands.size() < 2 ||
+      desc.operands.size() != desc.operandRoles.size())
+    return failure();
+
+  OperandRange dpsInits = dpsIface.getDpsInits();
+  if (dpsInits.size() != 1)
+    return failure();
+
+  Value dst = dpsInits.front();
+  if (desc.operands.back() != dst)
+    return failure();
+  if (desc.operandRoles.back() != static_cast<int64_t>(pto::OpLibArgRole::Tile))
+    return failure();
+
+  FusibleOpInfo info;
+  info.op = op;
+  info.dst = dst;
+  info.inputs.append(ArrayRef<Value>(desc.operands).drop_back().begin(),
+                     ArrayRef<Value>(desc.operands).drop_back().end());
+  return info;
 }
 
 static bool hasFusionGroupAttrs(Operation *op) {
@@ -81,26 +102,24 @@ static void appendUniqueValue(SmallVectorImpl<Value> &vals, Value v) {
     vals.push_back(v);
 }
 
-static GroupInterface buildGroupInterface(GroupInfo &group) {
+static FailureOr<GroupInterface> buildGroupInterface(GroupInfo &group) {
   GroupInterface iface;
 
   for (Operation *op : group.ops) {
-    FailureOr<BinaryOpInterface> opIfaceOr = getBinaryOpInterface(op);
-    if (failed(opIfaceOr))
-      continue;
-    appendUniqueValue(iface.producedInOrder, opIfaceOr->dst);
-    iface.producedSet.insert(opIfaceOr->dst);
+    FailureOr<FusibleOpInfo> opInfoOr = getFusibleOpInfo(op);
+    if (failed(opInfoOr))
+      return failure();
+    appendUniqueValue(iface.producedInOrder, opInfoOr->dst);
+    iface.producedSet.insert(opInfoOr->dst);
   }
 
   for (Operation *op : group.ops) {
-    FailureOr<BinaryOpInterface> opIfaceOr = getBinaryOpInterface(op);
-    if (failed(opIfaceOr))
-      continue;
-
-    for (Value src : {opIfaceOr->src0, opIfaceOr->src1}) {
-      if (!iface.producedSet.contains(src))
-        appendUniqueValue(iface.externalInputs, src);
-    }
+    FailureOr<FusibleOpInfo> opInfoOr = getFusibleOpInfo(op);
+    if (failed(opInfoOr))
+      return failure();
+    for (Value input : opInfoOr->inputs)
+      if (!iface.producedSet.contains(input))
+        appendUniqueValue(iface.externalInputs, input);
   }
 
   for (Value v : iface.externalInputs)
@@ -146,43 +165,6 @@ static DenseMap<Value, Value> mapCallArgsToEntry(Block *entry,
   return valueMap;
 }
 
-static FailureOr<Value> mapOrFail(DenseMap<Value, Value> &valueMap, Value key) {
-  auto it = valueMap.find(key);
-  if (it == valueMap.end())
-    return failure();
-  return it->second;
-}
-
-static LogicalResult createClonedBinaryOp(Operation *op, OpBuilder &builder,
-                                          Location loc, Value src0, Value src1,
-                                          Value dst) {
-  if (isa<pto::TMulOp>(op)) {
-    builder.create<pto::TMulOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  if (isa<pto::TDivOp>(op)) {
-    builder.create<pto::TDivOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  if (isa<pto::TAddOp>(op)) {
-    builder.create<pto::TAddOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  if (isa<pto::TSubOp>(op)) {
-    builder.create<pto::TSubOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  if (isa<pto::TMaxOp>(op)) {
-    builder.create<pto::TMaxOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  if (isa<pto::TMinOp>(op)) {
-    builder.create<pto::TMinOp>(loc, TypeRange{}, src0, src1, dst);
-    return success();
-  }
-  return failure();
-}
-
 struct PTOOutlineFusionGroupsPass
     : public pto::impl::PTOOutlineFusionGroupsBase<PTOOutlineFusionGroupsPass> {
   using pto::impl::PTOOutlineFusionGroupsBase<
@@ -204,7 +186,7 @@ struct PTOOutlineFusionGroupsPass
       for (Operation &op : block.getOperations()) {
         Operation *curOp = &op;
 
-        if (isSupportedFusionOp(curOp) && hasFusionGroupAttrs(curOp)) {
+        if (succeeded(getFusibleOpInfo(curOp)) && hasFusionGroupAttrs(curOp)) {
           auto gidAttr = curOp->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr);
           auto orderAttr = curOp->getAttrOfType<IntegerAttr>(kFusionOrderAttr);
 
@@ -248,15 +230,21 @@ struct PTOOutlineFusionGroupsPass
     Location loc = firstOp->getLoc();
 
     for (Operation *op : group.ops) {
-      FailureOr<BinaryOpInterface> opIfaceOr = getBinaryOpInterface(op);
-      if (failed(opIfaceOr)) {
+      if (failed(getFusibleOpInfo(op))) {
         firstOp->emitWarning()
             << "fusion-group fallback: unsupported grouped PTO op for outlining";
         return success();
       }
     }
 
-    GroupInterface iface = buildGroupInterface(group);
+    FailureOr<GroupInterface> ifaceOr = buildGroupInterface(group);
+    if (failed(ifaceOr)) {
+      firstOp->emitWarning()
+          << "fusion-group fallback: failed to build group interface, keep "
+             "original ops";
+      return success();
+    }
+    GroupInterface iface = *ifaceOr;
     if (iface.callArgs.empty()) {
       firstOp->emitWarning()
           << "fusion-group fallback: group has no external interface values, "
@@ -271,33 +259,17 @@ struct PTOOutlineFusionGroupsPass
 
     Block *entry = fusedFunc.addEntryBlock();
     OpBuilder bodyBuilder = OpBuilder::atBlockBegin(entry);
+    IRMapping mapping;
     DenseMap<Value, Value> valueMap = mapCallArgsToEntry(entry, iface.callArgs);
+    for (auto &[orig, mapped] : valueMap)
+      mapping.map(orig, mapped);
 
     for (Operation *op : group.ops) {
-      FailureOr<BinaryOpInterface> opIfaceOr = getBinaryOpInterface(op);
-      if (failed(opIfaceOr)) {
+      if (failed(getFusibleOpInfo(op))) {
         fusedFunc.erase();
         return success();
       }
-
-      FailureOr<Value> src0Or = mapOrFail(valueMap, opIfaceOr->src0);
-      FailureOr<Value> src1Or = mapOrFail(valueMap, opIfaceOr->src1);
-      FailureOr<Value> dstOr = mapOrFail(valueMap, opIfaceOr->dst);
-      if (failed(src0Or) || failed(src1Or) || failed(dstOr)) {
-        firstOp->emitWarning()
-            << "fusion-group fallback: failed to map group op operands, keep "
-               "original group";
-        fusedFunc.erase();
-        return success();
-      }
-
-      if (failed(createClonedBinaryOp(op, bodyBuilder, loc, *src0Or, *src1Or,
-                                      *dstOr))) {
-        firstOp->emitWarning()
-            << "fusion-group fallback: failed to clone group op into fused helper";
-        fusedFunc.erase();
-        return success();
-      }
+      bodyBuilder.clone(*op, mapping);
     }
 
     bodyBuilder.create<func::ReturnOp>(loc);

@@ -6,10 +6,10 @@
 
 ## 2. 分组与 outline 扩展
 
-- [ ] 2.1 修改 `lib/PTO/Transforms/PTOCreateFusionGroups.cpp`，把 binary-only 分组规则改为基于 `OpLibOpInterface` / `OpLibMatchDescriptor` 的 descriptor-driven grouping。
-- [ ] 2.2 让 mixed chain 支持 tile-tile 与 tile-scalar 混合分组，并把 scalar external input 纳入 group interface。
-- [ ] 2.3 修改 `lib/PTO/Transforms/PTOOutlineFusionGroups.cpp`，从固定 `(src0, src1, dst)` helper ABI 升级为“唯一 external operands + destination tiles”模型。
-- [ ] 2.4 保证 outline 后 helper 克隆保留 `tdivs` 的 `operandOrder` 与其他 lowering 相关 attrs。
+- [x] 2.1 修改 `lib/PTO/Transforms/PTOCreateFusionGroups.cpp`，把 binary-only 分组规则改为基于 `OpLibOpInterface` / `OpLibMatchDescriptor` 的 descriptor-driven grouping。
+- [x] 2.2 让 mixed chain 支持 tile-tile 与 tile-scalar 混合分组，并把 scalar external input 纳入 group interface。
+- [x] 2.3 修改 `lib/PTO/Transforms/PTOOutlineFusionGroups.cpp`，从固定 `(src0, src1, dst)` helper ABI 升级为“唯一 external operands + destination tiles”模型。
+- [x] 2.4 保证 outline 后 helper 克隆保留 `tdivs` 的 `operandOrder` 与其他 lowering 相关 attrs。
 
 ## 3. Grouped lowering 与 low-level fusion
 
