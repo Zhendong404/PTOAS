@@ -498,6 +498,25 @@ def _required_elements_for_shape_stride(shape_dims, stride_dims) -> Optional[int
     return max(req, 1)
 
 
+def _extract_function_scope(text: str, function_name: str) -> str:
+    pattern = re.compile(rf"\b{re.escape(function_name)}\s*\([^;{{}}]*\)\s*\{{")
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    body_start = match.end() - 1
+    depth = 0
+    for idx in range(body_start, len(text)):
+        ch = text[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[match.start(): idx + 1]
+    return text
+
+
 def _sanitize_int_expr(expr: str) -> str:
     expr = expr.strip()
     # Strip common C-style integer casts found in PTOAS-generated code.
@@ -680,25 +699,28 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
     if not pointer_param_names:
         return {}
 
+    kernel_name = _parse_kernel_name(kernel_text)
+    kernel_scope = _extract_function_scope(kernel_text, kernel_name)
+
     pointer_params = set(pointer_param_names)
 
-    int_max = _infer_int_var_maxima(kernel_text)
+    int_max = _infer_int_var_maxima(kernel_scope)
 
     pointer_like = set(pointer_param_names)
-    for m in re.finditer(r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*(?:=[^;]+)?;", kernel_text):
+    for m in re.finditer(r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*(?:=[^;]+)?;", kernel_scope):
         pointer_like.add(m.group(1))
 
     ptr_to_base_offset = {}
     for m in re.finditer(
         r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);",
-        kernel_text,
+        kernel_scope,
     ):
         ptr_to_base_offset[m.group(1)] = (m.group(2), m.group(3).strip())
 
     # declareVariablesAtTop form:
     #   __gm__ float* v35;
     #   v35 = v1 + v34;
-    for m in re.finditer(r"\b(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);", kernel_text):
+    for m in re.finditer(r"\b(\w+)\s*=\s*(\w+)\s*\+\s*([^;]+);", kernel_scope):
         lhs = m.group(1)
         base = m.group(2)
         if lhs not in pointer_like:
@@ -710,11 +732,11 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
     ptr_to_param = {}
     for m in re.finditer(
         r"__gm__\s+[\w:<>]+\s*\*\s*(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b",
-        kernel_text,
+        kernel_scope,
     ):
         ptr_to_param[m.group(1)] = m.group(2)
 
-    for m in re.finditer(r"\b(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b", kernel_text):
+    for m in re.finditer(r"\b(\w+)\s*=\s*\(__gm__\s+[\w:<>]+\s*\*\)\s*(\w+)\b", kernel_scope):
         lhs = m.group(1)
         rhs = m.group(2)
         if lhs not in pointer_like:
@@ -811,13 +833,13 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
 
     # Parse aliases: GTShape_*=pto::Shape<...>; GTStride_*=pto::Stride<...>;
     shape_aliases = {}
-    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Shape<([^>]*)>;", kernel_text):
+    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Shape<([^>]*)>;", kernel_scope):
         dims = _parse_int_list(m.group(2))
         if dims:
             shape_aliases[m.group(1)] = dims
 
     stride_aliases = {}
-    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Stride<([^>]*)>;", kernel_text):
+    for m in re.finditer(r"using\s+(\w+)\s*=\s*pto::Stride<([^>]*)>;", kernel_scope):
         dims = _parse_int_list(m.group(2))
         if dims:
             stride_aliases[m.group(1)] = dims
@@ -830,7 +852,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
         # and the 4-param layout form:
         #   using GT = GlobalTensor<T, ShapeAlias, StrideAlias, LayoutAlias>;
         r"using\s+(\w+)\s*=\s*GlobalTensor<\s*[^,>]+\s*,\s*(\w+)\s*,\s*(\w+)\s*(?:,\s*[^>]+)?\s*>;",
-        kernel_text,
+        kernel_scope,
     ):
         gt_alias = m.group(1)
         shape_alias = m.group(2)
@@ -839,7 +861,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
 
     # Find instantiations: GT_xxx v = GT_xxx(ptr, ...)
     param_elem_counts = {}
-    for m in re.finditer(r"\b(\w+)\s+\w+\s*=\s*\1\s*\(\s*(\w+)\s*,", kernel_text):
+    for m in re.finditer(r"\b(\w+)\s+\w+\s*=\s*\1\s*\(\s*(\w+)\s*,", kernel_scope):
         gt_alias = m.group(1)
         base_ptr = m.group(2)
         shape_stride = gt_alias_to_shape_stride.get(gt_alias)
@@ -860,7 +882,7 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
     # pto::Shape/pto::Stride directly in the GlobalTensor template.
     for m in re.finditer(
         r"\b(?:pto::)?GlobalTensor<[^;\n]*(?:pto::)?Shape<([^>]*)>[^;\n]*(?:pto::)?Stride<([^>]*)>[^;\n]*>\s*\(\s*([^,]+?)\s*,",
-        kernel_text,
+        kernel_scope,
     ):
         shape_dims = _parse_int_list(m.group(1))
         stride_dims = _parse_int_list(m.group(2))
