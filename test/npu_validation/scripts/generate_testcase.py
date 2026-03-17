@@ -267,13 +267,34 @@ def _derive_testcase_name(input_cpp: Path) -> str:
     return name
 
 
+def _find_repo_root(start: Path) -> Optional[Path]:
+    for candidate in [start, *start.parents]:
+        if (candidate / "test" / "samples").is_dir() and (candidate / "docs" / "PTO_IR_manual.md").is_file():
+            return candidate
+    return None
+
+
 def _resolve_sample_root(input_cpp: Path) -> Path:
     parent = input_cpp.parent
     if parent.name == "npu_validation":
-        return parent.parent
-    if parent.parent.name == "npu_validation":
-        return parent.parent.parent
-    return parent
+        candidate = parent.parent
+    elif parent.parent.name == "npu_validation":
+        candidate = parent.parent.parent
+    else:
+        candidate = parent
+
+    # Generated kernels usually live under build/output/<SampleDir>/..., while
+    # custom golden/compare assets live under test/samples/<SampleDir>/.
+    # Prefer the source sample directory when it exists so testcase generation
+    # can reuse those checked-in assets.
+    repo_root = _find_repo_root(input_cpp.resolve())
+    if repo_root is not None:
+        sample_dir_name = candidate.name
+        source_sample_root = repo_root / "test" / "samples" / sample_dir_name
+        if source_sample_root.is_dir():
+            return source_sample_root
+
+    return candidate
 
 
 def _parse_case_shape_suffix(testcase: str) -> Optional[Tuple[str, int, int, str]]:
@@ -1486,6 +1507,7 @@ endif()
     run_path = output_dir / "run.sh"
     run_path.write_text(run_sh, encoding="utf-8")
     run_path.chmod(0o755)
+    return output_dir
 
 
 def main():
@@ -1504,7 +1526,7 @@ def main():
 
     output_root = Path(args.output_root) if args.output_root else None
     testcase = args.testcase or _derive_testcase_name(Path(args.input))
-    generate_testcase(
+    output_dir = generate_testcase(
         Path(args.input),
         output_root,
         testcase,
@@ -1512,6 +1534,7 @@ def main():
         args.soc_version,
         aicore_arch=args.aicore_arch,
     )
+    print(f"Generated npu_validation testcase at: {output_dir.resolve()}")
 
 
 if __name__ == "__main__":
