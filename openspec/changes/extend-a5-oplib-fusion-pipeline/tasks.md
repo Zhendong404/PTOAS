@@ -24,12 +24,12 @@
 - [x] 4.1 更新 `test/tile_fusion/create_fusion_groups.mlir`，覆盖 tile-scalar 和 mixed chain 标组。
 - [x] 4.2 更新 `test/tile_fusion/materialize_fusion_groups.mlir`，覆盖 mixed chain helper 参数包含 scalar。
 - [x] 4.3 重写 `test/tile_fusion/low_level_loop_fusion.mlir`，显式检查单一 `pto.simd.vec_scope`、无链内中间 `vector.maskedstore` / 回读 `vector.maskedload`。
-- [ ] 4.4 新增 1 个 `test/tile_fusion/` negative 用例，验证非法 case 保守不融合。
-- [ ] 4.5 更新或新增 `test/oplib/` 用例，使用 `softmax_chain.pto` 验证 mixed chain，使用 `binary_max_min_chain.pto` 验证纯 tile-tile 对照。
-- [ ] 4.6 新增 1 个 EmitC/codegen smoke，检查输出中保留 `__VEC_SCOPE__` 且没有链内中间 tile 的多余 round-trip 访存模式。
+- [x] 4.4 新增 1 个 `test/tile_fusion/` negative 用例，验证非法 case 保守不融合。
+- [x] 4.5 更新或新增 `test/oplib/` 用例，使用 `softmax_chain.pto` 验证 mixed chain，使用 `binary_max_min_chain.pto` 验证纯 tile-tile 对照。
+- [x] 4.6 新增 1 个 EmitC/codegen smoke，检查输出中保留 `__VEC_SCOPE__` 且没有链内中间 tile 的多余 round-trip 访存模式。
 
 ## 5. 验证命令
 
 - [x] 5.1 运行 `../llvm-project/build-shared/bin/llvm-lit -sv test/tile_fusion/...`
-- [ ] 5.2 运行 `../llvm-project/build-shared/bin/llvm-lit -sv test/oplib/<相关用例>`
+- [x] 5.2 运行 `../llvm-project/build-shared/bin/llvm-lit -sv test/oplib/<相关用例>`
 - [x] 5.3 运行至少 1 个 `ptoas ... --enable-op-fusion -o %t.cpp` 的直出 C++ smoke，并记录结果

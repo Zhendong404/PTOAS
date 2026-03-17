@@ -180,8 +180,6 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
       return false;
     if (!sameForHeader(first.loop, stage.loop))
       return false;
-    if (!areEquivalentMaskValues(stage.store.getMask(), first.store.getMask()))
-      return false;
   }
 
   DenseMap<Value, unsigned> lastStoreStage;
