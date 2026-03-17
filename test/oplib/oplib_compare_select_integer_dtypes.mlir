@@ -10,22 +10,22 @@
 // CMP-TILE-U8-LABEL: func.func private @__pto_oplib_variant_tcmp_lt_u8(
 // CMP-TILE-U8: pto.oplib.match.dtype = "u8"
 // CMP-TILE-U8: pto.oplib.match.cmp_mode = "LT"
-// CMP-TILE-U8: %cmp = arith.cmpi ult, %lhs, %src1v : vector<64xi8>
+// CMP-TILE-U8: pto.simd.store_predicate %lhs, %src1v, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi8>, vector<64xi8>, !pto.tile_buf
 
 // CMP-TILE-F16-LABEL: func.func private @__pto_oplib_variant_tcmp_ge_f16(
 // CMP-TILE-F16: pto.oplib.match.dtype = "f16"
 // CMP-TILE-F16: pto.oplib.match.cmp_mode = "GE"
-// CMP-TILE-F16: %cmp = arith.cmpf oge, %lhs, %src1v : vector<64xf16>
+// CMP-TILE-F16: pto.simd.store_predicate %lhs, %src1v, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xf16>, vector<64xf16>, !pto.tile_buf
 
 // CMP-SCALAR-I16-LABEL: func.func private @__pto_oplib_variant_tcmps_ge_i16(
 // CMP-SCALAR-I16: pto.oplib.match.dtype = "i16"
 // CMP-SCALAR-I16: pto.oplib.match.cmp_mode = "GE"
-// CMP-SCALAR-I16: %cmp = arith.cmpi sge, %lhs, %scalarVec : vector<64xi16>
+// CMP-SCALAR-I16: pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi16>, i16, !pto.tile_buf
 
 // CMP-SCALAR-U32-LABEL: func.func private @__pto_oplib_variant_tcmps_lt_u32(
 // CMP-SCALAR-U32: pto.oplib.match.dtype = "u32"
 // CMP-SCALAR-U32: pto.oplib.match.cmp_mode = "LT"
-// CMP-SCALAR-U32: %cmp = arith.cmpi ult, %lhs, %scalarVec : vector<64xi32>
+// CMP-SCALAR-U32: pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi32>, i32, !pto.tile_buf
 
 // SEL-MASK-U8-LABEL: func.func private @__pto_oplib_variant_tsel_mask_u8(
 // SEL-MASK-U8: pto.oplib.match.dtype = "u8"

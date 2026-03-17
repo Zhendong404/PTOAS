@@ -1,12 +1,17 @@
-// RUN: { ptoas %S/../oplib/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+// RUN: { ptoas %S/../oplib/softmax_chain.pto --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all --print-ir-after-all-func-filter=__pto_fused_group_1_1 -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
-// CHECK-LABEL: func.func private @__pto_fused_group_0_0(
-// CHECK: scf.for
-// CHECK-COUNT-3: arith.mulf
-// CHECK-NOT: call @__pto_oplib_inst_v_tadd_f32_fast(
-// CHECK-NOT: pto.simd.load
-// CHECK-NOT: pto.simd.store
-// CHECK-NOT: pto.simd.predicate
-// CHECK-LABEL: func.func @flash_attention_softmax_block(
-// CHECK: call @__pto_fused_group_0_0(
+// CHECK-LABEL: func.func private @__pto_fused_group_1_1(
+// CHECK: %[[SRC0:[0-9]+]] = pto.simd.tile_to_memref %arg0
+// CHECK: %[[SRC1:[0-9]+]] = pto.simd.tile_to_memref %arg1
+// CHECK: %[[DST:[0-9]+]] = pto.simd.tile_to_memref %arg6
+// CHECK: %[[SRC2:[0-9]+]] = pto.simd.tile_to_memref %arg2
+// CHECK: %[[SRC3:[0-9]+]] = pto.simd.tile_to_memref %arg3
+// CHECK-COUNT-1: pto.simd.vec_scope
+// CHECK-COUNT-1: scf.for
+// CHECK-COUNT-4: vector.maskedload
+// CHECK-COUNT-4: arith.addf
+// CHECK-COUNT-1: arith.divf
+// CHECK-NOT: arith.select
+// CHECK-NOT: vector.maskedload %[[DST]]
+// CHECK: vector.maskedstore %[[DST]]

@@ -1,4 +1,4 @@
-// RUN: { ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all --print-ir-after-all-func-filter='(taddc|tsubc|taddsc|tsubsc)_deferred' -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 --print-ir-after-all -o /dev/null 2>&1 || true; } | FileCheck %s
 
 // CHECK-LABEL: func.func @taddc_deferred(
 // CHECK: pto.taddc

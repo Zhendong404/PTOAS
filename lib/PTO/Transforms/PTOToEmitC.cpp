@@ -3938,6 +3938,12 @@ static void inferTileMNK(func::FuncOp f, int &M, int &N, int &K) {
 struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
   using OpConversionPattern<func::FuncOp>::OpConversionPattern;
 
+  static bool useInlineAICoreHelperStyle(func::FuncOp op) {
+    StringRef name = op.getName();
+    return op.isPrivate() || name.starts_with("__pto_fused_group_") ||
+           name.starts_with("__pto_oplib_");
+  }
+
   LogicalResult matchAndRewrite(func::FuncOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     // Convert the function signature with the type converter.
@@ -3952,8 +3958,13 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
     // Create the EmitC function with the converted signature.
     auto emitcFunc = rewriter.create<emitc::FuncOp>(op.getLoc(), op.getName(),
                                                     funcType);
-    emitcFunc.setSpecifiersAttr(
-        rewriter.getStrArrayAttr({"__global__ AICORE"}));
+    if (useInlineAICoreHelperStyle(op)) {
+      emitcFunc.setSpecifiersAttr(rewriter.getStrArrayAttr(
+          {"[aicore]", "inline", "__attribute__((always_inline))"}));
+    } else {
+      emitcFunc.setSpecifiersAttr(
+          rewriter.getStrArrayAttr({"__global__ AICORE"}));
+    }
 
     // Inline the original body, then convert region/block argument types to
     // match the converted signature (also covers CFG blocks introduced by
@@ -9216,8 +9227,6 @@ struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
   matchAndRewrite(pto::SimdVecScopeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    rewriter.create<emitc::VerbatimOp>(
-        loc, "#if defined(__CCE_AICORE__) || defined(__CPU_SIM)");
     rewriter.create<emitc::VerbatimOp>(loc, "__VEC_SCOPE__ {");
 
     Block &innerBlock = op.getBody().front();
@@ -9226,8 +9235,6 @@ struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
     }
 
     rewriter.create<emitc::VerbatimOp>(loc, "}");
-    rewriter.create<emitc::VerbatimOp>(
-        loc, "#endif // __CCE_AICORE__ || __CPU_SIM");
     rewriter.eraseOp(op);
     return success();
   }

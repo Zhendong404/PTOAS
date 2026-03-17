@@ -235,13 +235,17 @@ def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary = "Fuse adjacent low-level loop nests in synthesized fused functions";
   let description = [{
-    Conservatively fuses adjacent 2-level scf.for nests with identical bounds.
-    If fusion is not legal, keeps the original loops unchanged.
+    Conservatively fuses adjacent canonical pto.simd.vec_scope stages in
+    synthesized fused helpers, performs store-to-load forwarding for internal
+    stage results, and keeps unsupported shapes unchanged.
   }];
   let constructor = "mlir::pto::createPTOLowLevelLoopFusionPass()";
   let dependentDialects = [
     "mlir::func::FuncDialect",
-    "mlir::scf::SCFDialect"
+    "mlir::pto::PTODialect",
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::vector::VectorDialect"
   ];
   let options = [
     Option<"debug", "debug", "bool",
