@@ -2500,6 +2500,15 @@ template <> llvm::StringRef getA5VectorUnaryCallee<math::RsqrtOp>() {
 
 template <typename ArithOp> static llvm::StringRef getA5VectorIntBinaryCallee();
 
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::AddIOp>() {
+  return "vadd";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::SubIOp>() {
+  return "vsub";
+}
+template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::MulIOp>() {
+  return "vmul";
+}
 template <> llvm::StringRef getA5VectorIntBinaryCallee<arith::AndIOp>() {
   return "vand";
 }
@@ -9867,6 +9876,9 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                OplibVectorBinaryArithToEmitC<arith::DivFOp>,
                OplibVectorBinaryArithToEmitC<arith::MaximumFOp>,
                OplibVectorBinaryArithToEmitC<arith::MinimumFOp>,
+               OplibVectorIntBinaryToEmitC<arith::AddIOp>,
+               OplibVectorIntBinaryToEmitC<arith::SubIOp>,
+               OplibVectorIntBinaryToEmitC<arith::MulIOp>,
                OplibVectorUnaryToEmitC<arith::NegFOp>,
                OplibVectorUnaryToEmitC<math::AbsFOp>,
                OplibVectorUnaryToEmitC<math::ExpOp>,
@@ -10238,6 +10250,39 @@ struct EmitPTOManualPass
               vecTy &&
               failed(validateA5OplibVectorType(subf.getOperation(), vecTy,
                                                "arith.subf"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto addi = dyn_cast<arith::AddIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(addi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(addi.getOperation(), vecTy,
+                                               "arith.addi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto subi = dyn_cast<arith::SubIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(subi.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(subi.getOperation(), vecTy,
+                                               "arith.subi"))) {
+            hasUnsupportedA5Vector = true;
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        }
+
+        if (auto muli = dyn_cast<arith::MulIOp>(op)) {
+          if (auto vecTy = dyn_cast<VectorType>(muli.getType());
+              vecTy &&
+              failed(validateA5OplibVectorType(muli.getOperation(), vecTy,
+                                               "arith.muli"))) {
             hasUnsupportedA5Vector = true;
             return WalkResult::interrupt();
           }

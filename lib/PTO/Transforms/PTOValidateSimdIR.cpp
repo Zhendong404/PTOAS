@@ -94,6 +94,14 @@ static bool isBinaryFloatCore(Operation *op) {
              arith::MaximumFOp, arith::MinimumFOp>(op);
 }
 
+static bool isBinaryIntCore(Operation *op) {
+  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op);
+}
+
+static bool isBinaryCore(Operation *op) {
+  return isBinaryFloatCore(op) || isBinaryIntCore(op);
+}
+
 static bool isVectorFloatBinaryArith(Operation *op) {
   if (!isBinaryFloatCore(op))
     return false;
@@ -399,9 +407,9 @@ static LogicalResult validateLegacySimdBody(func::FuncOp func, int64_t lanes) {
         coreSeq = std::numeric_limits<int64_t>::min();
         return;
       }
-      if (!isBinaryFloatCore(op)) {
+      if (!isBinaryCore(op)) {
         (void)emitCodeError(op, kErrCoreSlot,
-                            "core_slot op must be binary floating-point arith op");
+                            "core_slot op must be supported binary arith op");
         coreSeq = std::numeric_limits<int64_t>::min();
         return;
       }
@@ -931,10 +939,10 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
           "unsupported core_slot, expected 'binary_ewise_core'");
       return;
     }
-    if (!isBinaryFloatCore(op)) {
+    if (!isBinaryCore(op)) {
       status = emitCodeError(
           op, kErrCoreSlot,
-          "core_slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf");
+          "core_slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli");
       return;
     }
     if (op->getNumResults() != 1) {

@@ -984,6 +984,14 @@ static bool isBinaryFloatCore(Operation *op) {
              arith::MaximumFOp, arith::MinimumFOp>(op);
 }
 
+static bool isBinaryIntCore(Operation *op) {
+  return isa<arith::AddIOp, arith::SubIOp, arith::MulIOp>(op);
+}
+
+static bool isBinaryCore(Operation *op) {
+  return isBinaryFloatCore(op) || isBinaryIntCore(op);
+}
+
 static bool isVectorFloatBinaryArith(Operation *op) {
   if (!isBinaryFloatCore(op))
     return false;
@@ -1700,10 +1708,10 @@ struct TemplateRegistry {
                                      "core slot value mismatches seed.core_slot");
         return;
       }
-      if (!isBinaryFloatCore(op)) {
+      if (!isBinaryCore(op)) {
         status = emitFailureWithCode(
             op, kErrCoreSlot,
-            "core slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf");
+            "core slot op must be one of arith.addf/subf/mulf/divf/maximumf/minimumf/addi/subi/muli");
         return;
       }
       if (op->getNumResults() != 1) {
@@ -2384,13 +2392,31 @@ struct TemplateRegistry {
       Value lhs = core->getOperand(0);
       Value rhs = core->getOperand(1);
       Operation *newCore = nullptr;
+      Type coreTy = lhs.getType();
+      auto isIntLikeCoreType = [&]() {
+        if (isa<IntegerType, IndexType>(coreTy))
+          return true;
+        if (auto vecTy = dyn_cast<VectorType>(coreTy))
+          return isa<IntegerType>(vecTy.getElementType());
+        return false;
+      };
+
       if (selected.op == "tadd" || selected.op == "tpartadd" ||
           selected.op == "tadds" || selected.op == "trowsum") {
-        newCore = b.create<arith::AddFOp>(core->getLoc(), lhs, rhs);
+        if (isIntLikeCoreType())
+          newCore = b.create<arith::AddIOp>(core->getLoc(), lhs, rhs);
+        else
+          newCore = b.create<arith::AddFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tsub" || selected.op == "tsubs") {
-        newCore = b.create<arith::SubFOp>(core->getLoc(), lhs, rhs);
+        if (isIntLikeCoreType())
+          newCore = b.create<arith::SubIOp>(core->getLoc(), lhs, rhs);
+        else
+          newCore = b.create<arith::SubFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tmul" || selected.op == "tmuls") {
-        newCore = b.create<arith::MulFOp>(core->getLoc(), lhs, rhs);
+        if (isIntLikeCoreType())
+          newCore = b.create<arith::MulIOp>(core->getLoc(), lhs, rhs);
+        else
+          newCore = b.create<arith::MulFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tdiv") {
         newCore = b.create<arith::DivFOp>(core->getLoc(), lhs, rhs);
       } else if (selected.op == "tmax" || selected.op == "tpartmax" ||
