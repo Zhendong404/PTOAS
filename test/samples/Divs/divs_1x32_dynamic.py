@@ -1,7 +1,6 @@
 from pathlib import Path
 import sys
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from sample_utils.tiled_elementwise_cases import build_scalar_case
@@ -9,11 +8,11 @@ from sample_utils.tiled_elementwise_cases import build_scalar_case
 
 def build():
     return build_scalar_case(
-        kernel_name="vec_divs_kernel_2d",
+        kernel_name="divs_kernel_1x32_dynamic",
         op_name="divs",
-        rows=32,
+        rows=1,
         cols=32,
-        dynamic_shape=False,
+        dynamic_shape=True,
     )
 
 

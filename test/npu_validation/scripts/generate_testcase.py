@@ -6,7 +6,7 @@ import ast
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 INCLUDE_REPLACEMENT = (
     "// ---------------------------------------------------------------------------\n"
@@ -276,12 +276,33 @@ def _resolve_sample_root(input_cpp: Path) -> Path:
     return parent
 
 
+def _parse_case_shape_suffix(testcase: str) -> Optional[Tuple[str, int, int, str]]:
+    match = re.match(r"^(?P<base>.+)_(?P<rows>\d+)x(?P<cols>\d+)_(?P<variant>static|dynamic)$", testcase)
+    if not match:
+        return None
+    return (
+        match.group("base"),
+        int(match.group("rows")),
+        int(match.group("cols")),
+        match.group("variant"),
+    )
+
+
 def _find_custom_case_asset(sample_root: Path, testcase: str, filename: str) -> Optional[Path]:
-    candidates = (
+    candidates = [
         sample_root / f"{testcase}_{filename}",
         sample_root / "npu_validation" / testcase / filename,
         sample_root / "npu_validation" / filename,
-    )
+    ]
+    parsed = _parse_case_shape_suffix(testcase)
+    if parsed is not None:
+        base_name, _, _, _ = parsed
+        candidates.extend(
+            [
+                sample_root / f"{base_name}_{filename}",
+                sample_root / "npu_validation" / base_name / filename,
+            ]
+        )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -843,6 +864,7 @@ def generate_testcase(
     aicore_arch: Optional[str] = None,
 ):
     sample_root = _resolve_sample_root(input_cpp)
+    testcase_shape = _parse_case_shape_suffix(testcase)
     if output_root:
         output_dir = output_root / sample_root.name / testcase
     else:
@@ -979,6 +1001,18 @@ def generate_testcase(
                 f"    size_t fileSize_{p['name']} = elemCount_{p['name']} * sizeof({p['host_type']});"
             )
 
+    dynamic_shape_scalar_defaults = {}
+    if testcase_shape is not None and testcase_shape[3] == "dynamic":
+        _, shape_rows, shape_cols, _ = testcase_shape
+        int_scalar_params = [
+            p for p in params
+            if p["kind"] == "scalar"
+            and (re.match(r"^(u?int)(8|16|32|64)_t$", p["host_type"]) or p["host_type"] in {"int", "unsigned", "size_t"})
+        ]
+        if len(int_scalar_params) >= 2:
+            dynamic_shape_scalar_defaults[int_scalar_params[0]["name"]] = str(shape_rows)
+            dynamic_shape_scalar_defaults[int_scalar_params[1]["name"]] = str(shape_cols)
+
     for p in params:
         if p["kind"] != "scalar":
             continue
@@ -992,7 +1026,9 @@ def generate_testcase(
             # structures in the standard 1x256 f32 representation).
             param_decls_lines.append(f"    {t} {p['name']}{{128, 128, 128, 128}};")
             continue
-        if t == "bool":
+        if p["name"] in dynamic_shape_scalar_defaults:
+            value = dynamic_shape_scalar_defaults[p["name"]]
+        elif t == "bool":
             value = "true"
         elif re.match(r"^(u?int)(8|16|32|64)_t$", t) or t in {"int", "unsigned", "size_t"}:
             value = "1"

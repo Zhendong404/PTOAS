@@ -1,17 +1,16 @@
 from pathlib import Path
 import sys
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sample_utils.tiled_elementwise_cases import build_binary_case
+from sample_utils.tiled_elementwise_cases import build_scalar_case
 
 
 def build():
-    return build_binary_case(
-        kernel_name="vec_div_kernel_2d",
-        op_name="div",
-        rows=32,
+    return build_scalar_case(
+        kernel_name="divs_kernel_1x32_static",
+        op_name="divs",
+        rows=1,
         cols=32,
         dynamic_shape=False,
     )
