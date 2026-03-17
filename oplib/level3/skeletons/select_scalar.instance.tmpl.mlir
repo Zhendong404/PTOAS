@@ -23,12 +23,14 @@
     %zeroMode = arith.constant dense<0> : @@SCALAR_ARG_VECTOR_TYPE@@
     %rows = memref.dim %m0, %c0 : @@SRC0_MEMREF_TYPE@@
     %cols = memref.dim %m0, %c1 : @@SRC0_MEMREF_TYPE@@
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@RESULT_VECTOR_TYPE@@
       %scalarRaw = vector.splat %scalar : @@SCALAR_ARG_VECTOR_TYPE@@
       %scalarVec = arith.cmpi ne, %scalarRaw, %zeroMode : @@SCALAR_ARG_VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index

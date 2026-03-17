@@ -22,6 +22,7 @@
 // BIN6-DAG: __VEC_SCOPE__ {
 // BIN6-DAG: for (uint16_t
 // BIN6-DAG: for (uint16_t {{.*}} = 0; {{.*}} < 32; {{.*}} += 1) {
+// BIN6-NOT: for (uint16_t {{.*}} = 0; {{.*}} < {{.*}}; {{.*}} += 64)
 // BIN6-NOT: vlds_mask(
 // BIN6-NOT: PTOAS__OPLIB_
 

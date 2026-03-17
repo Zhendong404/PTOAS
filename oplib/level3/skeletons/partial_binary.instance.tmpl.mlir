@@ -25,6 +25,7 @@
     %cols1 = memref.dim %m1, %c1 : @@INPUT_MEMREF_TYPE@@
     %rows = memref.dim %md, %c0 : @@RESULT_MEMREF_TYPE@@
     %cols = memref.dim %md, %c1 : @@RESULT_MEMREF_TYPE@@
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
@@ -32,7 +33,8 @@
         %rhsRowValid = arith.cmpi slt, %r, %rows1 : index
         %lhsRowIndex = arith.select %lhsRowValid, %r, %c0 : index
         %rhsRowIndex = arith.select %rhsRowValid, %r, %c0 : index
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %dstRemain = arith.subi %cols, %cidx : index
           %dstTail = arith.cmpi slt, %dstRemain, %c64 : index
           %dstActive = arith.select %dstTail, %dstRemain, %c64 : index

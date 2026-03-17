@@ -20,12 +20,14 @@
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : @@INPUT_MEMREF_TYPE@@
     %cols = memref.dim %m0, %c1 : @@INPUT_MEMREF_TYPE@@
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant @@PASSIVE_VECTOR@@ : @@INPUT_VECTOR_TYPE@@
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@INPUT_VECTOR_TYPE@@
       %outMask = vector.create_mask %c1 : @@MASK_VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (@@INPUT_VECTOR_TYPE@@) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (@@INPUT_VECTOR_TYPE@@) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index

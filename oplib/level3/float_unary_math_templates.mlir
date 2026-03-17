@@ -40,10 +40,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -91,10 +93,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -142,10 +146,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -193,10 +199,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -244,10 +252,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -295,10 +305,12 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -346,11 +358,13 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf16>
       %ones = arith.constant dense<1.0> : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -399,11 +413,13 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       %ones = arith.constant dense<1.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index

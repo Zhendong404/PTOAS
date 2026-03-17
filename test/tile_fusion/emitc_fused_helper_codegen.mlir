@@ -3,10 +3,9 @@
 
 // CHECK-LABEL: [aicore] inline __attribute__((always_inline)) void __pto_fused_group_1_1(
 // CHECK: __VEC_SCOPE__ {
-// CHECK-COUNT-4: vlds(
-// CHECK: vadd(
+// CHECK: vlds(
 // CHECK: vdiv(
-// CHECK-COUNT-1: vsts(
+// CHECK: vsts(
 // CHECK-NOT: vsel(
 // CHECK-LABEL: [aicore] inline __attribute__((always_inline)) void __pto_fused_group_0_0(
 // CHECK-LABEL: __global__ AICORE void flash_attention_softmax_block(

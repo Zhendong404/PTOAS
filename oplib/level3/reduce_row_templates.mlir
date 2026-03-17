@@ -45,12 +45,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<0.0> : vector<64xf16>
       %passive = arith.constant dense<0.0> : vector<64xf16>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -105,12 +107,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<0.0> : vector<64xf32>
       %passive = arith.constant dense<0.0> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -165,12 +169,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<-65504.0> : vector<64xf16>
       %passive = arith.constant dense<-65504.0> : vector<64xf16>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -225,12 +231,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<-3.40282347E+38> : vector<64xf32>
       %passive = arith.constant dense<-3.40282347E+38> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -285,12 +293,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<65504.0> : vector<64xf16>
       %passive = arith.constant dense<65504.0> : vector<64xf16>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf16>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
@@ -345,12 +355,14 @@ module {
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %initVec = arith.constant dense<3.40282347E+38> : vector<64xf32>
       %passive = arith.constant dense<3.40282347E+38> : vector<64xf32>
       %outMask = vector.create_mask %c1 : vector<64xi1>
       scf.for %r = %c0 to %rows step %c1 {
-        %reduced = scf.for %cidx = %c0 to %cols step %c64 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+        %reduced = scf.for %j = %c0 to %repeatTimes step %c1 iter_args(%acc = %initVec) -> (vector<64xf32>) {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index

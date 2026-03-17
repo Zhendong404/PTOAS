@@ -22,6 +22,7 @@
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m1, %c0 : @@SRC1_MEMREF_TYPE@@
     %cols = memref.dim %m1, %c1 : @@SRC1_MEMREF_TYPE@@
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
@@ -32,7 +33,8 @@
       %zeroMask = arith.constant dense<0> : @@SRC0_VECTOR_TYPE@@
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@RESULT_VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index

@@ -24,13 +24,15 @@
     %c64 = arith.constant 64 : index
     %rows = memref.dim %m0, %c0 : @@SRC0_MEMREF_TYPE@@
     %cols = memref.dim %m0, %c1 : @@SRC0_MEMREF_TYPE@@
+    %repeatTimes = arith.ceildivsi %cols, %c64 : index
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@RESULT_VECTOR_TYPE@@
       %rowMask = vector.create_mask %c1 : @@MASK_VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
         %rowScalar = memref.load %m1[%r, %c0] : @@SRC1_MEMREF_TYPE@@
         %rhs = vector.splat %rowScalar : @@RESULT_VECTOR_TYPE@@
-        scf.for %cidx = %c0 to %cols step %c64 {
+        scf.for %j = %c0 to %repeatTimes step %c1 {
+          %cidx = arith.muli %j, %c64 : index
           %remain = arith.subi %cols, %cidx : index
           %lt = arith.cmpi slt, %remain, %c64 : index
           %active = arith.select %lt, %remain, %c64 : index
