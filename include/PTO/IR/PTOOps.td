@@ -1438,6 +1438,35 @@ def SimdReductionOp : PTO_Op<"simd.reduction", [
   }];
 }
 
+def SimdStorePredicateOp : PTO_Op<"simd.store_predicate"> {
+  let summary = "A5 OP-Lib marker for packed predicate compare+store.";
+  let description = [{
+    Backend-only OP-Lib bridge op that compares a SIMD vector against either
+    another SIMD vector or a scalar under an active-lane count and writes the
+    packed predicate result to the destination tile/memref using the hardware
+    packed-mask store path.
+  }];
+
+  let arguments = (ins
+    AnyVector:$lhs,
+    AnyType:$rhs,
+    TileBufOrMemRef:$dst,
+    Index:$linear_offset,
+    Index:$active_count,
+    PTO_CmpModeAttr:$cmpMode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $dst `,` $linear_offset `,` $active_count attr-dict
+      `:` type($lhs) `,` type($rhs) `,` qualified(type($dst)) `,`
+         type($linear_offset) `,` type($active_count)
+  }];
+}
+
 // High-Level Mov: 值语义
 def MovOp : PTO_Op<"mov", [
     SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile -> !pto.tile)

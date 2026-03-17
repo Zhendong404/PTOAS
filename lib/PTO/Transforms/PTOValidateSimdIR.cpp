@@ -124,7 +124,12 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
 
 static bool isSimdBridgeOp(Operation *op) {
   return isa<pto::SimdPredicateOp, pto::SimdLoadOp, pto::SimdStoreOp,
-             pto::SimdLoadPUOp, pto::SimdStorePUOp>(op);
+             pto::SimdLoadPUOp, pto::SimdStorePUOp,
+             pto::SimdStorePredicateOp>(op);
+}
+
+static bool isPackedCmpSimdBridgeOp(Operation *op) {
+  return isa<pto::SimdStorePredicateOp>(op);
 }
 
 static bool hasSimdBridgeOps(func::FuncOp func) {
@@ -137,6 +142,22 @@ static bool hasSimdBridgeOps(func::FuncOp func) {
     return WalkResult::advance();
   });
   return found;
+}
+
+static bool hasOnlyPackedCmpSimdBridgeOps(func::FuncOp func) {
+  bool sawPackedCmp = false;
+  bool sawOtherBridge = false;
+  func.walk([&](Operation *op) {
+    if (!isSimdBridgeOp(op))
+      return WalkResult::advance();
+    if (isPackedCmpSimdBridgeOp(op)) {
+      sawPackedCmp = true;
+      return WalkResult::advance();
+    }
+    sawOtherBridge = true;
+    return WalkResult::interrupt();
+  });
+  return sawPackedCmp && !sawOtherBridge;
 }
 
 static bool isAllowedTemplateBodyOp(Operation *op) {
@@ -657,6 +678,7 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
   if (auto opAttr = func->getAttrOfType<StringAttr>(kOpLibAttrOp))
     oplibOp = opAttr.getValue();
   bool requireExplicitExecMode = opRequiresExplicitExecMode(kind, oplibOp);
+  bool hasPackedCmpBridgeOnly = hasOnlyPackedCmpSimdBridgeOps(func);
 
   FunctionType fnTy = func.getFunctionType();
   for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
@@ -948,7 +970,7 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
                          "template must not contain multiple core slot ops");
   }
 
-  if (hasSimdBridge) {
+  if (hasSimdBridge && !hasPackedCmpBridgeOnly) {
     if (coreCount != 1) {
       return emitCodeError(
           func.getLoc(), kErrCoreSlot,

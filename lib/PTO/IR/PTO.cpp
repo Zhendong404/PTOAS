@@ -3829,6 +3829,43 @@ mlir::LogicalResult mlir::pto::SimdReductionOp::verify() {
 
   return success();
 }
+
+static LogicalResult verifySimdPackedPredicateDst(Operation *op, Type dstTy) {
+  Type elemTy;
+  if (auto tileTy = dyn_cast<TileBufType>(dstTy)) {
+    elemTy = tileTy.getElementType();
+  } else if (auto memTy = dyn_cast<MemRefType>(dstTy)) {
+    elemTy = memTy.getElementType();
+  } else {
+    return op->emitOpError("expects dst to be !pto.tile_buf or memref");
+  }
+
+  auto intTy = dyn_cast<IntegerType>(elemTy);
+  if (!intTy || intTy.getWidth() != 8)
+    return op->emitOpError("expects dst element type to be i8/ui8");
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdStorePredicateOp::verify() {
+  auto lhsTy = dyn_cast<VectorType>(getLhs().getType());
+  if (!lhsTy || lhsTy.isScalable())
+    return emitOpError("expects lhs to be a fixed-width vector type");
+  if (!lhsTy.getElementType().isIntOrFloat())
+    return emitOpError("expects lhs element type to be integer or float");
+
+  Type rhsTy = getRhs().getType();
+  if (auto rhsVecTy = dyn_cast<VectorType>(rhsTy)) {
+    if (rhsVecTy.isScalable())
+      return emitOpError("expects rhs vector to be fixed-width");
+    if (rhsVecTy != lhsTy)
+      return emitOpError("expects rhs vector type to match lhs");
+  } else if (rhsTy != lhsTy.getElementType()) {
+    return emitOpError(
+        "expects rhs to be either a matching vector type or lhs element type");
+  }
+
+  return verifySimdPackedPredicateDst(*this, getDst().getType());
+}
 //===----------------------------------------------------------------------===//
 // PTO.cpp  (add TSYNC DPS/tilebuf implementation)
 //===----------------------------------------------------------------------===//

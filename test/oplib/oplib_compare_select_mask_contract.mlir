@@ -2,17 +2,17 @@
 // RUN: FileCheck %s --check-prefix=CMP-SCALAR < %S/../../oplib/level3/cmp_tile_scalar_templates.mlir
 // RUN: FileCheck %s --check-prefix=SEL-MASK < %S/../../oplib/level3/select_mask_templates.mlir
 
-// CMP-TILE: %zeroI8 = arith.constant dense<0> : vector<64xi8>
-// CMP-TILE: %oneI8 = arith.constant dense<1> : vector<64xi8>
 // CMP-TILE: %mask = vector.create_mask %active : vector<64xi1>
-// CMP-TILE: vector.maskedstore %md[%r, %cidx], %mask, %zeroI8
-// CMP-TILE: vector.maskedstore %md[%r, %cidx], %cmp, %oneI8
+// CMP-TILE: %linearBase = arith.muli %r, %cols : index
+// CMP-TILE: %linear = arith.addi %linearBase, %cidx : index
+// CMP-TILE: pto.simd.store_predicate %lhs, %src1v, %dst, %linear, %active
+// CMP-TILE-NOT: vector.maskedstore
 
-// CMP-SCALAR: %zeroI8 = arith.constant dense<0> : vector<64xi8>
-// CMP-SCALAR: %oneI8 = arith.constant dense<1> : vector<64xi8>
 // CMP-SCALAR: %mask = vector.create_mask %active : vector<64xi1>
-// CMP-SCALAR: vector.maskedstore %md[%r, %cidx], %mask, %zeroI8
-// CMP-SCALAR: vector.maskedstore %md[%r, %cidx], %cmp, %oneI8
+// CMP-SCALAR: %linearBase = arith.muli %r, %cols : index
+// CMP-SCALAR: %linear = arith.addi %linearBase, %cidx : index
+// CMP-SCALAR: pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active
+// CMP-SCALAR-NOT: vector.maskedstore
 
 // SEL-MASK: %passiveMask = arith.constant dense<0> : vector<64xi8>
 // SEL-MASK: %zeroMask = arith.constant dense<0> : vector<64xi8>

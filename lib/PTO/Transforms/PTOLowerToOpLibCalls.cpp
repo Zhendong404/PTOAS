@@ -1000,7 +1000,12 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
 
 static bool isSimdBridgeOp(Operation *op) {
   return isa<pto::SimdPredicateOp, pto::SimdLoadOp, pto::SimdStoreOp,
-             pto::SimdLoadPUOp, pto::SimdStorePUOp>(op);
+             pto::SimdLoadPUOp, pto::SimdStorePUOp,
+             pto::SimdStorePredicateOp>(op);
+}
+
+static bool isPackedCmpSimdBridgeOp(Operation *op) {
+  return isa<pto::SimdStorePredicateOp>(op);
 }
 
 static bool isAllowedTemplateBodyOp(Operation *op) {
@@ -1462,6 +1467,22 @@ struct TemplateRegistry {
     std::string inferredVstDist;
     std::string inferredExecMode;
     bool requiresUnifiedLevel3Simd = isLevel3TemplateKind(entry.kind);
+    bool hasPackedCmpBridgeOnly = false;
+    if (entry.hasSimdBridgeOps) {
+      bool sawPackedCmp = false;
+      bool sawOtherBridge = false;
+      imported.walk([&](Operation *op) {
+        if (!isSimdBridgeOp(op))
+          return WalkResult::advance();
+        if (isPackedCmpSimdBridgeOp(op)) {
+          sawPackedCmp = true;
+          return WalkResult::advance();
+        }
+        sawOtherBridge = true;
+        return WalkResult::interrupt();
+      });
+      hasPackedCmpBridgeOnly = sawPackedCmp && !sawOtherBridge;
+    }
 
     llvm::DenseMap<Operation *, int64_t> preorder;
     int64_t seq = 0;
@@ -1738,7 +1759,7 @@ struct TemplateRegistry {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "seed template must contain exactly one core slot op");
     }
-    if (entry.hasSimdBridgeOps && coreCount != 1) {
+    if (entry.hasSimdBridgeOps && !hasPackedCmpBridgeOnly && coreCount != 1) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template using pto.simd.* must contain exactly one core slot op");
     }
@@ -1746,15 +1767,18 @@ struct TemplateRegistry {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template must not contain multiple core slot ops");
     }
-    if (entry.hasSimdBridgeOps && firstLoad == std::numeric_limits<int64_t>::max()) {
+    if (entry.hasSimdBridgeOps && !hasPackedCmpBridgeOnly &&
+        firstLoad == std::numeric_limits<int64_t>::max()) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template must contain simd.load/simd.load_pu");
     }
-    if (entry.hasSimdBridgeOps && firstStore == std::numeric_limits<int64_t>::max()) {
+    if (entry.hasSimdBridgeOps && !hasPackedCmpBridgeOnly &&
+        firstStore == std::numeric_limits<int64_t>::max()) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template must contain simd.store/simd.store_pu");
     }
-    if (entry.hasSimdBridgeOps && !(firstLoad < coreSeq && coreSeq < firstStore)) {
+    if (entry.hasSimdBridgeOps && !hasPackedCmpBridgeOnly &&
+        !(firstLoad < coreSeq && coreSeq < firstStore)) {
       return emitFailureWithCode(imported.getLoc(), kErrCoreSlot,
                                  "template ordering must satisfy load -> core -> store");
     }

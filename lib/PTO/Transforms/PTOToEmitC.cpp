@@ -2441,6 +2441,21 @@ buildA5PredicateFromActiveCount(ConversionPatternRewriter &rewriter, Location lo
   return pred.getResult(0);
 }
 
+static FailureOr<Value> buildA5PredicateFromActiveCountAndElemToken(
+    ConversionPatternRewriter &rewriter, Location loc,
+    llvm::StringRef elemTok, Value activeCount) {
+  auto *ctx = rewriter.getContext();
+  Value activeCountLValue =
+      materializeA5PredicateScalarLValue(rewriter, loc, activeCount);
+  auto maskRegTy = emitc::OpaqueType::get(ctx, "MaskReg");
+  auto templateArgs =
+      rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, elemTok)});
+  auto pred = rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{maskRegTy}, "CreatePredicate",
+      ValueRange{activeCountLValue}, ArrayAttr{}, templateArgs);
+  return pred.getResult(0);
+}
+
 template <typename ArithOp> static llvm::StringRef getA5VectorBinaryCallee();
 
 template <> llvm::StringRef getA5VectorBinaryCallee<arith::AddFOp>() {
@@ -2589,6 +2604,8 @@ getA5ReductionCallee(vector::CombiningKind kind, Type elemTy) {
     return failure();
   }
 }
+
+static std::string cmpModeTok(pto::CmpModeAttr a);
 
 static FailureOr<llvm::StringRef> getA5SimdReductionCallee(StringRef kind) {
   if (kind == "add")
@@ -2938,6 +2955,81 @@ struct SimdReductionToEmitC : public OpConversionPattern<pto::SimdReductionOp> {
         ValueRange{regVar.getResult(), adaptor.getOperand(), pred}, args,
         ArrayAttr{});
     rewriter.replaceOp(op, regVar.getResult());
+    return success();
+  }
+};
+
+struct SimdStorePredicateToEmitC
+    : public OpConversionPattern<pto::SimdStorePredicateOp> {
+  using OpConversionPattern<pto::SimdStorePredicateOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::SimdStorePredicateOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto vecTy = dyn_cast<VectorType>(op.getLhs().getType());
+    if (!vecTy)
+      return failure();
+    if (failed(
+            validateA5OplibVectorType(op, vecTy, op->getName().getStringRef())))
+      return failure();
+
+    auto elemTokOr =
+        getA5VectorElemToken(op, vecTy, op->getName().getStringRef());
+    if (failed(elemTokOr))
+      return failure();
+
+    auto predOr = buildA5PredicateFromActiveCountAndElemToken(
+        rewriter, op.getLoc(), *elemTokOr, adaptor.getActiveCount());
+    if (failed(predOr))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto maskTy = emitc::OpaqueType::get(ctx, "MaskReg");
+    auto maskVar = rewriter.create<emitc::VariableOp>(
+        op.getLoc(), maskTy, emitc::OpaqueAttr::get(ctx, ""));
+
+    auto modeTy = emitc::OpaqueType::get(ctx, "CmpMode");
+    auto modeVal = rewriter.create<emitc::ConstantOp>(
+        op.getLoc(), modeTy,
+        emitc::OpaqueAttr::get(ctx, cmpModeTok(op.getCmpModeAttr())));
+
+    auto cmpArgs = rewriter.getArrayAttr(
+        {rewriter.getIndexAttr(0), rewriter.getIndexAttr(1),
+         rewriter.getIndexAttr(2), rewriter.getIndexAttr(3),
+         rewriter.getIndexAttr(4)});
+    Value rhs = adaptor.getRhs();
+    if (isa<VectorType>(op.getRhs().getType())) {
+      auto rhsTy = cast<VectorType>(op.getRhs().getType());
+      if (failed(validateA5OplibVectorType(op, rhsTy,
+                                           op->getName().getStringRef())))
+        return failure();
+      rewriter.create<emitc::CallOpaqueOp>(
+          op.getLoc(), TypeRange{}, "ptoas_vcmp",
+          ValueRange{maskVar.getResult(), adaptor.getLhs(), rhs,
+                     modeVal.getResult(), *predOr},
+          cmpArgs, ArrayAttr{});
+    } else {
+      rewriter.create<emitc::CallOpaqueOp>(
+          op.getLoc(), TypeRange{}, "ptoas_vcmps",
+          ValueRange{maskVar.getResult(), adaptor.getLhs(), rhs,
+                     modeVal.getResult(), *predOr},
+          cmpArgs, ArrayAttr{});
+    }
+
+    Value dst = peelUnrealized(adaptor.getDst());
+    if (!isEmitCTileOpaqueType(dst.getType()))
+      return rewriter.notifyMatchFailure(
+          op,
+          "simd.store_predicate currently requires tile-like dst in EmitC lowering");
+
+    auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+    Value linearIndex = emitCCast(rewriter, op.getLoc(), i32Ty,
+                                  adaptor.getLinearOffset());
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "ptoas_pstore",
+        ValueRange{maskVar.getResult(), dst, linearIndex}, ArrayAttr{},
+        ArrayAttr{});
+
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -9124,6 +9216,8 @@ struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
   matchAndRewrite(pto::SimdVecScopeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    rewriter.create<emitc::VerbatimOp>(
+        loc, "#if defined(__CCE_AICORE__) || defined(__CPU_SIM)");
     rewriter.create<emitc::VerbatimOp>(loc, "__VEC_SCOPE__ {");
 
     Block &innerBlock = op.getBody().front();
@@ -9132,6 +9226,8 @@ struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
     }
 
     rewriter.create<emitc::VerbatimOp>(loc, "}");
+    rewriter.create<emitc::VerbatimOp>(
+        loc, "#endif // __CCE_AICORE__ || __CPU_SIM");
     rewriter.eraseOp(op);
     return success();
   }
@@ -9771,6 +9867,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                OplibVectorUnaryToEmitC<math::SqrtOp>,
                OplibVectorUnaryToEmitC<math::RsqrtOp>,
                OplibVectorCmpFToEmitC, OplibVectorCmpIToEmitC,
+               SimdStorePredicateToEmitC,
                OplibVectorSelectToEmitC<arith::SelectOp>,
                SimdReductionToEmitC,
                OplibVectorReductionToEmitC,
@@ -10465,7 +10562,8 @@ struct EmitPTOManualPass
       if (callee == "ptoas_vreduce_add" || callee == "ptoas_vreduce_max" ||
           callee == "ptoas_vreduce_min")
         needsVectorReductionHelper = true;
-      if (callee == "ptoas_vcmp")
+      if (callee == "ptoas_vcmp" || callee == "ptoas_vcmps" ||
+          callee == "ptoas_pstore")
         needsVectorCmpHelper = true;
       if (callee == "ptoas_vrem")
         needsVectorRemfHelper = true;
@@ -10494,6 +10592,7 @@ struct EmitPTOManualPass
     if (needsVectorReductionHelper) {
       helperBuilder.create<emitc::VerbatimOp>(
           loc, helperBuilder.getStringAttr(R"cpp(
+    #if defined(__CCE_AICORE__) || defined(__CPU_SIM)
     template <typename T>
     PTO_INTERNAL T ptoas_vreduce_add(RegTensor<T> src, MaskReg pred) {
       RegTensor<T> dst;
@@ -10546,11 +10645,13 @@ struct EmitPTOManualPass
       T red = ptoas_vreduce_min(src, pred);
       return red < acc ? red : acc;
     }
+    #endif
     )cpp"));
     }
     if (needsVectorCmpHelper) {
       helperBuilder.create<emitc::VerbatimOp>(
           loc, helperBuilder.getStringAttr(R"cpp(
+    #if defined(__CCE_AICORE__) || defined(__CPU_SIM)
     template <typename T>
     PTO_INTERNAL void ptoas_vcmp(MaskReg &dst, RegTensor<T> src0, RegTensor<T> src1,
                                  CmpMode mode, MaskReg pred) {
@@ -10578,11 +10679,47 @@ struct EmitPTOManualPass
         break;
       }
     }
+    template <typename RegT, typename T>
+    PTO_INTERNAL void ptoas_vcmps(MaskReg &dst, RegT src0, T src1,
+                                  CmpMode mode, MaskReg pred) {
+      switch (mode) {
+      case CmpMode::EQ:
+        vcmps_eq(dst, src0, src1, pred);
+        break;
+      case CmpMode::NE:
+        vcmps_ne(dst, src0, src1, pred);
+        break;
+      case CmpMode::LT:
+        vcmps_lt(dst, src0, src1, pred);
+        break;
+      case CmpMode::LE:
+        vcmps_le(dst, src0, src1, pred);
+        break;
+      case CmpMode::GT:
+        vcmps_gt(dst, src0, src1, pred);
+        break;
+      case CmpMode::GE:
+        vcmps_ge(dst, src0, src1, pred);
+        break;
+      default:
+        vcmps_eq(dst, src0, src1, pred);
+        break;
+      }
+    }
+    template <typename TileT>
+    PTO_INTERNAL void ptoas_pstore(MaskReg src, TileT &dst, int32_t linearIndex) {
+      __ubuf__ uint32_t *dstWords =
+          reinterpret_cast<__ubuf__ uint32_t *>(dst.data());
+      int32_t wordOffset = linearIndex / 32;
+      psts(src, dstWords + wordOffset, 0, PK);
+    }
+    #endif
     )cpp"));
     }
     if (needsVectorRemfHelper) {
       helperBuilder.create<emitc::VerbatimOp>(
           loc, helperBuilder.getStringAttr(R"cpp(
+    #if defined(__CCE_AICORE__) || defined(__CPU_SIM)
     template <typename T>
     PTO_INTERNAL void ptoas_vrem(RegTensor<T> &dst, RegTensor<T> src0,
                                  RegTensor<T> src1, MaskReg pred) {
@@ -10611,6 +10748,7 @@ struct EmitPTOManualPass
         vor(dst, dstEven, dstOdd, pred);
       }
     }
+    #endif
     )cpp"));
     }
     if (needsBitcastHelper) {

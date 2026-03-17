@@ -19,6 +19,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -35,7 +37,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -44,13 +46,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -58,9 +53,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf oeq, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -80,6 +76,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -96,7 +94,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -105,13 +103,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -119,9 +110,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf one, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -141,6 +133,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -157,7 +151,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -166,13 +160,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -180,9 +167,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf olt, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -202,6 +190,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -218,7 +208,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -227,13 +217,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -241,9 +224,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf ole, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -263,6 +247,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -279,7 +265,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -288,13 +274,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -302,9 +281,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf ogt, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -324,6 +304,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "f16",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -340,7 +322,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -349,13 +331,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7E00> : vector<64xf16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -363,9 +338,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %cmp = arith.cmpf oge, %lhs, %scalarVec : vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xf16>, f16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -385,6 +361,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -401,7 +379,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -410,13 +388,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -424,9 +395,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf oeq, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -446,6 +418,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -462,7 +436,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -471,13 +445,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -485,9 +452,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf one, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -507,6 +475,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -523,7 +493,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -532,13 +502,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -546,9 +509,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf olt, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -568,6 +532,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -584,7 +550,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -593,13 +559,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -607,9 +566,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf ole, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -629,6 +589,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -645,7 +607,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -654,13 +616,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -668,9 +623,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf ogt, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -690,6 +646,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "f32",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -706,7 +664,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -715,13 +673,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0x7FC00000> : vector<64xf32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -729,9 +680,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf32> into vector<64xf32>
-          %cmp = arith.cmpf oge, %lhs, %scalarVec : vector<64xf32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xf32>, f32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -751,6 +703,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -767,7 +721,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -776,13 +730,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -790,9 +737,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -812,6 +760,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -828,7 +778,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -837,13 +787,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -851,9 +794,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -873,6 +817,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -889,7 +835,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -898,13 +844,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -912,9 +851,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi slt, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -934,6 +874,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -950,7 +892,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -959,13 +901,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -973,9 +908,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi sle, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -995,6 +931,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1011,7 +949,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1020,13 +958,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1034,9 +965,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi sgt, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1056,6 +988,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "i16",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1072,7 +1006,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1081,13 +1015,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1095,9 +1022,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi sge, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1117,6 +1045,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1133,7 +1063,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1142,13 +1072,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1156,9 +1079,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1178,6 +1102,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1194,7 +1120,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1203,13 +1129,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1217,9 +1136,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1239,6 +1159,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1255,7 +1177,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1264,13 +1186,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1278,9 +1193,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi slt, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1300,6 +1216,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1316,7 +1234,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1325,13 +1243,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1339,9 +1250,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi sle, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1361,6 +1273,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1377,7 +1291,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1386,13 +1300,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1400,9 +1307,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi sgt, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1422,6 +1330,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "i32",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1438,7 +1348,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1447,13 +1357,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1461,9 +1364,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi sge, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1483,6 +1387,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1499,7 +1405,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1508,13 +1414,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1522,9 +1421,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1544,6 +1444,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1560,7 +1462,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1569,13 +1471,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1583,9 +1478,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1605,6 +1501,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1621,7 +1519,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1630,13 +1528,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1644,9 +1535,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi slt, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1666,6 +1558,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1682,7 +1576,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1691,13 +1585,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1705,9 +1592,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi sle, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1727,6 +1615,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1743,7 +1633,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1752,13 +1642,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1766,9 +1649,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi sgt, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1788,6 +1672,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "i8",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1804,7 +1690,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1813,13 +1699,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1827,9 +1706,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi sge, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1849,6 +1729,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1865,7 +1747,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1874,13 +1756,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1888,9 +1763,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1910,6 +1786,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1926,7 +1804,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1935,13 +1813,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -1949,9 +1820,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -1971,6 +1843,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -1987,7 +1861,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1996,13 +1870,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2010,9 +1877,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi ult, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2032,6 +1900,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2048,7 +1918,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2057,13 +1927,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2071,9 +1934,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi ule, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2093,6 +1957,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2109,7 +1975,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2118,13 +1984,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2132,9 +1991,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi ugt, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2154,6 +2014,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "u16",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2170,7 +2032,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i16, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2179,13 +2041,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi16>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2193,9 +2048,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %cmp = arith.cmpi uge, %lhs, %scalarVec : vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi16>, i16, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2215,6 +2071,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2231,7 +2089,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2240,13 +2098,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2254,9 +2105,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2276,6 +2128,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2292,7 +2146,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2301,13 +2155,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2315,9 +2162,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2337,6 +2185,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2353,7 +2203,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2362,13 +2212,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2376,9 +2219,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi ult, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2398,6 +2242,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2414,7 +2260,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2423,13 +2269,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2437,9 +2276,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi ule, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2459,6 +2299,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2475,7 +2317,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2484,13 +2326,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2498,9 +2333,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi ugt, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2520,6 +2356,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "u32",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2536,7 +2374,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i32, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2545,13 +2383,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi32>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2559,9 +2390,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi32> into vector<64xi32>
-          %cmp = arith.cmpi uge, %lhs, %scalarVec : vector<64xi32>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi32>, i32, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2581,6 +2413,8 @@ module {
         pto.oplib.variant_id = "eq",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "EQ",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2597,7 +2431,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2606,13 +2440,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2620,9 +2447,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi eq, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp eq>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2642,6 +2470,8 @@ module {
         pto.oplib.variant_id = "ne",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "NE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2658,7 +2488,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2667,13 +2497,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2681,9 +2504,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi ne, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ne>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2703,6 +2527,8 @@ module {
         pto.oplib.variant_id = "lt",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "LT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2719,7 +2545,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2728,13 +2554,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2742,9 +2561,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi ult, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp lt>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2764,6 +2584,8 @@ module {
         pto.oplib.variant_id = "le",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "LE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2780,7 +2602,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2789,13 +2611,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2803,9 +2618,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi ule, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp le>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2825,6 +2641,8 @@ module {
         pto.oplib.variant_id = "gt",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "GT",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2841,7 +2659,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2850,13 +2668,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2864,9 +2675,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi ugt, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp gt>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }
@@ -2886,6 +2698,8 @@ module {
         pto.oplib.variant_id = "ge",
         pto.oplib.match.dtype = "u8",
         pto.oplib.match.cmp_mode = "GE",
+        pto.simd.level = "binary_ewise_v1",
+        pto.simd.lanes = 64 : i64,
         pto.oplib.match.scalar_pos = 1 : i64,
         pto.oplib.match.arg0.rows = -1 : i64,
         pto.oplib.match.arg0.cols = -1 : i64,
@@ -2902,7 +2716,7 @@ module {
         pto.oplib.priority = 0 : i64
       } {
     %m0 = pto.simd.tile_to_memref %src0 : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %md = pto.simd.tile_to_memref %dst : !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0> to memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
+
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -2911,13 +2725,6 @@ module {
     %cols = memref.dim %m0, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     pto.simd.vec_scope {
       %passive = arith.constant dense<0> : vector<64xi8>
-      // Canonical byte-mask contract:
-      // - active false lanes materialize as 0
-      // - active true lanes materialize as nonzero (currently 1)
-      // - tail lanes are zero-filled under %mask and remain unobservable
-      %zeroI8 = arith.constant dense<0> : vector<64xi8>
-      %oneI8 = arith.constant dense<1> : vector<64xi8>
-      %scalarVec = vector.splat %scalar : vector<64xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %cidx = %c0 to %cols step %c64 {
           %remain = arith.subi %cols, %cidx : index
@@ -2925,9 +2732,10 @@ module {
           %active = arith.select %lt, %remain, %c64 : index
           %mask = vector.create_mask %active : vector<64xi1>
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %cmp = arith.cmpi uge, %lhs, %scalarVec : vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %mask, %zeroI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %cmp, %oneI8 {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %linearBase = arith.muli %r, %cols : index
+          %linear = arith.addi %linearBase, %cidx : index
+          pto.simd.store_predicate %lhs, %scalar, %dst, %linear, %active {cmpMode = #pto<cmp ge>} : vector<64xi8>, i8, !pto.tile_buf<loc=vec, dtype=i8, rows=32, cols=32, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index
+
         }
       }
     }

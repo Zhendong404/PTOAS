@@ -660,10 +660,8 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                 rhs_setup = ""
                 rhs_load = ""
                 rhs_value = "%src1v"
-                if has_scalar_operand:
-                    rhs_setup = f"      %scalarVec = vector.splat %scalar : {vector_type(dtype)}\n"
-                    rhs_value = "%scalarVec"
-                elif pattern["id"] == "compare":
+                compare_store = ""
+                if pattern["id"] == "compare" and not has_scalar_operand:
                     rhs_memref_cast = (
                         f"    %m1 = pto.simd.tile_to_memref %src1 : {tile_type(dtype)} to "
                         f"{memref_type(dtype, input_tile_shape[1])}\n"
@@ -673,8 +671,33 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         f'{{pto.simd.vld_dist = "NORM"}} : {memref_type(dtype, input_tile_shape[1])}, '
                         f"{mask_vector_type()}, {vector_type(dtype)} into {vector_type(dtype)}\n"
                     )
+                elif has_scalar_operand and pattern["id"] != "compare":
+                    rhs_setup = f"      %scalarVec = vector.splat %scalar : {vector_type(dtype)}\n"
+                    rhs_value = "%scalarVec"
                 elif pattern["id"] in {"binary", "partial_binary"}:
                     rhs_value = "%rhs"
+
+                if pattern["id"] == "compare":
+                    cmp_mode_attr = lower_name(condition or "eq")
+                    compare_store = (
+                        "          %linearBase = arith.muli %r, %cols : index\n"
+                        "          %linear = arith.addi %linearBase, %cidx : index\n"
+                    )
+                    if has_scalar_operand:
+                        rhs_value = "%scalar"
+                        compare_store += (
+                            f"          pto.simd.store_predicate %lhs, {rhs_value}, %dst, %linear, %active "
+                            f"{{cmpMode = #pto<cmp {cmp_mode_attr}>}} : "
+                            f"{vector_type(dtype)}, {scalar_arg_type}, "
+                            f"{tile_type(result_dtype or dtype, *result_tile_shape)}, index, index\n"
+                        )
+                    else:
+                        compare_store += (
+                            f"          pto.simd.store_predicate %lhs, {rhs_value}, %dst, %linear, %active "
+                            f"{{cmpMode = #pto<cmp {cmp_mode_attr}>}} : "
+                            f"{vector_type(dtype)}, {vector_type(dtype)}, "
+                            f"{tile_type(result_dtype or dtype, *result_tile_shape)}, index, index\n"
+                        )
 
                 passive_vector = op_info.get(
                     "passive_vector_by_dtype",
@@ -750,6 +773,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "rhs_setup": rhs_setup,
                         "rhs_load": rhs_load,
                         "rhs_value": rhs_value,
+                        "compare_store": compare_store,
                         "extra_setup": extra_setup,
                         "compute": compute,
                         "cost": str(cost),
@@ -817,6 +841,7 @@ def render_family_output(
                     "RHS_SETUP": instance["rhs_setup"],
                     "RHS_LOAD": instance["rhs_load"],
                     "RHS_VALUE": instance["rhs_value"],
+                    "COMPARE_STORE": instance["compare_store"],
                     "EXTRA_SETUP": instance["extra_setup"],
                     "COMPUTE": instance["compute"],
                     "COST": instance["cost"],
