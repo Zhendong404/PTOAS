@@ -3,6 +3,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
@@ -28,9 +29,13 @@ struct StageInfo {
   pto::SimdVecScopeOp scope;
   SmallVector<Operation *, 4> setupOps;
   SmallVector<Operation *, 4> scopePreludeOps;
-  scf::ForOp loop;
-  SmallVector<Operation *, 8> loopOps;
+  scf::ForOp outerLoop;
+  SmallVector<Operation *, 4> outerLoopPreludeOps;
+  scf::ForOp innerLoop;
+  SmallVector<Operation *, 8> leafOps;
   vector::MaskedStoreOp store;
+
+  bool hasInnerLoop() const { return static_cast<bool>(innerLoop); }
 };
 
 struct ForwardedStore {
@@ -44,6 +49,8 @@ static bool sameValues(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
   return lhs.size() == rhs.size() && llvm::equal(lhs, rhs);
 }
 
+static bool areEquivalentValues(Value lhs, Value rhs);
+
 static SmallVector<Value, 4> mapValues(ValueRange values, IRMapping &mapping) {
   SmallVector<Value, 4> mapped;
   mapped.reserve(values.size());
@@ -52,18 +59,23 @@ static SmallVector<Value, 4> mapValues(ValueRange values, IRMapping &mapping) {
   return mapped;
 }
 
+static Value mapValueOrSelf(Value value, IRMapping &mapping) {
+  return mapping.lookupOrDefault(value);
+}
+
 static bool sameForHeader(scf::ForOp lhs, scf::ForOp rhs) {
-  return lhs.getLowerBound() == rhs.getLowerBound() &&
-         lhs.getUpperBound() == rhs.getUpperBound() &&
-         lhs.getStep() == rhs.getStep() && lhs.getInitArgs().empty() &&
-         rhs.getInitArgs().empty() && lhs->getAttrs() == rhs->getAttrs();
+  return areEquivalentValues(lhs.getLowerBound(), rhs.getLowerBound()) &&
+         areEquivalentValues(lhs.getUpperBound(), rhs.getUpperBound()) &&
+         areEquivalentValues(lhs.getStep(), rhs.getStep()) &&
+         lhs.getInitArgs().empty() && rhs.getInitArgs().empty() &&
+         lhs->getAttrs() == rhs->getAttrs();
 }
 
 static bool isPureNoRegionOp(Operation *op) {
   return op->getNumRegions() == 0 && isMemoryEffectFree(op);
 }
 
-static bool isSupportedLoopOp(Operation *op) {
+static bool isSupportedLeafOp(Operation *op) {
   if (isa<vector::MaskedLoadOp, vector::MaskedStoreOp>(op))
     return true;
   return isPureNoRegionOp(op);
@@ -75,8 +87,56 @@ static bool isInterstageSetupOp(Operation *op) {
   return isPureNoRegionOp(op);
 }
 
-static bool areEquivalentMaskValues(Value lhs, Value rhs) {
+static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {
+  if (!lhs || !rhs)
+    return false;
+  if (lhs->getName() != rhs->getName())
+    return false;
+  if (lhs->getNumRegions() != 0 || rhs->getNumRegions() != 0)
+    return false;
+  if (lhs->getNumResults() != rhs->getNumResults())
+    return false;
+  if (lhs->getNumOperands() != rhs->getNumOperands())
+    return false;
+  if (lhs->getAttrDictionary() != rhs->getAttrDictionary())
+    return false;
+  if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes()))
+    return false;
+
+  if (auto lhsDim = dyn_cast<memref::DimOp>(lhs)) {
+    auto rhsDim = cast<memref::DimOp>(rhs);
+    return lhsDim.getSource().getType() == rhsDim.getSource().getType() &&
+           areEquivalentValues(lhsDim.getIndex(), rhsDim.getIndex());
+  }
+
+  for (auto [lhsOperand, rhsOperand] :
+       llvm::zip(lhs->getOperands(), rhs->getOperands())) {
+    if (!areEquivalentValues(lhsOperand, rhsOperand))
+      return false;
+  }
+  return true;
+}
+
+static bool areEquivalentValues(Value lhs, Value rhs) {
   if (lhs == rhs)
+    return true;
+  if (!lhs || !rhs)
+    return false;
+  if (lhs.getType() != rhs.getType())
+    return false;
+
+  auto lhsArg = dyn_cast<BlockArgument>(lhs);
+  auto rhsArg = dyn_cast<BlockArgument>(rhs);
+  if (lhsArg || rhsArg) {
+    return lhsArg && rhsArg && lhsArg.getOwner() == rhsArg.getOwner() &&
+           lhsArg.getArgNumber() == rhsArg.getArgNumber();
+  }
+
+  return areEquivalentOperations(lhs.getDefiningOp(), rhs.getDefiningOp());
+}
+
+static bool areEquivalentMaskValues(Value lhs, Value rhs) {
+  if (areEquivalentValues(lhs, rhs))
     return true;
   auto lhsMask = lhs.getDefiningOp<vector::ConstantMaskOp>();
   auto rhsMask = rhs.getDefiningOp<vector::ConstantMaskOp>();
@@ -86,48 +146,76 @@ static bool areEquivalentMaskValues(Value lhs, Value rhs) {
          lhsMask.getMaskDimSizesAttr() == rhsMask.getMaskDimSizesAttr();
 }
 
-static LogicalResult analyzeStage(pto::SimdVecScopeOp scope, StageInfo &stage) {
-  stage.scope = scope;
-
-  Block &scopeBody = scope.getBody().front();
-  bool seenLoop = false;
-  for (Operation &op : scopeBody) {
-    if (auto loop = dyn_cast<scf::ForOp>(op)) {
-      if (seenLoop)
-        return failure();
-      seenLoop = true;
-      stage.loop = loop;
-      continue;
-    }
-    if (seenLoop || !isPureNoRegionOp(&op))
-      return failure();
-    stage.scopePreludeOps.push_back(&op);
-  }
-
-  if (!stage.loop || !stage.loop.getInitArgs().empty())
-    return failure();
-
+static LogicalResult
+analyzeLeafLoopBody(Block &body, SmallVectorImpl<Operation *> &leafOps,
+                    vector::MaskedStoreOp &store) {
   int storesSeen = 0;
-  for (Operation &op : stage.loop.getBody()->without_terminator()) {
-    if (!isSupportedLoopOp(&op))
+  for (Operation &op : body.without_terminator()) {
+    if (!isSupportedLeafOp(&op))
       return failure();
-    if (auto store = dyn_cast<vector::MaskedStoreOp>(op)) {
+    if (auto maskedStore = dyn_cast<vector::MaskedStoreOp>(op)) {
       if (++storesSeen > 1)
         return failure();
-      stage.store = store;
+      store = maskedStore;
     }
-    stage.loopOps.push_back(&op);
+    leafOps.push_back(&op);
   }
 
   if (storesSeen != 1)
     return failure();
 
-  for (Operation *op : stage.loopOps)
+  for (Operation *op : leafOps)
     if (auto load = dyn_cast<vector::MaskedLoadOp>(op))
-      if (!areEquivalentMaskValues(load.getMask(), stage.store.getMask()))
+      if (!areEquivalentMaskValues(load.getMask(), store.getMask()))
         return failure();
 
   return success();
+}
+
+static LogicalResult analyzeStage(pto::SimdVecScopeOp scope, StageInfo &stage) {
+  stage.scope = scope;
+
+  Block &scopeBody = scope.getBody().front();
+  bool seenOuterLoop = false;
+  for (Operation &op : scopeBody) {
+    if (auto loop = dyn_cast<scf::ForOp>(op)) {
+      if (seenOuterLoop)
+        return failure();
+      seenOuterLoop = true;
+      stage.outerLoop = loop;
+      continue;
+    }
+    if (seenOuterLoop || !isPureNoRegionOp(&op))
+      return failure();
+    stage.scopePreludeOps.push_back(&op);
+  }
+
+  if (!stage.outerLoop || !stage.outerLoop.getInitArgs().empty())
+    return failure();
+
+  bool seenInnerLoop = false;
+  for (Operation &op : stage.outerLoop.getBody()->without_terminator()) {
+    if (auto loop = dyn_cast<scf::ForOp>(op)) {
+      if (seenInnerLoop)
+        return failure();
+      seenInnerLoop = true;
+      stage.innerLoop = loop;
+      continue;
+    }
+    if (seenInnerLoop || !isPureNoRegionOp(&op))
+      return failure();
+    stage.outerLoopPreludeOps.push_back(&op);
+  }
+
+  if (stage.innerLoop) {
+    if (!stage.innerLoop || !stage.innerLoop.getInitArgs().empty())
+      return failure();
+    return analyzeLeafLoopBody(*stage.innerLoop.getBody(), stage.leafOps,
+                               stage.store);
+  }
+
+  return analyzeLeafLoopBody(*stage.outerLoop.getBody(), stage.leafOps,
+                             stage.store);
 }
 
 static SmallVector<StageInfo, 8>
@@ -164,10 +252,78 @@ static const ForwardedStore *findForwardedStore(ArrayRef<ForwardedStore> stores,
                                                 ArrayRef<Value> indices,
                                                 Value mask) {
   for (const ForwardedStore &store : llvm::reverse(stores))
-    if (store.base == base && sameValues(store.indices, indices) &&
+    if (areEquivalentValues(store.base, base) &&
+        sameValues(store.indices, indices) &&
         areEquivalentMaskValues(store.mask, mask))
       return &store;
   return nullptr;
+}
+
+static bool sameLoopNestShape(const StageInfo &lhs, const StageInfo &rhs) {
+  if (lhs.hasInnerLoop() != rhs.hasInnerLoop())
+    return false;
+  if (!sameForHeader(lhs.outerLoop, rhs.outerLoop))
+    return false;
+  if (lhs.hasInnerLoop() && !sameForHeader(lhs.innerLoop, rhs.innerLoop))
+    return false;
+  return true;
+}
+
+static void cloneOpAndMapResults(OpBuilder &builder, Operation *op,
+                                 IRMapping &mapping) {
+  Operation *cloned = builder.clone(*op, mapping);
+  for (auto [oldRes, newRes] :
+       llvm::zip(op->getResults(), cloned->getResults()))
+    mapping.map(oldRes, newRes);
+}
+
+static void cloneStageLeafOps(OpBuilder &builder, const StageInfo &stage,
+                              IRMapping &mapping,
+                              ArrayRef<unsigned> lastStoreStage,
+                              unsigned stageIndex,
+                              SmallVectorImpl<ForwardedStore> &forwardedStores) {
+  for (Operation *op : stage.leafOps) {
+    if (auto load = dyn_cast<vector::MaskedLoadOp>(op)) {
+      Value base = mapping.lookupOrDefault(load.getBase());
+      SmallVector<Value, 4> indices = mapValues(load.getIndices(), mapping);
+      Value mask = mapping.lookupOrDefault(load.getMask());
+      Value passThru = mapping.lookupOrDefault(load.getPassThru());
+
+      if (const ForwardedStore *forwarded =
+              findForwardedStore(forwardedStores, base, indices, mask)) {
+        mapping.map(load.getResult(), forwarded->value);
+        continue;
+      }
+
+      auto cloned = builder.create<vector::MaskedLoadOp>(
+          load.getLoc(), load.getResult().getType(), base, indices, mask,
+          passThru);
+      cloned->setAttrs(load->getAttrs());
+      mapping.map(load.getResult(), cloned.getResult());
+      continue;
+    }
+
+    if (auto store = dyn_cast<vector::MaskedStoreOp>(op)) {
+      Value base = mapping.lookupOrDefault(store.getBase());
+      SmallVector<Value, 4> indices = mapValues(store.getIndices(), mapping);
+      Value mask = mapping.lookupOrDefault(store.getMask());
+      Value value = mapping.lookupOrDefault(store.getValueToStore());
+
+      if (lastStoreStage[stageIndex] == stageIndex) {
+        auto cloned = builder.create<vector::MaskedStoreOp>(
+            store.getLoc(), base, indices, mask, value);
+        cloned->setAttrs(store->getAttrs());
+      }
+
+      forwardedStores.push_back(
+          ForwardedStore{base, SmallVector<Value, 2>(indices.begin(),
+                                                     indices.end()),
+                         mask, value});
+      continue;
+    }
+
+    cloneOpAndMapResults(builder, op, mapping);
+  }
 }
 
 static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
@@ -178,16 +334,24 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
   for (StageInfo &stage : llvm::drop_begin(stages)) {
     if (stage.scope->getAttrs() != first.scope->getAttrs())
       return false;
-    if (!sameForHeader(first.loop, stage.loop))
+    if (!sameLoopNestShape(first, stage))
       return false;
   }
 
-  DenseMap<Value, unsigned> lastStoreStage;
-  for (auto [index, stage] : llvm::enumerate(stages))
-    lastStoreStage[stage.store.getBase()] = index;
+  SmallVector<unsigned, 8> lastStoreStage(stages.size());
+  for (auto [index, stage] : llvm::enumerate(stages)) {
+    unsigned last = index;
+    for (unsigned next = index + 1; next < stages.size(); ++next) {
+      if (areEquivalentValues(stage.store.getBase(),
+                              stages[next].store.getBase()))
+        last = next;
+    }
+    lastStoreStage[index] = last;
+  }
 
   OpBuilder blockBuilder(first.scope);
-  auto fusedScope = blockBuilder.create<pto::SimdVecScopeOp>(first.scope.getLoc());
+  auto fusedScope =
+      blockBuilder.create<pto::SimdVecScopeOp>(first.scope.getLoc());
   fusedScope->setAttrs(first.scope->getAttrs());
 
   for (StageInfo &stage : llvm::drop_begin(stages))
@@ -199,73 +363,47 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
   OpBuilder scopeBuilder = OpBuilder::atBlockBegin(scopeBody);
 
   SmallVector<IRMapping, 8> stageMappings(stages.size());
-  for (auto [index, stage] : llvm::enumerate(stages)) {
-    for (Operation *op : stage.scopePreludeOps) {
-      Operation *cloned = scopeBuilder.clone(*op, stageMappings[index]);
-      for (auto [oldRes, newRes] :
-           llvm::zip(op->getResults(), cloned->getResults()))
-        stageMappings[index].map(oldRes, newRes);
-    }
-  }
+  for (auto [index, stage] : llvm::enumerate(stages))
+    for (Operation *op : stage.scopePreludeOps)
+      cloneOpAndMapResults(scopeBuilder, op, stageMappings[index]);
 
-  auto fusedLoop = scopeBuilder.create<scf::ForOp>(
-      first.loop.getLoc(), first.loop.getLowerBound(), first.loop.getUpperBound(),
-      first.loop.getStep());
-  fusedLoop->setAttrs(first.loop->getAttrs());
+  auto fusedOuterLoop = scopeBuilder.create<scf::ForOp>(
+      first.outerLoop.getLoc(),
+      mapValueOrSelf(first.outerLoop.getLowerBound(), stageMappings.front()),
+      mapValueOrSelf(first.outerLoop.getUpperBound(), stageMappings.front()),
+      mapValueOrSelf(first.outerLoop.getStep(), stageMappings.front()));
+  fusedOuterLoop->setAttrs(first.outerLoop->getAttrs());
 
-  OpBuilder loopBuilder = OpBuilder::atBlockBegin(fusedLoop.getBody());
+  for (auto [index, stage] : llvm::enumerate(stages))
+    stageMappings[index].map(stage.outerLoop.getInductionVar(),
+                             fusedOuterLoop.getInductionVar());
+
+  OpBuilder outerBodyBuilder = OpBuilder::atBlockBegin(fusedOuterLoop.getBody());
+  for (auto [index, stage] : llvm::enumerate(stages))
+    for (Operation *op : stage.outerLoopPreludeOps)
+      cloneOpAndMapResults(outerBodyBuilder, op, stageMappings[index]);
+
   SmallVector<ForwardedStore, 8> forwardedStores;
+  if (first.hasInnerLoop()) {
+    auto fusedInnerLoop = outerBodyBuilder.create<scf::ForOp>(
+        first.innerLoop.getLoc(),
+        mapValueOrSelf(first.innerLoop.getLowerBound(), stageMappings.front()),
+        mapValueOrSelf(first.innerLoop.getUpperBound(), stageMappings.front()),
+        mapValueOrSelf(first.innerLoop.getStep(), stageMappings.front()));
+    fusedInnerLoop->setAttrs(first.innerLoop->getAttrs());
 
-  for (auto [index, stage] : llvm::enumerate(stages)) {
-    IRMapping &mapping = stageMappings[index];
-    mapping.map(stage.loop.getInductionVar(), fusedLoop.getInductionVar());
+    for (auto [index, stage] : llvm::enumerate(stages))
+      stageMappings[index].map(stage.innerLoop.getInductionVar(),
+                               fusedInnerLoop.getInductionVar());
 
-    for (Operation *op : stage.loopOps) {
-      if (auto load = dyn_cast<vector::MaskedLoadOp>(op)) {
-        Value base = mapping.lookupOrDefault(load.getBase());
-        SmallVector<Value, 4> indices = mapValues(load.getIndices(), mapping);
-        Value mask = mapping.lookupOrDefault(load.getMask());
-        Value passThru = mapping.lookupOrDefault(load.getPassThru());
-
-        if (const ForwardedStore *forwarded =
-                findForwardedStore(forwardedStores, base, indices, mask)) {
-          mapping.map(load.getResult(), forwarded->value);
-          continue;
-        }
-
-        auto cloned = loopBuilder.create<vector::MaskedLoadOp>(
-            load.getLoc(), load.getResult().getType(), base, indices, mask,
-            passThru);
-        cloned->setAttrs(load->getAttrs());
-        mapping.map(load.getResult(), cloned.getResult());
-        continue;
-      }
-
-      if (auto store = dyn_cast<vector::MaskedStoreOp>(op)) {
-        Value base = mapping.lookupOrDefault(store.getBase());
-        SmallVector<Value, 4> indices = mapValues(store.getIndices(), mapping);
-        Value mask = mapping.lookupOrDefault(store.getMask());
-        Value value = mapping.lookupOrDefault(store.getValueToStore());
-
-        if (lastStoreStage[stage.store.getBase()] == index) {
-          auto cloned = loopBuilder.create<vector::MaskedStoreOp>(
-              store.getLoc(), base, indices, mask, value);
-          cloned->setAttrs(store->getAttrs());
-        }
-
-        forwardedStores.push_back(
-            ForwardedStore{base, SmallVector<Value, 2>(indices.begin(),
-                                                       indices.end()),
-                           mask,
-                           value});
-        continue;
-      }
-
-      Operation *cloned = loopBuilder.clone(*op, mapping);
-      for (auto [oldRes, newRes] :
-           llvm::zip(op->getResults(), cloned->getResults()))
-        mapping.map(oldRes, newRes);
-    }
+    OpBuilder innerBodyBuilder = OpBuilder::atBlockBegin(fusedInnerLoop.getBody());
+    for (auto [index, stage] : llvm::enumerate(stages))
+      cloneStageLeafOps(innerBodyBuilder, stage, stageMappings[index],
+                        lastStoreStage, index, forwardedStores);
+  } else {
+    for (auto [index, stage] : llvm::enumerate(stages))
+      cloneStageLeafOps(outerBodyBuilder, stage, stageMappings[index],
+                        lastStoreStage, index, forwardedStores);
   }
 
   for (StageInfo &stage : llvm::reverse(stages))

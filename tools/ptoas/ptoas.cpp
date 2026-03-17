@@ -975,14 +975,18 @@ int main(int argc, char **argv) {
     inlineLibCallOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOInlineLibCallPass(inlineLibCallOptions));
 
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-
     if (enableOpFusion) {
       pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
       loopFusionOptions.debug = opFusionDebug;
       pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
     }
+
+    // Keep OP-Lib lowered loop nests intact until PTOLowLevelLoopFusion runs.
+    // In particular, avoid pre-fusion canonicalization folding away
+    // single-trip loops, otherwise the fusion pass no longer sees the regular
+    // loop structure emitted by OP-Lib lowering.
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());

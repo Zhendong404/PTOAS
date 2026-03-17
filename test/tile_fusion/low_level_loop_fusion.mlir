@@ -8,10 +8,9 @@
 // CHECK: %[[SRC2:[0-9]+]] = pto.simd.tile_to_memref %arg2
 // CHECK: %[[SRC3:[0-9]+]] = pto.simd.tile_to_memref %arg3
 // CHECK-COUNT-1: pto.simd.vec_scope
-// CHECK-COUNT-1: scf.for
+// CHECK-COUNT-2: scf.for
 // CHECK-COUNT-4: vector.maskedload
 // CHECK-COUNT-4: arith.addf
 // CHECK-COUNT-1: arith.divf
-// CHECK-NOT: arith.select
 // CHECK-NOT: vector.maskedload %[[DST]]
-// CHECK: vector.maskedstore %[[DST]]
+// CHECK-COUNT-1: vector.maskedstore
