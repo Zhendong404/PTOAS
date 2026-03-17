@@ -9,3 +9,7 @@
 // CHECK-COUNT-1: vsts(
 // CHECK-NOT: vsel(
 // CHECK-LABEL: [aicore] inline __attribute__((always_inline)) void __pto_fused_group_0_0(
+// CHECK-LABEL: __global__ AICORE void flash_attention_softmax_block(
+// CHECK: Tile<{{.*}}> [[TILE:v[0-9]+]];
+// CHECK-NEXT: TASSIGN([[TILE]], [[ADDR:v[0-9]+]]);
+// CHECK-NEXT: __ubuf__ float* [[PTR:v[0-9]+]] = [[TILE]].data();

@@ -11394,6 +11394,60 @@ struct EmitPTOManualPass
         varOp.erase();
     }
 
+    // --- Step D: Ensure TASSIGN happens before tile.data() extraction. ---
+    // Some bridge-cleanup paths may still leave:
+    //   Tile ... t;
+    //   auto *p = PTOAS__TILE_DATA(t);
+    //   TASSIGN(t, addr);
+    // which makes `p` observe an unbound tile address. Normalize the order
+    // late by hoisting TASSIGN before the earliest tile.data() extraction on
+    // the same tile within the block.
+    llvm::SmallVector<emitc::CallOpaqueOp> tileAssigns;
+    mop.walk([&](emitc::CallOpaqueOp callOp) {
+      if (callOp.getCallee() == "TASSIGN")
+        tileAssigns.push_back(callOp);
+    });
+
+    for (emitc::CallOpaqueOp assignOp : tileAssigns) {
+      if (assignOp->getNumOperands() < 2)
+        continue;
+      Value tile = assignOp.getOperand(0);
+      Block *block = assignOp->getBlock();
+      if (!tile || !block)
+        continue;
+
+      Operation *firstTileData = nullptr;
+      for (Operation &op : *block) {
+        if (&op == assignOp.getOperation())
+          break;
+        auto dataOp = dyn_cast<emitc::CallOpaqueOp>(&op);
+        if (!dataOp || dataOp.getCallee() != "PTOAS__TILE_DATA" ||
+            dataOp->getNumOperands() != 1)
+          continue;
+        if (dataOp.getOperand(0) != tile)
+          continue;
+        firstTileData = &op;
+        break;
+      }
+
+      if (!firstTileData)
+        continue;
+
+      bool canHoist = true;
+      for (Value operand : assignOp->getOperands()) {
+        if (auto *def = operand.getDefiningOp()) {
+          if (def->getBlock() == block && !def->isBeforeInBlock(firstTileData)) {
+            canHoist = false;
+            break;
+          }
+        }
+      }
+      if (!canHoist)
+        continue;
+
+      assignOp->moveBefore(firstTileData);
+    }
+
     // =========================================================================
   }
   };
