@@ -45,11 +45,14 @@ struct ForwardedStore {
   Value value;
 };
 
-static bool sameValues(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
-  return lhs.size() == rhs.size() && llvm::equal(lhs, rhs);
-}
-
 static bool areEquivalentValues(Value lhs, Value rhs);
+
+static bool areEquivalentValueRanges(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(llvm::zip(lhs, rhs), [](auto pair) {
+           return areEquivalentValues(std::get<0>(pair), std::get<1>(pair));
+         });
+}
 
 static SmallVector<Value, 4> mapValues(ValueRange values, IRMapping &mapping) {
   SmallVector<Value, 4> mapped;
@@ -253,7 +256,7 @@ static const ForwardedStore *findForwardedStore(ArrayRef<ForwardedStore> stores,
                                                 Value mask) {
   for (const ForwardedStore &store : llvm::reverse(stores))
     if (areEquivalentValues(store.base, base) &&
-        sameValues(store.indices, indices) &&
+        areEquivalentValueRanges(store.indices, indices) &&
         areEquivalentMaskValues(store.mask, mask))
       return &store;
   return nullptr;
