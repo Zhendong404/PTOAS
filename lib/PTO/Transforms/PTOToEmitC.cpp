@@ -722,6 +722,8 @@ struct ArithDivUIToEmitC : public OpConversionPattern<arith::DivUIOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::DivUIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type opTy = op.getType();
     auto intTy = dyn_cast<IntegerType>(opTy);
@@ -1654,6 +1656,8 @@ struct ArithMaxSIToEmitC : public OpConversionPattern<arith::MaxSIOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MaxSIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type dstTy = getTypeConverter()->convertType(op.getType());
     if (!dstTy)
@@ -1675,6 +1679,8 @@ struct ArithMinSIToEmitC : public OpConversionPattern<arith::MinSIOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MinSIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type dstTy = getTypeConverter()->convertType(op.getType());
     if (!dstTy)
@@ -1696,6 +1702,8 @@ struct ArithMaxUIToEmitC : public OpConversionPattern<arith::MaxUIOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MaxUIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type opTy = op.getType();
     auto intTy = dyn_cast<IntegerType>(opTy);
@@ -1732,6 +1740,8 @@ struct ArithMinUIToEmitC : public OpConversionPattern<arith::MinUIOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MinUIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type opTy = op.getType();
     auto intTy = dyn_cast<IntegerType>(opTy);
@@ -1784,6 +1794,8 @@ struct ArithMaxNumFToEmitC : public OpConversionPattern<arith::MaxNumFOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MaxNumFOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type dstTy = getTypeConverter()->convertType(op.getType());
     if (!dstTy)
@@ -1823,6 +1835,8 @@ struct ArithMinNumFToEmitC : public OpConversionPattern<arith::MinNumFOp>,
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(arith::MinNumFOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     auto loc = op.getLoc();
     Type dstTy = getTypeConverter()->convertType(op.getType());
     if (!dstTy)
@@ -1865,6 +1879,8 @@ struct ArithMinMaxFPropagateNaNToEmitC : public OpConversionPattern<ArithOp>,
   LogicalResult
   matchAndRewrite(ArithOp op, typename ArithOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     if (!isa<FloatType>(op.getType()))
       return rewriter.notifyMatchFailure(op, "expected scalar float type");
 
@@ -3624,6 +3640,8 @@ struct ArithDivSIToEmitC : public OpConversionPattern<arith::DivSIOp> {
 
   LogicalResult matchAndRewrite(arith::DivSIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (isa<VectorType>(op.getType()))
+      return failure();
     Type newTy = getTypeConverter()->convertType(op.getType());
     if (!newTy)
       return failure();

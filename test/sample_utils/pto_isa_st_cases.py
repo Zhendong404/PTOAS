@@ -178,7 +178,7 @@ def build_scalar_case(
                 dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=dst_shape)
 
                 src_tile = pto.AllocTileOp(
-                    _tile_buf_type(ctx, shape=src_shape, elem_ty=elem_ty, valid_shape=valid_shape, pad_value=pad_value)
+                    _tile_buf_type(ctx, shape=src_shape, elem_ty=elem_ty, valid_shape=src_shape, pad_value=pad_value)
                 ).result
                 dst_tile = pto.AllocTileOp(
                     _tile_buf_type(ctx, shape=dst_shape, elem_ty=elem_ty, valid_shape=valid_shape, pad_value=pad_value)
