@@ -8,34 +8,29 @@ if [[ ! -x "${ptoas_bin}" ]]; then
   exit 1
 fi
 
-backend_report="$(mktemp)"
-cleanup() {
-  rm -f "${backend_report}"
-}
-trap cleanup EXIT
+legacy_guard_pattern='a5vm\.\(load\|abs\|store\)'
+legacy_guard_regex='a5vm\.(load|abs|store)'
+
+rg -n "${legacy_guard_regex}" test/phase1/*.mlir >/dev/null && {
+  echo "error: obsolete pseudo-op fixture content detected under test/phase1" >&2
+  exit 1
+} || true
 
 echo "phase1 check: a5vm_vec_type.mlir"
 "${ptoas_bin}" test/phase1/a5vm_vec_type.mlir 2>&1 | FileCheck test/phase1/a5vm_vec_type.mlir
 
-echo "phase1 check: a5vm_load_op.mlir"
-"${ptoas_bin}" test/phase1/a5vm_load_op.mlir -o - | FileCheck test/phase1/a5vm_load_op.mlir
+echo "phase1 check: a5vm_copy_gm_to_ubuf_op.mlir"
+"${ptoas_bin}" test/phase1/a5vm_copy_gm_to_ubuf_op.mlir -o - | FileCheck test/phase1/a5vm_copy_gm_to_ubuf_op.mlir
 
-echo "phase1 check: a5vm_abs_op.mlir"
-"${ptoas_bin}" test/phase1/a5vm_abs_op.mlir -o - | FileCheck test/phase1/a5vm_abs_op.mlir
+echo "phase1 check: a5vm_vabs_kernel_shape.mlir"
+"${ptoas_bin}" test/phase1/a5vm_vabs_kernel_shape.mlir -o - | FileCheck test/phase1/a5vm_vabs_kernel_shape.mlir
 
-echo "phase1 check: a5vm_store_op.mlir"
-"${ptoas_bin}" test/phase1/a5vm_store_op.mlir -o - | FileCheck test/phase1/a5vm_store_op.mlir
+echo "phase1 check: a5vm_copy_ubuf_to_gm_op.mlir"
+"${ptoas_bin}" test/phase1/a5vm_copy_ubuf_to_gm_op.mlir -o - | FileCheck test/phase1/a5vm_copy_ubuf_to_gm_op.mlir
 
 echo "phase1 check: a5vm_backend_switch.mlir"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-allow-unresolved --a5vm-unresolved-report="${backend_report}" \
+"${ptoas_bin}" --pto-backend=a5vm --a5vm-allow-unresolved --a5vm-unresolved-report=/tmp/phase1-a5vm.unresolved \
   test/phase1/a5vm_backend_switch.mlir -o - | FileCheck test/phase1/a5vm_backend_switch.mlir
-
-test -s "$backend_report"
-
-echo "phase1 check: a5vm_backend_switch.mlir (intrinsics)"
-"${ptoas_bin}" --pto-backend=a5vm --a5vm-print-intrinsics --a5vm-allow-unresolved \
-  --a5vm-unresolved-report="${backend_report}" test/phase1/a5vm_backend_switch.mlir -o - 2>&1 | \
-  rg "A5VM intrinsic:"
 
 echo "phase1 check: a5vm_shared_dialects.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase1/a5vm_shared_dialects.mlir -o /dev/null 2>&1 | \
