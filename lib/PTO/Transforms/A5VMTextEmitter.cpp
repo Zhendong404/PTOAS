@@ -74,7 +74,7 @@ static std::string llvmScalarType(Type type) {
 }
 
 static std::string llvmValueType(Type type) {
-  if (auto vecType = dyn_cast<pto::a5vm::VecType>(type))
+  if (auto vecType = dyn_cast<a5vm::VecType>(type))
     return "<" + std::to_string(vecType.getElementCount()) + " x " +
            llvmScalarType(vecType.getElementType()) + ">";
   return llvmScalarType(type);
@@ -125,13 +125,13 @@ static std::string valueName(Value value,
 }
 
 static std::optional<IntrinsicSelection> selectIntrinsic(Operation *op) {
-  auto vectorType = [&]() -> pto::a5vm::VecType {
-    if (auto load = dyn_cast<pto::a5vm::LoadOp>(op))
-      return cast<pto::a5vm::VecType>(load.getResult().getType());
-    if (auto abs = dyn_cast<pto::a5vm::AbsOp>(op))
-      return cast<pto::a5vm::VecType>(abs.getResult().getType());
-    if (auto store = dyn_cast<pto::a5vm::StoreOp>(op))
-      return cast<pto::a5vm::VecType>(store.getValue().getType());
+  auto vectorType = [&]() -> a5vm::VecType {
+    if (auto load = dyn_cast<a5vm::VldsOp>(op))
+      return cast<a5vm::VecType>(load.getResult().getType());
+    if (auto abs = dyn_cast<a5vm::VabsOp>(op))
+      return cast<a5vm::VecType>(abs.getResult().getType());
+    if (auto store = dyn_cast<a5vm::VstsOp>(op))
+      return cast<a5vm::VecType>(store.getValue().getType());
     return {};
   }();
   if (!vectorType)
@@ -142,37 +142,33 @@ static std::optional<IntrinsicSelection> selectIntrinsic(Operation *op) {
       std::to_string(vectorType.getElementCount());
   const std::string vectorTypeStr = stringifyType(vectorType);
 
-  if (auto load = dyn_cast<pto::a5vm::LoadOp>(op)) {
+  if (auto load = dyn_cast<a5vm::VldsOp>(op)) {
     IntrinsicSelection selection;
     selection.opName = load->getName().getStringRef().str();
     selection.vectorType = vectorTypeStr;
-    selection.mappingKey = "load." + vecSuffix + "." + load.getLayout().str() +
-                           "." + load.getDomain().str();
+    selection.mappingKey = "vlds." + vecSuffix;
     selection.name = "@llvm.hivm." + selection.mappingKey;
     selection.resultType = llvmValueType(load.getResult().getType());
     selection.argumentTypes = "ptr, i64";
     return selection;
   }
 
-  if (auto abs = dyn_cast<pto::a5vm::AbsOp>(op)) {
+  if (auto abs = dyn_cast<a5vm::VabsOp>(op)) {
     IntrinsicSelection selection;
     selection.opName = abs->getName().getStringRef().str();
     selection.vectorType = vectorTypeStr;
-    selection.mappingKey = "abs." + vecSuffix;
+    selection.mappingKey = "vabs." + vecSuffix;
     selection.name = "@llvm.hivm." + selection.mappingKey;
     selection.resultType = llvmValueType(abs.getResult().getType());
     selection.argumentTypes = llvmValueType(abs.getInput().getType());
     return selection;
   }
 
-  if (auto store = dyn_cast<pto::a5vm::StoreOp>(op)) {
-    if (store.getDomain() != "gm")
-      return std::nullopt;
+  if (auto store = dyn_cast<a5vm::VstsOp>(op)) {
     IntrinsicSelection selection;
     selection.opName = store->getName().getStringRef().str();
     selection.vectorType = vectorTypeStr;
-    selection.mappingKey = "store." + vecSuffix + "." + store.getLayout().str() +
-                           "." + store.getDomain().str();
+    selection.mappingKey = "vsts." + vecSuffix;
     selection.name = "@llvm.hivm." + selection.mappingKey;
     selection.resultType = "void";
     selection.argumentTypes =
@@ -193,23 +189,25 @@ static std::string unresolvedRecord(Operation *op, StringRef vectorType,
 }
 
 static std::string unresolvedMappingKey(Operation *op) {
-  if (auto load = dyn_cast<pto::a5vm::LoadOp>(op)) {
-    auto vecType = cast<pto::a5vm::VecType>(load.getResult().getType());
-    return "load." + elementCode(vecType.getElementType()) + "x" +
-           std::to_string(vecType.getElementCount()) + "." +
-           load.getLayout().str() + "." + load.getDomain().str();
-  }
-  if (auto abs = dyn_cast<pto::a5vm::AbsOp>(op)) {
-    auto vecType = cast<pto::a5vm::VecType>(abs.getResult().getType());
-    return "abs." + elementCode(vecType.getElementType()) + "x" +
+  if (auto copy = dyn_cast<a5vm::CopyGmToUbufOp>(op))
+    return copy->getName().getStringRef().str();
+  if (auto load = dyn_cast<a5vm::VldsOp>(op)) {
+    auto vecType = cast<a5vm::VecType>(load.getResult().getType());
+    return "vlds." + elementCode(vecType.getElementType()) + "x" +
            std::to_string(vecType.getElementCount());
   }
-  if (auto store = dyn_cast<pto::a5vm::StoreOp>(op)) {
-    auto vecType = cast<pto::a5vm::VecType>(store.getValue().getType());
-    return "store." + elementCode(vecType.getElementType()) + "x" +
-           std::to_string(vecType.getElementCount()) + "." +
-           store.getLayout().str() + "." + store.getDomain().str();
+  if (auto abs = dyn_cast<a5vm::VabsOp>(op)) {
+    auto vecType = cast<a5vm::VecType>(abs.getResult().getType());
+    return "vabs." + elementCode(vecType.getElementType()) + "x" +
+           std::to_string(vecType.getElementCount());
   }
+  if (auto store = dyn_cast<a5vm::VstsOp>(op)) {
+    auto vecType = cast<a5vm::VecType>(store.getValue().getType());
+    return "vsts." + elementCode(vecType.getElementType()) + "x" +
+           std::to_string(vecType.getElementCount());
+  }
+  if (auto copy = dyn_cast<a5vm::CopyUbufToGmOp>(op))
+    return copy->getName().getStringRef().str();
   return op->getName().getStringRef().str();
 }
 
@@ -257,7 +255,13 @@ LogicalResult translateA5VMModuleToText(ModuleOp module, llvm::raw_ostream &os,
 
     for (Block &block : func.getBlocks()) {
       for (Operation &op : block.getOperations()) {
-        if (auto load = dyn_cast<pto::a5vm::LoadOp>(op)) {
+        if (auto copy = dyn_cast<a5vm::CopyGmToUbufOp>(op)) {
+          bodyOS << "  ; A5VM-PRIMITIVE: " << copy->getName().getStringRef()
+                 << "\n";
+          continue;
+        }
+
+        if (auto load = dyn_cast<a5vm::VldsOp>(op)) {
           auto selection = selectIntrinsic(load);
           if (!selection) {
             llvm_unreachable("load must resolve");
@@ -273,12 +277,12 @@ LogicalResult translateA5VMModuleToText(ModuleOp module, llvm::raw_ostream &os,
           bodyOS << "  " << valueName(load.getResult(), valueNames, nextValueID)
                  << " = call " << selection->resultType << " "
                  << selection->name << "(ptr "
-                 << valueName(load.getBase(), valueNames, nextValueID) << ", i64 "
+                 << valueName(load.getSource(), valueNames, nextValueID) << ", i64 "
                  << valueName(load.getOffset(), valueNames, nextValueID) << ")\n";
           continue;
         }
 
-        if (auto abs = dyn_cast<pto::a5vm::AbsOp>(op)) {
+        if (auto abs = dyn_cast<a5vm::VabsOp>(op)) {
           auto selection = selectIntrinsic(abs);
           if (!selection) {
             llvm_unreachable("abs must resolve");
@@ -298,7 +302,7 @@ LogicalResult translateA5VMModuleToText(ModuleOp module, llvm::raw_ostream &os,
           continue;
         }
 
-        if (auto store = dyn_cast<pto::a5vm::StoreOp>(op)) {
+        if (auto store = dyn_cast<a5vm::VstsOp>(op)) {
           auto selection = selectIntrinsic(store);
           if (!selection) {
             auto vecTypeStr = stringifyType(store.getValue().getType());
@@ -324,8 +328,15 @@ LogicalResult translateA5VMModuleToText(ModuleOp module, llvm::raw_ostream &os,
           bodyOS << "  call " << selection->resultType << " " << selection->name
                  << "(" << llvmValueType(store.getValue().getType()) << " "
                  << valueName(store.getValue(), valueNames, nextValueID) << ", ptr "
-                 << valueName(store.getBase(), valueNames, nextValueID) << ", i64 "
+                 << valueName(store.getDestination(), valueNames, nextValueID)
+                 << ", i64 "
                  << valueName(store.getOffset(), valueNames, nextValueID) << ")\n";
+          continue;
+        }
+
+        if (auto copy = dyn_cast<a5vm::CopyUbufToGmOp>(op)) {
+          bodyOS << "  ; A5VM-PRIMITIVE: " << copy->getName().getStringRef()
+                 << "\n";
           continue;
         }
 

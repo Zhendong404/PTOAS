@@ -54,5 +54,6 @@ target_link_libraries(pto-opt PRIVATE
 # 确保在编译 pto-opt 之前，TableGen 已经生成了头文件
 # "PTOOpsIncGen" 这个名字必须和你 include/PTO/IR/CMakeLists.txt 里定义的 add_public_tablegen_target 一致
 add_dependencies(pto-opt
-  PTOOpsIncGen 
+  PTOOpsIncGen
+  A5VMOpsIncGen
 )

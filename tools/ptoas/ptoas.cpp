@@ -732,7 +732,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
 
-  registry.insert<mlir::pto::a5vm::A5VMDialect>();
+  registry.insert<mlir::a5vm::A5VMDialect>();
   registry.insert<mlir::pto::PTODialect>();
   //mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
@@ -769,7 +769,7 @@ int main(int argc, char **argv) {
   context.allowUnregisteredDialects(true);
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
-  context.getOrLoadDialect<mlir::pto::a5vm::A5VMDialect>();
+  context.getOrLoadDialect<mlir::a5vm::A5VMDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();

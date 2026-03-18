@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTO.h"
 
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Builders.h"
@@ -19,7 +20,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
-using namespace mlir::pto::a5vm;
+using namespace mlir::a5vm;
 
 #define GET_TYPEDEF_CLASSES
 #include "PTO/IR/A5VMTypes.cpp.inc"
@@ -42,6 +43,84 @@ static LogicalResult verifyVecTypeLike(Operation *op, Type type,
   return VecType::verify(
       [&]() { return op->emitOpError() << roleDescription << " "; },
       vecType.getElementCount(), vecType.getElementType());
+}
+
+enum class MemoryRole {
+  Unknown,
+  GM,
+  UB,
+  Other,
+};
+
+static MemoryRole classifyMemoryRole(Type type) {
+  auto memrefType = dyn_cast<BaseMemRefType>(type);
+  if (!memrefType)
+    return MemoryRole::Other;
+
+  Attribute memorySpace = memrefType.getMemorySpace();
+  if (!memorySpace)
+    return MemoryRole::Unknown;
+
+  if (auto addrSpace = dyn_cast<pto::AddressSpaceAttr>(memorySpace)) {
+    switch (addrSpace.getAddressSpace()) {
+    case pto::AddressSpace::GM:
+    case pto::AddressSpace::Zero:
+      return MemoryRole::GM;
+    case pto::AddressSpace::VEC:
+      return MemoryRole::UB;
+    default:
+      return MemoryRole::Other;
+    }
+  }
+
+  if (auto intAttr = dyn_cast<IntegerAttr>(memorySpace)) {
+    switch (intAttr.getInt()) {
+    case static_cast<int64_t>(pto::AddressSpace::GM):
+    case static_cast<int64_t>(pto::AddressSpace::Zero):
+      return MemoryRole::GM;
+    case static_cast<int64_t>(pto::AddressSpace::VEC):
+      return MemoryRole::UB;
+    default:
+      return MemoryRole::Other;
+    }
+  }
+
+  return MemoryRole::Other;
+}
+
+static bool isMemRefLike(Type type) { return isa<BaseMemRefType>(type); }
+
+template <typename CopyOp>
+static LogicalResult verifyCopyOp(CopyOp op, bool expectSourceGM) {
+  if (!isMemRefLike(op.getSource().getType()) ||
+      !isMemRefLike(op.getDestination().getType()))
+    return op.emitOpError("requires memref source and destination");
+
+  bool hasAllMetadata = op.getLayoutAttr() && op.getValidRowsAttr() &&
+                        op.getValidColsAttr() && op.getBurstCountAttr() &&
+                        op.getBurstLenAttr() && op.getGmStrideAttr() &&
+                        op.getUbStrideAttr() && op.getUbPadAttr();
+
+  MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
+  MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
+  bool directionMatches = true;
+  if (expectSourceGM) {
+    directionMatches &= sourceRole != MemoryRole::UB;
+    directionMatches &= destinationRole != MemoryRole::GM;
+  } else {
+    directionMatches &= sourceRole != MemoryRole::GM;
+    directionMatches &= destinationRole != MemoryRole::UB;
+  }
+
+  if (!hasAllMetadata || !directionMatches) {
+    return op.emitOpError()
+           << "requires "
+           << (expectSourceGM ? "GM source, UB destination"
+                              : "UB source, GM destination")
+           << ", and complete transfer metadata";
+  }
+
+  return success();
 }
 
 Type VecType::parse(AsmParser &parser) {
@@ -114,48 +193,74 @@ void A5VMDialect::printAttribute(Attribute attr,
   llvm_unreachable("A5VM dialect defines no custom attributes");
 }
 
-void LoadOp::getEffects(
+void CopyGmToUbufOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getBaseMutable());
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
-LogicalResult LoadOp::verify() {
+LogicalResult CopyGmToUbufOp::verify() { return verifyCopyOp(*this, true); }
+
+void VldsOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+}
+
+LogicalResult VldsOp::verify() {
+  if (!isMemRefLike(getSource().getType()))
+    return emitOpError("requires a memref source");
+
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
 
-  if (!getLayoutAttr() || !getDomainAttr())
-    return emitOpError("requires layout and domain string attributes");
-  if (!getValidRowsAttr() || !getValidColsAttr())
-    return emitOpError("requires valid_rows and valid_cols integer attributes");
+  MemoryRole sourceRole = classifyMemoryRole(getSource().getType());
+  if (sourceRole == MemoryRole::GM)
+    return emitOpError("requires a UB-backed source memref");
 
   return success();
 }
 
-void StoreOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getValueMutable());
-  effects.emplace_back(MemoryEffects::Write::get(), &getBaseMutable());
-}
-
-LogicalResult AbsOp::verify() {
+LogicalResult VabsOp::verify() {
   if (failed(verifyVecTypeLike(*this, getInput().getType(), "operand type")))
     return failure();
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (getInput().getType() != getResult().getType())
-    return emitOpError("mismatched vector types");
+    return emitOpError("requires matching register vector shape");
   return success();
 }
 
-LogicalResult StoreOp::verify() {
+void VstsOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getValueMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult VstsOp::verify() {
   if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
     return failure();
-  if (!getLayoutAttr() || !getDomainAttr())
-    return emitOpError("requires layout and domain string attributes");
+
+  if (!isMemRefLike(getDestination().getType()))
+    return emitOpError("requires a memref destination");
+
+  MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
+  if (destinationRole == MemoryRole::GM)
+    return emitOpError("requires a UB-backed destination memref");
+
   return success();
 }
+
+void CopyUbufToGmOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult CopyUbufToGmOp::verify() { return verifyCopyOp(*this, false); }
 
 #define GET_OP_CLASSES
 #include "PTO/IR/A5VMOps.cpp.inc"

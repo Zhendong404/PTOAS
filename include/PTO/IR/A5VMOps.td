@@ -20,25 +20,21 @@ def A5VM_VectorType : Type<CPred<"::llvm::isa<::mlir::a5vm::VecType>($_self)">,
 class A5VM_Op<string mnemonic, list<Trait> traits = []>
     : Op<A5VM_Dialect, mnemonic, traits>;
 
-class A5VM_TransferMetadata : Arguments<(ins
-    StrAttr:$layout,
-    I64Attr:$valid_rows,
-    I64Attr:$valid_cols,
-    I64Attr:$burst_count,
-    I64Attr:$burst_len,
-    I64Attr:$gm_stride,
-    I64Attr:$ub_stride,
-    BoolAttr:$ub_pad
-  )>;
-
 def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
-  let arguments = !con((
-    ins
-      AnyMemRef:$source,
-      AnyMemRef:$destination
-  ), A5VM_TransferMetadata);
+  let arguments = (ins
+    AnyMemRef:$source,
+    AnyMemRef:$destination,
+    OptionalAttr<StrAttr>:$layout,
+    OptionalAttr<I64Attr>:$valid_rows,
+    OptionalAttr<I64Attr>:$valid_cols,
+    OptionalAttr<I64Attr>:$burst_count,
+    OptionalAttr<I64Attr>:$burst_len,
+    OptionalAttr<I64Attr>:$gm_stride,
+    OptionalAttr<I64Attr>:$ub_stride,
+    OptionalAttr<BoolAttr>:$ub_pad
+  );
 
   let results = (outs);
 
@@ -99,11 +95,18 @@ def A5VM_VstsOp : A5VM_Op<"vsts", [
 def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
-  let arguments = !con((
-    ins
-      AnyMemRef:$source,
-      AnyMemRef:$destination
-  ), A5VM_TransferMetadata);
+  let arguments = (ins
+    AnyMemRef:$source,
+    AnyMemRef:$destination,
+    OptionalAttr<StrAttr>:$layout,
+    OptionalAttr<I64Attr>:$valid_rows,
+    OptionalAttr<I64Attr>:$valid_cols,
+    OptionalAttr<I64Attr>:$burst_count,
+    OptionalAttr<I64Attr>:$burst_len,
+    OptionalAttr<I64Attr>:$gm_stride,
+    OptionalAttr<I64Attr>:$ub_stride,
+    OptionalAttr<BoolAttr>:$ub_pad
+  );
 
   let results = (outs);
 

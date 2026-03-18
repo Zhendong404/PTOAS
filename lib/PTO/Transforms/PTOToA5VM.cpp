@@ -240,6 +240,18 @@ void appendStaticSizes(ValueRange values, SmallVectorImpl<int64_t> &out,
   }
 }
 
+int64_t defaultTransferExtent(int64_t value) {
+  return value == ShapedType::kDynamic ? 1 : value;
+}
+
+int64_t deriveTransferStride(ArrayRef<int64_t> strides, int64_t fallback) {
+  for (int64_t stride : strides) {
+    if (stride != ShapedType::kDynamic)
+      return stride;
+  }
+  return fallback;
+}
+
 Value resolveTensorViewBase(Value value, Attribute &layoutAttr,
                             SmallVectorImpl<int64_t> &shape,
                             SmallVectorImpl<int64_t> &strides) {
@@ -515,7 +527,7 @@ LogicalResult lowerUnaryTileOp(StringRef family,
                                                         src)
                     .getResult(0);
 
-  auto absOp = rewriter.create<a5vm::AbsOp>(loc, vecType, vectorSrc);
+  auto absOp = rewriter.create<a5vm::VabsOp>(loc, vecType, vectorSrc);
   A5VMUnaryContract attrs = contract;
   attrs.family = family;
   attachUnaryContractAttrs(absOp, attrs);
@@ -546,30 +558,27 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
   if (!base || !isa<MemRefType>(base.getType()))
     return op.emitOpError("requires a memref-backed source for A5VM lowering");
 
-  Type dstElementType = getElementType(op.getDst());
-  if (!dstElementType)
-    return op.emitOpError("requires tile-compatible destination for A5VM lowering");
+  if (!isa<MemRefType>(op.getDst().getType()))
+    return op.emitOpError("requires a memref-backed destination for A5VM lowering");
 
-  auto vecType = getA5VMVecType(rewriter.getContext(), dstElementType);
-  if (!vecType)
-    return op.emitOpError("requires A5VM-compatible tile element type");
+  int64_t burstCount = 1;
+  int64_t burstLen = defaultTransferExtent(contract.validCols);
+  int64_t gmStride =
+      deriveTransferStride(contract.srcStrides, defaultTransferExtent(contract.validCols));
+  int64_t ubStride = defaultTransferExtent(contract.validCols);
+  bool ubPad = contract.leftPaddingPresent || contract.rightPaddingPresent ||
+               contract.hasPadValue || contract.padMode != "none";
 
-  Value zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-  auto loadOp = rewriter.create<a5vm::LoadOp>(
-      op.getLoc(), vecType, base, zero, rewriter.getStringAttr(contract.layout),
-      rewriter.getStringAttr(stringifyTileDomain(contract.tileDomain)),
+  auto loadOp = rewriter.create<a5vm::CopyGmToUbufOp>(
+      op.getLoc(), base, op.getDst(), rewriter.getStringAttr(contract.layout),
       rewriter.getI64IntegerAttr(contract.validRows),
-      rewriter.getI64IntegerAttr(contract.validCols));
+      rewriter.getI64IntegerAttr(contract.validCols),
+      rewriter.getI64IntegerAttr(burstCount),
+      rewriter.getI64IntegerAttr(burstLen),
+      rewriter.getI64IntegerAttr(gmStride),
+      rewriter.getI64IntegerAttr(ubStride),
+      rewriter.getBoolAttr(ubPad));
   attachLoadContractAttrs(loadOp, contract);
-  Value materializedDst =
-      rewriter
-          .create<UnrealizedConversionCastOp>(op.getLoc(),
-                                              TypeRange{op.getDst().getType()},
-                                              loadOp.getResult())
-          .getResult(0);
-  op.getDst().replaceUsesWithIf(materializedDst, [&](OpOperand &use) {
-    return use.getOwner() != op && use.getOwner() != materializedDst.getDefiningOp();
-  });
   return success();
 }
 
@@ -615,24 +624,21 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
   if (!base || !isa<MemRefType>(base.getType()))
     return op.emitOpError("requires a memref-backed destination for A5VM lowering");
 
-  Type srcElementType = getElementType(op.getSrc());
-  if (!srcElementType)
-    return op.emitOpError("requires tile-compatible source for A5VM lowering");
+  int64_t burstCount = 1;
+  int64_t burstLen = defaultTransferExtent(contract.validCols);
+  int64_t gmStride =
+      deriveTransferStride(contract.dstStrides, defaultTransferExtent(contract.validCols));
+  int64_t ubStride = defaultTransferExtent(contract.validCols);
 
-  auto vecType = getA5VMVecType(rewriter.getContext(), srcElementType);
-  if (!vecType)
-    return op.emitOpError("requires A5VM-compatible tile element type");
-
-  Value zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-  Value vectorSrc = rewriter
-                        .create<UnrealizedConversionCastOp>(op.getLoc(),
-                                                            TypeRange{vecType},
-                                                            op.getSrc())
-                        .getResult(0);
-  auto storeOp = rewriter.create<a5vm::StoreOp>(
-      op.getLoc(), vectorSrc, base, zero,
-      rewriter.getStringAttr(contract.dstLayout),
-      rewriter.getStringAttr(stringifyTileDomain(contract.srcDomain)));
+  auto storeOp = rewriter.create<a5vm::CopyUbufToGmOp>(
+      op.getLoc(), op.getSrc(), base, rewriter.getStringAttr(contract.dstLayout),
+      rewriter.getI64IntegerAttr(contract.validRows),
+      rewriter.getI64IntegerAttr(contract.validCols),
+      rewriter.getI64IntegerAttr(burstCount),
+      rewriter.getI64IntegerAttr(burstLen),
+      rewriter.getI64IntegerAttr(gmStride),
+      rewriter.getI64IntegerAttr(ubStride),
+      rewriter.getBoolAttr(false));
   attachStoreContractAttrs(storeOp, contract);
   return success();
 }

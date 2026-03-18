@@ -124,7 +124,7 @@ def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
   let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
   let dependentDialects = [
     "pto::PTODialect",
-    "pto::a5vm::A5VMDialect",
+    "a5vm::A5VMDialect",
     "func::FuncDialect",
     "arith::ArithDialect",
     "memref::MemRefDialect"
