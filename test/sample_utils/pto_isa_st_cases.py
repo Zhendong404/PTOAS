@@ -121,10 +121,10 @@ def build_binary_case(
                 dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=dst_shape)
 
                 src0_tile = pto.AllocTileOp(
-                    _tile_buf_type(ctx, shape=src0_shape, elem_ty=elem_ty, valid_shape=valid_shape, pad_value="null")
+                    _tile_buf_type(ctx, shape=src0_shape, elem_ty=elem_ty, valid_shape=src0_shape, pad_value="null")
                 ).result
                 src1_tile = pto.AllocTileOp(
-                    _tile_buf_type(ctx, shape=src1_shape, elem_ty=elem_ty, valid_shape=valid_shape, pad_value="null")
+                    _tile_buf_type(ctx, shape=src1_shape, elem_ty=elem_ty, valid_shape=src1_shape, pad_value="null")
                 ).result
                 dst_tile = pto.AllocTileOp(
                     _tile_buf_type(ctx, shape=dst_shape, elem_ty=elem_ty, valid_shape=valid_shape, pad_value="null")
