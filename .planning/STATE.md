@@ -1,14 +1,14 @@
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** Phase 1 execution in progress
+**Status:** Phase 1 complete, Phase 2 ready
 
 ## Project Reference
 
 See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 **Core value:** Preserve PTO library semantics and template-driven behavior inside PTOAS so backend lowering retains enough information to enable optimization instead of losing it during library instantiation.
-**Current focus:** Phase 1 - A5VM Foundation
+**Current focus:** Phase 2 - PTO Lowering
 
 ## Current Position
 
@@ -20,7 +20,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Phase 1 plans created
 - Plan `01-01` executed and summarized
 - Plan `01-02` executed and summarized
-- Next execution target: `01-03-PLAN.md`
+- Plan `01-03` executed and summarized
+- Next execution target: `02-01-PLAN.md`
 
 ## Active Milestone
 
@@ -31,7 +32,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | A5VM Foundation | In Progress |
+| 1 | A5VM Foundation | Complete |
 | 2 | PTO Lowering | Pending |
 | 3 | HIVM Emission | Pending |
 | 4 | Abs Validation | Pending |
@@ -53,7 +54,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Use committed MLIR `RUN:`/`FileCheck` fixtures as the Phase 1 backend contract before implementation starts.
 - Use a standalone Bash runner for Phase 1 verification instead of relying on external lit configuration.
 - Use a handwritten A5VM vector type parser/printer to preserve the exact `!a5vm.vec<...>` syntax under the local MLIR toolchain.
-- Let `ptoas` short-circuit raw A5VM textual inputs to a parse-only path until backend-selection work lands in plan `01-03`.
+- Keep `emitc` as the default backend while exposing `a5vm` through an explicit `--pto-backend` selector.
+- Treat raw A5VM textual fixtures as already-lowered backend IR on the A5VM path so debug IR preserves shared dialects and A5VM ops.
+- Report unresolved A5VM mappings through explicit comments, diagnostics, and optional sidecar files instead of guessing intrinsic spellings.
 
 ## Recent Progress
 
@@ -64,6 +67,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Registered A5VM in `ptoas` with parse-only textual fixture handling and passing Phase 1 A5VM checks
 - Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-02-SUMMARY.md`
 - Marked BACK-01, BACK-02, and A5VM-01 through A5VM-04 complete in `.planning/REQUIREMENTS.md`
+- Added the standalone `A5VMTextEmitter` with LLVM-like text output, intrinsic tracing, and unresolved-report support
+- Wired `ptoas --pto-backend=a5vm` to emit textual A5VM output while keeping `emitc` as the default path
+- Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-03-SUMMARY.md`
 
 ## Open Questions
 
@@ -72,9 +78,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Session Continuity
 
-- Next recommended command: `/gsd:execute-phase 01-a5vm-foundation`
-- Next plan to execute: `01-03-PLAN.md`
+- Next recommended command: `/gsd:execute-phase 02-pto-lowering`
+- Next plan to execute: `02-01-PLAN.md`
 - Current blocker status: none
 
 ---
-*Last updated: 2026-03-19 after completing plan 01-02*
+*Last updated: 2026-03-19 after completing plan 01-03*
