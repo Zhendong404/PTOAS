@@ -1,4 +1,5 @@
 add_mlir_dialect_library(PTOTransforms
+  A5VMTextEmitter.cpp
   InsertLoadStoreForMixCV.cpp
   PTOInsertCVMov.cpp
   PTOConvertToDPS.cpp
