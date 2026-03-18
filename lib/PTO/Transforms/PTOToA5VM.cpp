@@ -7,16 +7,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/Transforms/A5VMLowering.h"
+#include "PTO/Transforms/Passes.h"
 
 #include "PTO/IR/A5VM.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -24,6 +29,9 @@
 
 namespace mlir {
 namespace pto {
+
+#define GEN_PASS_DEF_PTOTOA5VM
+#include "PTO/Transforms/Passes.h.inc"
 
 namespace {
 
@@ -56,6 +64,20 @@ StringRef stringifyTileDomain(A5VMTileDomain domain) {
 
 StringRef stringifyTileLayout(TileBufType type) {
   if (auto layoutAttr = dyn_cast_or_null<BLayoutAttr>(type.getBLayoutAttr())) {
+    switch (layoutAttr.getValue()) {
+    case BLayout::RowMajor:
+      return "row_major";
+    case BLayout::ColMajor:
+      return "col_major";
+    }
+  }
+  return "row_major";
+}
+
+StringRef stringifyTileLayoutConfig(TileBufConfigAttr config) {
+  if (!config)
+    return "row_major";
+  if (auto layoutAttr = dyn_cast_or_null<BLayoutAttr>(config.getBLayout())) {
     switch (layoutAttr.getValue()) {
     case BLayout::RowMajor:
       return "row_major";
@@ -116,6 +138,91 @@ void getValidShape(TileBufType type, int64_t &rows, int64_t &cols) {
   ArrayRef<int64_t> validShape = type.getValidShape();
   rows = validShape.size() > 0 ? validShape[0] : ShapedType::kDynamic;
   cols = validShape.size() > 1 ? validShape[1] : ShapedType::kDynamic;
+}
+
+TileBufConfigAttr lookupTileConfig(Value value) {
+  if (!value)
+    return {};
+  if (auto bind = value.getDefiningOp<BindTileOp>())
+    return bind.getConfig();
+  if (auto cast = value.getDefiningOp<PointerCastOp>())
+    return cast.getConfig().value_or(TileBufConfigAttr{});
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>())
+    return lookupTileConfig(subview.getSource());
+  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>())
+    return lookupTileConfig(reinterpret.getSource());
+  if (auto cast = value.getDefiningOp<memref::CastOp>())
+    return lookupTileConfig(cast.getSource());
+  return {};
+}
+
+void lookupValidDims(Value value, Value &validRow, Value &validCol) {
+  if (!value) {
+    validRow = {};
+    validCol = {};
+    return;
+  }
+  if (auto bind = value.getDefiningOp<BindTileOp>()) {
+    validRow = bind.getValidRow();
+    validCol = bind.getValidCol();
+    return;
+  }
+  if (auto cast = value.getDefiningOp<PointerCastOp>()) {
+    validRow = cast.getValidRow();
+    validCol = cast.getValidCol();
+    return;
+  }
+  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
+    lookupValidDims(subview.getSource(), validRow, validCol);
+    return;
+  }
+  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>()) {
+    lookupValidDims(reinterpret.getSource(), validRow, validCol);
+    return;
+  }
+  if (auto cast = value.getDefiningOp<memref::CastOp>()) {
+    lookupValidDims(cast.getSource(), validRow, validCol);
+    return;
+  }
+  validRow = {};
+  validCol = {};
+}
+
+Type getElementType(Value value) {
+  Type type = value.getType();
+  if (auto tileType = dyn_cast<TileBufType>(type))
+    return tileType.getElementType();
+  if (auto memrefType = dyn_cast<MemRefType>(type))
+    return memrefType.getElementType();
+  return {};
+}
+
+Attribute getMemorySpace(Value value) {
+  Type type = value.getType();
+  if (auto tileType = dyn_cast<TileBufType>(type))
+    return tileType.getMemorySpace();
+  if (auto memrefType = dyn_cast<MemRefType>(type))
+    return memrefType.getMemorySpace();
+  return {};
+}
+
+StringRef deriveTileLayout(Value value) {
+  if (auto tileType = dyn_cast<TileBufType>(value.getType()))
+    return stringifyTileLayout(tileType);
+  return stringifyTileLayoutConfig(lookupTileConfig(value));
+}
+
+void deriveValidShape(Value value, int64_t &rows, int64_t &cols) {
+  if (auto tileType = dyn_cast<TileBufType>(value.getType())) {
+    getValidShape(tileType, rows, cols);
+    return;
+  }
+
+  Value validRow;
+  Value validCol;
+  lookupValidDims(value, validRow, validCol);
+  rows = getConstInt(validRow).value_or(ShapedType::kDynamic);
+  cols = getConstInt(validCol).value_or(ShapedType::kDynamic);
 }
 
 void appendStaticSizes(ValueRange values, SmallVectorImpl<int64_t> &out,
@@ -217,6 +324,76 @@ LogicalResult lowerUnsupportedMatStore(Location loc) {
   return failure();
 }
 
+struct PTOTLoadToA5VMLoad : OpRewritePattern<TLoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TLoadOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(lowerTLOAD(op, rewriter)))
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOTAbsToA5VMAbs : OpRewritePattern<TAbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TAbsOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(lowerTABS(op, rewriter)))
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOTStoreToA5VMStore : OpRewritePattern<TStoreOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TStoreOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(lowerTSTORE(op, rewriter)))
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOToA5VMPass)
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    SmallVector<Operation *> worklist;
+    module.walk([&](Operation *op) {
+      if (isa<TLoadOp, TAbsOp, TStoreOp>(op))
+        worklist.push_back(op);
+    });
+
+    PatternRewriter rewriter(&getContext());
+    for (Operation *op : worklist) {
+      if (!op->getBlock())
+        continue;
+      rewriter.setInsertionPoint(op);
+
+      LogicalResult status = TypeSwitch<Operation *, LogicalResult>(op)
+                                 .Case<TLoadOp>([&](TLoadOp loadOp) {
+                                   return lowerTLOAD(loadOp, rewriter);
+                                 })
+                                 .Case<TAbsOp>([&](TAbsOp absOp) {
+                                   return lowerTABS(absOp, rewriter);
+                                 })
+                                 .Case<TStoreOp>([&](TStoreOp storeOp) {
+                                   return lowerTSTORE(storeOp, rewriter);
+                                 })
+                                 .Default([](Operation *) { return failure(); });
+      if (succeeded(status))
+        rewriter.eraseOp(op);
+    }
+  }
+};
+
 } // namespace
 
 A5VMPartitionTrace extractPartitionTrace(Value value) {
@@ -238,10 +415,9 @@ A5VMLoadContract extractTLoadContract(TLoadOp op) {
   (void)base;
   contract.layout = stringifyLayoutAttr(layoutAttr);
 
-  auto dstType = cast<TileBufType>(op.getDst().getType());
-  contract.tileLayout = stringifyTileLayout(dstType);
-  contract.tileDomain = deriveTileDomain(dstType.getMemorySpace());
-  getValidShape(dstType, contract.validRows, contract.validCols);
+  contract.tileLayout = deriveTileLayout(op.getDst());
+  contract.tileDomain = deriveTileDomain(getMemorySpace(op.getDst()));
+  deriveValidShape(op.getDst(), contract.validRows, contract.validCols);
   contract.padMode = stringifyPadModeAttr(op.getPadModeAttr());
   contract.hasPadValue = static_cast<bool>(op.getPadValue());
   contract.leftPaddingPresent = static_cast<bool>(op.getLeftPaddingNum());
@@ -255,11 +431,10 @@ A5VMUnaryContract extractTAbsContract(TAbsOp op) {
   A5VMUnaryContract contract;
   contract.family = "abs";
 
-  auto srcType = cast<TileBufType>(op.getSrc().getType());
-  contract.tileDomain = deriveTileDomain(srcType.getMemorySpace());
-  contract.tileLayout = stringifyTileLayout(srcType);
-  getValidShape(srcType, contract.validRows, contract.validCols);
-  contract.elementType = srcType.getElementType();
+  contract.tileDomain = deriveTileDomain(getMemorySpace(op.getSrc()));
+  contract.tileLayout = deriveTileLayout(op.getSrc());
+  deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
+  contract.elementType = getElementType(op.getSrc());
   return contract;
 }
 
@@ -267,9 +442,8 @@ A5VMStoreContract extractTStoreContract(TStoreOp op) {
   A5VMStoreContract contract;
   contract.trace = extractPartitionTrace(op.getDst());
 
-  auto srcType = cast<TileBufType>(op.getSrc().getType());
-  contract.srcDomain = deriveTileDomain(srcType.getMemorySpace());
-  getValidShape(srcType, contract.validRows, contract.validCols);
+  contract.srcDomain = deriveTileDomain(getMemorySpace(op.getSrc()));
+  deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
 
   Attribute layoutAttr;
   SmallVector<int64_t> shape;
@@ -346,9 +520,19 @@ LogicalResult lowerUnaryTileOp(StringRef family,
   attrs.family = family;
   attachUnaryContractAttrs(absOp, attrs);
 
-  if (dst && dst.getType() != vecType)
-    rewriter.create<UnrealizedConversionCastOp>(loc, TypeRange{dst.getType()},
-                                                absOp.getResult());
+  if (dst) {
+    Value materializedDst = absOp.getResult();
+    if (dst.getType() != vecType) {
+      materializedDst =
+          rewriter
+              .create<UnrealizedConversionCastOp>(loc, TypeRange{dst.getType()},
+                                                  absOp.getResult())
+              .getResult(0);
+    }
+    dst.replaceUsesWithIf(materializedDst, [&](OpOperand &use) {
+      return use.getOwner() != absOp && use.getOwner() != materializedDst.getDefiningOp();
+    });
+  }
   return success();
 }
 
@@ -362,11 +546,11 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
   if (!base || !isa<MemRefType>(base.getType()))
     return op.emitOpError("requires a memref-backed source for A5VM lowering");
 
-  auto dstType = dyn_cast<TileBufType>(op.getDst().getType());
-  if (!dstType)
-    return op.emitOpError("requires tile_buf destination for A5VM lowering");
+  Type dstElementType = getElementType(op.getDst());
+  if (!dstElementType)
+    return op.emitOpError("requires tile-compatible destination for A5VM lowering");
 
-  auto vecType = getA5VMVecType(rewriter.getContext(), dstType.getElementType());
+  auto vecType = getA5VMVecType(rewriter.getContext(), dstElementType);
   if (!vecType)
     return op.emitOpError("requires A5VM-compatible tile element type");
 
@@ -377,20 +561,40 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
       rewriter.getI64IntegerAttr(contract.validRows),
       rewriter.getI64IntegerAttr(contract.validCols));
   attachLoadContractAttrs(loadOp, contract);
+  Value materializedDst =
+      rewriter
+          .create<UnrealizedConversionCastOp>(op.getLoc(),
+                                              TypeRange{op.getDst().getType()},
+                                              loadOp.getResult())
+          .getResult(0);
+  op.getDst().replaceUsesWithIf(materializedDst, [&](OpOperand &use) {
+    return use.getOwner() != op && use.getOwner() != materializedDst.getDefiningOp();
+  });
   return success();
 }
 
 LogicalResult lowerTABS(TAbsOp op, PatternRewriter &rewriter) {
   A5VMUnaryContract contract = extractTAbsContract(op);
-  if (contract.tileDomain != A5VMTileDomain::Vec)
-    return op.emitOpError("TABS lowering requires tile domain vec");
-  if (contract.tileLayout != "row_major")
-    return op.emitOpError("TABS lowering requires row-major tile layout");
-  if (contract.validRows != contract.validCols)
-    return op.emitOpError(
-        "TABS lowering requires matching valid rows and valid cols");
-  if (!contract.elementType.isF16() && !contract.elementType.isF32())
-    return op.emitOpError("TABS lowering supports only f16 and f32 element types");
+  bool hasPrecheckFailure = false;
+  if (contract.tileDomain != A5VMTileDomain::Vec) {
+    op.emitOpError("TABS lowering requires tile domain vec");
+    hasPrecheckFailure = true;
+  }
+  if (contract.tileLayout != "row_major") {
+    op.emitOpError("TABS lowering requires row-major tile layout");
+    hasPrecheckFailure = true;
+  }
+  if (contract.validRows != contract.validCols) {
+    op.emitOpError("TABS lowering requires matching valid rows and valid cols");
+    hasPrecheckFailure = true;
+  }
+  if (!contract.elementType || (!contract.elementType.isF16() &&
+                                !contract.elementType.isF32())) {
+    op.emitOpError("TABS lowering supports only f16 and f32 element types");
+    hasPrecheckFailure = true;
+  }
+  if (hasPrecheckFailure)
+    return failure();
 
   return lowerUnaryTileOp("abs", contract, op.getSrc(), op.getDst(), rewriter,
                           op.getLoc());
@@ -411,11 +615,11 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
   if (!base || !isa<MemRefType>(base.getType()))
     return op.emitOpError("requires a memref-backed destination for A5VM lowering");
 
-  auto srcType = dyn_cast<TileBufType>(op.getSrc().getType());
-  if (!srcType)
-    return op.emitOpError("requires tile_buf source for A5VM lowering");
+  Type srcElementType = getElementType(op.getSrc());
+  if (!srcElementType)
+    return op.emitOpError("requires tile-compatible source for A5VM lowering");
 
-  auto vecType = getA5VMVecType(rewriter.getContext(), srcType.getElementType());
+  auto vecType = getA5VMVecType(rewriter.getContext(), srcElementType);
   if (!vecType)
     return op.emitOpError("requires A5VM-compatible tile element type");
 
@@ -431,6 +635,10 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
       rewriter.getStringAttr(stringifyTileDomain(contract.srcDomain)));
   attachStoreContractAttrs(storeOp, contract);
   return success();
+}
+
+std::unique_ptr<Pass> createLowerPTOToA5VMPass() {
+  return std::make_unique<PTOToA5VMPass>();
 }
 
 } // namespace pto

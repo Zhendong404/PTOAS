@@ -119,4 +119,16 @@ def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   ];
 }
 
+def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
+  let summary = "Lower PTO tile ops to A5VM backend ops";
+  let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
+  let dependentDialects = [
+    "pto::PTODialect",
+    "pto::a5vm::A5VMDialect",
+    "func::FuncDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect"
+  ];
+}
+
 #endif // MLIR_DIALECT_PTO_PASSES
