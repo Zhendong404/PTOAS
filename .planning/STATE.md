@@ -6,9 +6,9 @@ current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
 status: verifying
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-03-18T20:35:43.510Z"
-last_activity: 2026-03-18
+stopped_at: Refreshed 01-03-PLAN.md
+last_updated: "2026-03-18T20:46:28Z"
+last_activity: 2026-03-19
 progress:
   total_phases: 4
   completed_phases: 2
@@ -27,8 +27,8 @@ progress:
 **Current Plan:** 3
 **Total Plans in Phase:** 3
 **Progress:** [██████░░░░] 60%
-**Last Activity:** 2026-03-18
-**Last Activity Description:** Completed 01-01-PLAN.md
+**Last Activity:** 2026-03-19
+**Last Activity Description:** Refreshed 01-03 raw corrected A5VM backend seam contract
 
 ## Project Reference
 
@@ -86,7 +86,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Use a handwritten A5VM vector type parser/printer to preserve the exact `!a5vm.vec<...>` syntax under the local MLIR toolchain.
 - Keep `emitc` as the default backend while exposing `a5vm` through an explicit `--pto-backend` selector.
 - Treat raw A5VM textual fixtures as already-lowered backend IR on the A5VM path so debug IR preserves shared dialects and A5VM ops.
-- Report unresolved A5VM mappings through explicit comments, diagnostics, and optional sidecar files instead of guessing intrinsic spellings.
+- Report unsupported A5VM seam cases through explicit comments, diagnostics, and optional sidecar files instead of guessing later-stage emission behavior.
 - Use committed Phase 2 MLIR/FileCheck fixtures as the PTO semantic-lowering contract before implementing the lowering pass.
 - Use a standalone Bash runner for Phase 2 verification instead of relying on external lit configuration.
 
@@ -101,9 +101,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Registered A5VM in `ptoas` with parse-only textual fixture handling and passing Phase 1 A5VM checks
 - Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-02-SUMMARY.md`
 - Marked BACK-01, BACK-02, and A5VM-01 through A5VM-04 complete in `.planning/REQUIREMENTS.md`
-- Added the standalone `A5VMTextEmitter` with LLVM-like text output, intrinsic tracing, and unresolved-report support
-- Wired `ptoas --pto-backend=a5vm` to emit textual A5VM output while keeping `emitc` as the default path
-- Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-03-SUMMARY.md`
+- Rewrote `A5VMTextEmitter` to preserve raw corrected A5VM text and explicit unsupported-op diagnostics at the Phase 1 seam
+- Locked `ptoas --pto-backend=a5vm` regression coverage to corrected A5VM primitive text while keeping `emitc` as the default path
+- Refreshed `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-03-SUMMARY.md` to document the raw-text seam contract
 - Added committed Phase 2 fixtures for TLOAD, TSTORE, TABS, and unary lowering metadata contracts
 - Added executable `test/phase2/run_phase2_checks.sh` with explicit ptoas and `ctest` invocations
 - Created `.planning/phases/02-pto-lowering/02-pto-lowering-01-SUMMARY.md`
@@ -128,6 +128,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 | Phase | Duration | Tasks | Files |
 |-------|----------|-------|-------|
+| Phase 01-a5vm-foundation P03 (refresh) | 22min | 2 tasks | 4 files |
 | Phase 02 P02 | 7min | 2 tasks | 3 files |
 | Phase 02-pto-lowering P03 | 24min | 2 tasks | 6 files |
 | Phase 01 P01 | 21min | 2 tasks | 10 files |
@@ -142,6 +143,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Run PTO-to-A5VM only on the --pto-backend=a5vm branch after the shared pre-backend passes.
 - [Phase 02]: Extract tile layout, valid dims, and address-space metadata from bind_tile and pointer_cast SSA chains because the A5VM boundary sees memref-backed tile values.
 - [Phase 02]: Use an explicit rewrite walk instead of greedy pattern application so single-op Phase 2 fixtures retain visible a5vm.load and a5vm.abs ops in debug IR.
+- [Phase 01-a5vm-foundation]: Keep the Phase 1 A5VM seam at raw corrected backend text and defer llvm.hivm emission to the later HIVM phase.
 - [Phase 01]: Keep the no-legacy-name regression check in the standalone runner rather than in the MLIR fixtures so file-level validation can forbid obsolete spellings entirely.
 - [Phase 01-a5vm-foundation]: Keep copy-op transfer attrs parser-optional and verifier-required so invalid fixtures fail with the planned diagnostic instead of a parser error.
 - [Phase 01-a5vm-foundation]: Derive copy transfer metadata from existing lowering contract fields instead of widening the public Phase 2 lowering structs in this plan.

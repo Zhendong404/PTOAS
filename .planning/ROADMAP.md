@@ -45,7 +45,7 @@ Create the corrected backend entry point and the minimum hardware-facing `a5vm` 
 Plans:
 - [ ] `01-01-PLAN.md` — Replan required: existing fixtures assume the wrong A5VM op surface
 - [ ] `01-02-PLAN.md` — Replan required: existing dialect implementation uses the wrong namespace and pseudo-op model
-- [ ] `01-03-PLAN.md` — Replan required: existing backend boundary work must be rechecked against corrected A5VM primitives
+- [x] `01-03-PLAN.md` — Preserve raw corrected A5VM text at the backend seam and lock the explicit `--pto-backend=a5vm` contract
 
 ### Phase 2: PTO Lowering
 
