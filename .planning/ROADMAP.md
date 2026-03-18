@@ -92,6 +92,14 @@ Emit textual LLVM HIVM intrinsic IR from `a5vm` and fully remove the `emitc` out
 2. Intrinsic spellings are derived from op/type/variant information rather than a single hardcoded string path.
 3. The textual output for the implemented subset is structurally legal and suitable for downstream verification on another machine.
 
+**Plans:** 4 plans
+
+Plans:
+- [ ] `03-01-PLAN.md` — Create the Phase 3 FileCheck fixtures and committed runner for HIVM emission, naming, unresolved reporting, and llvm-as parsing
+- [ ] `03-02-PLAN.md` — Build the shared HIVM intrinsic naming and unresolved-selection helper layer
+- [ ] `03-03-PLAN.md` — Implement the LLVM-like A5VM text printer and unresolved sidecar serialization
+- [ ] `03-04-PLAN.md` — Wire `ptoas` to replace the final EmitC output slot with the new HIVM text emitter and run the full Phase 3 suite
+
 ### Phase 4: Abs Validation
 
 **Goal**
