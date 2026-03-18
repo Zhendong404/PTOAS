@@ -5,30 +5,30 @@ milestone_name: milestone
 current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
-status: ready_to_execute
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-19T02:13:14+08:00"
-last_activity: 2026-03-19
+status: verifying
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-03-18T18:38:53.948Z"
+last_activity: 2026-03-18
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 10
-  completed_plans: 5
-  percent: 50
+  completed_plans: 6
+  percent: 60
 ---
 
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** Ready to execute
+**Status:** Phase complete — ready for verification
 **Current Phase:** 2
 **Current Phase Name:** PTO Lowering
 **Total Phases:** 4
 **Current Plan:** 3
 **Total Plans in Phase:** 3
-**Progress:** [█████░░░░░] 50%
-**Last Activity:** 2026-03-19
-**Last Activity Description:** Completed 02-02-PLAN.md
+**Progress:** [██████░░░░] 60%
+**Last Activity:** 2026-03-18
+**Last Activity Description:** Completed 02-03-PLAN.md
 
 ## Project Reference
 
@@ -50,7 +50,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Plan `01-03` executed and summarized
 - Plan `02-01` executed and summarized
 - Plan `02-02` executed and summarized
-- Next execution target: `02-03-PLAN.md`
+- Plan `02-03` executed and summarized
+- Next execution target: `03-01-PLAN.md`
 
 ## Active Milestone
 
@@ -62,7 +63,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | A5VM Foundation | Complete |
-| 2 | PTO Lowering | In Progress |
+| 2 | PTO Lowering | Complete |
 | 3 | HIVM Emission | Pending |
 | 4 | Abs Validation | Pending |
 
@@ -107,6 +108,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Added `include/PTO/Transforms/A5VMLowering.h` with reusable TLOAD/TABS/TSTORE lowering contracts and entrypoint declarations
 - Added `lib/PTO/Transforms/PTOToA5VM.cpp` with contract extraction helpers, unary metadata attachment, and explicit TSTORE ACC/MAT TODO diagnostics
 - Created `.planning/phases/02-pto-lowering/02-pto-lowering-02-SUMMARY.md`
+- Registered the `pto-to-a5vm` pass and wired `ptoas --pto-backend=a5vm` through PTO-to-A5VM lowering before backend emission
+- Created `.planning/phases/02-pto-lowering/02-pto-lowering-03-SUMMARY.md`
 
 ## Open Questions
 
@@ -124,6 +127,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase | Duration | Tasks | Files |
 |-------|----------|-------|-------|
 | Phase 02 P02 | 7min | 2 tasks | 3 files |
+| Phase 02-pto-lowering P03 | 24min | 2 tasks | 6 files |
 
 ## Decisions Made
 
@@ -131,6 +135,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Keep the lowering surface split into public contracts plus a helper implementation file before pass wiring.
 - [Phase 02]: Use explicit metadata attachment helpers so fixture-locked attribute names stay readable and reusable.
 - [Phase 02]: Preserve unsupported TSTORE ACC and MAT paths as dedicated TODO diagnostics instead of collapsing them into a generic failure.
+- [Phase 02]: Run PTO-to-A5VM only on the --pto-backend=a5vm branch after the shared pre-backend passes.
+- [Phase 02]: Extract tile layout, valid dims, and address-space metadata from bind_tile and pointer_cast SSA chains because the A5VM boundary sees memref-backed tile values.
+- [Phase 02]: Use an explicit rewrite walk instead of greedy pattern application so single-op Phase 2 fixtures retain visible a5vm.load and a5vm.abs ops in debug IR.
 
 ## Blockers
 
@@ -138,9 +145,9 @@ None.
 
 ## Session
 
-**Last Date:** 2026-03-18T18:13:14.230Z
-**Stopped At:** Completed 02-02-PLAN.md
+**Last Date:** 2026-03-18T18:38:53.946Z
+**Stopped At:** Completed 02-03-PLAN.md
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-02*
+*Last updated: 2026-03-19 after completing plan 02-03*
