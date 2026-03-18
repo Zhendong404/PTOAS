@@ -19,11 +19,11 @@
 // CHECK-SAME: trace_sizes = [32, 32]
 
 module {
-  func.func @abs_tload_contract(%src: memref<1024xf32>, %index: index) {
+  func.func @abs_tload_contract(%src: !pto.ptr<f32>, %index: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c32 = arith.constant 32 : index
-    %tv = pto.make_tensor_view %src, shape = [%c32, %c32] strides = [%c32, %c1]
+    %tv = pto.make_tensor_view %src, shape = [%c32, %c32], strides = [%c32, %c1]
       : !pto.tensor_view<?x?xf32>
     %slice = pto.partition_view %tv, offsets = [%c0, %c0], sizes = [%c32, %c32]
       : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<32x32xf32>

@@ -640,7 +640,16 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
 }
 
 static bool containsA5VMIR(llvm::StringRef input) {
-  return input.contains("!a5vm.vec<") || input.contains("a5vm.");
+  llvm::StringRef rest = input;
+  while (!rest.empty()) {
+    auto split = rest.split('\n');
+    llvm::StringRef line = split.first.trim();
+    if (!line.starts_with("//") &&
+        (line.contains("!a5vm.vec<") || line.contains("a5vm.")))
+      return true;
+    rest = split.second;
+  }
+  return false;
 }
 
 static llvm::SmallVector<llvm::StringRef> splitTopLevelModules(llvm::StringRef input) {
@@ -912,6 +921,9 @@ int main(int argc, char **argv) {
       pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
     }
     pm.addPass(emitc::createFormExpressionsPass());
+    pm.addPass(mlir::createCSEPass());
+  } else if (!skipPreBackendPasses) {
+    pm.addPass(pto::createLowerPTOToA5VMPass());
     pm.addPass(mlir::createCSEPass());
   }
 
