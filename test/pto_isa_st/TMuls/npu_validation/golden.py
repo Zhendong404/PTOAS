@@ -8,7 +8,14 @@ for search_root in (Path(__file__).resolve().parent, Path(__file__).resolve().pa
         sys.path.insert(0, str(search_root))
         break
 
-from validation_runtime import default_buffers, load_case_meta, single_output, write_buffers, write_golden
+from validation_runtime import (
+    default_buffers,
+    load_case_meta,
+    scalar_input_names,
+    single_output,
+    write_buffers,
+    write_golden,
+)
 
 
 CASES = {
@@ -60,7 +67,7 @@ def main():
         buffers[lhs_name] = lhs.reshape(-1)
         buffers[rhs_name] = rhs.reshape(-1)
     else:
-        src_name, scalar_name = meta.inputs
+        src_name, scalar_name = scalar_input_names(meta)
         src_rows, src_cols = spec["src"]
         float_like = spec["dtype"] in {"f32", "f16"}
         if "tmuls" in {"tadds", "tsubs", "tmuls", "tdivs"}:

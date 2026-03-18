@@ -42,6 +42,13 @@ log() {
   printf '[%s] %s\n' "$(date +'%F %T')" "$*"
 }
 
+interrupted=0
+
+handle_interrupt() {
+  interrupted=1
+  log "收到中断信号，停止继续调度后续 case"
+}
+
 matches_filter() {
   local value="$1"
   local filter="$2"
@@ -120,12 +127,17 @@ log "TOTAL_CASES=${TOTAL_COUNT}"
 
 status_file="$(mktemp -t output_npu_validation.XXXXXX)"
 trap 'rm -f "${status_file}"' EXIT
+trap 'handle_interrupt' INT TERM
 
 ok_count=0
 fail_count=0
 idx=0
 
 for run_script in "${RUN_SCRIPTS[@]}"; do
+  if [[ ${interrupted} -ne 0 ]]; then
+    break
+  fi
+
   idx=$((idx + 1))
   case_dir="$(dirname -- "${run_script}")"
   case_name="$(basename -- "${case_dir}")"
@@ -151,6 +163,12 @@ for run_script in "${RUN_SCRIPTS[@]}"; do
   ) 2>&1 | tee "${case_log_path}"
   run_rc=${PIPESTATUS[0]}
 
+  if [[ ${interrupted} -ne 0 || ${run_rc} -eq 130 || ${run_rc} -eq 143 ]]; then
+    interrupted=1
+    log "中断 ${case_id}，退出批量执行"
+    break
+  fi
+
   if [[ ${run_rc} -eq 0 ]]; then
     log "PASS ${case_id}"
     printf '%s\t%s\t%s\n' "PASS" "${case_id}" "${case_log_path}" >> "${status_file}"
@@ -161,6 +179,10 @@ for run_script in "${RUN_SCRIPTS[@]}"; do
     fail_count=$((fail_count + 1))
   fi
 done
+
+if [[ ${interrupted} -ne 0 ]]; then
+  exit 130
+fi
 
 echo
 echo "========== NPU VALIDATION SUMMARY =========="

@@ -129,11 +129,19 @@ def default_buffers(meta: CaseMeta):
 
 
 def write_buffers(meta: CaseMeta, buffers):
+    inferred_scalar = _infer_scalar_input_from_kernel(meta)
     for name in meta.read_order:
         if name not in buffers:
             raise KeyError(f'missing buffer for {name}')
         array = np.asarray(buffers[name], dtype=meta.np_types[name]).reshape(-1)
         expected = meta.elem_counts[name]
+        if (
+            array.size == 1
+            and expected > 1
+            and inferred_scalar is not None
+            and name == inferred_scalar
+        ):
+            array = np.repeat(array, expected)
         if array.size != expected:
             raise ValueError(f'{name}: expected {expected} elements, got {array.size}')
         array.tofile(f'{name}.bin')
@@ -154,6 +162,46 @@ def single_output(meta: CaseMeta) -> str:
     if len(meta.outputs) != 1:
         raise ValueError(f'expected exactly one output, got {meta.outputs}')
     return meta.outputs[0]
+
+
+def _infer_scalar_input_from_kernel(meta: CaseMeta, kernel_cpp: str | Path | None = None) -> str | None:
+    kernel_path = Path(kernel_cpp) if kernel_cpp is not None else None
+    if kernel_path is None:
+        matches = sorted(Path.cwd().glob('*_kernel.cpp'))
+        if len(matches) != 1:
+            return None
+        kernel_path = matches[0]
+    if not kernel_path.is_file():
+        return None
+
+    text = kernel_path.read_text(encoding='utf-8')
+    direct_index_reads = {
+        match.group(1)
+        for match in re.finditer(r'\b(\w+)\s*\[\s*[^\]]+\s*\]', text)
+        if match.group(1) in meta.inputs
+    }
+    if len(direct_index_reads) == 1:
+        return next(iter(direct_index_reads))
+    return None
+
+
+def scalar_input_names(meta: CaseMeta) -> tuple[str, str]:
+    if len(meta.inputs) != 2:
+        raise ValueError(f'expected exactly two inputs for scalar case, got {meta.inputs}')
+    scalar_candidates = [name for name in meta.inputs if meta.elem_counts.get(name) == 1]
+    if len(scalar_candidates) != 1:
+        inferred_scalar = _infer_scalar_input_from_kernel(meta)
+        if inferred_scalar is not None:
+            scalar_name = inferred_scalar
+            src_name = next(name for name in meta.inputs if name != scalar_name)
+            return src_name, scalar_name
+        raise ValueError(
+            f'expected exactly one scalar input with elem_count=1, got '
+            f'{[(name, meta.elem_counts.get(name)) for name in meta.inputs]}'
+        )
+    scalar_name = scalar_candidates[0]
+    src_name = next(name for name in meta.inputs if name != scalar_name)
+    return src_name, scalar_name
 
 
 def packed_row_bytes(cols: int) -> int:

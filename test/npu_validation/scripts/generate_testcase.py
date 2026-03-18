@@ -909,6 +909,24 @@ def _infer_gm_pointer_elem_counts(kernel_text: str, pointer_param_names):
             continue
         param_elem_counts[param] = max(param_elem_counts.get(param, 0), req + max(off, 0))
 
+    # Scalar-pointer kernels often access the GM scalar directly with raw
+    # indexing (e.g. `v2[v17]`) instead of materializing a GlobalTensor view.
+    # Infer a conservative element count from those direct reads/writes so
+    # testcase input generation does not over-allocate them to logical_elem_count.
+    for m in re.finditer(r"\b(\w+)\s*\[\s*([^\]]+)\s*\]", kernel_scope):
+        base = m.group(1)
+        index_expr = m.group(2).strip()
+        if base not in pointer_like and base not in pointer_params:
+            continue
+        param, off0 = resolve_param_and_offset(base)
+        if not param or off0 is None:
+            continue
+        index_val = _safe_eval_int_expr(index_expr, int_max)
+        if index_val is None:
+            continue
+        req = off0 + max(index_val, 0) + 1
+        param_elem_counts[param] = max(param_elem_counts.get(param, 0), req)
+
     return param_elem_counts
 
 
