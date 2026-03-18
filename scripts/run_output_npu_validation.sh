@@ -5,10 +5,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-SRC_ROOT="${SRC_ROOT:-${PTOAS_OUT_DIR:-${REPO_ROOT}/build/output}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/build/output_npu_validation}"
 LOG_ROOT="${LOG_ROOT:-${REPO_ROOT}/build/output_npu_validation_log}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUN_MODE="${RUN_MODE:-npu}"
 SOC_VERSION="${SOC_VERSION:-Ascend950}"
 CASE_FILTER="${CASE_FILTER:-}"
@@ -16,42 +14,32 @@ SAMPLE_FILTER="${SAMPLE_FILTER:-}"
 
 usage() {
   cat <<EOF
-顺序执行 runop.sh 生成的 output 目录下所有 case 的上板验证，并实时打印结果。
+串行执行 ${OUTPUT_ROOT} 下所有 testcase 目录中的 run.sh，并统计 pass/fail 数量与 fail 列表。
 
 用法:
-  $0 [--src-root <dir>] [--output-root <dir>] [--log-root <dir>]
-     [--python <python>] [--run-mode <npu|sim>] [--soc-version <soc>]
+  $0 [--output-root <dir>] [--log-root <dir>]
+     [--run-mode <npu|sim>] [--soc-version <soc>]
      [--sample <sample>] [--case <case>]
 
 参数:
-  --src-root     输入 .cpp 根目录，默认: \$PTOAS_OUT_DIR 或 ${REPO_ROOT}/build/output
-  --output-root  generate_testcase.py 输出目录，默认: ${REPO_ROOT}/build/output_npu_validation
+  --output-root  testcase 根目录，默认: ${REPO_ROOT}/build/output_npu_validation
   --log-root     每个 case 的日志目录，默认: ${REPO_ROOT}/build/output_npu_validation_log
-  --python       Python 解释器，默认: python3
-  --run-mode     传给 generate_testcase.py 的运行模式，默认: npu
-  --soc-version  传给 generate_testcase.py / run.sh 的 SoC，默认: Ascend910B1
-  --sample       仅运行指定 sample 目录，例如 Abs
-  --case         仅运行指定 case 名，例如 abs 或 abs-pto
+  --run-mode     传给 run.sh 的 RUN_MODE，默认: npu
+  --soc-version  传给 run.sh 的 SOC_VERSION，默认: Ascend950
+  --sample       仅运行指定 sample 目录，例如 TAdd
+  --case         仅运行指定 case 名，例如 tadd_float_16x32_16x64_16x32_16x31
   -h, --help     显示帮助
 
 示例:
   $0
-  $0 --sample Abs
-  $0 --case abs
+  $0 --sample TAdd
+  $0 --case tadd_float_16x32_16x64_16x32_16x31
   $0 --run-mode sim --soc-version Ascend910
 EOF
 }
 
 log() {
   printf '[%s] %s\n' "$(date +'%F %T')" "$*"
-}
-
-normalize_case_name() {
-  local name="$1"
-  name="${name%.cpp}"
-  name="${name%-pto}"
-  name="${name%_pto}"
-  printf '%s\n' "${name}"
 }
 
 matches_filter() {
@@ -63,11 +51,6 @@ matches_filter() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --src-root)
-      [[ $# -ge 2 ]] || { echo "[ERROR] --src-root 缺少参数" >&2; exit 2; }
-      SRC_ROOT="$2"
-      shift 2
-      ;;
     --output-root)
       [[ $# -ge 2 ]] || { echo "[ERROR] --output-root 缺少参数" >&2; exit 2; }
       OUTPUT_ROOT="$2"
@@ -76,11 +59,6 @@ while [[ $# -gt 0 ]]; do
     --log-root)
       [[ $# -ge 2 ]] || { echo "[ERROR] --log-root 缺少参数" >&2; exit 2; }
       LOG_ROOT="$2"
-      shift 2
-      ;;
-    --python)
-      [[ $# -ge 2 ]] || { echo "[ERROR] --python 缺少参数" >&2; exit 2; }
-      PYTHON_BIN="$2"
       shift 2
       ;;
     --run-mode)
@@ -115,31 +93,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -d "${SRC_ROOT}" ]] || { echo "[ERROR] 输入目录不存在: ${SRC_ROOT}" >&2; exit 1; }
-command -v "${PYTHON_BIN}" >/dev/null 2>&1 || { echo "[ERROR] Python 不可用: ${PYTHON_BIN}" >&2; exit 1; }
+[[ -d "${OUTPUT_ROOT}" ]] || { echo "[ERROR] output_npu_validation 目录不存在: ${OUTPUT_ROOT}" >&2; exit 1; }
+mkdir -p "${LOG_ROOT}" || { echo "[ERROR] 创建日志目录失败: ${LOG_ROOT}" >&2; exit 1; }
 
-mkdir -p "${OUTPUT_ROOT}" "${LOG_ROOT}" || { echo "[ERROR] 创建输出目录失败" >&2; exit 1; }
-
-declare -a CPP_FILES=()
-while IFS= read -r -d '' file; do
-  [[ "$(basename -- "${file}")" == ._* ]] && continue
-  sample_name="$(basename -- "$(dirname -- "${file}")")"
-  case_base_name="$(basename -- "${file}" .cpp)"
-  case_name="$(normalize_case_name "$(basename -- "${file}")")"
+declare -a RUN_SCRIPTS=()
+while IFS= read -r -d '' run_script; do
+  case_dir="$(dirname -- "${run_script}")"
+  case_name="$(basename -- "${case_dir}")"
+  sample_name="$(basename -- "$(dirname -- "${case_dir}")")"
   matches_filter "${sample_name}" "${SAMPLE_FILTER}" || continue
-  if [[ -n "${CASE_FILTER}" ]] && [[ "${case_name}" != "${CASE_FILTER}" ]] && [[ "${case_base_name}" != "${CASE_FILTER}" ]]; then
-    continue
-  fi
-  CPP_FILES+=("${file}")
-done < <(find "${SRC_ROOT}" -type f -name "*.cpp" -print0 | sort -z)
+  matches_filter "${case_name}" "${CASE_FILTER}" || continue
+  RUN_SCRIPTS+=("${run_script}")
+done < <(find "${OUTPUT_ROOT}" -type f -name "run.sh" -print0 | sort -z)
 
-TOTAL_COUNT="${#CPP_FILES[@]}"
+TOTAL_COUNT="${#RUN_SCRIPTS[@]}"
 if [[ "${TOTAL_COUNT}" -eq 0 ]]; then
-  echo "[ERROR] 未找到可执行的 .cpp case: ${SRC_ROOT}" >&2
+  echo "[ERROR] 未找到匹配的 run.sh: ${OUTPUT_ROOT} (sample=${SAMPLE_FILTER:-*}, case=${CASE_FILTER:-*})" >&2
   exit 1
 fi
 
-log "SRC_ROOT=${SRC_ROOT}"
 log "OUTPUT_ROOT=${OUTPUT_ROOT}"
 log "LOG_ROOT=${LOG_ROOT}"
 log "RUN_MODE=${RUN_MODE}"
@@ -153,77 +125,52 @@ ok_count=0
 fail_count=0
 idx=0
 
-for cpp in "${CPP_FILES[@]}"; do
+for run_script in "${RUN_SCRIPTS[@]}"; do
   idx=$((idx + 1))
-  sample_name="$(basename -- "$(dirname -- "${cpp}")")"
-  case_base="$(basename -- "${cpp}")"
-  testcase="$(normalize_case_name "${case_base}")"
-  case_output_dir="${OUTPUT_ROOT}/${sample_name}/${testcase}"
+  case_dir="$(dirname -- "${run_script}")"
+  case_name="$(basename -- "${case_dir}")"
+  sample_name="$(basename -- "$(dirname -- "${case_dir}")")"
+  case_id="${sample_name}/${case_name}"
   case_log_dir="${LOG_ROOT}/${sample_name}"
-  case_log_path="${case_log_dir}/${testcase}.log"
+  case_log_path="${case_log_dir}/${case_name}.log"
 
   mkdir -p "${case_log_dir}" || {
-    printf '%s\t%s\t%s\n' "FAIL" "${sample_name}/${testcase}" "mkdir log dir failed" >> "${status_file}"
+    printf '%s\t%s\t%s\n' "FAIL" "${case_id}" "mkdir log dir failed" >> "${status_file}"
     fail_count=$((fail_count + 1))
     continue
   }
 
   echo
-  log "[${idx}/${TOTAL_COUNT}] CASE ${sample_name}/${testcase}"
-  log "INPUT=${cpp}"
+  log "[${idx}/${TOTAL_COUNT}] CASE ${case_id}"
+  log "RUN_SH=${run_script}"
   log "LOG=${case_log_path}"
 
-  {
-    echo "[INFO] generate_testcase: ${cpp}"
-    "${PYTHON_BIN}" "${REPO_ROOT}/test/npu_validation/scripts/generate_testcase.py" \
-      --input "${cpp}" \
-      --testcase "${testcase}" \
-      --output-root "${OUTPUT_ROOT}" \
-      --run-mode "${RUN_MODE}" \
-      --soc-version "${SOC_VERSION}"
-  } 2>&1 | tee "${case_log_path}"
-  gen_rc=${PIPESTATUS[0]}
-
-  if [[ ${gen_rc} -ne 0 ]]; then
-    log "FAIL generate_testcase: ${sample_name}/${testcase} (exit=${gen_rc})"
-    printf '%s\t%s\t%s\n' "FAIL" "${sample_name}/${testcase}" "${case_log_path}" >> "${status_file}"
-    fail_count=$((fail_count + 1))
-    continue
-  fi
-
-  if [[ ! -x "${case_output_dir}/run.sh" ]]; then
-    echo "[ERROR] run.sh 未生成: ${case_output_dir}/run.sh" | tee -a "${case_log_path}"
-    printf '%s\t%s\t%s\n' "FAIL" "${sample_name}/${testcase}" "${case_log_path}" >> "${status_file}"
-    fail_count=$((fail_count + 1))
-    continue
-  fi
-
   (
-    cd "${case_output_dir}" || exit 1
+    cd "${case_dir}" || exit 1
     env RUN_MODE="${RUN_MODE}" SOC_VERSION="${SOC_VERSION}" ./run.sh
-  ) 2>&1 | tee -a "${case_log_path}"
+  ) 2>&1 | tee "${case_log_path}"
   run_rc=${PIPESTATUS[0]}
 
   if [[ ${run_rc} -eq 0 ]]; then
-    log "OK ${sample_name}/${testcase}"
-    printf '%s\t%s\t%s\n' "OK" "${sample_name}/${testcase}" "${case_log_path}" >> "${status_file}"
+    log "PASS ${case_id}"
+    printf '%s\t%s\t%s\n' "PASS" "${case_id}" "${case_log_path}" >> "${status_file}"
     ok_count=$((ok_count + 1))
   else
-    log "FAIL run.sh: ${sample_name}/${testcase} (exit=${run_rc})"
-    printf '%s\t%s\t%s\n' "FAIL" "${sample_name}/${testcase}" "${case_log_path}" >> "${status_file}"
+    log "FAIL ${case_id} (exit=${run_rc})"
+    printf '%s\t%s\t%s\n' "FAIL" "${case_id}" "${case_log_path}" >> "${status_file}"
     fail_count=$((fail_count + 1))
   fi
 done
 
 echo
 echo "========== NPU VALIDATION SUMMARY =========="
-echo "TOTAL=${TOTAL_COUNT}  OK=${ok_count}  FAIL=${fail_count}"
+echo "TOTAL=${TOTAL_COUNT}  PASS=${ok_count}  FAIL=${fail_count}"
 
 if [[ ${fail_count} -gt 0 ]]; then
   echo "---------- FAIL CASES ----------"
-  while IFS=$'\t' read -r st case_name log_path; do
+  while IFS=$'\t' read -r st case_id log_path; do
     [[ "${st}" == "FAIL" ]] || continue
-    echo "${case_name}  FAIL"
+    echo "${case_id}"
     echo "log: ${log_path}"
   done < "${status_file}"
   exit 1
