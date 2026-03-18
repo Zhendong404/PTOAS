@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits>
 #include <optional>
@@ -77,7 +78,14 @@ static constexpr llvm::StringLiteral kErrBodyDisallowedIR =
     "E_OPLIB_BODY_DISALLOWED_IR";
 static constexpr llvm::StringLiteral kErrSimdAttrRequired =
     "E_OPLIB_SIMD_ATTR_REQUIRED";
-static constexpr int64_t kRequiredLevel3SimdLanes = 64;
+static constexpr int64_t kA5VectorLengthBits = 256 * 8;
+
+static std::string typeToString(Type ty) {
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  ty.print(os);
+  return os.str();
+}
 
 enum class TemplateArgRole {
   Tile,
@@ -129,6 +137,69 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
   if (!vecTy || vecTy.isScalable())
     return failure();
   return vecTy.getNumElements();
+}
+
+static std::optional<int64_t> getExpectedA5SimdLanesForElemType(Type elemTy) {
+  unsigned bitWidth = 0;
+  if (elemTy.isF16() || elemTy.isBF16())
+    bitWidth = 16;
+  else if (elemTy.isF32())
+    bitWidth = 32;
+  else if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
+    if (intTy.getWidth() == 1)
+      return std::nullopt;
+    bitWidth = intTy.getWidth();
+  } else {
+    return std::nullopt;
+  }
+
+  if (bitWidth == 0 || (kA5VectorLengthBits % bitWidth) != 0)
+    return std::nullopt;
+  return kA5VectorLengthBits / bitWidth;
+}
+
+static bool isSupportedA5MaskLanes(int64_t lanes) {
+  return lanes == 32 || lanes == 64 || lanes == 128 || lanes == 256;
+}
+
+static bool isA5ByteLaneCarrierVector(Type elemTy, int64_t lanes,
+                                      int64_t simdLanes) {
+  return elemTy.isInteger(8) && simdLanes > 0 && lanes == simdLanes;
+}
+
+static std::optional<int64_t>
+inferExpectedLevel3SimdLanes(FunctionType fnTy,
+                             ArrayRef<TemplateArgRole> argRoles) {
+  auto infer = [&](bool skipI8Tiles) -> std::optional<int64_t> {
+    for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
+      if (role != TemplateArgRole::Tile)
+        continue;
+      auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+      if (!tileTy)
+        continue;
+      Type elemTy = tileTy.getElementType();
+      if (skipI8Tiles && elemTy.isInteger(8))
+        continue;
+      if (auto expected = getExpectedA5SimdLanesForElemType(elemTy))
+        return expected;
+    }
+    return std::nullopt;
+  };
+
+  if (auto expected = infer(/*skipI8Tiles=*/true))
+    return expected;
+
+  for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
+    if (role != TemplateArgRole::Tile)
+      continue;
+    auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+    if (!tileTy)
+      continue;
+    if (auto expected =
+            getExpectedA5SimdLanesForElemType(tileTy.getElementType()))
+      return expected;
+  }
+  return std::nullopt;
 }
 
 static bool isSimdBridgeOp(Operation *op) {
@@ -741,12 +812,13 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
   }
 
   if (isLevel3TemplateKind(kind) && simdLanes > 0 &&
-      simdLanes != kRequiredLevel3SimdLanes) {
-    return emitCodeError(
-        func.getOperation(), kErrLanesMismatch,
-        Twine("Level-3 template kind=") + kind +
-            " requires pto.simd.lanes = " +
-            Twine(kRequiredLevel3SimdLanes) + ", got " + Twine(simdLanes));
+      inferExpectedLevel3SimdLanes(fnTy, argRoles) &&
+      simdLanes != *inferExpectedLevel3SimdLanes(fnTy, argRoles)) {
+    return emitCodeError(func.getOperation(), kErrLanesMismatch,
+                         Twine("Level-3 template kind=") + kind +
+                             " requires pto.simd.lanes = " +
+                             Twine(*inferExpectedLevel3SimdLanes(fnTy, argRoles)) +
+                             ", got " + Twine(simdLanes));
   }
 
   llvm::DenseMap<Operation *, int64_t> preorder;
@@ -759,25 +831,67 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
   int coreCount = 0;
   bool sawLevel3VectorValue = false;
   LogicalResult status = success();
+  int64_t effectiveSimdLanes =
+      simdLanes > 0 ? simdLanes
+                    : inferExpectedLevel3SimdLanes(fnTy, argRoles).value_or(-1);
 
   auto requireLevel3VectorLanes = [&](Operation *targetOp, Type ty,
                                       StringRef position) -> bool {
     if (!isLevel3TemplateKind(kind))
       return true;
+    auto vecTy = dyn_cast<VectorType>(ty);
+    if (!vecTy || vecTy.isScalable())
+      return true;
     auto lanes = getFixedVectorLanes(ty);
     if (failed(lanes))
       return true;
     sawLevel3VectorValue = true;
-    if (*lanes == kRequiredLevel3SimdLanes)
-      return true;
-    status = emitCodeError(
-        targetOp, kErrLanesMismatch,
-        Twine("Level-3 template kind=") + kind +
-            " requires vector<" + Twine(kRequiredLevel3SimdLanes) +
-            "x*> values, but " + position + " of op '" +
-            targetOp->getName().getStringRef() + "' uses " + Twine(*lanes) +
-            " lanes");
-    return false;
+    Type elemTy = vecTy.getElementType();
+    if (elemTy.isInteger(1)) {
+      if (!isSupportedA5MaskLanes(*lanes)) {
+        status = emitCodeError(
+            targetOp, kErrLanesMismatch,
+            Twine("Level-3 template kind=") + kind +
+                " requires vector<i1> masks with supported A5 lane counts "
+                "(32/64/128/256), but " + position + " of op '" +
+                targetOp->getName().getStringRef() + "' uses " +
+                Twine(*lanes) + " lanes");
+        return false;
+      }
+    } else {
+      auto expectedLanes = getExpectedA5SimdLanesForElemType(elemTy);
+      if (!expectedLanes) {
+        status = emitCodeError(
+            targetOp, kErrDType,
+            Twine("Level-3 template kind=") + kind +
+                " uses unsupported A5 SIMD element type " +
+                typeToString(elemTy));
+        return false;
+      }
+      if (*lanes != *expectedLanes &&
+          !isA5ByteLaneCarrierVector(elemTy, *lanes, effectiveSimdLanes)) {
+        status = emitCodeError(
+            targetOp, kErrLanesMismatch,
+            Twine("Level-3 template kind=") + kind + " requires " +
+                typeToString(elemTy) + " vectors to use " +
+                Twine(*expectedLanes) + " lanes, but " + position +
+                " of op '" + targetOp->getName().getStringRef() + "' uses " +
+                Twine(*lanes) + " lanes");
+        return false;
+      }
+    }
+
+    if (effectiveSimdLanes > 0 && *lanes != effectiveSimdLanes) {
+      status = emitCodeError(
+          targetOp, kErrLanesMismatch,
+          Twine("Level-3 template kind=") + kind +
+              " requires vector lanes to match pto.simd.lanes = " +
+              Twine(effectiveSimdLanes) + ", but " + position + " of op '" +
+              targetOp->getName().getStringRef() + "' uses " +
+              Twine(*lanes) + " lanes");
+      return false;
+    }
+    return true;
   };
 
   auto requireNonEmptyTokenAttr = [&](Operation *targetOp, StringRef attrName,
@@ -970,8 +1084,7 @@ static LogicalResult validateOplibBody(func::FuncOp func, StringRef kind,
     return emitCodeError(
         func.getOperation(), kErrLanesMismatch,
         Twine("Level-3 template kind=") + kind +
-            " must materialize a vector<" +
-            Twine(kRequiredLevel3SimdLanes) + "x*> SIMD body");
+            " must materialize a supported A5 SIMD body");
   }
 
   if (coreCount > 1) {

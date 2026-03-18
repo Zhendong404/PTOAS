@@ -7,7 +7,7 @@
 // TEMPLATE: pto.oplib.op = "trecip"
 // TEMPLATE: pto.oplib.semantic_origin = "public_api_rewrite"
 // TEMPLATE: pto.oplib.semantic_equivalent = "TDIVS(dst, 1, src)"
-// TEMPLATE: %ones = arith.constant dense<1.0> : vector<64xf16>
+// TEMPLATE: %ones = arith.constant dense<1.0> : vector<128xf16>
 // TEMPLATE: %result = arith.divf %ones, %lhs
 // TEMPLATE-LABEL: func.func private @__pto_oplib_variant_trecip_f32(
 // TEMPLATE: pto.oplib.semantic_origin = "public_api_rewrite"

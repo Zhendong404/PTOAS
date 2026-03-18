@@ -18,6 +18,7 @@ SNIPPET_DIR = SCRIPT_DIR / "families" / "snippets"
 CATALOG_PATH = SKELETON_DIR / "catalog.json"
 MODULE_TEMPLATE_PATH = SKELETON_DIR / "module.tmpl.mlir"
 GENERATED_FILE_BANNER = "// AUTO-GENERATED: do not edit directly."
+A5_VECTOR_LENGTH_BITS = 256 * 8
 
 TILE_TYPE_FMT = (
     "!pto.tile_buf<loc=vec, dtype={dtype}, rows={rows}, cols={cols}, v_row=?, "
@@ -150,11 +151,31 @@ def scalar_literal(dtype: str, value: str) -> str:
     raise ValueError(f"unsupported scalar literal '{value}' for dtype {dtype}")
 
 
-def vector_type(dtype: str, lanes: int = 64) -> str:
+def a5_simd_lanes(dtype: str) -> int:
+    bitwidth = 0
+    ir_dtype = carrier_ir_dtype(dtype)
+    if ir_dtype in {"f16", "bf16"}:
+        bitwidth = 16
+    elif ir_dtype == "f32":
+        bitwidth = 32
+    elif ir_dtype.startswith("i") and ir_dtype[1:].isdigit():
+        bitwidth = int(ir_dtype[1:])
+    else:
+        raise ValueError(f"unsupported dtype '{dtype}' for A5 SIMD lane inference")
+    if bitwidth <= 0 or A5_VECTOR_LENGTH_BITS % bitwidth != 0:
+        raise ValueError(
+            f"dtype '{dtype}' has unsupported bitwidth {bitwidth} for {A5_VECTOR_LENGTH_BITS}-bit A5 vector length"
+        )
+    return A5_VECTOR_LENGTH_BITS // bitwidth
+
+
+def vector_type(dtype: str, lanes: int | None = None) -> str:
+    if lanes is None:
+        lanes = a5_simd_lanes(dtype)
     return f"vector<{lanes}x{carrier_ir_dtype(dtype)}>"
 
 
-def mask_vector_type(lanes: int = 64) -> str:
+def mask_vector_type(lanes: int) -> str:
     return f"vector<{lanes}xi1>"
 
 
@@ -473,6 +494,7 @@ def build_snippet_mapping(
     snippet_rhs = "%scalarVec"
     if operand_order == "scalar_tile":
         snippet_lhs, snippet_rhs = snippet_rhs, snippet_lhs
+    vector_lanes = a5_simd_lanes(dtype)
     input_vector_ty = vector_type(dtype)
     result_vector_ty = vector_type(result_dtype or dtype)
     return {
@@ -483,7 +505,7 @@ def build_snippet_mapping(
         "VECTOR_TYPE": result_vector_ty,
         "INPUT_VECTOR_TYPE": input_vector_ty,
         "RESULT_VECTOR_TYPE": result_vector_ty,
-        "MASK_VECTOR_TYPE": mask_vector_type(),
+        "MASK_VECTOR_TYPE": mask_vector_type(vector_lanes),
         "CMP_PREDICATE": cmp_predicate,
         "RHS_VALUE": rhs_value,
         "SNIPPET_LHS": snippet_lhs,
@@ -597,6 +619,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
         requested_dtypes = op_info.get("dtypes")
         op_dtypes = [dtype for dtype in dtypes if requested_dtypes is None or dtype in requested_dtypes]
         for dtype in op_dtypes:
+            vector_lanes = a5_simd_lanes(dtype)
             arg_types = [
                 resolve_arg_type(role, dtype, result_dtype, arg_types_by_role) for role in family["parameter_roles"]
             ]
@@ -669,7 +692,7 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                     rhs_load = (
                         f"          %src1v = vector.maskedload %m1[%r, %cidx], %mask, %passive "
                         f'{{pto.simd.vld_dist = "NORM"}} : {memref_type(dtype, input_tile_shape[1])}, '
-                        f"{mask_vector_type()}, {vector_type(dtype)} into {vector_type(dtype)}\n"
+                        f"{mask_vector_type(vector_lanes)}, {vector_type(dtype)} into {vector_type(dtype)}\n"
                     )
                 elif has_scalar_operand and pattern["id"] != "compare":
                     rhs_setup = f"      %scalarVec = vector.splat %scalar : {vector_type(dtype)}\n"
@@ -758,15 +781,21 @@ def expand_family_instances(pattern: dict[str, Any], family: dict[str, Any], dty
                         "src0_memref_type": memref_type(src0_dtype, src0_tile_shape[1]),
                         "src1_memref_type": memref_type(src1_dtype, src1_tile_shape[1]),
                         "src2_memref_type": memref_type(src2_dtype, src2_tile_shape[1]),
-                        "src0_vector_type": vector_type(src0_dtype),
+                        "src0_vector_type": (
+                            vector_type(src0_dtype, vector_lanes)
+                            if pattern["id"] == "select_mask"
+                            else vector_type(src0_dtype)
+                        ),
                         "src1_vector_type": vector_type(src1_dtype),
                         "src2_vector_type": vector_type(src2_dtype),
                         "scalar_vector_type": vector_type(dtype, 1),
+                        "scalar_arg_single_vector_type": vector_type(scalar_arg_type, 1),
                         "scalar_arg_vector_type": vector_type(scalar_arg_type),
-                        "splat_shuffle_mask": splat_shuffle_mask(),
+                        "splat_shuffle_mask": splat_shuffle_mask(vector_lanes),
+                        "simd_lanes": str(vector_lanes),
                         "scalar_type": scalar_type(result_dtype or dtype),
                         "scalar_arg_type": scalar_arg_type,
-                        "mask_vector_type": mask_vector_type(),
+                        "mask_vector_type": mask_vector_type(vector_lanes),
                         "passive_vector": passive_vector,
                         "reduce_init": reduce_init,
                         "rhs_memref_cast": rhs_memref_cast,
@@ -829,8 +858,10 @@ def render_family_output(
                     "SRC1_VECTOR_TYPE": instance["src1_vector_type"],
                     "SRC2_VECTOR_TYPE": instance["src2_vector_type"],
                     "SCALAR_VECTOR_TYPE": instance["scalar_vector_type"],
+                    "SCALAR_ARG_SINGLE_VECTOR_TYPE": instance["scalar_arg_single_vector_type"],
                     "SCALAR_ARG_VECTOR_TYPE": instance["scalar_arg_vector_type"],
                     "SPLAT_SHUFFLE_MASK": instance["splat_shuffle_mask"],
+                    "SIMD_LANES": instance["simd_lanes"],
                     "VECTOR_TYPE": instance["input_vector_type"],
                     "SCALAR_TYPE": instance["scalar_type"],
                     "SCALAR_ARG_TYPE": instance["scalar_arg_type"],

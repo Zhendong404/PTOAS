@@ -863,7 +863,7 @@
       ],
       "semantic_source_paths": [
         "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2370",
-        "include/pto/common/pto_instr.hpp:1371"
+        "include/pto/common/pto_instr.hpp:1359"
       ],
       "header_paths": [
         "include/pto/common/pto_instr.hpp"
@@ -886,7 +886,7 @@
       ],
       "semantic_source_paths": [
         "/home/zhangzhendong/ptoas-workspace/PTOAS/docs/PTO_IR_manual.md:2424",
-        "include/pto/common/pto_instr.hpp:1380"
+        "include/pto/common/pto_instr.hpp:1368"
       ],
       "header_paths": [
         "include/pto/common/pto_instr.hpp"

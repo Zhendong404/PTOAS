@@ -18,18 +18,18 @@
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant @@SIMD_LANES@@ : index
     %rows = memref.dim %m0, %c0 : @@INPUT_MEMREF_TYPE@@
     %cols = memref.dim %m0, %c1 : @@INPUT_MEMREF_TYPE@@
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
           %mask = vector.create_mask %active : @@MASK_VECTOR_TYPE@@
           %lhs = vector.maskedload %m0[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : @@INPUT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@VECTOR_TYPE@@ into @@VECTOR_TYPE@@
           %rhs = vector.maskedload %m1[%r, %cidx], %mask, %passive {pto.simd.vld_dist = "NORM"} : @@INPUT_MEMREF_TYPE@@, @@MASK_VECTOR_TYPE@@, @@VECTOR_TYPE@@ into @@VECTOR_TYPE@@

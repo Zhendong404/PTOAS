@@ -83,7 +83,7 @@
 // BAD-SIMD-ATTR: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-IR: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-VEC: E_OPLIB_SIMD_LANES_MISMATCH
-// BAD-VEC: requires vector<64x*> values
+// BAD-VEC: requires f32 vectors to use 64 lanes
 // BAD-LEGACY-CAST: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MISSING-KNOBS: E_OPLIB_SIMD_ATTR_REQUIRED
 // BAD-MISSING-KNOBS: pto.simd.exec_mode
@@ -102,4 +102,4 @@
 // BAD-MATH: E_OPLIB_BODY_DISALLOWED_IR
 // BAD-MATH: math.sin
 // BAD-VEC-INT: E_OPLIB_SIMD_LANES_MISMATCH
-// BAD-VEC-INT: requires vector<64x*> values
+// BAD-VEC-INT: requires i32 vectors to use 64 lanes

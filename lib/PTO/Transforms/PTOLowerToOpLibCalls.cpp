@@ -139,7 +139,7 @@ static constexpr llvm::StringLiteral kErrBodyDisallowedIR =
     "E_OPLIB_BODY_DISALLOWED_IR";
 static constexpr llvm::StringLiteral kErrSimdAttrRequired =
     "E_OPLIB_SIMD_ATTR_REQUIRED";
-static constexpr int64_t kRequiredLevel3SimdLanes = 64;
+static constexpr int64_t kA5VectorLengthBits = 256 * 8;
 
 struct GroupInfo {
   int64_t groupId = -1;
@@ -1033,6 +1033,69 @@ static FailureOr<int64_t> getFixedVectorLanes(Type ty) {
   return vecTy.getNumElements();
 }
 
+static std::optional<int64_t> getExpectedA5SimdLanesForElemType(Type elemTy) {
+  unsigned bitWidth = 0;
+  if (elemTy.isF16() || elemTy.isBF16())
+    bitWidth = 16;
+  else if (elemTy.isF32())
+    bitWidth = 32;
+  else if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
+    if (intTy.getWidth() == 1)
+      return std::nullopt;
+    bitWidth = intTy.getWidth();
+  } else {
+    return std::nullopt;
+  }
+
+  if (bitWidth == 0 || (kA5VectorLengthBits % bitWidth) != 0)
+    return std::nullopt;
+  return kA5VectorLengthBits / bitWidth;
+}
+
+static bool isSupportedA5MaskLanes(int64_t lanes) {
+  return lanes == 32 || lanes == 64 || lanes == 128 || lanes == 256;
+}
+
+static bool isA5ByteLaneCarrierVector(Type elemTy, int64_t lanes,
+                                      int64_t simdLanes) {
+  return elemTy.isInteger(8) && simdLanes > 0 && lanes == simdLanes;
+}
+
+static std::optional<int64_t>
+inferExpectedLevel3SimdLanes(FunctionType fnTy,
+                             ArrayRef<TemplateArgRole> argRoles) {
+  auto infer = [&](bool skipI8Tiles) -> std::optional<int64_t> {
+    for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
+      if (role != TemplateArgRole::Tile)
+        continue;
+      auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+      if (!tileTy)
+        continue;
+      Type elemTy = tileTy.getElementType();
+      if (skipI8Tiles && elemTy.isInteger(8))
+        continue;
+      if (auto expected = getExpectedA5SimdLanesForElemType(elemTy))
+        return expected;
+    }
+    return std::nullopt;
+  };
+
+  if (auto expected = infer(/*skipI8Tiles=*/true))
+    return expected;
+
+  for (auto [inTy, role] : llvm::zip(fnTy.getInputs(), argRoles)) {
+    if (role != TemplateArgRole::Tile)
+      continue;
+    auto tileTy = dyn_cast<pto::TileBufType>(inTy);
+    if (!tileTy)
+      continue;
+    if (auto expected =
+            getExpectedA5SimdLanesForElemType(tileTy.getElementType()))
+      return expected;
+  }
+  return std::nullopt;
+}
+
 static bool isSimdBridgeOp(Operation *op) {
   return isa<pto::SimdPredicateOp, pto::SimdLoadOp, pto::SimdStoreOp,
              pto::SimdLoadPUOp, pto::SimdStorePUOp,
@@ -1443,12 +1506,18 @@ struct TemplateRegistry {
                                      *levelOr);
     }
     if (isLevel3TemplateKind(entry->kind) &&
-        *lanesOr != kRequiredLevel3SimdLanes) {
+        inferExpectedLevel3SimdLanes(imported.getFunctionType(),
+                                     entry->argRoles) &&
+        *lanesOr !=
+            *inferExpectedLevel3SimdLanes(imported.getFunctionType(),
+                                          entry->argRoles)) {
       return emitFailureWithCode(
           op, kErrLanesMismatch,
           Twine("Level-3 template kind=") + entry->kind +
               " requires pto.simd.lanes = " +
-              Twine(kRequiredLevel3SimdLanes) + ", got " + Twine(*lanesOr));
+              Twine(*inferExpectedLevel3SimdLanes(imported.getFunctionType(),
+                                                  entry->argRoles)) +
+              ", got " + Twine(*lanesOr));
     }
     entry->simdLevel = *levelOr;
     entry->simdLanes = *lanesOr;
@@ -1524,24 +1593,68 @@ struct TemplateRegistry {
     imported.walk([&](Operation *op) { preorder[op] = seq++; });
 
     LogicalResult status = success();
+    int64_t effectiveSimdLanes =
+        entry.simdLanes > 0
+            ? entry.simdLanes
+            : inferExpectedLevel3SimdLanes(imported.getFunctionType(),
+                                           entry.argRoles)
+                  .value_or(-1);
     auto requireLevel3VectorLanes = [&](Operation *targetOp, Type ty,
                                         StringRef position) -> bool {
       if (!requiresUnifiedLevel3Simd)
+        return true;
+      auto vecTy = dyn_cast<VectorType>(ty);
+      if (!vecTy || vecTy.isScalable())
         return true;
       FailureOr<int64_t> lanes = getFixedVectorLanes(ty);
       if (failed(lanes))
         return true;
       sawLevel3VectorValue = true;
-      if (*lanes == kRequiredLevel3SimdLanes)
-        return true;
-      status = emitFailureWithCode(
-          targetOp, kErrLanesMismatch,
-          Twine("Level-3 template kind=") + entry.kind +
-              " requires vector<" + Twine(kRequiredLevel3SimdLanes) +
-              "x*> values, but " + position + " of op '" +
-              targetOp->getName().getStringRef() + "' uses " + Twine(*lanes) +
-              " lanes");
-      return false;
+      Type elemTy = vecTy.getElementType();
+      if (elemTy.isInteger(1)) {
+        if (!isSupportedA5MaskLanes(*lanes)) {
+          status = emitFailureWithCode(
+              targetOp, kErrLanesMismatch,
+              Twine("Level-3 template kind=") + entry.kind +
+                  " requires vector<i1> masks with supported A5 lane counts "
+                  "(32/64/128/256), but " + position + " of op '" +
+                  targetOp->getName().getStringRef() + "' uses " +
+                  Twine(*lanes) + " lanes");
+          return false;
+        }
+      } else {
+        auto expectedLanes = getExpectedA5SimdLanesForElemType(elemTy);
+        if (!expectedLanes) {
+          status = emitFailureWithCode(
+              targetOp, kErrDType,
+              Twine("Level-3 template kind=") + entry.kind +
+                  " uses unsupported A5 SIMD element type " +
+                  typeToString(elemTy));
+          return false;
+        }
+        if (*lanes != *expectedLanes &&
+            !isA5ByteLaneCarrierVector(elemTy, *lanes, effectiveSimdLanes)) {
+          status = emitFailureWithCode(
+              targetOp, kErrLanesMismatch,
+              Twine("Level-3 template kind=") + entry.kind + " requires " +
+                  typeToString(elemTy) + " vectors to use " +
+                  Twine(*expectedLanes) + " lanes, but " + position +
+                  " of op '" + targetOp->getName().getStringRef() +
+                  "' uses " + Twine(*lanes) + " lanes");
+          return false;
+        }
+      }
+      if (effectiveSimdLanes > 0 && *lanes != effectiveSimdLanes) {
+        status = emitFailureWithCode(
+            targetOp, kErrLanesMismatch,
+            Twine("Level-3 template kind=") + entry.kind +
+                " requires vector lanes to match pto.simd.lanes = " +
+                Twine(effectiveSimdLanes) + ", but " + position + " of op '" +
+                targetOp->getName().getStringRef() + "' uses " +
+                Twine(*lanes) + " lanes");
+        return false;
+      }
+      return true;
     };
     auto requireNonEmptyTokenAttr = [&](Operation *targetOp, StringRef attrName,
                                         StringRef usage,
@@ -1751,8 +1864,7 @@ struct TemplateRegistry {
       return emitFailureWithCode(
           imported.getOperation(), kErrLanesMismatch,
           Twine("Level-3 template kind=") + entry.kind +
-              " must materialize a vector<" +
-              Twine(kRequiredLevel3SimdLanes) + "x*> SIMD body");
+              " must materialize a supported A5 SIMD body");
     }
 
     // Canonicalization may rewrite vector.maskedload/store to vector.load/store

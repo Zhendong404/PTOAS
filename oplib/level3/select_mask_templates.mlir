@@ -50,32 +50,32 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 128 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
       // - active lane nonzero => true
       // - tail lanes load as zero via %laneMask/%passiveMask and must not
       //   affect the selected value
-      %passiveMask = arith.constant dense<0> : vector<64xi8>
-      %zeroMask = arith.constant dense<0> : vector<64xi8>
-      %passive = arith.constant dense<0.0> : vector<64xf16>
+      %passiveMask = arith.constant dense<0> : vector<128xi8>
+      %zeroMask = arith.constant dense<0> : vector<128xi8>
+      %passive = arith.constant dense<0.0> : vector<128xf16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
-          %laneMask = vector.create_mask %active : vector<64xi1>
-          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
-          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16> into vector<64xf16>
-          %result = arith.select %maskVec, %lhs, %rhs : vector<64xi1>, vector<64xf16>
-          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xf16>
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
+          %laneMask = vector.create_mask %active : vector<128xi1>
+          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi8> into vector<128xi8>
+          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<128xi8>
+          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xf16> into vector<128xf16>
+          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xf16> into vector<128xf16>
+          %result = arith.select %maskVec, %lhs, %rhs : vector<128xi1>, vector<128xf16>
+          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xf16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xf16>
         }
       }
     }
@@ -126,10 +126,10 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 64 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xf32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
@@ -141,10 +141,10 @@ module {
       %passive = arith.constant dense<0.0> : vector<64xf32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
           %laneMask = vector.create_mask %active : vector<64xi1>
           %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
           %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
@@ -202,32 +202,32 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 128 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
       // - active lane nonzero => true
       // - tail lanes load as zero via %laneMask/%passiveMask and must not
       //   affect the selected value
-      %passiveMask = arith.constant dense<0> : vector<64xi8>
-      %zeroMask = arith.constant dense<0> : vector<64xi8>
-      %passive = arith.constant dense<0> : vector<64xi16>
+      %passiveMask = arith.constant dense<0> : vector<128xi8>
+      %zeroMask = arith.constant dense<0> : vector<128xi8>
+      %passive = arith.constant dense<0> : vector<128xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
-          %laneMask = vector.create_mask %active : vector<64xi1>
-          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
-          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %result = arith.select %maskVec, %lhs, %rhs : vector<64xi1>, vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16>
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
+          %laneMask = vector.create_mask %active : vector<128xi1>
+          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi8> into vector<128xi8>
+          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<128xi8>
+          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16> into vector<128xi16>
+          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16> into vector<128xi16>
+          %result = arith.select %maskVec, %lhs, %rhs : vector<128xi1>, vector<128xi16>
+          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16>
         }
       }
     }
@@ -278,10 +278,10 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 64 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
@@ -293,10 +293,10 @@ module {
       %passive = arith.constant dense<0> : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
           %laneMask = vector.create_mask %active : vector<64xi1>
           %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
           %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
@@ -354,32 +354,32 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 256 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
       // - active lane nonzero => true
       // - tail lanes load as zero via %laneMask/%passiveMask and must not
       //   affect the selected value
-      %passiveMask = arith.constant dense<0> : vector<64xi8>
-      %zeroMask = arith.constant dense<0> : vector<64xi8>
-      %passive = arith.constant dense<0> : vector<64xi8>
+      %passiveMask = arith.constant dense<0> : vector<256xi8>
+      %zeroMask = arith.constant dense<0> : vector<256xi8>
+      %passive = arith.constant dense<0> : vector<256xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
-          %laneMask = vector.create_mask %active : vector<64xi1>
-          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
-          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %result = arith.select %maskVec, %lhs, %rhs : vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
+          %laneMask = vector.create_mask %active : vector<256xi1>
+          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<256xi8>
+          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %result = arith.select %maskVec, %lhs, %rhs : vector<256xi1>, vector<256xi8>
+          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8>
         }
       }
     }
@@ -430,32 +430,32 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 128 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
       // - active lane nonzero => true
       // - tail lanes load as zero via %laneMask/%passiveMask and must not
       //   affect the selected value
-      %passiveMask = arith.constant dense<0> : vector<64xi8>
-      %zeroMask = arith.constant dense<0> : vector<64xi8>
-      %passive = arith.constant dense<0> : vector<64xi16>
+      %passiveMask = arith.constant dense<0> : vector<128xi8>
+      %zeroMask = arith.constant dense<0> : vector<128xi8>
+      %passive = arith.constant dense<0> : vector<128xi16>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
-          %laneMask = vector.create_mask %active : vector<64xi1>
-          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
-          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16> into vector<64xi16>
-          %result = arith.select %maskVec, %lhs, %rhs : vector<64xi1>, vector<64xi16>
-          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi16>
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
+          %laneMask = vector.create_mask %active : vector<128xi1>
+          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi8> into vector<128xi8>
+          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<128xi8>
+          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16> into vector<128xi16>
+          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16> into vector<128xi16>
+          %result = arith.select %maskVec, %lhs, %rhs : vector<128xi1>, vector<128xi16>
+          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi16, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<128xi1>, vector<128xi16>
         }
       }
     }
@@ -506,10 +506,10 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 64 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi32, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
@@ -521,10 +521,10 @@ module {
       %passive = arith.constant dense<0> : vector<64xi32>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
           %laneMask = vector.create_mask %active : vector<64xi1>
           %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
           %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
@@ -582,32 +582,32 @@ module {
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant 256 : index
     %rows = memref.dim %m1, %c0 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
     %cols = memref.dim %m1, %c1 : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       // Canonical byte-mask contract:
       // - active lane 0 => false
       // - active lane nonzero => true
       // - tail lanes load as zero via %laneMask/%passiveMask and must not
       //   affect the selected value
-      %passiveMask = arith.constant dense<0> : vector<64xi8>
-      %zeroMask = arith.constant dense<0> : vector<64xi8>
-      %passive = arith.constant dense<0> : vector<64xi8>
+      %passiveMask = arith.constant dense<0> : vector<256xi8>
+      %zeroMask = arith.constant dense<0> : vector<256xi8>
+      %passive = arith.constant dense<0> : vector<256xi8>
       scf.for %r = %c0 to %rows step %c1 {
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %remain = arith.subi %cols, %cidx : index
-          %lt = arith.cmpi slt, %remain, %c64 : index
-          %active = arith.select %lt, %remain, %c64 : index
-          %laneMask = vector.create_mask %active : vector<64xi1>
-          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<64xi8>
-          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8> into vector<64xi8>
-          %result = arith.select %maskVec, %lhs, %rhs : vector<64xi1>, vector<64xi8>
-          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<64xi1>, vector<64xi8>
+          %lt = arith.cmpi slt, %remain, %cLanes : index
+          %active = arith.select %lt, %remain, %cLanes : index
+          %laneMask = vector.create_mask %active : vector<256xi1>
+          %maskBytes = vector.maskedload %m0[%r, %cidx], %laneMask, %passiveMask {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %maskVec = arith.cmpi ne, %maskBytes, %zeroMask : vector<256xi8>
+          %lhs = vector.maskedload %m1[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %rhs = vector.maskedload %m2[%r, %cidx], %laneMask, %passive {pto.simd.vld_dist = "NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8> into vector<256xi8>
+          %result = arith.select %maskVec, %lhs, %rhs : vector<256xi1>, vector<256xi8>
+          vector.maskedstore %md[%r, %cidx], %laneMask, %result {pto.simd.vst_dist = "DIST_NORM"} : memref<?x?xi8, strided<[32, 1], offset: 0>, #pto.address_space<vec>>, vector<256xi1>, vector<256xi8>
         }
       }
     }

@@ -18,14 +18,14 @@
 
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c64 = arith.constant 64 : index
+    %cLanes = arith.constant @@SIMD_LANES@@ : index
     %rows0 = memref.dim %m0, %c0 : @@INPUT_MEMREF_TYPE@@
     %cols0 = memref.dim %m0, %c1 : @@INPUT_MEMREF_TYPE@@
     %rows1 = memref.dim %m1, %c0 : @@INPUT_MEMREF_TYPE@@
     %cols1 = memref.dim %m1, %c1 : @@INPUT_MEMREF_TYPE@@
     %rows = memref.dim %md, %c0 : @@RESULT_MEMREF_TYPE@@
     %cols = memref.dim %md, %c1 : @@RESULT_MEMREF_TYPE@@
-    %repeatTimes = arith.ceildivsi %cols, %c64 : index
+    %repeatTimes = arith.ceildivsi %cols, %cLanes : index
     pto.simd.vec_scope {
       %passive = arith.constant @@PASSIVE_VECTOR@@ : @@VECTOR_TYPE@@
 @@EXTRA_SETUP@@      scf.for %r = %c0 to %rows step %c1 {
@@ -34,18 +34,18 @@
         %lhsRowIndex = arith.select %lhsRowValid, %r, %c0 : index
         %rhsRowIndex = arith.select %rhsRowValid, %r, %c0 : index
         scf.for %j = %c0 to %repeatTimes step %c1 {
-          %cidx = arith.muli %j, %c64 : index
+          %cidx = arith.muli %j, %cLanes : index
           %dstRemain = arith.subi %cols, %cidx : index
-          %dstTail = arith.cmpi slt, %dstRemain, %c64 : index
-          %dstActive = arith.select %dstTail, %dstRemain, %c64 : index
+          %dstTail = arith.cmpi slt, %dstRemain, %cLanes : index
+          %dstActive = arith.select %dstTail, %dstRemain, %cLanes : index
           %mask = vector.create_mask %dstActive : @@MASK_VECTOR_TYPE@@
 
           %lhsColValid = arith.cmpi sgt, %cols0, %cidx : index
           %lhsColIndex = arith.select %lhsColValid, %cidx, %c0 : index
           %lhsRemainRaw = arith.subi %cols0, %cidx : index
           %lhsRemain = arith.select %lhsColValid, %lhsRemainRaw, %c0 : index
-          %lhsTail = arith.cmpi slt, %lhsRemain, %c64 : index
-          %lhsActiveBase = arith.select %lhsTail, %lhsRemain, %c64 : index
+          %lhsTail = arith.cmpi slt, %lhsRemain, %cLanes : index
+          %lhsActiveBase = arith.select %lhsTail, %lhsRemain, %cLanes : index
           %lhsActive = arith.select %lhsRowValid, %lhsActiveBase, %c0 : index
           %lhsMask = vector.create_mask %lhsActive : @@MASK_VECTOR_TYPE@@
 
@@ -53,8 +53,8 @@
           %rhsColIndex = arith.select %rhsColValid, %cidx, %c0 : index
           %rhsRemainRaw = arith.subi %cols1, %cidx : index
           %rhsRemain = arith.select %rhsColValid, %rhsRemainRaw, %c0 : index
-          %rhsTail = arith.cmpi slt, %rhsRemain, %c64 : index
-          %rhsActiveBase = arith.select %rhsTail, %rhsRemain, %c64 : index
+          %rhsTail = arith.cmpi slt, %rhsRemain, %cLanes : index
+          %rhsActiveBase = arith.select %rhsTail, %rhsRemain, %cLanes : index
           %rhsActive = arith.select %rhsRowValid, %rhsActiveBase, %c0 : index
           %rhsMask = vector.create_mask %rhsActive : @@MASK_VECTOR_TYPE@@
 

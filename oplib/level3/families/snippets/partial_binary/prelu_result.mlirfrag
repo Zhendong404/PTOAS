@@ -4,5 +4,5 @@
 // SNIPPET_COMPUTE_BEGIN
 %positive = arith.cmpf ogt, %lhs, %zeroVec : @@VECTOR_TYPE@@
 %scaled = @@CORE_OP@@ %rhs, %lhs@@EXEC_MODE_ATTR@@ : @@VECTOR_TYPE@@
-%result = arith.select %positive, %lhs, %scaled : vector<64xi1>, @@VECTOR_TYPE@@
+%result = arith.select %positive, %lhs, %scaled : @@MASK_VECTOR_TYPE@@, @@VECTOR_TYPE@@
 // SNIPPET_COMPUTE_END

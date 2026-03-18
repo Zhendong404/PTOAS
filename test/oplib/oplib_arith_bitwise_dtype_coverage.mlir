@@ -17,11 +17,11 @@
 
 // IBIN-U8: // axes = dtype=u8, core_op=arith.divui, variant_id=tile_u8
 // IBIN-U8: func.func private @__pto_oplib_variant_tdiv_u8(
-// IBIN-U8: %result = arith.divui %lhs, %rhs : vector<64xi8>
+// IBIN-U8: %result = arith.divui %lhs, %rhs : vector<256xi8>
 
 // IBIN-U16: // axes = dtype=u16, core_op=arith.remui, variant_id=tile_u16
 // IBIN-U16: func.func private @__pto_oplib_variant_trem_u16(
-// IBIN-U16: %result = arith.remui %lhs, %rhs : vector<64xi16>
+// IBIN-U16: %result = arith.remui %lhs, %rhs : vector<128xi16>
 
 // IBIN-U32: // axes = dtype=u32, core_op=arith.maxui, variant_id=tile_u32
 // IBIN-U32: func.func private @__pto_oplib_variant_tmax_u32(
@@ -49,12 +49,12 @@
 // FTS-NOT: __pto_oplib_variant_tlrelu_bf16(
 
 // ITS-U8: func.func private @__pto_oplib_variant_tdivs_tile_scalar_u8_u8(
-// ITS-U8: %result = arith.divui %lhs, %scalarVec : vector<64xi8>
+// ITS-U8: %result = arith.divui %lhs, %scalarVec : vector<256xi8>
 // ITS-U8: func.func private @__pto_oplib_variant_tdivs_scalar_tile_u8_u8(
-// ITS-U8: %result = arith.divui %scalarVec, %lhs : vector<64xi8>
+// ITS-U8: %result = arith.divui %scalarVec, %lhs : vector<256xi8>
 
 // ITS-U16: func.func private @__pto_oplib_variant_trems_u16(
-// ITS-U16: %result = arith.remui %lhs, %scalarVec : vector<64xi16>
+// ITS-U16: %result = arith.remui %lhs, %scalarVec : vector<128xi16>
 
 // ITS-U32: func.func private @__pto_oplib_variant_tmaxs_u32(
 // ITS-U32: %result = arith.maxui %lhs, %scalarVec : vector<64xi32>

@@ -17,4 +17,4 @@
 // BAD-CMP: missing required attr: pto.oplib.match.cmp_mode
 // BAD-IS-BINARY: missing required attr: pto.oplib.match.is_binary
 // BAD-VEC: E_OPLIB_SIMD_LANES_MISMATCH
-// BAD-VEC: requires vector<64x*> values
+// BAD-VEC: requires f32 vectors to use 64 lanes
