@@ -28,7 +28,7 @@ progress:
 **Total Plans in Phase:** 3
 **Progress:** [██████░░░░] 60%
 **Last Activity:** 2026-03-18
-**Last Activity Description:** Completed 02-03-PLAN.md
+**Last Activity Description:** Completed 01-01-PLAN.md
 
 ## Project Reference
 
@@ -92,6 +92,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Recent Progress
 
+- Replaced the obsolete Phase 1 pseudo-op fixtures with corrected GM/UB copy and `vlds` / `vabs` / `vsts` contracts
+- Rewrote `test/phase1/run_phase1_checks.sh` to run only the corrected Phase 1 suite and guard against legacy pseudo-op names
 - Committed Phase 1 fixtures for `a5vm` vector types, core ops, backend switching, and shared dialect preservation
 - Added executable `test/phase1/run_phase1_checks.sh` with unresolved-report and intrinsic-tracing coverage
 - Created `.planning/phases/01-a5vm-foundation/01-a5vm-foundation-01-SUMMARY.md`
@@ -152,4 +154,4 @@ None.
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-03*
+*Last updated: 2026-03-19 after completing plan 01-01*
