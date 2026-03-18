@@ -11,8 +11,8 @@
 
 | # | Phase | Goal | Requirements | Success Criteria |
 |---|-------|------|--------------|------------------|
-| 1 | A5VM Foundation | Introduce the new backend boundary and the minimum `a5vm` IR model needed for the `Abs` path | BACK-01, BACK-02, A5VM-01, A5VM-02, A5VM-03, A5VM-04 | 4 |
-| 2 | PTO Lowering | Lower `TLOAD`, `TABS`, and `TSTORE` from PTO into `a5vm` while preserving PTO semantics and template behavior | PTO-01, PTO-02, PTO-03, PTO-04 | 4 |
+| 1 | A5VM Foundation | Introduce the corrected backend boundary and the minimum hardware-facing `a5vm` primitive IR needed for the `Abs` path | BACK-01, BACK-02, A5VM-01, A5VM-02, A5VM-03, A5VM-04 | 4 |
+| 2 | PTO Lowering | Lower `TLOAD`, `TABS`, and `TSTORE` from PTO into `a5vm` using the real PTO-library structure rather than pseudo load/store abstractions | PTO-01, PTO-02, PTO-03, PTO-04 | 4 |
 | 3 | HIVM Emission | Replace the `emitc` output path with textual LLVM HIVM emission for the implemented `a5vm` subset | HIVM-01, HIVM-02, HIVM-03 | 3 |
 | 4 | Abs Validation | Compile the `Abs` sample end to end through the new path and extract the required HIVM intrinsic inventory | BACK-03, VAL-01, VAL-02 | 3 |
 
@@ -22,7 +22,7 @@
 
 **Goal**
 
-Create the new backend entry point and the minimum `a5vm` dialect surface required to represent the `Abs` vector path without relying on `emitc`.
+Create the corrected backend entry point and the minimum hardware-facing `a5vm` primitive IR needed for the `Abs` path.
 
 **Requirements**
 
@@ -37,21 +37,21 @@ Create the new backend entry point and the minimum `a5vm` dialect surface requir
 
 1. A new backend path exists at the current `emitc` boundary without redesigning the overall pass pipeline.
 2. `a5vm` defines legal fixed-width 256-byte vector typing and rejects illegal widths.
-3. `a5vm` contains the minimum load, abs, and store style operations needed for the `Abs` path.
+3. `a5vm` uses the `mlir::a5vm` namespace and a primitive op surface that stays close to the CCE builtin layer rather than to PTO-interface-shaped pseudo-ops.
 4. General control flow and scalar arithmetic remain handled by shared dialects rather than moving into `a5vm`.
 
 **Plans:** 3 plans
 
 Plans:
-- [x] `01-01-PLAN.md` — Create the Phase 1 FileCheck fixtures and committed runner for all Wave 0 checks
-- [x] `01-02-PLAN.md` — Add the first-class `a5vm` dialect, 256-byte vector type, and minimum `load`/`abs`/`store` ops
-- [x] `01-03-PLAN.md` — Wire explicit backend selection, A5VM text emission, and unresolved-report diagnostics at the current `emitc` boundary
+- [ ] `01-01-PLAN.md` — Replan required: existing fixtures assume the wrong A5VM op surface
+- [ ] `01-02-PLAN.md` — Replan required: existing dialect implementation uses the wrong namespace and pseudo-op model
+- [ ] `01-03-PLAN.md` — Replan required: existing backend boundary work must be rechecked against corrected A5VM primitives
 
 ### Phase 2: PTO Lowering
 
 **Goal**
 
-Implement PTO-to-A5VM lowering helpers that preserve existing PTO-side semantic decisions for the `Abs` path.
+Implement PTO-to-A5VM lowering that preserves the real PTO-library control structure and semantic decisions for the `Abs` path.
 
 **Requirements**
 
@@ -62,17 +62,17 @@ Implement PTO-to-A5VM lowering helpers that preserve existing PTO-side semantic 
 
 **Success Criteria**
 
-1. `TLOAD` lowers into `a5vm` using data derived from PTO tile/global semantics rather than a hardcoded sample-only path.
-2. `TABS` lowers into `a5vm` in a way that matches existing PTO unary behavior and source/destination compatibility expectations.
-3. `TSTORE` lowers into `a5vm` while preserving the source tile domain and destination layout decisions needed for backend code selection.
+1. `TLOAD` lowers according to the PTO library’s GM-to-UB copy behavior rather than to a pseudo-load abstraction.
+2. `TABS` lowers according to the PTO library’s real vector pipeline and loop structure, including `vld`, `vabs`, and `vst`.
+3. `TSTORE` lowers according to the PTO library’s UB-to-GM copy behavior while preserving the source tile domain and destination layout decisions needed for backend code selection.
 4. The lowering structure is reusable for future PTO ops without replacing the architecture established for `Abs`.
 
 **Plans:** 3 plans
 
 Plans:
-- [x] `02-01-PLAN.md` — Create the Phase 2 FileCheck fixtures and committed runner for PTO semantic-lowering checks
-- [x] `02-02-PLAN.md` — Define the shared PTO-to-A5VM lowering contracts, helper layer, and explicit unsupported-branch behavior
-- [x] `02-03-PLAN.md` — Register the PTO-to-A5VM pass and wire it into the `--pto-backend=a5vm` path in `ptoas`
+- [ ] `02-01-PLAN.md` — Replan required: existing fixtures lock the wrong pseudo-load/store semantics
+- [ ] `02-02-PLAN.md` — Replan required: existing helper layer does not mirror PTO-library structure
+- [ ] `02-03-PLAN.md` — Replan required: existing pass wiring lowers through the wrong semantic model
 
 ### Phase 3: HIVM Emission
 
@@ -120,10 +120,10 @@ Use the `Abs` sample as the first acceptance case for the new backend and extrac
 
 ## Sequencing Notes
 
-- Phase 1 must complete before PTO semantic lowering has a target IR.
-- Phase 2 must complete before the final intrinsic inventory can be trusted.
+- Phase 1 must be corrected before PTO semantic lowering has a trustworthy target IR.
+- Phase 2 must be corrected before the final intrinsic inventory can be trusted.
 - Phase 3 should be implemented before full `Abs` validation because the sample acceptance target is the new textual HIVM output path.
 - Phase 4 is the acceptance and inventory-extraction phase, not a separate architecture redesign.
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-03*
+*Last updated: 2026-03-19 after correcting the roadmap to match PTO-library-aligned A5VM and lowering semantics*

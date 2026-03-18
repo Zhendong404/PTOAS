@@ -6,8 +6,8 @@ current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
 status: verifying
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-03-18T18:38:53.948Z"
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-03-18T20:07:17.745Z"
 last_activity: 2026-03-18
 progress:
   total_phases: 4
@@ -128,6 +128,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 |-------|----------|-------|-------|
 | Phase 02 P02 | 7min | 2 tasks | 3 files |
 | Phase 02-pto-lowering P03 | 24min | 2 tasks | 6 files |
+| Phase 01 P01 | 21min | 2 tasks | 10 files |
 
 ## Decisions Made
 
@@ -138,6 +139,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Run PTO-to-A5VM only on the --pto-backend=a5vm branch after the shared pre-backend passes.
 - [Phase 02]: Extract tile layout, valid dims, and address-space metadata from bind_tile and pointer_cast SSA chains because the A5VM boundary sees memref-backed tile values.
 - [Phase 02]: Use an explicit rewrite walk instead of greedy pattern application so single-op Phase 2 fixtures retain visible a5vm.load and a5vm.abs ops in debug IR.
+- [Phase 01]: Keep the no-legacy-name regression check in the standalone runner rather than in the MLIR fixtures so file-level validation can forbid obsolete spellings entirely.
 
 ## Blockers
 
@@ -145,8 +147,8 @@ None.
 
 ## Session
 
-**Last Date:** 2026-03-18T18:38:53.946Z
-**Stopped At:** Completed 02-03-PLAN.md
+**Last Date:** 2026-03-18T20:07:17.743Z
+**Stopped At:** Completed 01-01-PLAN.md
 **Resume File:** None
 
 ---

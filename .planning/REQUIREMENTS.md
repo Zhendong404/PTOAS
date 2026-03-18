@@ -13,17 +13,17 @@
 
 ### A5VM Dialect
 
-- [x] **A5VM-01**: Developer can represent legal `a5vm` vector types whose total width is always exactly 256 bytes.
-- [x] **A5VM-02**: Developer can represent the `Abs` load path with an `a5vm` load operation whose result type is a legal `a5vm` vector type.
-- [x] **A5VM-03**: Developer can represent the `Abs` compute path with an `a5vm` absolute-value operation whose operand and result types are legal `a5vm` vector types.
-- [x] **A5VM-04**: Developer can represent the `Abs` store path with an `a5vm` store operation that consumes a legal `a5vm` vector value and backend-specific addressing inputs.
+- [x] **A5VM-01**: Developer can represent legal `a5vm` vector types whose total width is always exactly 256 bytes under the corrected `mlir::a5vm` dialect namespace.
+- [x] **A5VM-02**: Developer can represent the `Abs` path with hardware-facing `a5vm` primitive operations whose naming stays close to the CCE builtin layer rather than to pseudo PTO-interface-shaped ops.
+- [x] **A5VM-03**: Developer can represent the `Abs` vector compute path with corrected `a5vm` vector primitives such as `vld`, `vabs`, and `vst` whose operand/result types are legal `a5vm` vector types.
+- [x] **A5VM-04**: Developer can represent the `Abs` memory-movement path with corrected `a5vm` primitives that are suitable for PTO-library-aligned GM/UB transfer lowering.
 
 ### PTO Lowering
 
-- [x] **PTO-01**: Developer can lower PTO `TLOAD` on the `Abs` path into `a5vm` operations while preserving the PTO-side layout, shape, and valid-region decisions needed for backend code selection.
-- [x] **PTO-02**: Developer can lower PTO `TABS` on the `Abs` path into `a5vm` operations in a way that matches existing PTO parameter behavior and unary-op template dispatch intent.
-- [x] **PTO-03**: Developer can lower PTO `TSTORE` on the `Abs` path into `a5vm` operations while preserving the PTO-side source tile domain and destination layout behavior needed for code selection.
-- [x] **PTO-04**: Developer can add new PTO-to-A5VM lowerings through the same framework without changing the backend architecture established for `Abs`.
+- [ ] **PTO-01**: Developer can lower PTO `TLOAD` on the `Abs` path into `a5vm` operations using the real PTO-library GM-to-UB copy structure while preserving PTO-side layout, shape, valid-region, stride, and trace decisions needed for backend code selection.
+- [ ] **PTO-02**: Developer can lower PTO `TABS` on the `Abs` path into `a5vm` operations in a way that matches the PTO library’s real vector pipeline and loop structure, including `vld`, `vabs`, `vst`, and the surrounding hardware/software loop semantics.
+- [ ] **PTO-03**: Developer can lower PTO `TSTORE` on the `Abs` path into `a5vm` operations using the real PTO-library UB-to-GM copy structure while preserving the PTO-side source tile domain and destination layout behavior needed for code selection.
+- [ ] **PTO-04**: Developer can add new PTO-to-A5VM lowerings through the same PTO-library-aligned framework without changing the backend architecture established for `Abs`.
 
 ### HIVM Textual Emission
 
@@ -53,7 +53,7 @@
 
 | Feature | Reason |
 |---------|--------|
-| Full PTO library reimplementation | v1 only needs the minimum interfaces required to compile the `Abs` sample |
+| Full PTO library reimplementation beyond the `Abs` path | v1 only needs the minimum interfaces required to compile the `Abs` sample, but those interfaces must still match the real PTO library structure |
 | Broad PTO op coverage unrelated to `Abs` | would expand scope before the backend architecture is proven |
 | Downstream execution validation on local machine | target environment for full HIVM validation is not available locally |
 | Pass-pipeline redesign | the user requires replacing only the `emitc` position, not reworking the overall pipeline |
@@ -69,10 +69,10 @@
 | A5VM-02 | Phase 1 | Complete |
 | A5VM-03 | Phase 1 | Complete |
 | A5VM-04 | Phase 1 | Complete |
-| PTO-01 | Phase 2 | Complete |
-| PTO-02 | Phase 2 | Complete |
-| PTO-03 | Phase 2 | Complete |
-| PTO-04 | Phase 2 | Complete |
+| PTO-01 | Phase 2 | Pending |
+| PTO-02 | Phase 2 | Pending |
+| PTO-03 | Phase 2 | Pending |
+| PTO-04 | Phase 2 | Pending |
 | HIVM-01 | Phase 3 | Pending |
 | HIVM-02 | Phase 3 | Pending |
 | HIVM-03 | Phase 3 | Pending |
@@ -86,4 +86,4 @@
 
 ---
 *Requirements defined: 2026-03-18*
-*Last updated: 2026-03-19 after completing plan 02-01*
+*Last updated: 2026-03-19 after correcting A5VM and PTO-lowering requirements to match the PTO library*
