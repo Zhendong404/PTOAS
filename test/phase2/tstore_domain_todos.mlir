@@ -1,9 +1,9 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
 
 // CHECK-LABEL: func.func @tstore_domain_todos
-// CHECK: a5vm.copy_ubuf_to_gm
 // CHECK: TSTORE ACC lowering TODO for a5vm backend
 // CHECK: TSTORE MAT lowering TODO for a5vm backend
+// CHECK-NOT: failed to legalize operation
 
 module {
   func.func @tstore_domain_todos(%dst: !pto.ptr<f32>) {

@@ -14,12 +14,12 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace pto {
@@ -41,38 +41,47 @@ LogicalResult lowerTSTOREOp(TStoreOp op, PatternRewriter &rewriter) {
   return lowerTSTORE(op, rewriter);
 }
 
-template <typename OpTy, LogicalResult (*LowerFn)(OpTy, PatternRewriter &)>
-struct LowerPTOOpPattern : public OpRewritePattern<OpTy> {
-  using OpRewritePattern<OpTy>::OpRewritePattern;
+LogicalResult lowerPTOOp(Operation *op, PatternRewriter &rewriter) {
+  rewriter.setInsertionPoint(op);
 
-  LogicalResult matchAndRewrite(OpTy op,
-                                PatternRewriter &rewriter) const override {
-    if (failed(LowerFn(op, rewriter)))
-      return failure();
-    rewriter.eraseOp(op);
+  LogicalResult lowered = success();
+  if (auto tload = dyn_cast<TLoadOp>(op))
+    lowered = lowerTLOADOp(tload, rewriter);
+  else if (auto tabs = dyn_cast<TAbsOp>(op))
+    lowered = lowerTABSOp(tabs, rewriter);
+  else if (auto tstore = dyn_cast<TStoreOp>(op))
+    lowered = lowerTSTOREOp(tstore, rewriter);
+  else
     return success();
-  }
-};
+
+  if (failed(lowered))
+    return failure();
+
+  rewriter.eraseOp(op);
+  return success();
+}
 
 struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PTOToA5VMPass)
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    RewritePatternSet patterns(&getContext());
-    patterns.add<LowerPTOOpPattern<TLoadOp, lowerTLOADOp>,
-                 LowerPTOOpPattern<TAbsOp, lowerTABSOp>,
-                 LowerPTOOpPattern<TStoreOp, lowerTSTOREOp>>(&getContext());
+    SmallVector<Operation *> ptoOps;
+    module.walk([&](Operation *op) {
+      if (isa<TLoadOp, TAbsOp, TStoreOp>(op))
+        ptoOps.push_back(op);
+    });
 
-    ConversionTarget target(getContext());
-    target.addLegalDialect<a5vm::A5VMDialect, arith::ArithDialect,
-                           func::FuncDialect, memref::MemRefDialect,
-                           scf::SCFDialect>();
-    target.addLegalDialect<pto::PTODialect>();
-    target.addIllegalOp<TLoadOp, TAbsOp, TStoreOp>();
-    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    PatternRewriter rewriter(&getContext());
+    bool sawFailure = false;
+    for (Operation *op : ptoOps) {
+      if (!op->getBlock())
+        continue;
+      if (failed(lowerPTOOp(op, rewriter)))
+        sawFailure = true;
+    }
 
-    if (failed(applyPartialConversion(module, target, std::move(patterns))))
+    if (sawFailure)
       signalPassFailure();
   }
 };

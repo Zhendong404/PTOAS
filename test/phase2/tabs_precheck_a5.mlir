@@ -4,6 +4,7 @@
 // CHECK: TABS lowering requires row-major tile layout
 // CHECK: TABS lowering requires matching source and destination valid region
 // CHECK: TABS lowering supports only f16 and f32 element types
+// CHECK-NOT: failed to legalize operation
 // CHECK-NOT: a5vm.copy_gm_to_ubuf
 // CHECK-NOT: a5vm.vlds
 // CHECK-NOT: a5vm.vabs
