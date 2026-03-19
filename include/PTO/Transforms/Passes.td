@@ -127,7 +127,8 @@ def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
     "a5vm::A5VMDialect",
     "func::FuncDialect",
     "arith::ArithDialect",
-    "memref::MemRefDialect"
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
   ];
 }
 
