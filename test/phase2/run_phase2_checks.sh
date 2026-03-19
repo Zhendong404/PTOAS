@@ -3,6 +3,24 @@ set -euo pipefail
 
 ptoas_bin="./build/tools/ptoas/ptoas"
 a5vm_ops_td="include/PTO/IR/A5VMOps.td"
+filecheck_candidates=("FileCheck" "FileCheck-19" "/usr/lib/llvm-19/bin/FileCheck")
+filecheck_bin=""
+
+for candidate in "${filecheck_candidates[@]}"; do
+  if command -v "${candidate}" >/dev/null 2>&1; then
+    filecheck_bin="$(command -v "${candidate}")"
+    break
+  fi
+  if [[ "${candidate}" = /* && -x "${candidate}" ]]; then
+    filecheck_bin="${candidate}"
+    break
+  fi
+done
+
+if [[ -z "${filecheck_bin}" ]]; then
+  echo "error: missing FileCheck; checked: ${filecheck_candidates[*]}" >&2
+  exit 1
+fi
 
 if [[ ! -x "${ptoas_bin}" ]]; then
   echo "error: missing ./build/tools/ptoas/ptoas" >&2
@@ -35,27 +53,27 @@ fi
 
 echo "phase2 check: tload_copy_family_shape.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tload_copy_family_shape.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/tload_copy_family_shape.mlir
+  "${filecheck_bin}" test/phase2/tload_copy_family_shape.mlir
 
 echo "phase2 check: tabs_abs_loop_shape.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tabs_abs_loop_shape.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/tabs_abs_loop_shape.mlir
+  "${filecheck_bin}" test/phase2/tabs_abs_loop_shape.mlir
 
 echo "phase2 check: tabs_precheck_a5.mlir"
 "${ptoas_bin}" --pto-backend=a5vm test/phase2/tabs_precheck_a5.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/tabs_precheck_a5.mlir
+  "${filecheck_bin}" test/phase2/tabs_precheck_a5.mlir
 
 echo "phase2 check: tstore_copy_family_shape.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tstore_copy_family_shape.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/tstore_copy_family_shape.mlir
+  "${filecheck_bin}" test/phase2/tstore_copy_family_shape.mlir
 
 echo "phase2 check: tstore_domain_todos.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tstore_domain_todos.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/tstore_domain_todos.mlir
+  "${filecheck_bin}" test/phase2/tstore_domain_todos.mlir
 
 echo "phase2 check: pto_backend_a5vm_wiring.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/pto_backend_a5vm_wiring.mlir -o /dev/null 2>&1 | \
-  FileCheck test/phase2/pto_backend_a5vm_wiring.mlir
+  "${filecheck_bin}" test/phase2/pto_backend_a5vm_wiring.mlir
 
 echo "phase2 check: ctest"
 ctest --test-dir build --output-on-failure
