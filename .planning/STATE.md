@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
-status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-19T01:00:12.912Z"
+status: verifying
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-03-19T01:16:42.526Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 10
   completed_plans: 6
   percent: 60
@@ -20,7 +20,7 @@ progress:
 # Project State
 
 **Updated:** 2026-03-19
-**Status:** In progress
+**Status:** Phase complete — ready for verification
 **Current Phase:** 2
 **Current Phase Name:** PTO Lowering
 **Total Phases:** 4
@@ -50,7 +50,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Plan `01-03` executed and summarized
 - Revised plan `02-01` executed and summarized
 - Plan `02-02` executed and summarized
-- Next execution target: `02-03-PLAN.md`
+- Plan `02-03` executed and summarized
+- Next execution target: verification for Phase 2 completion
 
 ## Active Milestone
 
@@ -62,7 +63,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | A5VM Foundation | Complete |
-| 2 | PTO Lowering | In Progress |
+| 2 | PTO Lowering | Ready for Verification |
 | 3 | HIVM Emission | Pending |
 | 4 | Abs Validation | Pending |
 
@@ -93,7 +94,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 - Rewrote `include/PTO/Transforms/A5VMLowering.h` around explicit A5-only TLOAD, TABS, and TSTORE lowering contracts
 - Added `lib/PTO/Transforms/PTOToA5VMLowering.cpp` and split pass wiring away from shared contract extraction, copy-loop programming, and unary vec-scope lowering
-- Registered `scf` for the PTO-to-A5VM pass and validated `test/phase2/tabs_abs_loop_shape.mlir` against the rebuilt CLI
+- Switched `lib/PTO/Transforms/PTOToA5VM.cpp` to partial conversion so failed helper lowerings now fail the pass instead of being skipped
+- Refactored `tools/ptoas/ptoas.cpp` so the A5VM branch schedules `createLowerPTOToA5VMPass()` separately from EmitC backend emission
 
 ## Open Questions
 
@@ -102,9 +104,9 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Session Continuity
 
-- Next recommended command: `/gsd:execute-phase 02-pto-lowering`
-- Next plan to execute: `02-03-PLAN.md`
-- Current blocker status: none
+- Next recommended command: `/gsd:verify-work`
+- Next plan to execute: none - Phase 2 plans complete
+- Current blocker status: pre-existing A5VM generated-header build defect blocks fresh `ptoas` rebuild verification
 
 ## Performance Metrics
 
@@ -117,6 +119,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase 01 P01 | 21min | 2 tasks | 10 files |
 | Phase 01-a5vm-foundation P02 | 25min | 2 tasks | 8 files |
 | Phase 02-pto-lowering P02 | 24min | 2 tasks | 5 files |
+| Phase 02-pto-lowering P03 | 12min | 2 tasks | 2 files |
 
 ## Decisions Made
 
@@ -138,16 +141,18 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Keep the public Phase 2 surface limited to lowerTLOAD, lowerTABS, and lowerTSTORE plus truthful A5-only contracts.
 - [Phase 02]: Represent copy-family set_loop programming as explicit attached metadata so the PTO branch structure stays visible before dedicated loop ops exist.
 - [Phase 02]: Build unary Abs lowering as structural SCF vec-scope loops around vlds, vabs, and vsts, and register SCF in the pass dependency list.
+- [Phase 02-pto-lowering]: Use partial conversion so helper lowering failures surface as pass failures instead of being silently skipped.
+- [Phase 02-pto-lowering]: Factor shared pre-backend passes into a helper so the A5VM branch stays structurally separate from EmitC.
 
 ## Blockers
 
-None.
+- Fresh `CCACHE_DISABLE=1 ninja -C build PTOTransforms ptoas` verification is blocked by a pre-existing A5VM generated-header path/build-graph defect; see `.planning/phases/02-pto-lowering/deferred-items.md`.
 
 ## Session
 
-**Last Date:** 2026-03-19T01:00:12.910Z
-**Stopped At:** Completed 02-02-PLAN.md
+**Last Date:** 2026-03-19T01:16:16.809Z
+**Stopped At:** Completed 02-03-PLAN.md
 **Resume File:** None
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-02*
+*Last updated: 2026-03-19 after completing plan 02-03*

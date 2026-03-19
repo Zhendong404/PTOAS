@@ -1,0 +1,2 @@
+- Full `CCACHE_DISABLE=1 ninja -C build PTOTransforms ptoas` verification is currently blocked by a pre-existing A5VM generated-header issue: `include/PTO/IR/A5VM.h` expects `PTO/IR/A5VMTypes.h.inc`, but the current build graph does not materialize that file and only emits partial A5VM generated headers under `build/include/A5VM/IR/`.
+- The build directory also required a local timestamp refresh on `build/build.ninja` to escape repeated CMake regeneration before the compile could proceed, indicating stale generated metadata outside this plan's code changes.
