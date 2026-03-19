@@ -51,7 +51,7 @@ Each task was committed atomically:
 1. **Task 1: Register the corrected PTO-to-A5VM pass and dispatch through the three explicit entrypoints** - `a8ddf32` (fix)
 2. **Task 2: Wire `ptoas --pto-backend=a5vm` through the corrected Phase 2 lowering path** - `d4409d3` (feat)
 
-**Plan metadata:** pending
+**Plan metadata:** `36aaf0e` (docs)
 
 ## Files Created/Modified
 - `lib/PTO/Transforms/PTOToA5VM.cpp` - switched from a manual walk to partial conversion with explicit legality and pass failure propagation.
