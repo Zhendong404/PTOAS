@@ -2,6 +2,8 @@
 
 // CHECK-LABEL: func.func @tabs_abs_loop_shape
 // CHECK: scf.for
+// CHECK-SAME: cce_aiv_loop_hint
+// CHECK: llvm.loop.aivector_scope
 // CHECK: scf.for
 // CHECK: a5vm.vlds
 // CHECK: a5vm.vabs
@@ -18,6 +20,7 @@ module {
   }
 }
 
-// The vec-scope is represented structurally instead of as a dedicated A5VM op.
-// This contract therefore locks the surrounding loop nesting and ordered vector
-// primitive sequence rather than a standalone vec-scope mnemonic.
+// The chosen lowered loop carries explicit AIV vec-scope semantics through
+// cce_aiv_loop_hint before lowering and llvm.loop.aivector_scope after lowering.
+// This contract therefore locks both loop ownership and the ordered
+// a5vm.vlds -> a5vm.vabs -> a5vm.vsts vector primitive sequence.

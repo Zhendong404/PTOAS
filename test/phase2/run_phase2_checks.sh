@@ -23,6 +23,16 @@ if rg -n 'a5vm\.(load|store|abs)\b|tabs_precheck\.mlir' test/phase2/*.mlir >/dev
   exit 1
 fi
 
+if ! rg -n 'cce_aiv_loop_hint|llvm\.loop\.aivector_scope' test/phase2/tabs_abs_loop_shape.mlir >/dev/null; then
+  echo "error: tabs_abs_loop_shape.mlir must require explicit AIV carrier strings" >&2
+  exit 1
+fi
+
+if rg -n '^// CHECK(?:(?:-[A-Z]+)?)?: scf\.for$' test/phase2/tabs_abs_loop_shape.mlir >/dev/null; then
+  echo "error: tabs_abs_loop_shape.mlir still checks bare scf.for nesting without vec-scope carrier details" >&2
+  exit 1
+fi
+
 echo "phase2 check: tload_copy_family_shape.mlir"
 "${ptoas_bin}" --pto-backend=a5vm --a5vm-print-ir test/phase2/tload_copy_family_shape.mlir -o /dev/null 2>&1 | \
   FileCheck test/phase2/tload_copy_family_shape.mlir
