@@ -29,20 +29,29 @@ struct A5VMPartitionTrace {
   bool hasDynamicSizes = false;
 };
 
+struct A5VMLoopProgramming {
+  int64_t loop2 = 1;
+  int64_t loop1 = 1;
+  int64_t srcLoop2Stride = 1;
+  int64_t srcLoop1Stride = 1;
+  int64_t dstLoop2Stride = 1;
+  int64_t dstLoop1Stride = 1;
+};
+
 struct A5VMLoadContract {
-  StringRef layout;
-  SmallVector<int64_t> srcShape;
-  SmallVector<int64_t> srcStrides;
+  StringRef sourceLayout;
+  SmallVector<int64_t> sourceShape;
+  SmallVector<int64_t> sourceStrides;
   StringRef tileLayout;
   A5VMTileDomain tileDomain = A5VMTileDomain::Vec;
   int64_t validRows = ShapedType::kDynamic;
   int64_t validCols = ShapedType::kDynamic;
   StringRef padMode;
-  bool hasPadValue = false;
-  bool leftPaddingPresent = false;
-  bool rightPaddingPresent = false;
+  Value padValue;
+  Value leftPaddingNum;
+  Value rightPaddingNum;
   bool initOutBuffer = false;
-  bool hasInitCondition = false;
+  Value initCondition;
   A5VMPartitionTrace trace;
 };
 
@@ -57,22 +66,41 @@ struct A5VMUnaryContract {
 
 struct A5VMStoreContract {
   A5VMTileDomain srcDomain = A5VMTileDomain::Vec;
-  StringRef dstLayout;
-  SmallVector<int64_t> dstShape;
-  SmallVector<int64_t> dstStrides;
+  StringRef destinationLayout;
+  SmallVector<int64_t> destinationShape;
+  SmallVector<int64_t> destinationStrides;
   int64_t validRows = ShapedType::kDynamic;
   int64_t validCols = ShapedType::kDynamic;
   A5VMPartitionTrace trace;
 };
 
+void set_loop2_stride_outtoub(Operation *copyOp, int64_t dstStride,
+                              int64_t srcStride, Builder &builder);
+void set_loop1_stride_outtoub(Operation *copyOp, int64_t dstStride,
+                              int64_t srcStride, Builder &builder);
+void set_loop_size_outtoub(Operation *copyOp, int64_t loop2, int64_t loop1,
+                           Builder &builder);
+void set_loop2_stride_ubtoout(Operation *copyOp, int64_t srcStride,
+                              int64_t dstStride, Builder &builder);
+void set_loop1_stride_ubtoout(Operation *copyOp, int64_t srcStride,
+                              int64_t dstStride, Builder &builder);
+void set_loop_size_ubtoout(Operation *copyOp, int64_t loop2, int64_t loop1,
+                           Builder &builder);
+
+LogicalResult programCopyGmToUbLoops(Operation *copyOp,
+                                     const A5VMLoadContract &contract,
+                                     Builder &builder);
+LogicalResult programCopyUbToGmLoops(Operation *copyOp,
+                                     const A5VMStoreContract &contract,
+                                     Builder &builder);
+LogicalResult buildUnaryVecScope(StringRef family,
+                                 const A5VMUnaryContract &contract, Value src,
+                                 Value dst, PatternRewriter &rewriter,
+                                 Location loc);
+
 LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter);
 LogicalResult lowerTABS(TAbsOp op, PatternRewriter &rewriter);
 LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter);
-
-LogicalResult lowerUnaryTileOp(StringRef family,
-                               const A5VMUnaryContract &contract, Value src,
-                               Value dst, PatternRewriter &rewriter,
-                               Location loc);
 
 } // namespace pto
 } // namespace mlir
