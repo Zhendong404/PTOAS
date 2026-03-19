@@ -6,8 +6,8 @@ current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
 status: verifying
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-03-19T02:41:31.347Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-19T02:58:49.780Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
@@ -28,7 +28,7 @@ progress:
 **Total Plans in Phase:** 3
 **Progress:** [██████░░░░] 60%
 **Last Activity:** 2026-03-19
-**Last Activity Description:** Replayed revised 02-01 Phase 2 fixture and runner contracts
+**Last Activity Description:** Executed plan 02-02 to preserve copy-family lowering and explicit AIV loop-carrier metadata
 
 ## Project Reference
 
@@ -104,7 +104,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Pending Todos
 
-- Preserve `__VEC_SCOPE__` as explicit AIV loop semantics instead of lowering it to a plain software loop. Tracked in `.planning/todos/pending/2026-03-19-preserve-vec-scope-as-aiv-loop.md`.
+- None currently recorded for this phase execution.
 
 ## Session Continuity
 
@@ -125,6 +125,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase 02-pto-lowering P02 | 24min | 2 tasks | 5 files |
 | Phase 02-pto-lowering P03 | 12min | 2 tasks | 2 files |
 | Phase 02-pto-lowering P01 | 8min | 2 tasks | 3 files |
+| Phase 02-pto-lowering P02 | 14min | 2 tasks | 1 files |
 
 ## Decisions Made
 
@@ -151,6 +152,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02-pto-lowering]: Factor shared pre-backend passes into a helper so the A5VM branch stays structurally separate from EmitC.
 - [Phase 02-pto-lowering]: Expose AIV vec-scope ownership as an explicit unary lowering contract instead of implying it from plain scf.for nesting.
 - [Phase 02-pto-lowering]: Enforce the corrected vec-scope semantics in the Phase 2 runner so stale pseudo-op checks and bare loop-only fixtures fail fast.
+- [Phase 02]: Treat an already-satisfied task as an explicit empty commit when enforcing one commit per executed plan task.
+- [Phase 02]: Keep __VEC_SCOPE__ as a dedicated dummy loop carrier so the chosen loop owns cce_aiv_loop_hint and llvm.loop.aivector_scope metadata.
 
 ## Blockers
 
@@ -159,7 +162,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 ## Session
 
 **Last Date:** 2026-03-19T02:41:31.344Z
-**Stopped At:** Completed 02-01-PLAN.md
+**Stopped At:** Completed 02-02-PLAN.md
 **Resume File:** None
 
 ---

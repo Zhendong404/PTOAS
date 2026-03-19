@@ -70,9 +70,9 @@ Implement PTO-to-A5VM lowering that preserves the real PTO-library control struc
 **Plans:** 3 plans
 
 Plans:
-- [ ] `02-01-PLAN.md` — Rewrite the Phase 2 public contracts, fixtures, and runner around explicit AIV loop-scope carriage for `TABS`
-- [ ] `02-02-PLAN.md` — Implement truthful PTO-to-A5VM helper lowering for copy families and explicit AIV-scoped unary lowering
-- [ ] `02-03-PLAN.md` — Register and wire the corrected PTO-to-A5VM execution path through `ptoas --pto-backend=a5vm`
+- [x] `02-01-PLAN.md` — Rewrite the Phase 2 public contracts, fixtures, and runner around explicit AIV loop-scope carriage for `TABS`
+- [x] `02-02-PLAN.md` — Implement truthful PTO-to-A5VM helper lowering for copy families and explicit AIV-scoped unary lowering
+- [x] `02-03-PLAN.md` — Register and wire the corrected PTO-to-A5VM execution path through `ptoas --pto-backend=a5vm`
 
 ### Phase 3: HIVM Emission
 
@@ -126,4 +126,4 @@ Use the `Abs` sample as the first acceptance case for the new backend and extrac
 - Phase 4 is the acceptance and inventory-extraction phase, not a separate architecture redesign.
 
 ---
-*Last updated: 2026-03-19 after completing plan 02-03*
+*Last updated: 2026-03-19 after completing plan 02-02 execution replay*

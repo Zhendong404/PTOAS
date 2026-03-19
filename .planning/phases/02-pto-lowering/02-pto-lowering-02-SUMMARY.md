@@ -2,117 +2,94 @@
 phase: 02-pto-lowering
 plan: 02
 subsystem: api
-tags: [mlir, a5vm, pto, lowering, scf, cmake]
+tags: [mlir, a5vm, pto, lowering, scf]
 requires:
   - phase: 02-pto-lowering
-    provides: Revised 02-01 fixture contracts and phase runner for the corrected PTO-to-A5VM shape
+    provides: "public A5VM lowering contracts and fixture-locked vec-scope expectations from 02-01"
 provides:
-  - Public A5-only lowering contracts for TLOAD, TABS, and TSTORE
-  - Shared PTOToA5VMLowering helper layer for contract extraction, copy-loop programming, and unary vec-scope construction
-  - Build-wired SCF-enabled Phase 2 lowering path with explicit TSTORE ACC and MAT TODO diagnostics
-affects: [02-03-PLAN.md, ptoas, a5vm]
+  - "Explicit AIV loop-carrier lowering for TABS via attachLoopScopeMetadata"
+  - "Verified truthful copy-family helper surface for TLOAD and TSTORE"
+  - "Phase 3-readable cce_aiv_loop_hint and llvm.loop.aivector_scope ownership on the chosen loop"
+affects: [02-03, 03-hivm-emission, a5vm-text-emission]
 tech-stack:
   added: []
-  patterns: [Explicit lowering contracts, helper-based PTO semantic extraction, SCF vec-scope lowering, attribute-backed copy loop programming]
+  patterns: [explicit-loop-scope-contract, pto-copy-family-lowering, unary-vec-scope-carrier]
 key-files:
-  created:
-    - lib/PTO/Transforms/PTOToA5VMLowering.cpp
-  modified:
-    - include/PTO/Transforms/A5VMLowering.h
-    - lib/PTO/Transforms/PTOToA5VM.cpp
-    - lib/PTO/Transforms/CMakeLists.txt
-    - include/PTO/Transforms/Passes.td
+  created: [.planning/phases/02-pto-lowering/02-pto-lowering-02-SUMMARY.md]
+  modified: [lib/PTO/Transforms/PTOToA5VMLowering.cpp]
 key-decisions:
-  - "Keep the public Phase 2 surface limited to lowerTLOAD, lowerTABS, and lowerTSTORE plus truthful A5-only contracts."
-  - "Represent copy-family set_loop programming as explicit attached metadata so the PTO branch structure stays visible before dedicated loop ops exist."
-  - "Build unary Abs lowering as structural SCF vec-scope loops around vlds, vabs, and vsts, and register SCF in the pass dependency list."
+  - "Keep __VEC_SCOPE__ as a dedicated dummy loop carrier instead of inferring AIV ownership from generic scf nesting."
+  - "Record task 1 with an empty commit because the checked-in HEAD already satisfied the copy-family helper acceptance criteria."
 patterns-established:
-  - "Extract PTO lowering contracts first, then materialize A5VM operations from those contracts."
-  - "Materialize memref views for pointer-backed or tile-backed values before building A5VM copy/vector ops."
+  - "AIV scope ownership is attached to a specific loop via attachLoopScopeMetadata and mirrored with source and lowered metadata names."
+  - "Task execution can use an explicit empty commit when a required plan task is already satisfied in HEAD and no code delta is needed."
 requirements-completed: [PTO-01, PTO-02, PTO-03, PTO-04]
-duration: 24min
+duration: 14min
 completed: 2026-03-19
 ---
 
-# Phase 2 Plan 2: PTO Lowering Summary
+# Phase 2 Plan 02: PTO Lowering Summary
 
-**A5-only PTO lowering contracts with a build-wired helper layer for copy-family loop metadata and structural unary vec-scope lowering**
+**AIV-scoped TABS dummy-loop ownership with preserved copy-family TLOAD and TSTORE helper structure**
 
 ## Performance
 
-- **Duration:** 24 min
-- **Started:** 2026-03-19T00:34:00Z
-- **Completed:** 2026-03-19T00:58:49Z
+- **Duration:** 14 min
+- **Started:** 2026-03-19T02:43:00Z
+- **Completed:** 2026-03-19T02:57:15Z
 - **Tasks:** 2
-- **Files modified:** 5
+- **Files modified:** 1
 
 ## Accomplishments
-
-- Rewrote the public lowering header to expose only the corrected A5-only contracts and explicit `lowerTLOAD`, `lowerTABS`, and `lowerTSTORE` entrypoints.
-- Split the PTO-to-A5VM implementation into a dedicated helper translation unit that extracts truthful PTO contracts, preserves partition/valid-shape metadata, and programs copy-family loop attributes explicitly.
-- Wired the helper layer into `PTOTransforms`, registered `scf` for unary vec-scope lowering, rebuilt `ptoas`, and validated the `tabs_abs_loop_shape` fixture against the rebuilt CLI.
+- Preserved the truthful copy-family helper surface for `TLOAD` and `TSTORE`, including explicit GM/UB loop-programming helpers and `ACC` / `MAT` TODO diagnostics.
+- Reworked `TABS` lowering so `__VEC_SCOPE__` is carried by a dedicated dummy loop that owns both `cce_aiv_loop_hint` and `llvm.loop.aivector_scope`.
+- Kept the ordered unary primitive sequence visible as `a5vm::VldsOp`, `a5vm::VabsOp`, and `a5vm::VstsOp` inside the chosen AIV loop carrier plus surrounding software chunking loop.
 
 ## Task Commits
 
 Each task was committed atomically:
 
-1. **Task 1: Redefine the public Phase 2 lowering contracts around A5-only semantics** - `ded4b7d` (feat)
-2. **Task 2: Implement the shared helper layer that mirrors PTO-library control structure** - `3c5969e` (feat)
+1. **Task 1: Implement truthful copy-family lowering helpers for TLOAD and TSTORE** - `bf2b739` (feat)
+2. **Task 2: Implement unary TABS lowering with explicit AIV loop metadata and build integration** - `aaa8961` (feat)
 
 ## Files Created/Modified
-
-- `include/PTO/Transforms/A5VMLowering.h` - Public A5-only contracts, entrypoints, and shared helper declarations for copy-loop programming and unary vec-scope construction.
-- `lib/PTO/Transforms/PTOToA5VMLowering.cpp` - Shared contract extraction, memref materialization, copy-loop metadata programming, and structural `vlds -> vabs -> vsts` lowering.
-- `lib/PTO/Transforms/PTOToA5VM.cpp` - Pass wiring reduced to dispatch and erase semantics around the extracted helper entrypoints.
-- `lib/PTO/Transforms/CMakeLists.txt` - Adds the helper translation unit and SCF dialect linkage to `PTOTransforms`.
-- `include/PTO/Transforms/Passes.td` - Registers `scf::SCFDialect` so structural vec-scope loops can be built at runtime.
+- `.planning/phases/02-pto-lowering/02-pto-lowering-02-SUMMARY.md` - execution record for plan 02-02
+- `lib/PTO/Transforms/PTOToA5VMLowering.cpp` - copy-family helper verification plus explicit AIV loop-carrier lowering for `TABS`
 
 ## Decisions Made
-
-- Kept the public boundary narrow: contracts and explicit PTO entrypoints are public, while extraction and lowering mechanics live in `PTOToA5VMLowering.cpp`.
-- Stored `set_loop*_outtoub` and `set_loop*_ubtoout` semantics as readable attached attributes on copy ops, which preserves the PTO decision structure without inventing new dialect ops in this plan.
-- Lowered `TABS` through structural `scf.for` nesting plus ordered `a5vm.vlds`, `a5vm.vabs`, and `a5vm.vsts`, which matches the corrected Phase 2 fixture contract and leaves room for future unary reuse.
+- Kept the AIV vector scope attached to a loop-shaped carrier rather than reducing it to a plain region marker, matching the confirmed dummy-loop frontend semantics.
+- Left `lib/PTO/Transforms/CMakeLists.txt` unchanged because the translation unit was already correctly wired into `PTOTransforms`.
 
 ## Deviations from Plan
 
-### Auto-fixed Issues
+### Execution Notes
 
-**1. [Rule 3 - Blocking] Materialized memref views for pointer-backed and tile-backed operands**
-- **Found during:** Task 2
-- **Issue:** The A5VM copy/vector ops require memref operands, while Phase 2 sources and destinations can arrive as PTO pointers or tile-annotated values.
-- **Fix:** Added helper-level memref materialization before creating A5VM copy or vector ops.
-- **Files modified:** `lib/PTO/Transforms/PTOToA5VMLowering.cpp`
-- **Verification:** `env CCACHE_DISABLE=1 cmake --build build --target pto-opt -j2`
-- **Committed in:** `3c5969e`
-
-**2. [Rule 3 - Blocking] Registered SCF as a pass dependency for unary vec-scope lowering**
-- **Found during:** Task 2
-- **Issue:** The rebuilt CLI failed at runtime because `scf.for` was constructed without `SCF` being registered in the pass dependency list.
-- **Fix:** Added `scf::SCFDialect` to the pass definition and included the SCF dialect header in the pass wiring TU.
-- **Files modified:** `include/PTO/Transforms/Passes.td`, `lib/PTO/Transforms/PTOToA5VM.cpp`
-- **Verification:** `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/tabs_abs_loop_shape.mlir -o /dev/null 2>&1 | /data/mouliangyu/projects/github.com/llvm/llvm-project/build/bin/FileCheck test/phase2/tabs_abs_loop_shape.mlir`
-- **Committed in:** `3c5969e`
+**1. Task 1 required no additional code delta**
+- **Found during:** Task 1
+- **Issue:** The checked-in `HEAD` already satisfied the task 1 acceptance criteria before execution began.
+- **Fix:** Verified the acceptance strings directly and recorded task completion with an explicit empty commit so the per-task commit protocol still holds.
+- **Files modified:** None
+- **Verification:** `rg` acceptance command from the plan passed against `lib/PTO/Transforms/PTOToA5VMLowering.cpp`
+- **Committed in:** `bf2b739`
 
 ---
 
-**Total deviations:** 2 auto-fixed (2 blocking)
-**Impact on plan:** Both fixes were required to make the planned helper layer compile and execute in the real CLI. No architectural scope change.
+**Total deviations:** 1 execution note
+**Impact on plan:** No scope change. Task 1 remained satisfied, task 2 delivered the actual code delta for this execution.
 
 ## Issues Encountered
-
-- `CLAUDE.md` was not present at the repository root, so execution proceeded from the phase planning artifacts and workspace skill index.
-- Sandbox builds initially failed because `ccache` attempted to write to a read-only home directory path. Verification succeeded with `CCACHE_DISABLE=1`.
+- The first local task commit accidentally bundled task 2 changes; I rewound my own last commit and re-split the work so the final history matches the one-commit-per-task requirement.
 
 ## User Setup Required
 
 None - no external service configuration required.
 
 ## Next Phase Readiness
+- Phase 2 helper lowering now exposes explicit loop ownership that Phase 3 can read during textual HIVM emission.
+- Fresh full rebuild verification is still subject to the previously documented A5VM generated-header build defect; this plan only ran the fixture-oriented acceptance checks from the plan.
 
-- Plan `02-03` can now wire these helper entrypoints into the remaining backend path knowing the contracts, helper layer, and SCF vec-scope structure already exist.
-- The current helper layer preserves the semantic inputs and branch visibility needed for future completion of `TSTORE` ACC/MAT branches and broader unary reuse.
-
-## Self-Check: PASSED
+## Self-Check
+PASSED
 
 ---
 *Phase: 02-pto-lowering*
