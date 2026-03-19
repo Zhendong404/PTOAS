@@ -9,7 +9,6 @@ BUILD_DIR="${BUILD_DIR:-build}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "${ROOT_DIR}"
-python3 "${ROOT_DIR}/golden.py"
 
 # Best-effort resolve PTO_ISA_ROOT for generated CMakeLists.txt.
 if [[ -z "${PTO_ISA_ROOT:-}" ]]; then
@@ -104,6 +103,7 @@ copy_outputs_as_golden() {
 
 case "${GOLDEN_MODE}" in
   sim)
+    python3 "${ROOT_DIR}/golden.py"
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH_SIM}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@_sim"
     copy_outputs_as_golden
     if [[ "${RUN_MODE}" == "npu" ]]; then
@@ -116,9 +116,6 @@ case "${GOLDEN_MODE}" in
       echo "[ERROR] GOLDEN_MODE=npu requires RUN_MODE=npu" >&2
       exit 2
     fi
-    python3 "${ROOT_DIR}/golden.py"
-    LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@"
-    copy_outputs_as_golden
     python3 "${ROOT_DIR}/golden.py"
     LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" "${ROOT_DIR}/${BUILD_DIR}/@EXECUTABLE@"
     COMPARE_STRICT=1 python3 "${ROOT_DIR}/compare.py"

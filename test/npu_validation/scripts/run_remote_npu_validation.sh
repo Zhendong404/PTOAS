@@ -296,11 +296,7 @@ while IFS= read -r -d '' cpp; do
         fi
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
-        if [[ "${CUSTOM_GOLDEN}" != "1" ]]; then
-          copy_outputs_as_golden
-          python3 ./golden.py
-          LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
-        else
+        if [[ "${CUSTOM_GOLDEN}" == "1" ]]; then
           log "Using custom golden for ${testcase}"
         fi
         COMPARE_STRICT=1 python3 ./compare.py
