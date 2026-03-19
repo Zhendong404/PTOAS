@@ -25,7 +25,7 @@
 
 ### TABS alignment standard
 - `lowerTABS` should align as closely as practical to the PTO template and implementation decision structure, not only to the observable `abs` result.
-- For the `Abs` path, `TABS` should lower through the actual vector primitive sequence: `a5vm.vld`, `a5vm.vabs`, and `a5vm.vst`.
+- For the `Abs` path, `TABS` should lower through the actual vector primitive sequence landed in Phase 1: `a5vm.vlds`, `a5vm.vabs`, and `a5vm.vsts`.
 - `TABS` lowering must reflect both the `__VEC_SCOPE__` hardware-loop structure and the inner software loop structure used by the PTO implementation to iterate UB data by vector granularity.
 - PTO-side restrictions such as dtype/domain/valid-shape compatibility should be enforced in lowering pre-checks before building `a5vm`.
 - `TABS` should become the standard lowering template for future unary ops such as `TNEG` and `TLOG`, but only if that template is built from the real PTO-library control structure.
@@ -59,7 +59,7 @@
 | ID | Description | Research Support |
 |----|-------------|-----------------|
 | PTO-01 | Developer can lower PTO `TLOAD` on the `Abs` path into `a5vm` operations using the real PTO-library GM-to-UB copy structure while preserving PTO-side layout, shape, valid-region, stride, and trace decisions needed for backend code selection. | Plan `lowerTLOAD` around A5 `copy_gm_to_ubuf_align_v2` family selection plus `set_loop*_outtoub` programming, not a fake vector load. |
-| PTO-02 | Developer can lower PTO `TABS` on the `Abs` path into `a5vm` operations in a way that matches the PTO library’s real vector pipeline and loop structure, including `vld`, `vabs`, `vst`, and the surrounding hardware/software loop semantics. | Plan `lowerTABS` as a unary template that materializes the `__VEC_SCOPE__` region and inner loops around `vld -> vabs -> vst`. |
+| PTO-02 | Developer can lower PTO `TABS` on the `Abs` path into `a5vm` operations in a way that matches the PTO library’s real vector pipeline and loop structure, including `vlds`, `vabs`, `vsts`, and the surrounding hardware/software loop semantics. | Plan `lowerTABS` as a unary template that materializes the `__VEC_SCOPE__` region and inner loops around `vlds -> vabs -> vsts`. |
 | PTO-03 | Developer can lower PTO `TSTORE` on the `Abs` path into `a5vm` operations using the real PTO-library UB-to-GM copy structure while preserving the PTO-side source tile domain and destination layout behavior needed for code selection. | Plan `lowerTSTORE` around A5 `copy_ubuf_to_gm_align_v2` family behavior plus `set_loop*_ubtoout` programming, with explicit `VEC` / `ACC` / `MAT` entry branches. |
 | PTO-04 | Developer can add new PTO-to-A5VM lowerings through the same PTO-library-aligned framework without changing the backend architecture established for `Abs`. | Keep three PTO entrypoints and a minimal helper layer for contract extraction, branch selection, loop programming, trace attachment, and common unary checks. |
 </phase_requirements>
@@ -164,12 +164,12 @@ case Mat: return emitTodo(op, "TSTORE MAT lowering TODO");
 Source: `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TStore.hpp`
 
 ### Pattern 4: Separate Copy Semantics From Vector Compute Semantics
-**What:** `TLOAD`/`TSTORE` use copy-family primitives and loop registers. `TABS` uses vector register load/compute/store inside `__VEC_SCOPE__`.
+**What:** `TLOAD`/`TSTORE` use copy-family primitives and loop registers. `TABS` uses vector register load/compute/store inside `__VEC_SCOPE__`, with the landed Phase 1 ops `vlds` / `vabs` / `vsts`.
 **When to use:** Always. Never unify them into one pseudo vector-op abstraction.
 **Example:**
 ```c++
 // TLOAD/TSTORE: build copy-family op sequence.
-// TABS: build vec-scope + inner loop around vld/vabs/vst.
+// TABS: build vec-scope + inner loop around vlds/vabs/vsts.
 ```
 Source: `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TLoad.hpp`, `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TStore.hpp`, `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TUnaryOp.hpp`
 
@@ -185,7 +185,7 @@ Source: `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TLoad.hpp
 |---------|-------------|-------------|-----|
 | Semantic truth | A custom PTO model disconnected from CANN | A5 CANN PTO headers + PTO ODS/verifiers | The A5 headers already define the real dispatch structure. |
 | Memory movement | A fake generic load/store op | Copy-family A5VM ops that mirror GM↔UB movement | Copy-family selection and loop registers are the semantics. |
-| Unary control flow | A single `abs` op with attrs | `vec_scope` + `vld` + `vabs` + `vst` + software loop shape | The PTO library does real vector-looping, not scalarized abstraction. |
+| Unary control flow | A single `abs` op with attrs | `vec_scope` + `vlds` + `vabs` + `vsts` + software loop shape | The PTO library does real vector-looping, not scalarized abstraction. |
 | Store branching | A hidden default branch | Explicit `VEC` / `ACC` / `MAT` entry branches | Phase 2 must preserve visible future extension points. |
 
 **Key insight:** In corrected Phase 2, the “backend contract” is not a value-level `abs` result. It is the preserved decision structure that tells later stages which copy family, loop registers, tile-domain branch, and vector-loop pattern the PTO library would have used.
@@ -207,7 +207,7 @@ Source: `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TLoad.hpp
 ### Pitfall 3: Flattening `TABS` into one op
 **What goes wrong:** The plan drops `__VEC_SCOPE__`, 1D vs 2D shape selection, and the inner software loop.
 **Why it happens:** The visible math is only absolute value.
-**How to avoid:** Lock a fixture that checks for vec-scope region plus ordered `vld`, `vabs`, `vst`.
+**How to avoid:** Lock a fixture that checks for vec-scope region plus ordered `vlds`, `vabs`, `vsts`.
 **Warning signs:** Fixture only checks `a5vm.vabs`.
 
 ### Pitfall 4: Losing valid-region equality semantics
@@ -223,7 +223,7 @@ Source: `/usr/local/Ascend/cann-8.5.0/aarch64-linux/include/pto/npu/a5/TLoad.hpp
 **Warning signs:** Contract no longer contains `pad_mode`, `pad_value`, `left_padding_num`, `right_padding_num`, `init_out_buffer`, `init_condition`.
 
 ### Pitfall 6: Planning Phase 2 without checking the A5VM primitive surface
-**What goes wrong:** The lowering plan assumes `vld`, `vst`, vec-scope, and copy-family A5VM ops already exist when the current repo still exposes stale pseudo ops in [`include/PTO/IR/A5VMOps.td`](/data/mouliangyu/projects/github.com/zhangstevenunity/PTOAS/include/PTO/IR/A5VMOps.td).
+**What goes wrong:** The lowering plan assumes a primitive surface different from the one actually landed in Phase 1. The current repo exposes `vlds`, `vabs`, and `vsts`, while vec-scope is represented structurally rather than as a dedicated A5VM op.
 **Why it happens:** Phase 1 was corrected in planning, but the workspace still contains stale implementation artifacts.
 **How to avoid:** Make Wave 0 explicitly verify the corrected A5VM primitive inventory or extend it before Phase 2 lowering work starts.
 **Warning signs:** Planner writes tasks assuming current `A5VMOps.td` is already correct.
@@ -285,7 +285,7 @@ for (uint32_t k = 0; k < gShape0; ++k)
 | Fixture | What it must lock | Why |
 |---------|-------------------|-----|
 | `test/phase2/tload_copy_family_shape.mlir` | `lowerTLOAD` emits copy-family A5VM structure for the `Abs` path, preserving layout, shape, strides, valid row/col, pad/init fields, partition trace, and out-to-UB loop programming | Prevents regression back to fake load ops. |
-| `test/phase2/tabs_abs_loop_shape.mlir` | `lowerTABS` emits `vec_scope` plus inner loop with ordered `a5vm.vld`, `a5vm.vabs`, `a5vm.vst` | Locks the real unary loop shape. |
+| `test/phase2/tabs_abs_loop_shape.mlir` | `lowerTABS` emits `vec_scope` plus inner loop with ordered `a5vm.vlds`, `a5vm.vabs`, `a5vm.vsts` | Locks the real unary loop shape. |
 | `test/phase2/tstore_copy_family_shape.mlir` | `lowerTSTORE` emits UB-to-GM copy-family structure with destination layout/shape/strides, valid row/col, trace, and UB-to-out loop programming | Prevents regression back to fake store ops. |
 | `test/phase2/tstore_domain_todos.mlir` | `ACC` and `MAT` branches remain explicit and produce dedicated TODO diagnostics | Preserves truthful future extension points. |
 | `test/phase2/pto_backend_a5vm_wiring.mlir` | `--pto-backend=a5vm` runs PTO-to-A5VM lowering before final backend emission and does not route through EmitC lowering | Locks the backend seam. |
@@ -357,7 +357,7 @@ Use the existing seam in [`tools/ptoas/ptoas.cpp`](/data/mouliangyu/projects/git
 
 1. **Which corrected A5VM primitives already exist after Phase 1 correction?**
    - What we know: current workspace still exposes stale pseudo ops in [`include/PTO/IR/A5VMOps.td`](/data/mouliangyu/projects/github.com/zhangstevenunity/PTOAS/include/PTO/IR/A5VMOps.td).
-   - What's unclear: whether corrected `vld`, `vabs`, `vst`, vec-scope, and copy-family ops already landed elsewhere or still need Phase 2-adjacent work.
+   - What's unclear: whether the landed `vlds`, `vabs`, `vsts` primitive surface is sufficient as-is, or whether any adjacent helper abstraction still needs to be added in Phase 2.
    - Recommendation: make this the first Wave 0 check and extend A5VM if missing.
 
 2. **How should loop programming be represented in A5VM IR?**
@@ -384,7 +384,7 @@ Use the existing seam in [`tools/ptoas/ptoas.cpp`](/data/mouliangyu/projects/git
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
 | PTO-01 | `TLOAD` preserves copy-family structure, loop programming, layout/stride/trace/pad metadata | structural | `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/tload_copy_family_shape.mlir -o /dev/null 2>&1 | FileCheck test/phase2/tload_copy_family_shape.mlir` | ❌ Wave 0 |
-| PTO-02 | `TABS` emits vec-scope plus `vld -> vabs -> vst` loop shape and rejects unsupported cases | structural | `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/tabs_abs_loop_shape.mlir -o /dev/null 2>&1 | FileCheck test/phase2/tabs_abs_loop_shape.mlir` | ❌ Wave 0 |
+| PTO-02 | `TABS` emits vec-scope plus `vlds -> vabs -> vsts` loop shape and rejects unsupported cases | structural | `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/tabs_abs_loop_shape.mlir -o /dev/null 2>&1 | FileCheck test/phase2/tabs_abs_loop_shape.mlir` | ❌ Wave 0 |
 | PTO-03 | `TSTORE` preserves UB-to-GM copy-family structure and explicit `ACC` / `MAT` TODO branches | structural | `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/tstore_copy_family_shape.mlir -o /dev/null 2>&1 | FileCheck test/phase2/tstore_copy_family_shape.mlir` | ❌ Wave 0 |
 | PTO-04 | Backend wiring keeps the same architecture and only activates PTO-to-A5VM on `--pto-backend=a5vm` | structural | `./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir test/phase2/pto_backend_a5vm_wiring.mlir -o /dev/null 2>&1 | FileCheck test/phase2/pto_backend_a5vm_wiring.mlir` | ❌ Wave 0 |
 
