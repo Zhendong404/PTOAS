@@ -209,6 +209,52 @@ static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
   return false;
 }
 
+static void addSharedPreBackendPasses(OpPassManager &pm,
+                                      PTOBackend effectiveBackend,
+                                      PTOBuildLevel effectiveLevel) {
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+
+  if (!disableInferLayout)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addPass(pto::createPTOViewToMemrefPass());
+
+  if (effectiveLevel != PTOBuildLevel::Level3) {
+    PlanMemoryOptions planMemoryOption;
+    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
+    planMemoryOption.enableGlobalReuse = false;
+    planMemoryOption.enablePrintMemoryAllocatedSize = false;
+    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+  }
+
+  if (enableInsertSync) {
+    if (effectiveLevel == PTOBuildLevel::Level3) {
+      llvm::errs() << "Warning: --enable-insert-sync is ignored because "
+                      "--pto-level=level3.\n";
+    } else {
+      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+    }
+  }
+
+  pm.addPass(createCSEPass());
+
+  if (effectiveBackend == PTOBackend::A5VM) {
+    pm.addPass(pto::createLowerPTOToA5VMPass());
+    pm.addPass(mlir::createCSEPass());
+    return;
+  }
+
+  std::string arch = ptoTargetArch;
+  for (char &c : arch)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (arch == "a3") {
+    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
+  } else {
+    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
+  }
+  pm.addPass(emitc::createFormExpressionsPass());
+  pm.addPass(mlir::createCSEPass());
+}
+
 static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
   for (func::FuncOp func : module.getOps<func::FuncOp>()) {
     for (Operation &op : func.getBody().front().getOperations()) {
@@ -872,37 +918,12 @@ int main(int argc, char **argv) {
   const bool skipPreBackendPasses =
       effectiveBackend == PTOBackend::A5VM && inputIsA5VMIR;
   if (!skipPreBackendPasses) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-
-    if (!disableInferLayout)
-      pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-    pm.addPass(pto::createPTOViewToMemrefPass());
     // bufferizationPipeline(pm);
     //pm.addPass(createInferPTOMemScopePass());
-
-    if (effectiveLevel != PTOBuildLevel::Level3) {
-      PlanMemoryOptions planMemoryOption;
-      planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
-      planMemoryOption.enableGlobalReuse = false;
-      planMemoryOption.enablePrintMemoryAllocatedSize = false;
-      pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
-    }
-
-    // Conditionally add Sync pass based on flag
-    if (enableInsertSync) {
-      if (effectiveLevel == PTOBuildLevel::Level3) {
-        llvm::errs() << "Warning: --enable-insert-sync is ignored because "
-                        "--pto-level=level3.\n";
-      } else {
-        pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-      }
-    }
-
     // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
     // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
     // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
-
-    pm.addPass(createCSEPass());
+    addSharedPreBackendPasses(pm, effectiveBackend, effectiveLevel);
   }
   std::string arch = ptoTargetArch;
   for (char &c : arch)
@@ -914,19 +935,6 @@ int main(int argc, char **argv) {
   }
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
-  if (effectiveBackend == PTOBackend::EmitC) {
-    if (arch == "a3") {
-      pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-    } else {
-      pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
-    }
-    pm.addPass(emitc::createFormExpressionsPass());
-    pm.addPass(mlir::createCSEPass());
-  } else if (!skipPreBackendPasses) {
-    pm.addPass(pto::createLowerPTOToA5VMPass());
-    pm.addPass(mlir::createCSEPass());
-  }
-
   if (!skipPreBackendPasses) {
     if (failed(pm.run(*module))) {
       llvm::errs() << "Error: Pass execution failed.\n";
