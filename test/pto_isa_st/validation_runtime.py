@@ -251,21 +251,40 @@ def pack_predicate_mask_for_buffer(bits: np.ndarray, *, elem_count: int, dtype, 
     return np.frombuffer(packed_bytes.tobytes(), dtype=dtype).copy()
 
 
-def _report_compare_failure(golden: np.ndarray, output: np.ndarray, golden_path: str, output_path: str):
+def _report_compare_failure(
+    golden: np.ndarray,
+    output: np.ndarray,
+    golden_path: str,
+    output_path: str,
+    *,
+    atol: float,
+):
     if golden.size == 0:
         print(f'[ERROR] Mismatch: {golden_path} vs {output_path}, empty buffers')
         return
     if np.issubdtype(golden.dtype, np.integer) or np.issubdtype(golden.dtype, np.unsignedinteger):
         golden_cmp = golden.astype(np.int64, copy=False)
         output_cmp = output.astype(np.int64, copy=False)
+        if atol == 0.0:
+            mismatch_mask = golden != output
+        else:
+            mismatch_mask = ~np.isclose(golden, output, atol=atol, rtol=atol)
     else:
         golden_cmp = golden.astype(np.float64, copy=False)
         output_cmp = output.astype(np.float64, copy=False)
+        mismatch_mask = ~np.isclose(golden, output, atol=atol, rtol=atol, equal_nan=True)
+
     diff = np.abs(golden_cmp - output_cmp)
-    index = int(np.argmax(diff))
+    mismatch_indices = np.flatnonzero(mismatch_mask)
+    first_index = int(mismatch_indices[0]) if mismatch_indices.size else 0
+    max_index = int(np.nanargmax(np.where(np.isnan(diff), np.inf, diff)))
     print(
-        f'[ERROR] Mismatch: {golden_path} vs {output_path}, max diff={float(diff[index])} at idx={index} '
-        f'(golden={golden_cmp[index]}, out={output_cmp[index]}, dtype={golden.dtype})'
+        f'[ERROR] Mismatch: {golden_path} vs {output_path}, '
+        f'first diff at idx={first_index} '
+        f'(golden={golden_cmp[first_index]}, out={output_cmp[first_index]}, '
+        f'abs_diff={float(diff[first_index])}, dtype={golden.dtype}); '
+        f'max diff={float(diff[max_index])} at idx={max_index} '
+        f'(golden={golden_cmp[max_index]}, out={output_cmp[max_index]})'
     )
 
 
@@ -290,7 +309,7 @@ def compare_file(golden_path: str, output_path: str, dtype, atol: float) -> bool
     else:
         ok = np.allclose(golden, output, atol=atol, rtol=atol, equal_nan=True)
     if not ok:
-        _report_compare_failure(golden, output, golden_path, output_path)
+        _report_compare_failure(golden, output, golden_path, output_path, atol=atol)
         return False
     return True
 
