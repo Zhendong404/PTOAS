@@ -15,7 +15,20 @@ config.excludes = [
 ]
 
 config.test_source_root = os.path.dirname(__file__)
-config.test_exec_root = config.test_source_root
+
+
+def _resolve_build_root():
+    env_build_dir = os.environ.get("PTOAS_BUILD_DIR")
+    if env_build_dir:
+        return os.path.abspath(env_build_dir)
+
+    repo_root = os.path.abspath(os.path.join(config.test_source_root, ".."))
+    return os.path.join(repo_root, "build")
+
+
+build_root = _resolve_build_root()
+config.test_exec_root = os.path.join(build_root, "test")
+os.makedirs(config.test_exec_root, exist_ok=True)
 
 
 def _resolve_ptoas_bin():
@@ -23,8 +36,7 @@ def _resolve_ptoas_bin():
     if env_bin:
         return env_bin
 
-    repo_root = os.path.abspath(os.path.join(config.test_source_root, ".."))
-    candidate = os.path.join(repo_root, "build", "tools", "ptoas", "ptoas")
+    candidate = os.path.join(build_root, "tools", "ptoas", "ptoas")
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return candidate
 
