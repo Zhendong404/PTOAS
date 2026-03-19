@@ -29,6 +29,18 @@ namespace pto {
 
 namespace {
 
+LogicalResult lowerTLOADOp(TLoadOp op, PatternRewriter &rewriter) {
+  return lowerTLOAD(op, rewriter);
+}
+
+LogicalResult lowerTABSOp(TAbsOp op, PatternRewriter &rewriter) {
+  return lowerTABS(op, rewriter);
+}
+
+LogicalResult lowerTSTOREOp(TStoreOp op, PatternRewriter &rewriter) {
+  return lowerTSTORE(op, rewriter);
+}
+
 template <typename OpTy, LogicalResult (*LowerFn)(OpTy, PatternRewriter &)>
 struct LowerPTOOpPattern : public OpRewritePattern<OpTy> {
   using OpRewritePattern<OpTy>::OpRewritePattern;
@@ -48,9 +60,9 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerPTOOpPattern<TLoadOp, lowerTLOAD>,
-                 LowerPTOOpPattern<TAbsOp, lowerTABS>,
-                 LowerPTOOpPattern<TStoreOp, lowerTSTORE>>(&getContext());
+    patterns.add<LowerPTOOpPattern<TLoadOp, lowerTLOADOp>,
+                 LowerPTOOpPattern<TAbsOp, lowerTABSOp>,
+                 LowerPTOOpPattern<TStoreOp, lowerTSTOREOp>>(&getContext());
 
     ConversionTarget target(getContext());
     target.addLegalDialect<a5vm::A5VMDialect, arith::ArithDialect,
