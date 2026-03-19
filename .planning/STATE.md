@@ -102,6 +102,10 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - Which exact LLVM HIVM intrinsic spellings correspond to each builtin variant exercised by the final `Abs` path
 - Whether the implemented `Abs` path needs only the currently expected load/abs/store intrinsic families or additional helper intrinsics
 
+## Pending Todos
+
+- Preserve `__VEC_SCOPE__` as explicit AIV loop semantics instead of lowering it to a plain software loop. Tracked in `.planning/todos/pending/2026-03-19-preserve-vec-scope-as-aiv-loop.md`.
+
 ## Session Continuity
 
 - Next recommended command: `/gsd:verify-work`
@@ -132,6 +136,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Use an explicit rewrite walk instead of greedy pattern application so single-op Phase 2 fixtures retain visible a5vm.load and a5vm.abs ops in debug IR.
 - [Phase 02]: Gate revised Wave 0 fixture replay on the landed A5VM primitive names instead of silently tolerating stale Phase 1 assumptions.
 - [Phase 02]: Represent `__VEC_SCOPE__` structurally in Phase 2 fixtures by checking loop nesting and ordered `vlds` / `vabs` / `vsts`.
+- [Phase 02]: Revisit the current `__VEC_SCOPE__` representation because the user confirmed it corresponds to `cce_aiv_loop_hint` / `llvm.loop.aivector_scope`, not just ordinary loop structure.
 - [Phase 02]: Keep obsolete pseudo-op name rejection in the Phase 2 runner so fixture files stay focused on the corrected lowering shape.
 - [Phase 01-a5vm-foundation]: Keep the Phase 1 A5VM seam at raw corrected backend text and defer llvm.hivm emission to the later HIVM phase.
 - [Phase 01]: Keep the no-legacy-name regression check in the standalone runner rather than in the MLIR fixtures so file-level validation can forbid obsolete spellings entirely.
