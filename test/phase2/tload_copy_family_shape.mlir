@@ -2,28 +2,32 @@
 
 // CHECK-LABEL: func.func @tload_copy_family_shape
 // CHECK: a5vm.set_loop2_stride_outtoub
-// CHECK-SAME: dst_stride = 32
-// CHECK-SAME: src_stride = 32
+// CHECK-SAME: 4503599627374592
 // CHECK: a5vm.set_loop1_stride_outtoub
-// CHECK-SAME: dst_stride = 1
-// CHECK-SAME: src_stride = 1
+// CHECK-SAME: 4503599627374592
 // CHECK: a5vm.set_loop_size_outtoub
-// CHECK-SAME: loop2 = 32
-// CHECK-SAME: loop1 = 32
+// CHECK-SAME: 2097153
 // CHECK: a5vm.copy_gm_to_ubuf
 // CHECK-SAME: layout = "nd"
 // CHECK-SAME: valid_rows = 32
 // CHECK-SAME: valid_cols = 32
-// CHECK-SAME: burst_count = 32
-// CHECK-SAME: burst_len = 32
-// CHECK-SAME: gm_stride = 32
-// CHECK-SAME: ub_stride = 32
+// CHECK-SAME: sid = 0
+// CHECK-SAME: n_burst = 32
+// CHECK-SAME: len_burst = 128
+// CHECK-SAME: gm_stride = 128
+// CHECK-SAME: ub_stride = 128
+// CHECK-SAME: left_padding_count = 0
+// CHECK-SAME: right_padding_count = 0
+// CHECK-SAME: data_select_bit = false
+// CHECK-SAME: l2_cache_ctl = 0
 // CHECK-SAME: pad_mode = "none"
 // CHECK-SAME: has_pad_value = false
 // CHECK-SAME: left_padding_num = 0
 // CHECK-SAME: right_padding_num = 0
 // CHECK-SAME: init_out_buffer = false
 // CHECK-SAME: has_init_condition = false
+// CHECK-SAME: g_shape = [1, 1, 1, 32, 32]
+// CHECK-SAME: g_strides = [1024, 1024, 1024, 32, 1]
 // CHECK-SAME: src_strides = [32, 1]
 // CHECK-SAME: trace_offsets = [0, 0]
 // CHECK-SAME: trace_sizes = [32, 32]

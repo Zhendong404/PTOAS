@@ -46,7 +46,6 @@ enum class A5VMLoopScopeKind {
 
 struct A5VMLoopScopeContract {
   A5VMLoopScopeKind kind = A5VMLoopScopeKind::None;
-  StringRef sourceAttr = "cce_aiv_loop_hint";
   StringRef loweredAttr = "llvm.loop.aivector_scope";
   int64_t loopDepth = 0;
 };
@@ -57,6 +56,7 @@ struct A5VMLoadContract {
   SmallVector<int64_t> sourceStrides;
   StringRef tileLayout;
   A5VMTileDomain tileDomain = A5VMTileDomain::Vec;
+  Type elementType;
   int64_t validRows = ShapedType::kDynamic;
   int64_t validCols = ShapedType::kDynamic;
   StringRef padMode;
@@ -83,6 +83,7 @@ struct A5VMStoreContract {
   StringRef destinationLayout;
   SmallVector<int64_t> destinationShape;
   SmallVector<int64_t> destinationStrides;
+  Type elementType;
   int64_t validRows = ShapedType::kDynamic;
   int64_t validCols = ShapedType::kDynamic;
   A5VMPartitionTrace trace;

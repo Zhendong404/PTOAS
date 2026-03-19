@@ -21,14 +21,13 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <optional>
+#include <utility>
 
 namespace mlir {
 namespace pto {
 
 namespace {
 
-constexpr StringLiteral kVecScopeName = "__VEC_SCOPE__";
-constexpr StringLiteral kSourceLoopScopeAttrName = "cce_aiv_loop_hint";
 constexpr StringLiteral kLoweredLoopScopeAttrName = "llvm.loop.aivector_scope";
 
 std::optional<int64_t> getConstInt(Value value) {
@@ -238,19 +237,12 @@ void appendStaticSizes(ValueRange values, SmallVectorImpl<int64_t> &out,
   }
 }
 
-int64_t defaultTransferExtent(int64_t value) {
-  return value == ShapedType::kDynamic ? 1 : value;
-}
-
-int64_t deriveTransferStride(ArrayRef<int64_t> strides, int64_t fallback,
-                             size_t index = 0) {
-  if (index < strides.size() && strides[index] != ShapedType::kDynamic)
-    return strides[index];
-  for (int64_t stride : strides) {
-    if (stride != ShapedType::kDynamic)
-      return stride;
-  }
-  return fallback;
+int64_t getElementByteSize(Type type) {
+  if (auto floatType = dyn_cast<FloatType>(type))
+    return (floatType.getWidth() + 7) / 8;
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return (intType.getWidth() + 7) / 8;
+  return 0;
 }
 
 void recordStaticValues(ValueRange values, SmallVectorImpl<int64_t> &out) {
@@ -390,31 +382,90 @@ ArrayAttr asI64ArrayAttr(Builder &builder, ArrayRef<int64_t> values) {
   return builder.getArrayAttr(attrs);
 }
 
-DictionaryAttr makeStrideAttr(Builder &builder, int64_t first, int64_t second,
-                              StringRef firstName, StringRef secondName) {
-  return builder.getDictionaryAttr(
-      {builder.getNamedAttr(firstName, builder.getI64IntegerAttr(first)),
-       builder.getNamedAttr(secondName, builder.getI64IntegerAttr(second))});
+void normalizeToPTOGlobalShapeAndStride(ArrayRef<int64_t> shape,
+                                        ArrayRef<int64_t> strides,
+                                        SmallVectorImpl<int64_t> &globalShape,
+                                        SmallVectorImpl<int64_t> &globalStride) {
+  constexpr int64_t kRank = 5;
+  globalShape.assign(kRank, 1);
+  globalStride.assign(kRank, 1);
+
+  size_t shapeRank = std::min<size_t>(shape.size(), kRank);
+  size_t strideRank = std::min<size_t>(strides.size(), kRank);
+  size_t rank = std::min(shapeRank, strideRank);
+  size_t base = kRank - rank;
+
+  for (size_t i = 0; i < rank; ++i) {
+    globalShape[base + i] = shape[shape.size() - rank + i];
+    globalStride[base + i] = strides[strides.size() - rank + i];
+  }
+
+  for (int i = static_cast<int>(kRank) - 2; i >= 0; --i) {
+    if (i >= static_cast<int>(base))
+      continue;
+    if (globalStride[i + 1] == ShapedType::kDynamic ||
+        globalShape[i + 1] == ShapedType::kDynamic) {
+      globalStride[i] = ShapedType::kDynamic;
+      continue;
+    }
+    globalStride[i] = globalStride[i + 1] * globalShape[i + 1];
+  }
 }
 
-void attachTraceAttrs(Operation *op, const A5VMPartitionTrace &trace,
-                      Builder &builder) {
-  op->setAttr("trace_offsets", asI64ArrayAttr(builder, trace.offsets));
-  op->setAttr("trace_sizes", asI64ArrayAttr(builder, trace.sizes));
+int64_t packLoopStrideConfig(int64_t first, int64_t second) {
+  return (static_cast<int64_t>(first) << 40) | static_cast<int64_t>(second);
 }
 
-int64_t deriveTileLoop2Stride(StringRef tileLayout, int64_t validRows,
-                              int64_t validCols) {
-  if (tileLayout == "col_major")
-    return defaultTransferExtent(validRows);
-  return defaultTransferExtent(validCols);
+int64_t packLoopSizeConfig(int64_t loop2, int64_t loop1) {
+  return (static_cast<int64_t>(loop2) << 21) | static_cast<int64_t>(loop1);
 }
 
-int64_t deriveTileLoop1Stride(StringRef tileLayout, int64_t validRows,
-                              int64_t validCols) {
-  if (tileLayout == "col_major")
-    return 1;
-  return 1;
+LogicalResult deriveVecNDTransferConfig(ArrayRef<int64_t> shape,
+                                        ArrayRef<int64_t> strides,
+                                        StringRef tileLayout, Type elementType,
+                                        int64_t validRows, int64_t validCols,
+                                        SmallVectorImpl<int64_t> &globalShape,
+                                        SmallVectorImpl<int64_t> &globalStride,
+                                        int64_t &nBurst, int64_t &lenBurst,
+                                        int64_t &gmStrideBytes,
+                                        int64_t &ubStrideBytes,
+                                        int64_t &loop1Size,
+                                        int64_t &loop2Size,
+                                        int64_t &loop1FirstStrideBytes,
+                                        int64_t &loop1SecondStrideBytes,
+                                        int64_t &loop2FirstStrideBytes,
+                                        int64_t &loop2SecondStrideBytes) {
+  if (tileLayout != "row_major")
+    return failure();
+
+  int64_t elemBytes = getElementByteSize(elementType);
+  if (elemBytes <= 0)
+    return failure();
+
+  normalizeToPTOGlobalShapeAndStride(shape, strides, globalShape, globalStride);
+  if (globalShape.size() != 5 || globalStride.size() != 5)
+    return failure();
+  if (llvm::any_of(globalShape, [](int64_t v) { return v == ShapedType::kDynamic; }) ||
+      llvm::any_of(globalStride, [](int64_t v) { return v == ShapedType::kDynamic; }))
+    return failure();
+  if (validRows == ShapedType::kDynamic || validCols == ShapedType::kDynamic)
+    return failure();
+
+  nBurst = globalShape[3];
+  lenBurst = validCols * elemBytes;
+  gmStrideBytes = globalStride[3] * elemBytes;
+  ubStrideBytes = validCols * elemBytes;
+
+  int64_t dstStride2 = globalShape[3] * validCols;
+  int64_t dstStride1 = globalShape[2] * dstStride2;
+
+  loop2Size = globalShape[1];
+  loop1Size = globalShape[2];
+  loop2FirstStrideBytes = dstStride1 * elemBytes;
+  loop2SecondStrideBytes = globalStride[1] * elemBytes;
+  loop1FirstStrideBytes = dstStride2 * elemBytes;
+  loop1SecondStrideBytes = globalStride[2] * elemBytes;
+  return success();
 }
 
 Attribute getGmMemorySpace(MLIRContext *context) {
@@ -488,6 +539,7 @@ A5VMPartitionTrace extractPartitionTrace(Value value) {
 A5VMLoadContract extractTLoadContract(TLoadOp op) {
   A5VMLoadContract contract;
   contract.trace = extractPartitionTrace(op.getSrc());
+  contract.elementType = getElementType(op.getDst());
 
   Attribute layoutAttr;
   Value base = resolveTensorViewBase(op.getSrc(), layoutAttr, contract.sourceShape,
@@ -515,7 +567,6 @@ A5VMUnaryContract extractTAbsContract(TAbsOp op) {
   deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
   contract.elementType = getElementType(op.getSrc());
   contract.loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
-  contract.loopScope.sourceAttr = kSourceLoopScopeAttrName;
   contract.loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   contract.loopScope.loopDepth = 0;
   return contract;
@@ -527,6 +578,7 @@ A5VMStoreContract extractTStoreContract(TStoreOp op) {
 
   contract.srcDomain = deriveTileDomain(getMemorySpace(op.getSrc()));
   deriveValidShape(op.getSrc(), contract.validRows, contract.validCols);
+  contract.elementType = getElementType(op.getSrc());
 
   Attribute layoutAttr;
   Value base = resolveTensorViewBase(op.getDst(), layoutAttr,
@@ -539,51 +591,37 @@ A5VMStoreContract extractTStoreContract(TStoreOp op) {
 
 void attachLoadContractAttrs(Operation *op, const A5VMLoadContract &contract) {
   Builder builder(op->getContext());
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  normalizeToPTOGlobalShapeAndStride(contract.sourceShape, contract.sourceStrides,
+                                     globalShape, globalStride);
   op->setAttr("layout", builder.getStringAttr(contract.sourceLayout));
-  op->setAttr("src_shape", asI64ArrayAttr(builder, contract.sourceShape));
-  op->setAttr("src_strides", asI64ArrayAttr(builder, contract.sourceStrides));
-  op->setAttr("tile_layout", builder.getStringAttr(contract.tileLayout));
-  op->setAttr("tile_domain",
-              builder.getStringAttr(stringifyTileDomain(contract.tileDomain)));
+  op->setAttr("g_shape", asI64ArrayAttr(builder, globalShape));
+  op->setAttr("g_strides", asI64ArrayAttr(builder, globalStride));
   op->setAttr("valid_rows", builder.getI64IntegerAttr(contract.validRows));
   op->setAttr("valid_cols", builder.getI64IntegerAttr(contract.validCols));
-  op->setAttr("pad_mode", builder.getStringAttr(contract.padMode));
-  op->setAttr("has_pad_value", builder.getBoolAttr(static_cast<bool>(contract.padValue)));
-  op->setAttr("left_padding_num", builder.getI64IntegerAttr(
-                                      getConstInt(contract.leftPaddingNum).value_or(0)));
-  op->setAttr("right_padding_num", builder.getI64IntegerAttr(
-                                       getConstInt(contract.rightPaddingNum).value_or(0)));
-  op->setAttr("init_out_buffer", builder.getBoolAttr(contract.initOutBuffer));
-  op->setAttr("has_init_condition",
-              builder.getBoolAttr(static_cast<bool>(contract.initCondition)));
-  attachTraceAttrs(op, contract.trace, builder);
-}
-
-void attachUnaryContractAttrs(Operation *op, const A5VMUnaryContract &contract) {
-  Builder builder(op->getContext());
-  op->setAttr("unary_family", builder.getStringAttr(contract.family));
-  op->setAttr("tile_domain",
-              builder.getStringAttr(stringifyTileDomain(contract.tileDomain)));
-  op->setAttr("tile_layout", builder.getStringAttr(contract.tileLayout));
-  op->setAttr("valid_rows", builder.getI64IntegerAttr(contract.validRows));
-  op->setAttr("valid_cols", builder.getI64IntegerAttr(contract.validCols));
-  if (contract.loopScope.kind == A5VMLoopScopeKind::AIVVectorScope) {
-    op->setAttr(contract.loopScope.sourceAttr, builder.getUnitAttr());
-    op->setAttr(contract.loopScope.loweredAttr, builder.getUnitAttr());
-    op->setAttr("a5vm.scope", builder.getStringAttr(kVecScopeName));
-  }
+  op->setAttr("sid", builder.getI64IntegerAttr(0));
+  op->setAttr("left_padding_count", builder.getI64IntegerAttr(0));
+  op->setAttr("right_padding_count", builder.getI64IntegerAttr(0));
+  op->setAttr("l2_cache_ctl", builder.getI64IntegerAttr(0));
+  op->setAttr("data_select_bit",
+              builder.getBoolAttr(contract.padMode != "none" || contract.padValue ||
+                                  contract.leftPaddingNum || contract.rightPaddingNum));
 }
 
 void attachStoreContractAttrs(Operation *op, const A5VMStoreContract &contract) {
   Builder builder(op->getContext());
-  op->setAttr("src_domain",
-              builder.getStringAttr(stringifyTileDomain(contract.srcDomain)));
-  op->setAttr("dst_layout", builder.getStringAttr(contract.destinationLayout));
-  op->setAttr("dst_shape", asI64ArrayAttr(builder, contract.destinationShape));
-  op->setAttr("dst_strides", asI64ArrayAttr(builder, contract.destinationStrides));
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  normalizeToPTOGlobalShapeAndStride(contract.destinationShape,
+                                     contract.destinationStrides, globalShape,
+                                     globalStride);
+  op->setAttr("g_shape", asI64ArrayAttr(builder, globalShape));
+  op->setAttr("g_strides", asI64ArrayAttr(builder, globalStride));
   op->setAttr("valid_rows", builder.getI64IntegerAttr(contract.validRows));
   op->setAttr("valid_cols", builder.getI64IntegerAttr(contract.validCols));
-  attachTraceAttrs(op, contract.trace, builder);
+  op->setAttr("sid", builder.getI64IntegerAttr(0));
+  op->setAttr("reserved", builder.getI64IntegerAttr(0));
 }
 
 LogicalResult lowerUnsupportedAccStore(Location loc) {
@@ -609,101 +647,98 @@ LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
     return failure();
 
   Operation *loopOp = loop.getOperation();
-  loopOp->setAttr(contract.sourceAttr, rewriter.getUnitAttr());
   loopOp->setAttr(contract.loweredAttr, rewriter.getUnitAttr());
-  loopOp->setAttr("a5vm.scope", rewriter.getStringAttr(kVecScopeName));
-  loopOp->setAttr("a5vm.loop_scope_depth",
-                  rewriter.getI64IntegerAttr(contract.loopDepth));
   return success();
 }
 
 void set_loop2_stride_outtoub(Operation *copyOp, int64_t dstStride,
                               int64_t srcStride, Builder &builder) {
   copyOp->setAttr("a5vm.set_loop2_stride_outtoub",
-                  makeStrideAttr(builder, dstStride, srcStride, "dst_stride",
-                                 "src_stride"));
+                  builder.getI64IntegerAttr(
+                      packLoopStrideConfig(dstStride, srcStride)));
 }
 
 void set_loop1_stride_outtoub(Operation *copyOp, int64_t dstStride,
                               int64_t srcStride, Builder &builder) {
   copyOp->setAttr("a5vm.set_loop1_stride_outtoub",
-                  makeStrideAttr(builder, dstStride, srcStride, "dst_stride",
-                                 "src_stride"));
+                  builder.getI64IntegerAttr(
+                      packLoopStrideConfig(dstStride, srcStride)));
 }
 
 void set_loop_size_outtoub(Operation *copyOp, int64_t loop2, int64_t loop1,
                            Builder &builder) {
   copyOp->setAttr("a5vm.set_loop_size_outtoub",
-                  builder.getDictionaryAttr(
-                      {builder.getNamedAttr("loop2",
-                                            builder.getI64IntegerAttr(loop2)),
-                       builder.getNamedAttr("loop1",
-                                            builder.getI64IntegerAttr(loop1))}));
+                  builder.getI64IntegerAttr(packLoopSizeConfig(loop2, loop1)));
 }
 
 void set_loop2_stride_ubtoout(Operation *copyOp, int64_t srcStride,
                               int64_t dstStride, Builder &builder) {
   copyOp->setAttr("a5vm.set_loop2_stride_ubtoout",
-                  makeStrideAttr(builder, srcStride, dstStride, "src_stride",
-                                 "dst_stride"));
+                  builder.getI64IntegerAttr(
+                      packLoopStrideConfig(srcStride, dstStride)));
 }
 
 void set_loop1_stride_ubtoout(Operation *copyOp, int64_t srcStride,
                               int64_t dstStride, Builder &builder) {
   copyOp->setAttr("a5vm.set_loop1_stride_ubtoout",
-                  makeStrideAttr(builder, srcStride, dstStride, "src_stride",
-                                 "dst_stride"));
+                  builder.getI64IntegerAttr(
+                      packLoopStrideConfig(srcStride, dstStride)));
 }
 
 void set_loop_size_ubtoout(Operation *copyOp, int64_t loop2, int64_t loop1,
                            Builder &builder) {
   copyOp->setAttr("a5vm.set_loop_size_ubtoout",
-                  builder.getDictionaryAttr(
-                      {builder.getNamedAttr("loop2",
-                                            builder.getI64IntegerAttr(loop2)),
-                       builder.getNamedAttr("loop1",
-                                            builder.getI64IntegerAttr(loop1))}));
+                  builder.getI64IntegerAttr(packLoopSizeConfig(loop2, loop1)));
 }
 
 LogicalResult programCopyGmToUbLoops(Operation *copyOp,
                                      const A5VMLoadContract &contract,
                                      Builder &builder) {
-  int64_t loop2 = defaultTransferExtent(contract.validRows);
-  int64_t loop1 = defaultTransferExtent(contract.validCols);
-  int64_t dstLoop2Stride =
-      deriveTileLoop2Stride(contract.tileLayout, contract.validRows,
-                            contract.validCols);
-  int64_t dstLoop1Stride =
-      deriveTileLoop1Stride(contract.tileLayout, contract.validRows,
-                            contract.validCols);
-  int64_t srcLoop2Stride =
-      deriveTransferStride(contract.sourceStrides, loop1, 0);
-  int64_t srcLoop1Stride =
-      deriveTransferStride(contract.sourceStrides, 1, 1);
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  int64_t nBurst = 0, lenBurst = 0, gmStrideBytes = 0, ubStrideBytes = 0;
+  int64_t loop1Size = 0, loop2Size = 0;
+  int64_t loop1DstStrideBytes = 0, loop1SrcStrideBytes = 0;
+  int64_t loop2DstStrideBytes = 0, loop2SrcStrideBytes = 0;
+  if (failed(deriveVecNDTransferConfig(contract.sourceShape, contract.sourceStrides,
+                                       contract.tileLayout, contract.elementType,
+                                       contract.validRows, contract.validCols,
+                                       globalShape, globalStride, nBurst, lenBurst,
+                                       gmStrideBytes, ubStrideBytes, loop1Size,
+                                       loop2Size, loop1DstStrideBytes,
+                                       loop1SrcStrideBytes, loop2DstStrideBytes,
+                                       loop2SrcStrideBytes)))
+    return failure();
 
-  set_loop2_stride_outtoub(copyOp, dstLoop2Stride, srcLoop2Stride, builder);
-  set_loop1_stride_outtoub(copyOp, dstLoop1Stride, srcLoop1Stride, builder);
-  set_loop_size_outtoub(copyOp, loop2, loop1, builder);
+  set_loop2_stride_outtoub(copyOp, loop2DstStrideBytes, loop2SrcStrideBytes, builder);
+  set_loop1_stride_outtoub(copyOp, loop1DstStrideBytes, loop1SrcStrideBytes, builder);
+  set_loop_size_outtoub(copyOp, loop2Size, loop1Size, builder);
   return success();
 }
 
 LogicalResult programCopyUbToGmLoops(Operation *copyOp,
                                      const A5VMStoreContract &contract,
                                      Builder &builder) {
-  int64_t loop2 = defaultTransferExtent(contract.validRows);
-  int64_t loop1 = defaultTransferExtent(contract.validCols);
-  int64_t srcLoop2Stride = deriveTileLoop2Stride("row_major", contract.validRows,
-                                                 contract.validCols);
-  int64_t srcLoop1Stride = deriveTileLoop1Stride("row_major", contract.validRows,
-                                                 contract.validCols);
-  int64_t dstLoop2Stride =
-      deriveTransferStride(contract.destinationStrides, loop1, 0);
-  int64_t dstLoop1Stride =
-      deriveTransferStride(contract.destinationStrides, 1, 1);
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  int64_t nBurst = 0, lenBurst = 0, burstDstStrideBytes = 0, burstSrcStrideBytes = 0;
+  int64_t loop1Size = 0, loop2Size = 0;
+  int64_t loop1SrcStrideBytes = 0, loop1DstStrideBytes = 0;
+  int64_t loop2SrcStrideBytes = 0, loop2DstStrideBytes = 0;
+  if (failed(deriveVecNDTransferConfig(contract.destinationShape,
+                                       contract.destinationStrides,
+                                       "row_major", contract.elementType,
+                                       contract.validRows, contract.validCols,
+                                       globalShape, globalStride, nBurst, lenBurst,
+                                       burstDstStrideBytes, burstSrcStrideBytes,
+                                       loop1Size, loop2Size, loop1SrcStrideBytes,
+                                       loop1DstStrideBytes, loop2SrcStrideBytes,
+                                       loop2DstStrideBytes)))
+    return failure();
 
-  set_loop_size_ubtoout(copyOp, loop2, loop1, builder);
-  set_loop1_stride_ubtoout(copyOp, srcLoop1Stride, dstLoop1Stride, builder);
-  set_loop2_stride_ubtoout(copyOp, srcLoop2Stride, dstLoop2Stride, builder);
+  set_loop_size_ubtoout(copyOp, loop2Size, loop1Size, builder);
+  set_loop1_stride_ubtoout(copyOp, loop1SrcStrideBytes, loop1DstStrideBytes, builder);
+  set_loop2_stride_ubtoout(copyOp, loop2SrcStrideBytes, loop2DstStrideBytes, builder);
   return success();
 }
 
@@ -740,23 +775,20 @@ LogicalResult buildUnaryVecScope(StringRef family,
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
     return emitError(loc) << "failed to attach AIV loop scope metadata";
-  attachUnaryContractAttrs(aivScopeLoop, contract);
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
   auto chunkLoop =
       rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
-  attachUnaryContractAttrs(chunkLoop, contract);
 
   OpBuilder::InsertionGuard chunkGuard(rewriter);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
   auto vlds = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, offset);
   auto vabs = rewriter.create<a5vm::VabsOp>(loc, vecType, vlds.getResult());
-  attachUnaryContractAttrs(vabs, contract);
   (void)family;
   rewriter.create<a5vm::VstsOp>(loc, vabs.getResult(), dstBuffer, offset,
-                                rewriter.getStringAttr(kVecScopeName));
+                                StringAttr());
 
   return success();
 }
@@ -779,13 +811,21 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
   if (!sourceBuffer || !destinationBuffer)
     return op.emitOpError("requires A5-compatible source and destination buffers");
 
-  int64_t burstCount = defaultTransferExtent(contract.validRows);
-  int64_t burstLen = defaultTransferExtent(contract.validCols);
-  int64_t gmStride =
-      deriveTransferStride(contract.sourceStrides, burstLen, 0);
-  int64_t ubStride =
-      deriveTileLoop2Stride(contract.tileLayout, contract.validRows,
-                            contract.validCols);
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  int64_t burstCount = 0, burstLen = 0, gmStride = 0, ubStride = 0;
+  int64_t loop1Size = 0, loop2Size = 0;
+  int64_t loop1DstStrideBytes = 0, loop1SrcStrideBytes = 0;
+  int64_t loop2DstStrideBytes = 0, loop2SrcStrideBytes = 0;
+  if (failed(deriveVecNDTransferConfig(contract.sourceShape, contract.sourceStrides,
+                                       contract.tileLayout, contract.elementType,
+                                       contract.validRows, contract.validCols,
+                                       globalShape, globalStride, burstCount,
+                                       burstLen, gmStride, ubStride, loop1Size,
+                                       loop2Size, loop1DstStrideBytes,
+                                       loop1SrcStrideBytes, loop2DstStrideBytes,
+                                       loop2SrcStrideBytes)))
+    return op.emitOpError("requires PTO-compatible vec ND2ND copy_gm_to_ubuf arguments");
   bool ubPad = contract.padMode != "none" || contract.padValue ||
                contract.leftPaddingNum || contract.rightPaddingNum;
 
@@ -794,8 +834,13 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
       rewriter.getStringAttr(contract.sourceLayout),
       rewriter.getI64IntegerAttr(contract.validRows),
       rewriter.getI64IntegerAttr(contract.validCols),
+      rewriter.getI64IntegerAttr(0),
       rewriter.getI64IntegerAttr(burstCount),
       rewriter.getI64IntegerAttr(burstLen),
+      rewriter.getI64IntegerAttr(0),
+      rewriter.getI64IntegerAttr(0),
+      rewriter.getBoolAttr(ubPad),
+      rewriter.getI64IntegerAttr(0),
       rewriter.getI64IntegerAttr(gmStride),
       rewriter.getI64IntegerAttr(ubStride),
       rewriter.getBoolAttr(ubPad));
@@ -865,22 +910,33 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
   if (!sourceBuffer || !destinationBuffer)
     return op.emitOpError("requires A5-compatible source and destination buffers");
 
-  int64_t burstCount = defaultTransferExtent(contract.validRows);
-  int64_t burstLen = defaultTransferExtent(contract.validCols);
-  int64_t gmStride =
-      deriveTransferStride(contract.destinationStrides, burstLen, 0);
-  int64_t ubStride = deriveTileLoop2Stride("row_major", contract.validRows,
-                                           contract.validCols);
+  SmallVector<int64_t> globalShape;
+  SmallVector<int64_t> globalStride;
+  int64_t burstCount = 0, burstLen = 0, gmStride = 0, ubStride = 0;
+  int64_t loop1Size = 0, loop2Size = 0;
+  int64_t loop1SrcStrideBytes = 0, loop1DstStrideBytes = 0;
+  int64_t loop2SrcStrideBytes = 0, loop2DstStrideBytes = 0;
+  if (failed(deriveVecNDTransferConfig(contract.destinationShape,
+                                       contract.destinationStrides, "row_major",
+                                       contract.elementType, contract.validRows,
+                                       contract.validCols, globalShape,
+                                       globalStride, burstCount, burstLen,
+                                       gmStride, ubStride, loop1Size, loop2Size,
+                                       loop1SrcStrideBytes, loop1DstStrideBytes,
+                                       loop2SrcStrideBytes, loop2DstStrideBytes)))
+    return op.emitOpError("requires PTO-compatible vec ND2ND copy_ubuf_to_gm arguments");
 
   auto copyOp = rewriter.create<a5vm::CopyUbufToGmOp>(
       op.getLoc(), sourceBuffer, destinationBuffer,
       rewriter.getStringAttr(contract.destinationLayout),
       rewriter.getI64IntegerAttr(contract.validRows),
       rewriter.getI64IntegerAttr(contract.validCols),
+      rewriter.getI64IntegerAttr(0),
       rewriter.getI64IntegerAttr(burstCount),
       rewriter.getI64IntegerAttr(burstLen),
+      rewriter.getI64IntegerAttr(0),
       rewriter.getI64IntegerAttr(gmStride),
-      rewriter.getI64IntegerAttr(ubStride), rewriter.getBoolAttr(false));
+      rewriter.getI64IntegerAttr(ubStride));
   attachStoreContractAttrs(copyOp, contract);
   if (failed(programCopyUbToGmLoops(copyOp, contract, rewriter)))
     return failure();

@@ -2,22 +2,23 @@
 
 // CHECK-LABEL: func.func @tstore_copy_family_shape
 // CHECK: a5vm.set_loop_size_ubtoout
-// CHECK-SAME: loop2 = 32
-// CHECK-SAME: loop1 = 32
+// CHECK-SAME: 2097153
 // CHECK: a5vm.set_loop1_stride_ubtoout
-// CHECK-SAME: src_stride = 1
-// CHECK-SAME: dst_stride = 1
+// CHECK-SAME: 4503599627374592
 // CHECK: a5vm.set_loop2_stride_ubtoout
-// CHECK-SAME: src_stride = 32
-// CHECK-SAME: dst_stride = 32
+// CHECK-SAME: 4503599627374592
 // CHECK: a5vm.copy_ubuf_to_gm
 // CHECK-SAME: layout = "nd"
 // CHECK-SAME: valid_rows = 32
 // CHECK-SAME: valid_cols = 32
-// CHECK-SAME: burst_count = 32
-// CHECK-SAME: burst_len = 32
-// CHECK-SAME: gm_stride = 32
-// CHECK-SAME: ub_stride = 32
+// CHECK-SAME: sid = 0
+// CHECK-SAME: n_burst = 32
+// CHECK-SAME: len_burst = 128
+// CHECK-SAME: reserved = 0
+// CHECK-SAME: burst_dst_stride = 128
+// CHECK-SAME: burst_src_stride = 128
+// CHECK-SAME: g_shape = [1, 1, 1, 32, 32]
+// CHECK-SAME: g_strides = [1024, 1024, 1024, 32, 1]
 // CHECK-SAME: dst_strides = [32, 1]
 // CHECK-SAME: trace_offsets = [0, 0]
 // CHECK-SAME: trace_sizes = [32, 32]

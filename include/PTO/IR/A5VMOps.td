@@ -29,8 +29,13 @@ def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
     OptionalAttr<StrAttr>:$layout,
     OptionalAttr<I64Attr>:$valid_rows,
     OptionalAttr<I64Attr>:$valid_cols,
-    OptionalAttr<I64Attr>:$burst_count,
-    OptionalAttr<I64Attr>:$burst_len,
+    OptionalAttr<I64Attr>:$sid,
+    OptionalAttr<I64Attr>:$n_burst,
+    OptionalAttr<I64Attr>:$len_burst,
+    OptionalAttr<I64Attr>:$left_padding_count,
+    OptionalAttr<I64Attr>:$right_padding_count,
+    OptionalAttr<BoolAttr>:$data_select_bit,
+    OptionalAttr<I64Attr>:$l2_cache_ctl,
     OptionalAttr<I64Attr>:$gm_stride,
     OptionalAttr<I64Attr>:$ub_stride,
     OptionalAttr<BoolAttr>:$ub_pad
@@ -101,11 +106,12 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
     OptionalAttr<StrAttr>:$layout,
     OptionalAttr<I64Attr>:$valid_rows,
     OptionalAttr<I64Attr>:$valid_cols,
-    OptionalAttr<I64Attr>:$burst_count,
-    OptionalAttr<I64Attr>:$burst_len,
-    OptionalAttr<I64Attr>:$gm_stride,
-    OptionalAttr<I64Attr>:$ub_stride,
-    OptionalAttr<BoolAttr>:$ub_pad
+    OptionalAttr<I64Attr>:$sid,
+    OptionalAttr<I64Attr>:$n_burst,
+    OptionalAttr<I64Attr>:$len_burst,
+    OptionalAttr<I64Attr>:$reserved,
+    OptionalAttr<I64Attr>:$burst_dst_stride,
+    OptionalAttr<I64Attr>:$burst_src_stride
   );
 
   let results = (outs);

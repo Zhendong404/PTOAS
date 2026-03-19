@@ -6,8 +6,10 @@
 // CHECK: a5vm.vlds
 // CHECK: a5vm.vabs
 // CHECK: a5vm.vsts
-// CHECK: } {a5vm.scope = "__VEC_SCOPE__", cce_aiv_loop_hint, llvm.loop.aivector_scope
-// CHECK: } {a5vm.loop_scope_depth = 0 : i64, a5vm.scope = "__VEC_SCOPE__", cce_aiv_loop_hint, llvm.loop.aivector_scope
+// CHECK-NOT: a5vm.scope = "__VEC_SCOPE__"
+// CHECK-NOT: dist = "__VEC_SCOPE__"
+// CHECK: } {
+// CHECK-NEXT: } {llvm.loop.aivector_scope}
 // CHECK-NOT: emitc.call_opaque "TABS"
 
 module {
@@ -21,6 +23,6 @@ module {
 }
 
 // The chosen lowered loop carries explicit AIV vec-scope semantics through
-// cce_aiv_loop_hint before lowering and llvm.loop.aivector_scope after lowering.
+// llvm.loop.aivector_scope on the carrier loop.
 // This contract therefore locks both loop ownership and the ordered
 // a5vm.vlds -> a5vm.vabs -> a5vm.vsts vector primitive sequence.

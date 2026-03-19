@@ -91,15 +91,53 @@ static MemoryRole classifyMemoryRole(Type type) {
 static bool isMemRefLike(Type type) { return isa<BaseMemRefType>(type); }
 
 template <typename CopyOp>
-static LogicalResult verifyCopyOp(CopyOp op, bool expectSourceGM) {
+static LogicalResult verifyCopyGmToUbufOp(CopyOp op, bool expectSourceGM) {
   if (!isMemRefLike(op.getSource().getType()) ||
       !isMemRefLike(op.getDestination().getType()))
     return op.emitOpError("requires memref source and destination");
 
   bool hasAllMetadata = op.getLayoutAttr() && op.getValidRowsAttr() &&
-                        op.getValidColsAttr() && op.getBurstCountAttr() &&
-                        op.getBurstLenAttr() && op.getGmStrideAttr() &&
-                        op.getUbStrideAttr() && op.getUbPadAttr();
+                        op.getValidColsAttr() && op.getSidAttr() &&
+                        op.getNBurstAttr() && op.getLenBurstAttr() &&
+                        op.getLeftPaddingCountAttr() &&
+                        op.getRightPaddingCountAttr() &&
+                        op.getDataSelectBitAttr() && op.getL2CacheCtlAttr() &&
+                        op.getGmStrideAttr() && op.getUbStrideAttr() &&
+                        op.getUbPadAttr();
+
+  MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
+  MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
+  bool directionMatches = true;
+  if (expectSourceGM) {
+    directionMatches &= sourceRole != MemoryRole::UB;
+    directionMatches &= destinationRole != MemoryRole::GM;
+  } else {
+    directionMatches &= sourceRole != MemoryRole::GM;
+    directionMatches &= destinationRole != MemoryRole::UB;
+  }
+
+  if (!hasAllMetadata || !directionMatches) {
+    return op.emitOpError()
+           << "requires "
+           << (expectSourceGM ? "GM source, UB destination"
+                              : "UB source, GM destination")
+           << ", and complete transfer metadata";
+  }
+
+  return success();
+}
+
+template <typename CopyOp>
+static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
+  if (!isMemRefLike(op.getSource().getType()) ||
+      !isMemRefLike(op.getDestination().getType()))
+    return op.emitOpError("requires memref source and destination");
+
+  bool hasAllMetadata =
+      op.getLayoutAttr() && op.getValidRowsAttr() && op.getValidColsAttr() &&
+      op.getSidAttr() && op.getNBurstAttr() && op.getLenBurstAttr() &&
+      op.getReservedAttr() && op.getBurstDstStrideAttr() &&
+      op.getBurstSrcStrideAttr();
 
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
   MemoryRole destinationRole = classifyMemoryRole(op.getDestination().getType());
@@ -200,7 +238,9 @@ void CopyGmToUbufOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
-LogicalResult CopyGmToUbufOp::verify() { return verifyCopyOp(*this, true); }
+LogicalResult CopyGmToUbufOp::verify() {
+  return verifyCopyGmToUbufOp(*this, true);
+}
 
 void VldsOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
@@ -260,7 +300,9 @@ void CopyUbufToGmOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
-LogicalResult CopyUbufToGmOp::verify() { return verifyCopyOp(*this, false); }
+LogicalResult CopyUbufToGmOp::verify() {
+  return verifyCopyUbufToGmOp(*this, false);
+}
 
 #define GET_OP_CLASSES
 #include "PTO/IR/A5VMOps.cpp.inc"
