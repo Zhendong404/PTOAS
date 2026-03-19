@@ -38,6 +38,18 @@ struct A5VMLoopProgramming {
   int64_t dstLoop1Stride = 1;
 };
 
+enum class A5VMLoopScopeKind {
+  None,
+  AIVVectorScope,
+};
+
+struct A5VMLoopScopeContract {
+  A5VMLoopScopeKind kind = A5VMLoopScopeKind::None;
+  StringRef sourceAttr = "cce_aiv_loop_hint";
+  StringRef loweredAttr = "llvm.loop.aivector_scope";
+  int64_t loopDepth = 0;
+};
+
 struct A5VMLoadContract {
   StringRef sourceLayout;
   SmallVector<int64_t> sourceShape;
@@ -62,6 +74,7 @@ struct A5VMUnaryContract {
   int64_t validRows = ShapedType::kDynamic;
   int64_t validCols = ShapedType::kDynamic;
   Type elementType;
+  A5VMLoopScopeContract loopScope;
 };
 
 struct A5VMStoreContract {
@@ -86,6 +99,9 @@ void set_loop1_stride_ubtoout(Operation *copyOp, int64_t srcStride,
                               int64_t dstStride, Builder &builder);
 void set_loop_size_ubtoout(Operation *copyOp, int64_t loop2, int64_t loop1,
                            Builder &builder);
+LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
+                                      const A5VMLoopScopeContract &contract,
+                                      PatternRewriter &rewriter);
 
 LogicalResult programCopyGmToUbLoops(Operation *copyOp,
                                      const A5VMLoadContract &contract,
