@@ -6,8 +6,8 @@ current_phase: 2
 current_phase_name: PTO Lowering
 current_plan: 3
 status: verifying
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-03-19T01:16:42.526Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-19T02:41:31.347Z"
 last_activity: 2026-03-19
 progress:
   total_phases: 4
@@ -124,6 +124,7 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 | Phase 01-a5vm-foundation P02 | 25min | 2 tasks | 8 files |
 | Phase 02-pto-lowering P02 | 24min | 2 tasks | 5 files |
 | Phase 02-pto-lowering P03 | 12min | 2 tasks | 2 files |
+| Phase 02-pto-lowering P01 | 8min | 2 tasks | 3 files |
 
 ## Decisions Made
 
@@ -148,6 +149,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 - [Phase 02]: Build unary Abs lowering as structural SCF vec-scope loops around vlds, vabs, and vsts, and register SCF in the pass dependency list.
 - [Phase 02-pto-lowering]: Use partial conversion so helper lowering failures surface as pass failures instead of being silently skipped.
 - [Phase 02-pto-lowering]: Factor shared pre-backend passes into a helper so the A5VM branch stays structurally separate from EmitC.
+- [Phase 02-pto-lowering]: Expose AIV vec-scope ownership as an explicit unary lowering contract instead of implying it from plain scf.for nesting.
+- [Phase 02-pto-lowering]: Enforce the corrected vec-scope semantics in the Phase 2 runner so stale pseudo-op checks and bare loop-only fixtures fail fast.
 
 ## Blockers
 
@@ -155,8 +158,8 @@ See: `.planning/PROJECT.md` (updated 2026-03-18)
 
 ## Session
 
-**Last Date:** 2026-03-19T01:16:16.809Z
-**Stopped At:** Completed 02-03-PLAN.md
+**Last Date:** 2026-03-19T02:41:31.344Z
+**Stopped At:** Completed 02-01-PLAN.md
 **Resume File:** None
 
 ---
