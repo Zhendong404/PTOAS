@@ -144,6 +144,11 @@ static llvm::cl::opt<bool> a5vmPrintIR(
     llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> dumpA5VMIR(
+    "dump-a5vm-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> ptoPrintSeamIR(
     "pto-print-seam-ir",
     llvm::cl::desc("Print shared pre-backend seam IR to stderr"),
@@ -160,6 +165,11 @@ static llvm::cl::opt<bool> a5vmPrintIntrinsics(
     llvm::cl::desc("Print A5VM intrinsic selection decisions to stderr"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> a5vmEmitHIVMText(
+    "a5vm-emit-hivm-text",
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw A5VM IR"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> a5vmAllowUnresolved(
     "a5vm-allow-unresolved",
     llvm::cl::desc("Emit explicit unresolved A5VM comments instead of failing"),
@@ -168,6 +178,12 @@ static llvm::cl::opt<bool> a5vmAllowUnresolved(
 static llvm::cl::opt<std::string> a5vmUnresolvedReport(
     "a5vm-unresolved-report",
     llvm::cl::desc("Write unresolved A5VM mappings to a sidecar report"),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> hivmUnresolvedReport(
+    "hivm-unresolved-report",
+    llvm::cl::desc("Write unresolved HIVM mappings to a sidecar report"),
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
@@ -1005,16 +1021,25 @@ int main(int argc, char **argv) {
   }
 
   if (effectiveBackend == PTOBackend::A5VM) {
-    if (a5vmPrintIR) {
+    if (a5vmPrintIR || dumpA5VMIR) {
       printA5VMIROpSummary(*module, llvm::errs());
       module->print(llvm::errs());
       llvm::errs() << "\n";
     }
 
+    if (!a5vmEmitHIVMText) {
+      module->print(outputFile.os());
+      outputFile.os() << "\n";
+      outputFile.keep();
+      return 0;
+    }
+
     pto::A5VMEmissionOptions options;
+    options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
     options.printIntrinsicSelections = a5vmPrintIntrinsics;
     options.allowUnresolved = a5vmAllowUnresolved;
-    options.unresolvedReportPath = a5vmUnresolvedReport;
+    options.unresolvedReportPath =
+        !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : a5vmUnresolvedReport;
 
     if (failed(pto::translateA5VMModuleToText(*module, outputFile.os(), options,
                                               llvm::errs()))) {

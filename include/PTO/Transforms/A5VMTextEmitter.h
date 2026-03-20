@@ -9,10 +9,9 @@
 namespace mlir::pto {
 
 struct A5VMEmissionOptions {
-  // Phase 1 keeps the A5VM seam at raw backend-text granularity, so intrinsic
-  // selection tracing is intentionally unused until the later HIVM-emission work.
+  bool dumpA5VMIR = false;
   bool printIntrinsicSelections = false;
-  bool allowUnresolved = false;
+  bool allowUnresolved = true;
   std::string unresolvedReportPath;
 };
 

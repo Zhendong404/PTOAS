@@ -208,7 +208,7 @@ FILLPAD_CPP="${FILLPAD_OUT}/Fillpad/fillpad-pto.cpp"
 FILLPAD_EXPAND_CPP="${FILLPAD_OUT}/Fillpad/fillpad_expand-pto.cpp"
 [[ -f "${FILLPAD_CPP}" ]] || { echo "error: missing ${FILLPAD_CPP}" >&2; exit 1; }
 [[ -f "${FILLPAD_EXPAND_CPP}" ]] || { echo "error: missing ${FILLPAD_EXPAND_CPP}" >&2; exit 1; }
-require_pattern 'a5vm\.vsts_pred' "${FILLPAD_CPP}" \
+require_pattern 'a5vm\.vsts' "${FILLPAD_CPP}" \
   "Fillpad output lost predicated valid-copy store lowering"
 if rg -n 'pto\.tfillpad' "${FILLPAD_CPP}" >/dev/null; then
   echo "error: Fillpad output still contains pto.tfillpad" >&2
@@ -216,7 +216,7 @@ if rg -n 'pto\.tfillpad' "${FILLPAD_CPP}" >/dev/null; then
 fi
 require_pattern 'a5vm\.vdup' "${FILLPAD_EXPAND_CPP}" \
   "Fillpad expand output lost pad-vector materialization"
-require_pattern 'a5vm\.vsts_pred' "${FILLPAD_EXPAND_CPP}" \
+require_pattern 'a5vm\.vsts' "${FILLPAD_EXPAND_CPP}" \
   "Fillpad expand output lost predicated fillpad store lowering"
 if rg -n 'pto\.tfillpad_expand' "${FILLPAD_EXPAND_CPP}" >/dev/null; then
   echo "error: Fillpad expand output still contains pto.tfillpad_expand" >&2
@@ -419,7 +419,7 @@ require_pattern 'a5vm\.punpack' "${SEL_CPP}" \
   "Sel output lost predicate-unpack lowering"
 require_pattern 'a5vm\.vsel' "${SEL_CPP}" \
   "Sel output lost vector select lowering"
-require_pattern 'a5vm\.vsts_pred' "${SEL_CPP}" \
+require_pattern 'a5vm\.vsts' "${SEL_CPP}" \
   "Sel output lost predicated vector store lowering"
 if rg -n 'pto\.tsel' "${SEL_CPP}" >/dev/null; then
   echo "error: Sel output still contains pto.tsel" >&2
@@ -429,7 +429,7 @@ require_pattern 'a5vm\.pset_b16' "${SEL_HEAD_CPP}" \
   "Sel head output lost full-mask materialization lowering"
 require_pattern 'a5vm\.pintlv_b16' "${SEL_HEAD_CPP}" \
   "Sel head output lost predicate interleave lowering"
-require_pattern 'a5vm\.vsts_pred' "${SEL_HEAD_CPP}" \
+require_pattern 'a5vm\.vsts' "${SEL_HEAD_CPP}" \
   "Sel head output lost predicated vector store lowering"
 if rg -n 'pto\.tsel' "${SEL_HEAD_CPP}" >/dev/null; then
   echo "error: Sel head output still contains pto.tsel" >&2
@@ -469,7 +469,7 @@ DYNAMIC_VALID_OUT="${SYNC_OUT}/Sync/test_dynamic_valid_shape-pto.cpp"
 [[ -f "${DYNAMIC_VALID_OUT}" ]] || { echo "error: missing ${DYNAMIC_VALID_OUT}" >&2; exit 1; }
 require_pattern 'a5vm\.vrelu' "${DYNAMIC_VALID_OUT}" \
   "dynamic valid-shape sample lost relu lowering"
-require_pattern 'a5vm\.vsts_pred' "${DYNAMIC_VALID_OUT}" \
+require_pattern 'a5vm\.vsts' "${DYNAMIC_VALID_OUT}" \
   "dynamic valid-shape sample lost tail-aware store lowering"
 require_pattern 'llvm\.loop\.aivector_scope' "${DYNAMIC_VALID_OUT}" \
   "dynamic valid-shape sample lost vec-scope loop carrier"
@@ -700,7 +700,7 @@ require_pattern 'a5vm\.vadd' "${PARSER_ONLINE_UPDATE_CPP}" \
   "PyPTOIRParser online update output lost TAdd lowering"
 require_pattern 'a5vm\.vdiv' "${PARSER_ONLINE_UPDATE_CPP}" \
   "PyPTOIRParser online update output lost TRowExpandDiv lowering"
-require_pattern 'a5vm\.vsts_pred' "${PARSER_ONLINE_UPDATE_CPP}" \
+require_pattern 'a5vm\.vsts' "${PARSER_ONLINE_UPDATE_CPP}" \
   "PyPTOIRParser online update output lost tail store lowering"
 require_pattern 'llvm\.loop\.aivector_scope' "${PARSER_ONLINE_UPDATE_CPP}" \
   "PyPTOIRParser online update output lost vec-scope loop carrier"

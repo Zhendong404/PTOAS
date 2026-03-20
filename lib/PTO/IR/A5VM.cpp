@@ -693,6 +693,20 @@ LogicalResult PgeB32Op::verify() {
   return success();
 }
 
+template <typename PltOp>
+static LogicalResult verifyPredicateLaneCountOp(PltOp op) {
+  if (failed(verifyMaskTypeLike(op, op.getResult().getType(), "result type")))
+    return failure();
+  Type scalarType = op.getScalar().getType();
+  if (!scalarType.isIndex() && !isa<IntegerType>(scalarType))
+    return op.emitOpError("requires scalar to be index or integer");
+  return success();
+}
+
+LogicalResult PltB8Op::verify() { return verifyPredicateLaneCountOp(*this); }
+LogicalResult PltB16Op::verify() { return verifyPredicateLaneCountOp(*this); }
+LogicalResult PltB32Op::verify() { return verifyPredicateLaneCountOp(*this); }
+
 LogicalResult PpackOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getInput().getType(), "input type")) ||
       failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
@@ -853,10 +867,14 @@ LogicalResult VshrsOp::verify() {
 LogicalResult VabsOp::verify() {
   if (failed(verifyVecTypeLike(*this, getInput().getType(), "operand type")))
     return failure();
+  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+    return failure();
   if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("requires matching register vector shape");
+  if (getMode() && !isSupportedPredicateMode(*getMode()))
+    return emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -864,10 +882,14 @@ template <typename UnaryOp>
 static LogicalResult verifyUnaryVecOp(UnaryOp op) {
   if (failed(verifyVecTypeLike(op, op.getInput().getType(), "operand type")))
     return failure();
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
+    return failure();
   if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
   if (op.getInput().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shape");
+  if (op.getMode() && !isSupportedPredicateMode(*op.getMode()))
+    return op.emitOpError("requires supported predicate mode");
   return success();
 }
 
@@ -1172,6 +1194,8 @@ void VstsOp::getEffects(
 LogicalResult VstsOp::verify() {
   if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
     return failure();
+  if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
+    return failure();
 
   if (!isBufferLike(getDestination().getType()))
     return emitOpError("requires a pointer-like destination");
@@ -1254,26 +1278,6 @@ LogicalResult VsldbOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
       failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
     return failure();
-  return success();
-}
-
-void VstsPredOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), &getValueMutable());
-  effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
-}
-
-LogicalResult VstsPredOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
-    return failure();
-  if (!isBufferLike(getDestination().getType()))
-    return emitOpError("requires a pointer-like destination");
-  if (!getActiveLanes().getType().isIndex())
-    return emitOpError("requires index active_lanes");
-  MemoryRole destinationRole = classifyMemoryRole(getDestination().getType());
-  if (destinationRole == MemoryRole::GM)
-    return emitOpError("requires a UB-backed destination");
   return success();
 }
 

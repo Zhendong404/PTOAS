@@ -1,4 +1,5 @@
 add_mlir_dialect_library(PTOTransforms
+  HIVMIntrinsicNaming.cpp
   A5VMTextEmitter.cpp
   PTOToA5VM.cpp
   PTOToA5VMLowering.cpp
