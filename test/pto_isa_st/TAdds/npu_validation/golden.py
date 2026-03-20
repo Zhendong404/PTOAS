@@ -91,9 +91,8 @@ def main():
     buffers = default_buffers(meta)
     out_name = single_output(meta)
     dtype = np.dtype(meta.np_types[out_name])
-    dst_rows, dst_cols = spec["dst"]
     valid_rows, valid_cols = spec["valid"]
-    out = np.zeros((dst_rows, dst_cols), dtype=dtype)
+    out = np.zeros((valid_rows, valid_cols), dtype=dtype)
     generator = _rng(23)
 
     if "scalar" == "binary":

@@ -116,7 +116,6 @@ def _clamp_valid_shape(
         min(valid_shape[1], shape[1]),
     )
 
-
 def _target_arch_for_binary_case(op_name: str, dtype_token: str) -> str | None:
     # Integer binary tdiv is only accepted on the A5 verifier path.
     if op_name == "tdiv" and dtype_token in {"i16", "i32", "u16", "u32"}:
@@ -193,7 +192,7 @@ def build_binary_case(
 
                 src0_view = _make_view(ctx, src0_ptr, elem_ty, shape=src0_shape)
                 src1_view = _make_view(ctx, src1_ptr, elem_ty, shape=src1_shape)
-                dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=dst_shape)
+                dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=valid_shape)
                 src0_dynamic_valid = _needs_dynamic_source_tile(valid_shape, src0_shape)
                 src1_dynamic_valid = _needs_dynamic_source_tile(valid_shape, src1_shape)
 
@@ -265,10 +264,16 @@ def build_binary_case(
                     )
 
                 use_src0 = _subset_if_needed(
-                    src0_tile, src_shape=src0_shape, dst_shape=dst_shape, ctx=ctx
+                    src0_tile,
+                    src_shape=src0_shape,
+                    dst_shape=dst_shape,
+                    ctx=ctx,
                 )
                 use_src1 = _subset_if_needed(
-                    src1_tile, src_shape=src1_shape, dst_shape=dst_shape, ctx=ctx
+                    src1_tile,
+                    src_shape=src1_shape,
+                    dst_shape=dst_shape,
+                    ctx=ctx,
                 )
                 _BINARY_OPS[op_name](use_src0, use_src1, dst_tile)
                 pto.TStoreOp(None, dst_tile, dst_view)
@@ -318,7 +323,7 @@ def build_scalar_case(
                 src_ptr, scalar_ptr, dst_ptr = entry.arguments
 
                 src_view = _make_view(ctx, src_ptr, elem_ty, shape=src_shape)
-                dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=dst_shape)
+                dst_view = _make_view(ctx, dst_ptr, elem_ty, shape=valid_shape)
                 src_dynamic_valid = _needs_dynamic_source_tile(valid_shape, src_shape)
 
                 src_tile = pto.AllocTileOp(
@@ -362,7 +367,10 @@ def build_scalar_case(
                 scalar = pto.load_scalar(elem_ty, scalar_ptr, _idx_const(ctx, 0))
 
                 work_src = _subset_if_needed(
-                    src_tile, src_shape=src_shape, dst_shape=dst_shape, ctx=ctx
+                    src_tile,
+                    src_shape=src_shape,
+                    dst_shape=dst_shape,
+                    ctx=ctx,
                 )
                 _SCALAR_OPS[op_name](work_src, scalar, dst_tile)
                 pto.TStoreOp(None, dst_tile, dst_view)
