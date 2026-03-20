@@ -32,14 +32,70 @@ Updated: 2026-03-20
 
 ## Overview
 
-This section is a placeholder for the external-developer-facing introduction.
+This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a
+compiler-internal and externally facing specification designed to represent
+vector compute kernels within the PTO architecture. Much like NVVM provides a
+robust IR for GPU architectures, VPTO serves as the direct bridge between
+high-level programming models and the underlying hardware ISA, providing a
+precise, low-level representation of vector workloads explicitly designed for
+the Ascend 950 architecture.
 
-- PTO vector ISA background:
-  `TODO(user): explain where VPTO fits in the PTO stack, which layer it models, and why an external developer would read or author this IR directly.`
-- Relationship to CCE:
-  `TODO(user): compare VPTO ops with CCE builtins / wrapper APIs, including what is preserved, renamed, or made explicit in SSA form.`
-- Intended audience and non-goals:
-  `TODO(user): explain what this document expects from external developers and what remains compiler-internal.`
+### PTO Vector ISA Background
+
+#### Position in the Stack and Layer Modeled
+
+VPTO operates as a very low-level intermediate representation within the PTO
+compiler stack. It is uniquely designed to accurately and comprehensively
+express all architectural information of the Ascend 950 hardware. It
+specifically models the bare-metal vector execution layer, making
+hardware-specific capabilities and constraints, such as exact vector lane
+configurations, memory space hierarchies, and hardware-specific fusion
+semantics, fully transparent and controllable.
+
+#### Why External Developers Read or Author VPTO
+
+While the majority of users will interact with the PTO architecture via
+higher-level frameworks, external developers may need to read or author VPTO IR
+directly for several key reasons:
+
+- Custom Toolchain Development:
+  build custom compiler frontends or domain-specific languages (DSLs) that
+  target the Ascend 950 architecture with maximum hardware utilization.
+- Performance Engineering:
+  inspect the output of high-level compiler passes, verify fine-grained
+  optimization behaviors, and pinpoint performance bottlenecks at the
+  architectural level.
+- Micro-Optimization:
+  hand-author highly optimized, critical mathematical kernels using a stable,
+  precise IR when higher-level abstractions cannot achieve the theoretical peak
+  performance of the hardware.
+
+### Relationship to CCE
+
+VPTO is designed to express the full semantic capabilities of the Compute Cube
+Engine (CCE), but with significant structural and pipeline advantages for
+compiler development.
+
+- Bypassing the C/Clang Pipeline:
+  while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates
+  entirely independently of the C language frontend. By bypassing Clang AST
+  generation and frontend processing, utilizing VPTO significantly reduces
+  overall compilation time and memory overhead.
+- Enhanced IR Verification:
+  because VPTO is a strongly typed, SSA-based (Static Single Assignment)
+  compiler IR rather than a C-wrapper API, it provides a much more rigorous and
+  detailed IR verification process. Structural inconsistencies, invalid memory
+  access patterns, and operand type mismatches are caught immediately with
+  precise, explicit diagnostic feedback, providing developers with much higher
+  visibility into kernel correctness than traditional CCE error reporting.
+
+### Intended Audience
+
+This document is written for compiler engineers, library writers, and advanced
+performance architects. We expect the reader to have a working understanding of
+modern compiler infrastructure, specifically MLIR, the principles of Static
+Single Assignment (SSA) form, and a deep understanding of the vector-processing
+capabilities of the Ascend 950 architecture.
 
 ## Getting Started
 
