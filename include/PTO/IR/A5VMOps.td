@@ -266,6 +266,36 @@ def A5VM_PsetB16Op : A5VM_Op<"pset_b16", [Pure]> {
   }];
 }
 
+// NOTE: The op families introduced below are intentionally marked as
+// unvalidated scaffolding. They are added to preserve missing CCE builtin
+// semantics at the dialect layer, but they have not yet been validated through
+// PTO lowering or end-to-end sample execution.
+def A5VM_PsetB32Op : A5VM_Op<"pset_b32", [Pure]> {
+  let arguments = (ins StrAttr:$pattern);
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $pattern attr-dict `:` type($result)
+  }];
+}
+
+class A5VM_PgeOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
+  let arguments = (ins StrAttr:$pattern);
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $pattern attr-dict `:` type($result)
+  }];
+}
+
+def A5VM_PgeB8Op : A5VM_PgeOp<"pge_b8">;
+def A5VM_PgeB16Op : A5VM_PgeOp<"pge_b16">;
+def A5VM_PgeB32Op : A5VM_PgeOp<"pge_b32">;
+
 class A5VM_MaskUnaryOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
   let arguments = (ins A5VM_MaskTypeConstraint:$input);
   let results = (outs A5VM_MaskTypeConstraint:$result);
@@ -291,6 +321,35 @@ def A5VM_PunpackOp : A5VM_MaskUnaryOp<"punpack"> {
   }];
 }
 
+def A5VM_PnotOp : A5VM_Op<"pnot", [Pure]> {
+  let arguments = (ins
+    A5VM_MaskTypeConstraint:$input,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $input `,` $mask attr-dict `:` type($input) `,` type($mask) `->` type($result)
+  }];
+}
+
+def A5VM_PselOp : A5VM_Op<"psel", [Pure]> {
+  let arguments = (ins
+    A5VM_MaskTypeConstraint:$src0,
+    A5VM_MaskTypeConstraint:$src1,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src0 `,` $src1 `,` $mask attr-dict `:` type($src0) `,` type($src1) `,` type($mask) `->` type($result)
+  }];
+}
+
 def A5VM_PldsOp : A5VM_Op<"plds", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
@@ -305,6 +364,78 @@ def A5VM_PldsOp : A5VM_Op<"plds", [
 
   let assemblyFormat = [{
     $source `[` $offset `]` attr-dict `:` type($source) `->` type($result)
+  }];
+}
+
+// NOTE: Unvalidated predicate load/store-family abstractions. Added to cover
+// direct CCE predicate memory builtins not yet end-to-end exercised.
+def A5VM_PldOp : A5VM_Op<"pld", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    Index:$offset,
+    StrAttr:$dist
+  );
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $offset `]` `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($result)
+  }];
+}
+
+def A5VM_PldiOp : A5VM_Op<"pldi", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    I32:$offset,
+    StrAttr:$dist
+  );
+  let results = (outs A5VM_MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `,` $offset `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($result)
+  }];
+}
+
+def A5VM_PstOp : A5VM_Op<"pst", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_MaskTypeConstraint:$value,
+    A5VM_BufferType:$destination,
+    Index:$offset,
+    StrAttr:$dist
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `[` $offset `]` `,` $dist attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+  }];
+}
+
+def A5VM_PstiOp : A5VM_Op<"psti", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_MaskTypeConstraint:$value,
+    A5VM_BufferType:$destination,
+    I32:$offset,
+    StrAttr:$dist
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `,` $offset `,` $dist attr-dict `:` type($value) `,` type($destination) `,` type($offset)
   }];
 }
 
@@ -363,6 +494,86 @@ def A5VM_VminOp : A5VM_BinaryVecOp<"vmin">;
 def A5VM_VandOp : A5VM_BinaryVecOp<"vand">;
 def A5VM_VorOp : A5VM_BinaryVecOp<"vor">;
 def A5VM_VxorOp : A5VM_BinaryVecOp<"vxor">;
+
+def A5VM_VaddcOp : A5VM_Op<"vaddc", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    A5VM_VectorType:$result,
+    A5VM_MaskTypeConstraint:$carry
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result) `,` type($carry)
+  }];
+}
+
+def A5VM_VsubcOp : A5VM_Op<"vsubc", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    A5VM_VectorType:$result,
+    A5VM_MaskTypeConstraint:$carry
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result) `,` type($carry)
+  }];
+}
+
+def A5VM_VaddcsOp : A5VM_Op<"vaddcs", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$carry_in,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    A5VM_VectorType:$result,
+    A5VM_MaskTypeConstraint:$carry
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $carry_in `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($carry_in) `,` type($mask) `->` type($result) `,` type($carry)
+  }];
+}
+
+def A5VM_VsubcsOp : A5VM_Op<"vsubcs", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$carry_in,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs
+    A5VM_VectorType:$result,
+    A5VM_MaskTypeConstraint:$carry
+  );
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $carry_in `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($carry_in) `,` type($mask) `->` type($result) `,` type($carry)
+  }];
+}
+
+def A5VM_VbcntOp : A5VM_UnaryVecOp<"vbcnt">;
+def A5VM_VclsOp : A5VM_UnaryVecOp<"vcls">;
+
+def A5VM_VshlOp : A5VM_BinaryVecOp<"vshl">;
+def A5VM_VshrOp : A5VM_BinaryVecOp<"vshr">;
 
 def A5VM_VselOp : A5VM_Op<"vsel", [Pure]> {
   let arguments = (ins
@@ -575,11 +786,50 @@ def A5VM_VgatherbOp : A5VM_Op<"vgatherb", [
   }];
 }
 
+// NOTE: Unvalidated new gather/select/interleave-family abstractions. Added to
+// cover CCE builtin families not yet exercised through end-to-end PTO seams.
+def A5VM_Vgather2BcOp : A5VM_Op<"vgather2_bc", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    A5VM_VectorType:$offsets,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `,` $offsets `,` $mask attr-dict `:` type($source) `,` type($offsets) `,` type($mask) `->` type($result)
+  }];
+}
+
 def A5VM_VmulsOp : A5VM_VecScalarOp<"vmuls">;
 def A5VM_VaddsOp : A5VM_VecScalarOp<"vadds">;
 def A5VM_VmaxsOp : A5VM_VecScalarOp<"vmaxs">;
 def A5VM_VminsOp : A5VM_VecScalarOp<"vmins">;
 def A5VM_VlreluOp : A5VM_VecScalarOp<"vlrelu">;
+def A5VM_VshlsOp : A5VM_VecScalarOp<"vshls">;
+def A5VM_VshrsOp : A5VM_VecScalarOp<"vshrs">;
+
+def A5VM_VsldOp : A5VM_Op<"vsld", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    Index:$offset,
+    StrAttr:$stride
+  );
+
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $offset `]` `,` $stride attr-dict `:` type($source) `->` type($result)
+  }];
+}
 
 def A5VM_VstsOp : A5VM_Op<"vsts", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -657,6 +907,27 @@ def A5VM_PstsOp : A5VM_Op<"psts", [
   }];
 }
 
+// NOTE: Unvalidated new store-family abstraction. Added for missing CCE
+// `vsst` semantics, but not yet exercised through end-to-end PTO lowering.
+def A5VM_VsstOp : A5VM_Op<"vsst", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_VectorType:$value,
+    A5VM_BufferType:$destination,
+    Index:$offset,
+    StrAttr:$stride
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `[` $offset `]` `,` $stride attr-dict `:` type($value) `,` type($destination)
+  }];
+}
+
 def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
@@ -684,6 +955,324 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
     attr-dict `:` type($source) `,` type($destination) `,` type($valid_rows) `,` type($valid_cols) `,`
     type($sid) `,` type($n_burst) `,` type($len_burst) `,` type($reserved) `,`
     type($burst_dst_stride) `,` type($burst_src_stride)
+  }];
+}
+
+// NOTE: Unvalidated new x2 / pair / align-store-family abstractions. Added to
+// reflect CCE builtin families but not yet end-to-end validated.
+def A5VM_VselrOp : A5VM_Op<"vselr", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$src0,
+    A5VM_VectorType:$src1
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src0 `,` $src1 attr-dict `:` type($src0) `,` type($src1) `->` type($result)
+  }];
+}
+
+def A5VM_Vselrv2Op : A5VM_Op<"vselrv2", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$src0,
+    A5VM_VectorType:$src1
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src0 `,` $src1 attr-dict `:` type($src0) `,` type($src1) `->` type($result)
+  }];
+}
+
+def A5VM_VintlvOp : A5VM_Op<"vintlv", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs
+  );
+  let results = (outs A5VM_VectorType:$low, A5VM_VectorType:$high);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($low) `,` type($high)
+  }];
+}
+
+def A5VM_VdintlvOp : A5VM_Op<"vdintlv", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs
+  );
+  let results = (outs A5VM_VectorType:$low, A5VM_VectorType:$high);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($low) `,` type($high)
+  }];
+}
+
+def A5VM_Vintlvv2Op : A5VM_Op<"vintlvv2", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    StrAttr:$part
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $part attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def A5VM_Vdintlvv2Op : A5VM_Op<"vdintlvv2", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    StrAttr:$part
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $part attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+}
+
+def A5VM_VmullOp : A5VM_Op<"vmull", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs A5VM_VectorType:$low, A5VM_VectorType:$high);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $mask attr-dict `:` type($lhs) `,` type($rhs) `,` type($mask) `->` type($low) `,` type($high)
+  }];
+}
+
+def A5VM_VmulaOp : A5VM_Op<"vmula", [Pure]> {
+  let arguments = (ins
+    A5VM_VectorType:$acc,
+    A5VM_VectorType:$lhs,
+    A5VM_VectorType:$rhs,
+    A5VM_MaskTypeConstraint:$mask,
+    OptionalAttr<StrAttr>:$mode
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $acc `,` $lhs `,` $rhs `,` $mask attr-dict `:` type($acc) `,` type($lhs) `,` type($rhs) `,` type($mask) `->` type($result)
+  }];
+}
+
+def A5VM_Vldx2Op : A5VM_Op<"vldx2", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    Index:$offset,
+    StrAttr:$dist
+  );
+  let results = (outs A5VM_VectorType:$low, A5VM_VectorType:$high);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $offset `]` `,` $dist attr-dict `:` type($source) `,` type($offset) `->` type($low) `,` type($high)
+  }];
+}
+
+def A5VM_Vstx2Op : A5VM_Op<"vstx2", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_VectorType:$low,
+    A5VM_VectorType:$high,
+    A5VM_BufferType:$destination,
+    Index:$offset,
+    StrAttr:$dist,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $low `,` $high `,` $destination `[` $offset `]` `,` $dist `,` $mask attr-dict `:` type($low) `,` type($high) `,` type($destination) `,` type($offset) `,` type($mask)
+  }];
+}
+
+def A5VM_VsldbOp : A5VM_Op<"vsldb", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferType:$source,
+    I32:$offset,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `,` $offset `,` $mask attr-dict `:` type($source) `,` type($offset) `,` type($mask) `->` type($result)
+  }];
+}
+
+def A5VM_VsstbOp : A5VM_Op<"vsstb", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_VectorType:$value,
+    A5VM_BufferType:$destination,
+    I32:$offset,
+    A5VM_MaskTypeConstraint:$mask
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `,` $offset `,` $mask attr-dict `:` type($value) `,` type($destination) `,` type($offset) `,` type($mask)
+  }];
+}
+
+def A5VM_VstaOp : A5VM_Op<"vsta", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$value,
+    A5VM_BufferType:$destination,
+    Index:$offset
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `[` $offset `]` attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+  }];
+}
+
+def A5VM_VstasOp : A5VM_Op<"vstas", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$value,
+    A5VM_BufferType:$destination,
+    I32:$offset
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination `,` $offset attr-dict `:` type($value) `,` type($destination) `,` type($offset)
+  }];
+}
+
+def A5VM_VstarOp : A5VM_Op<"vstar", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$value,
+    A5VM_BufferType:$destination
+  );
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $value `,` $destination attr-dict `:` type($value) `,` type($destination)
+  }];
+}
+
+// NOTE: Unvalidated stateful store-family abstractions. These preserve
+// align/base/offset update results explicitly in SSA form instead of relying on
+// implicit CCE reference updates.
+def A5VM_PstuOp : A5VM_Op<"pstu", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$align_in,
+    A5VM_MaskTypeConstraint:$value,
+    A5VM_BufferType:$base
+  );
+  let results = (outs A5VM_AlignTypeConstraint:$align_out, A5VM_BufferType:$base_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $align_in `,` $value `,` $base attr-dict `:` type($align_in) `,` type($value) `,` type($base) `->` type($align_out) `,` type($base_out)
+  }];
+}
+
+def A5VM_VstuOp : A5VM_Op<"vstu", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$align_in,
+    Index:$offset_in,
+    A5VM_VectorType:$value,
+    A5VM_BufferType:$base,
+    StrAttr:$mode
+  );
+  let results = (outs A5VM_AlignTypeConstraint:$align_out, Index:$offset_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $align_in `,` $offset_in `,` $value `,` $base `,` $mode attr-dict `:` type($align_in) `,` type($offset_in) `,` type($value) `,` type($base) `->` type($align_out) `,` type($offset_out)
+  }];
+}
+
+def A5VM_VstusOp : A5VM_Op<"vstus", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$align_in,
+    I32:$offset,
+    A5VM_VectorType:$value,
+    A5VM_BufferType:$base,
+    StrAttr:$mode
+  );
+  let results = (outs A5VM_AlignTypeConstraint:$align_out, A5VM_BufferType:$base_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $align_in `,` $offset `,` $value `,` $base `,` $mode attr-dict `:` type($align_in) `,` type($offset) `,` type($value) `,` type($base) `->` type($align_out) `,` type($base_out)
+  }];
+}
+
+def A5VM_VsturOp : A5VM_Op<"vstur", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_AlignTypeConstraint:$align_in,
+    A5VM_VectorType:$value,
+    A5VM_BufferType:$base,
+    StrAttr:$mode
+  );
+  let results = (outs A5VM_AlignTypeConstraint:$align_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $align_in `,` $value `,` $base `,` $mode attr-dict `:` type($align_in) `,` type($value) `,` type($base) `->` type($align_out)
   }];
 }
 
