@@ -29,6 +29,9 @@
 
 ## What Changes
 
+本 change 明确只覆盖 `docs/tile_fusion/tile_fusion_design_spec.md` 中的 5.1 `PreFusionAnalysisPass`。
+它不包含 5.3 的分组/planning，也不包含 5.4 的调度/scheduling。
+
 ### 目标
 
 - 新增 `PreFusionAnalysisPass`，为 tile fusion planning 提供独立分析结果。
@@ -45,6 +48,8 @@
 
 ### 非目标
 
+- 不在本 change 中实现分组/planning pass。
+- 不在本 change 中实现调度/scheduling pass。
 - 不在本 change 中产生 `fusion_id` 或组内顺序标签。
 - 不在本 change 中做物理重排、OP 聚拢或 `fusion_region` 封装。
 - 不实现 5.2 `ShapeInferencePass`。

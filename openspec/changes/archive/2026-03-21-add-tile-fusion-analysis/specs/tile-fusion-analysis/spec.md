@@ -35,6 +35,17 @@
   - 迭代域等价类
   - hard boundary / local boundary 分类
 
+### Requirement: PreFusionAnalysisPass MUST stay analysis-only in v1 scope
+
+`PreFusionAnalysisPass` 在本 change 中 MUST 只产出分析结论，不承担分组或调度职责。
+
+#### Scenario: Analysis does not emit grouping or scheduling decisions
+
+- **WHEN** `PreFusionAnalysisPass` 在 5.1 范围内运行
+- **THEN** 它 MUST NOT 直接生成 `fusion_id`、`pto.fusion.order` 或等价的分组结果
+- **AND** MUST NOT 对 op 做物理重排或调度决策
+- **AND** MUST 只为后续 5.3 planning / 5.4 scheduling 提供可复用的分析元数据
+
 ### Requirement: treshape MUST be treated as a local non-through boundary
 
 `pto.treshape` 在 v1 planning 范围内 MUST 被视为局部非穿透边界，而不是可融合 compute op 或全局硬屏障。

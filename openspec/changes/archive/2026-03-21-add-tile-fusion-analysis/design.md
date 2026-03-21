@@ -3,6 +3,7 @@
 ### 范围
 
 本 design 只覆盖 `docs/tile_fusion/tile_fusion_design_spec.md` 中的 5.1 `PreFusionAnalysisPass`。
+它不覆盖 5.3 的分组/planning，也不覆盖 5.4 的调度/scheduling。
 
 本 change 的边界固定为：
 
@@ -50,6 +51,8 @@
 
 **Non-Goals:**
 
+- 不实现任何分组/planning 决策。
+- 不实现任何调度/scheduling 决策。
 - 不输出 `fusion_id` 或 `pto.fusion.order`。
 - 不做任何 IR 重排。
 - 不进行动态 shape 推导或符号统一化。
