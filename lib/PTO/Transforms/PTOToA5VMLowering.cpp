@@ -2003,17 +2003,28 @@ Value buildMinIndexValue(PatternRewriter &rewriter, Location loc, Value lhs,
 Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
                                      Type elementType, Value laneCount) {
   auto maskType = a5vm::MaskType::get(rewriter.getContext());
+  Value laneCountI16 = laneCount;
+  if (laneCount.getType().isIndex()) {
+    laneCountI16 =
+        rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI16Type(), laneCount);
+  } else if (auto intType = dyn_cast<IntegerType>(laneCount.getType())) {
+    if (intType.getWidth() < 16)
+      laneCountI16 = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI16Type(), laneCount);
+    else if (intType.getWidth() > 16)
+      laneCountI16 =
+          rewriter.create<arith::TruncIOp>(loc, rewriter.getI16Type(), laneCount);
+  }
   unsigned bitWidth = 0;
   if (auto intType = dyn_cast<IntegerType>(elementType))
     bitWidth = intType.getWidth();
   else if (auto floatType = dyn_cast<FloatType>(elementType))
     bitWidth = floatType.getWidth();
   if (bitWidth == 8)
-    return rewriter.create<a5vm::PltB8Op>(loc, maskType, laneCount).getResult();
+    return rewriter.create<a5vm::PltB8Op>(loc, maskType, laneCountI16).getResult();
   if (bitWidth == 16)
-    return rewriter.create<a5vm::PltB16Op>(loc, maskType, laneCount).getResult();
+    return rewriter.create<a5vm::PltB16Op>(loc, maskType, laneCountI16).getResult();
   if (bitWidth == 32)
-    return rewriter.create<a5vm::PltB32Op>(loc, maskType, laneCount).getResult();
+    return rewriter.create<a5vm::PltB32Op>(loc, maskType, laneCountI16).getResult();
   llvm_unreachable("unsupported element type for predicate lane-count lowering");
 }
 

@@ -122,6 +122,7 @@ static FailureOr<IntrinsicSelection> selectSyncLike(Operation *op) {
     usedFields.push_back("src_pipe=" + waitFlag.getSrcPipe().str());
     usedFields.push_back("dst_pipe=" + waitFlag.getDstPipe().str());
     usedFields.push_back("event=" + waitFlag.getEventId().str());
+    return makeResolved(op, "llvm.hivm.WAIT.FLAG.IMM", usedFields, "");
   } else if (auto barrier = dyn_cast<a5vm::PipeBarrierOp>(op)) {
     usedFields.push_back("pipe=" + barrier.getPipe().str());
     return makeResolved(op, "llvm.hivm.BARRIER", usedFields, "");
@@ -155,6 +156,19 @@ static FailureOr<IntrinsicSelection> selectConfigLike(Operation *op) {
                         "");
 }
 
+static FailureOr<IntrinsicSelection> selectPredicateIntrinsic(Operation *op) {
+  llvm::SmallVector<std::string, 4> usedFields;
+  llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
+
+  if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
+    const std::string resultFragment = getVectorTypeFragment(plt.getResult().getType());
+    usedFields = {"family=plt", "bitwidth=32", "result=" + resultFragment};
+    return makeResolved(op, "llvm.hivm.plt.b32", usedFields, resultFragment);
+  }
+
+  return failure();
+}
+
 } // namespace
 
 FailureOr<IntrinsicSelection> selectLoadIntrinsic(Operation *op) {
@@ -169,12 +183,10 @@ FailureOr<IntrinsicSelection> selectLoadIntrinsic(Operation *op) {
     usedFields.push_back("dist=" + (*vlds.getDist()).str());
 
   if (vecFragment == "v64f32")
-    return makeResolved(op, "llvm.hivm.vldsx1.v64f32", usedFields, vecFragment);
+    return makeResolved(op, "llvm.hivm.vldsx1", usedFields, vecFragment);
 
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
   std::string candidate = "llvm.hivm.vldsx1";
-  if (!vecFragment.empty())
-    candidate += "." + vecFragment;
   return makeUnresolved(op, "vldsx1", candidate, usedFields, missingFields,
                         vecFragment);
 }
@@ -210,11 +222,9 @@ FailureOr<IntrinsicSelection> selectStoreIntrinsic(Operation *op) {
     if (vsts.getDistAttr())
       usedFields.push_back("dist=" + (*vsts.getDist()).str());
     if (vecFragment == "v64f32")
-      return makeResolved(op, "llvm.hivm.vstsx1.v64f32", usedFields,
+      return makeResolved(op, "llvm.hivm.vstsx1", usedFields,
                           vecFragment);
     std::string candidate = "llvm.hivm.vstsx1";
-    if (!vecFragment.empty())
-      candidate += "." + vecFragment;
     return makeUnresolved(op, "vstsx1", candidate, usedFields, missingFields,
                           vecFragment);
   }
@@ -283,6 +293,8 @@ FailureOr<IntrinsicSelection> selectIntrinsic(Operation *op) {
     return *selectLoadIntrinsic(op);
   if (succeeded(selectUnaryIntrinsic(op)))
     return *selectUnaryIntrinsic(op);
+  if (succeeded(selectPredicateIntrinsic(op)))
+    return *selectPredicateIntrinsic(op);
   if (succeeded(selectStoreIntrinsic(op)))
     return *selectStoreIntrinsic(op);
 

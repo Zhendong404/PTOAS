@@ -9,6 +9,7 @@
 #include "PTO/Transforms/A5VMTextEmitter.h"
 
 #include "PTO/IR/A5VM.h"
+#include "PTO/IR/PTO.h"
 #include "PTO/Transforms/HIVMIntrinsicNaming.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -160,6 +161,36 @@ private:
     return value;
   }
 
+  llvm::Value *castIntegerLikeToI32(llvm::Value *value) {
+    if (!value)
+      return nullptr;
+    if (value->getType() == getIntegerType(32))
+      return value;
+    if (!value->getType()->isIntegerTy())
+      return nullptr;
+    unsigned width = value->getType()->getIntegerBitWidth();
+    if (width < 32)
+      return builder.CreateZExt(value, getIntegerType(32), "i32.zext");
+    if (width > 32)
+      return builder.CreateTrunc(value, getIntegerType(32), "i32.trunc");
+    return value;
+  }
+
+  llvm::Value *castIntegerLikeToI16(llvm::Value *value) {
+    if (!value)
+      return nullptr;
+    if (value->getType() == getIntegerType(16))
+      return value;
+    if (!value->getType()->isIntegerTy())
+      return nullptr;
+    unsigned width = value->getType()->getIntegerBitWidth();
+    if (width < 16)
+      return builder.CreateZExt(value, getIntegerType(16), "i16.zext");
+    if (width > 16)
+      return builder.CreateTrunc(value, getIntegerType(16), "i16.trunc");
+    return value;
+  }
+
   std::optional<uint64_t> parsePipeImmediate(llvm::StringRef pipe) {
     if (pipe == "PIPE_S")
       return 0;
@@ -199,6 +230,77 @@ private:
     return value;
   }
 
+  std::optional<uint64_t> parseLoadDistImmediate(llvm::StringRef dist) {
+    if (dist.empty() || dist == "NORM")
+      return 0;
+    if (dist == "BLK")
+      return 15;
+    if (dist == "UNPK_B16")
+      return 14;
+    if (dist == "DINTLV_B32")
+      return 19;
+    return std::nullopt;
+  }
+
+  std::optional<uint64_t> parseStoreDistImmediate(Type valueType,
+                                                  llvm::StringRef dist) {
+    auto vecType = dyn_cast<a5vm::VecType>(valueType);
+    if (!vecType)
+      return std::nullopt;
+
+    if (dist.empty()) {
+      unsigned bitWidth = 0;
+      if (auto intType = dyn_cast<IntegerType>(vecType.getElementType()))
+        bitWidth = intType.getWidth();
+      else if (auto floatType = dyn_cast<FloatType>(vecType.getElementType()))
+        bitWidth = floatType.getWidth();
+      switch (bitWidth) {
+      case 8:
+        return 0;
+      case 16:
+        return 1;
+      case 32:
+        return 2;
+      default:
+        return std::nullopt;
+      }
+    }
+
+    if (dist == "NORM_B8")
+      return 0;
+    if (dist == "NORM_B16")
+      return 1;
+    if (dist == "NORM_B32")
+      return 2;
+    if (dist == "ONEPT_B8")
+      return 3;
+    if (dist == "ONEPT_B16")
+      return 4;
+    if (dist == "ONEPT_B32")
+      return 5;
+    if (dist == "PK_B16")
+      return 6;
+    if (dist == "PK_B32")
+      return 7;
+    if (dist == "INTLV_B8")
+      return 8;
+    if (dist == "INTLV_B16")
+      return 9;
+    if (dist == "PK_B64")
+      return 10;
+    if (dist == "INTLV_B32")
+      return 11;
+    if (dist == "PK4_B32")
+      return 12;
+    if (dist == "MRG4CHN_B8")
+      return 13;
+    if (dist == "MRG2CHN_B8")
+      return 14;
+    if (dist == "MRG2CHN_B16")
+      return 15;
+    return std::nullopt;
+  }
+
   llvm::Type *convertScalarType(Type type) {
     if (type.isIndex())
       return getIntegerType(64);
@@ -226,10 +328,37 @@ private:
     if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type))
       return llvm::PointerType::get(llvmContext, ptrType.getAddressSpace());
 
-    if (isa<BaseMemRefType>(type))
-      return llvm::PointerType::getUnqual(llvmContext);
+    if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
+      unsigned addressSpace = 0;
+      Attribute memorySpace = memrefType.getMemorySpace();
+      if (auto addrSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memorySpace))
+        addressSpace = static_cast<unsigned>(addrSpace.getAddressSpace());
+      else if (auto intAttr = dyn_cast_or_null<IntegerAttr>(memorySpace))
+        addressSpace = static_cast<unsigned>(intAttr.getInt());
+      if (addressSpace == 0)
+        addressSpace = static_cast<unsigned>(pto::AddressSpace::GM);
+      return llvm::PointerType::get(llvmContext, addressSpace);
+    }
 
     return convertScalarType(type);
+  }
+
+  llvm::Value *convertElementOffsetToBytes(llvm::Value *offset, Type elementType) {
+    llvm::Value *offsetI32 = castIntegerLikeToI32(offset);
+    if (!offsetI32)
+      return nullptr;
+
+    unsigned bitWidth = 0;
+    if (auto intType = dyn_cast<IntegerType>(elementType))
+      bitWidth = intType.getWidth();
+    else if (auto floatType = dyn_cast<FloatType>(elementType))
+      bitWidth = floatType.getWidth();
+    if (bitWidth == 0 || bitWidth % 8 != 0)
+      return nullptr;
+
+    return builder.CreateMul(
+        offsetI32, llvm::ConstantInt::get(getIntegerType(32), bitWidth / 8),
+        "offset.bytes");
   }
 
   llvm::Value *lookup(Value value) {
@@ -674,6 +803,56 @@ private:
     } else if (auto barrier = dyn_cast<a5vm::PipeBarrierOp>(op)) {
       if (failed(appendBarrierImmediate(barrier.getPipe())))
         return failure();
+    } else if (isa<a5vm::PltB32Op>(op)) {
+      if (rawOperands.size() != 1) {
+        diagOS << "A5VM emission failed: expected one operand for plt_b32\n";
+        return failure();
+      }
+      llvm::Value *laneCount = castIntegerLikeToI16(rawOperands[0]);
+      if (!laneCount) {
+        diagOS << "A5VM emission failed: could not cast plt_b32 lane count\n";
+        return failure();
+      }
+      appendArg(laneCount);
+    } else if (auto vlds = dyn_cast<a5vm::VldsOp>(op)) {
+      if (rawOperands.size() != 2) {
+        diagOS << "A5VM emission failed: expected two operands for vlds\n";
+        return failure();
+      }
+      llvm::Value *offsetBytes =
+          convertElementOffsetToBytes(rawOperands[1],
+                                      cast<a5vm::VecType>(vlds.getResult().getType())
+                                          .getElementType());
+      auto distImm = parseLoadDistImmediate(vlds.getDistAttr() ? *vlds.getDist() : "");
+      if (!offsetBytes || !distImm) {
+        diagOS << "A5VM emission failed: could not encode vlds offset/dist\n";
+        return failure();
+      }
+      appendArg(rawOperands[0]);
+      appendArg(offsetBytes);
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), 0));
+    } else if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
+      if (rawOperands.size() != 4) {
+        diagOS << "A5VM emission failed: expected four operands for vsts\n";
+        return failure();
+      }
+      llvm::Value *offsetBytes =
+          convertElementOffsetToBytes(rawOperands[2],
+                                      cast<a5vm::VecType>(vsts.getValue().getType())
+                                          .getElementType());
+      auto distImm = parseStoreDistImmediate(
+          vsts.getValue().getType(), vsts.getDistAttr() ? *vsts.getDist() : "");
+      if (!offsetBytes || !distImm) {
+        diagOS << "A5VM emission failed: could not encode vsts offset/dist\n";
+        return failure();
+      }
+      appendArg(rawOperands[0]);
+      appendArg(rawOperands[1]);
+      appendArg(offsetBytes);
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), 0));
+      appendArg(rawOperands[3]);
     } else {
       for (llvm::Value *operand : rawOperands)
         appendArg(operand);
@@ -689,7 +868,8 @@ private:
 
     bool skipGenericAttrs =
         isa<a5vm::CopyGmToUbufOp, a5vm::CopyUbufToGmOp, a5vm::SetFlagOp,
-            a5vm::WaitFlagOp, a5vm::PipeBarrierOp>(op);
+            a5vm::WaitFlagOp, a5vm::PipeBarrierOp, a5vm::PltB32Op,
+            a5vm::VldsOp, a5vm::VstsOp>(op);
     for (NamedAttribute attr : op->getAttrs()) {
       if (skipGenericAttrs)
         continue;
