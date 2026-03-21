@@ -122,6 +122,17 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
+  let summary = "Compact planned fusion groups into block-local contiguous spans";
+  let description = [{
+    Consumes fusion planning metadata emitted by FusionPlanPass and performs
+    block-local instruction scheduling to make each accepted fusion group a
+    contiguous span without redefining group membership.
+  }];
+  let constructor = "mlir::pto::createOpSchedulingPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def PreFusionAnalysis : Pass<"pto-pre-fusion-analysis", "func::FuncOp"> {
   let summary = "Analyze block-local tile-fusion candidates before planning";
   let description = [{

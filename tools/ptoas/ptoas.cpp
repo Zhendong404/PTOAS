@@ -1236,8 +1236,11 @@ int main(int argc, char **argv) {
       pto::createLoweringSyncToPipePass());
   if (enableA5OplibPipeline) {
     preCodegenPm.addPass(pto::createPTOValidateSimdIRPass());
-    if (enableOpFusion)
+    if (enableOpFusion) {
       preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+      preCodegenPm.addNestedPass<mlir::func::FuncOp>(
+          pto::createOpSchedulingPass());
+    }
   }
 
   preCodegenPm.addPass(pto::createPTOViewToMemrefPass());

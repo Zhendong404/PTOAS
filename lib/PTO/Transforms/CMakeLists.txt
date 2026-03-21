@@ -31,6 +31,7 @@ add_mlir_dialect_library(PTOTransforms
   LoweringSyncToPipe.cpp
   PTOPreFusionAnalysis.cpp
   PTOFusionPlan.cpp
+  PTOOpScheduling.cpp
   PTOLowerToOpLibCalls.cpp
   PTOOutlineFusionGroups.cpp
   PTOInstantiateAndInlineOpLib.cpp
