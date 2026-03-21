@@ -460,19 +460,67 @@ enumerated by the verifier:
 
 ## __VEC_SCOPE__
 
-`__VEC_SCOPE__` is not an `pto` op.
+`__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF)
+launch. In the PTO architecture, it defines the hardware interface between the
+Scalar Unit and the Vector Thread.
 
-It must be represented as:
+It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a
+specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This
+gives the compiler a natural structural boundary for identifying the code block
+that must be lowered into a discrete VF hardware instruction sequence.
+
+### Scalar-Vector Interface
+
+The execution model follows non-blocking fork semantics:
+
+- Scalar invocation:
+  the scalar processor invokes a vector thread by calling a VF. Once the launch
+  command is issued, the scalar unit does not stall and continues executing
+  subsequent instructions in the pipeline.
+- Vector execution:
+  after invocation, the vector thread independently fetches and executes the
+  instructions defined within the VF scope.
+- Parallelism:
+  this decoupled execution allows the scalar and vector units to run in
+  parallel, so the scalar unit can prepare addresses or manage control flow
+  while the vector unit performs heavy SIMD computation.
+
+### Launch Mechanism And Constraints
+
+To successfully launch a VF, the hardware requires explicit setup for parameter
+passing and instruction fetching:
+
+- Parameter buffering:
+  all arguments required by the VF, such as base addresses and pointer offsets,
+  must be staged in hardware-specific buffers. These buffers act as the
+  mailbox between the scalar and vector domains.
+- Launch overhead:
+  launching a VF is not instantaneous. It typically incurs a latency of a few
+  cycles while parameters are prepared and moved into the hardware buffers, the
+  hardware synchronizes state, and the vector thread begins its fetch cycle.
+  Very small VFs should account for this overhead because launch cost can rival
+  useful computation time.
+
+### MLIR Representation
+
+Representative form:
 
 ```mlir
+// Scalar unit executes code before this point...
 %c0 = arith.constant 0 : index
 %c1 = arith.constant 1 : index
-scf.for %dummy = %c0 to %c1 step %c1 {
-  // vector-scope body
-} {llvm.loop.aivector_scope}
-```
 
-This is the dialect-level representation of the A5 vector-scope loop.
+// The VF launch boundary
+scf.for %dummy = %c0 to %c1 step %c1 {
+  // Vector thread fetches and executes these instructions in parallel
+  // with the scalar unit.
+  %v = pto.vlds %ub[%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
+  %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+  pto.vsts %abs, %ub_out[%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+} {llvm.loop.aivector_scope}
+
+// Scalar unit continues executing immediately after the launch...
+```
 
 ## Correspondence Categories
 
