@@ -26,10 +26,13 @@ struct PreFusionAnalysisPass
     if (func.isExternal())
       return;
 
-    FailureOr<pto::PreFusionAnalysisResult> analysisOr =
-        pto::buildPreFusionAnalysis(func);
-    if (failed(analysisOr))
+    const auto &analysis = getAnalysis<pto::PreFusionAnalysis>();
+    if (!analysis.isValid()) {
       signalPassFailure();
+      return;
+    }
+
+    markAllAnalysesPreserved();
   }
 };
 

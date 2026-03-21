@@ -109,15 +109,16 @@ def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
-def PTOCreateFusionGroups : Pass<"pto-create-fusion-groups", "func::FuncOp"> {
-  let summary =
-      "Create fusion groups for fusible PTO binary elementwise chains";
+def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
+  let summary = "Build conservative tile-fusion planning groups from block-local analysis";
   let description = [{
-    Finds contiguous fusible chains and annotates ops with:
+    Consumes PreFusionAnalysis results, forms conservative block-local fusion
+    groups for currently supported compute ops, and annotates accepted group
+    members with:
       - pto.fusion.group_id
       - pto.fusion.order
   }];
-  let constructor = "mlir::pto::createPTOCreateFusionGroupsPass()";
+  let constructor = "mlir::pto::createFusionPlanPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 

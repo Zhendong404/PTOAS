@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Support/LLVM.h"
 
+#include <cassert>
 #include <optional>
 
 namespace mlir {
@@ -77,6 +78,25 @@ struct PreFusionAnalysisResult {
 };
 
 FailureOr<PreFusionAnalysisResult> buildPreFusionAnalysis(func::FuncOp func);
+
+class PreFusionAnalysis {
+public:
+  explicit PreFusionAnalysis(func::FuncOp func) {
+    FailureOr<PreFusionAnalysisResult> resultOr = buildPreFusionAnalysis(func);
+    if (succeeded(resultOr))
+      result = std::move(*resultOr);
+  }
+
+  bool isValid() const { return result.has_value(); }
+
+  const PreFusionAnalysisResult &getResult() const {
+    assert(result && "expected valid pre-fusion analysis result");
+    return *result;
+  }
+
+private:
+  std::optional<PreFusionAnalysisResult> result;
+};
 
 } // namespace pto
 } // namespace mlir

@@ -183,9 +183,8 @@ struct PrintPreFusionAnalysisPass
     if (func.isExternal())
       return;
 
-    FailureOr<pto::PreFusionAnalysisResult> resultOr =
-        pto::buildPreFusionAnalysis(func);
-    if (failed(resultOr)) {
+    const auto &analysis = getAnalysis<pto::PreFusionAnalysis>();
+    if (!analysis.isValid()) {
       signalPassFailure();
       return;
     }
@@ -193,7 +192,8 @@ struct PrintPreFusionAnalysisPass
     llvm::raw_ostream &os = llvm::outs();
     os << "PreFusionAnalysis @" << func.getSymName() << "\n";
 
-    for (auto [blockIndex, blockAnalysis] : llvm::enumerate(resultOr->blocks)) {
+    for (auto [blockIndex, blockAnalysis] :
+         llvm::enumerate(analysis.getResult().blocks)) {
       os << "  block[" << blockIndex << "]\n";
       DenseMap<Value, std::string> valueLabels =
           buildValueLabels(*blockAnalysis.block, blockAnalysis);
@@ -256,6 +256,8 @@ struct PrintPreFusionAnalysisPass
            << (live.hasLocalHardBoundaryUsers ? "true" : "false") << "\n";
       }
     }
+
+    markAllAnalysesPreserved();
   }
 };
 
