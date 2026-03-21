@@ -41,98 +41,120 @@ Updated: 2026-03-21
 
 ## Overview
 
-This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a
-compiler-internal and externally facing specification designed to represent
-vector compute kernels within the PTO architecture. Much like NVVM provides a
-robust IR for GPU architectures, VPTO serves as the direct bridge between
-high-level programming models and the underlying hardware ISA, providing a
-precise, low-level representation of vector workloads explicitly designed for
-the Ascend 950 architecture.
+This document defines the Vector PTO (VPTO) ISA surface used by PTOAS for
+vector-thread execution. VPTO preserves the architecturally visible behavior of
+the vector ISA while removing binary encodings and reifying selected state in
+SSA form.
 
 ### PTO Vector ISA Background
 
 #### Position in the Stack and Layer Modeled
 
-VPTO operates as a very low-level intermediate representation within the PTO
-compiler stack. It is uniquely designed to accurately and comprehensively
-express all architectural information of the Ascend 950 hardware. It
-specifically models the bare-metal vector execution layer, making
-hardware-specific capabilities and constraints, such as exact vector lane
-configurations, memory space hierarchies, and hardware-specific fusion
-semantics, fully transparent and controllable.
+PTO uses two closely related machine models for vector work:
 
-#### Why External Developers Read or Author VPTO
+- Tile world: `pto.t*` ops and `!pto.tile_buf<loc=vec,...>` model
+  multi-dimensional tiles resident in the Vector tile buffer.
+- Vector-thread world: `pto.v*` ops model the vector-thread instructions that
+  operate on vector registers, predicate registers, align state, shared
+  registers, address registers, special registers, and Vector tile buffer
+  addresses.
 
-While the majority of users will interact with the PTO architecture via
-higher-level frameworks, external developers may need to read or author VPTO IR
-directly for several key reasons:
+A `!pto.tile_buf<loc=vec,...>` value is therefore not a different storage class
+from a VPTO memory operand. It is a tile-shaped view of the same Vector tile
+buffer address space that VPTO load, store, gather, scatter, sort, and filter
+families access through `!llvm.ptr<6>`.
 
-- Custom Toolchain Development:
-  build custom compiler frontends or domain-specific languages (DSLs) that
-  target the Ascend 950 architecture with maximum hardware utilization.
-- Performance Engineering:
-  inspect the output of high-level compiler passes, verify fine-grained
-  optimization behaviors, and pinpoint performance bottlenecks at the
-  architectural level.
-- Micro-Optimization:
-  hand-author highly optimized, critical mathematical kernels using a stable,
-  precise IR when higher-level abstractions cannot achieve the theoretical peak
-  performance of the hardware.
+#### Structural Organization
 
-### Relationship to CCE
+VPTO programs combine three architectural domains:
 
-VPTO is designed to express the full semantic capabilities of the Compute Cube
-Engine (CCE), but with significant structural and pipeline advantages for
-compiler development.
+- Main-scalar control domain: launches vector functions, pushes parameter-buffer
+  contents, declares loop topology, programs address-generation state, and
+  stores or clears special-register state.
+- Vector-thread execution domain: executes arithmetic, compare, predicate,
+  rearrangement, reduction, and special-function instructions over
+  `!pto.vreg`, `!pto.mask`, and `!pto.align`.
+- Vector tile buffer domain: holds staged vectors and tiles. Copy families move
+  data between GM and the Vector tile buffer; vector load/store families move
+  data between the Vector tile buffer and vector, predicate, or align state.
 
-- Bypassing the C/Clang Pipeline:
-  while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates
-  entirely independently of the C language frontend. By bypassing Clang AST
-  generation and frontend processing, utilizing VPTO significantly reduces
-  overall compilation time and memory overhead.
-- Enhanced IR Verification:
-  because VPTO is a strongly typed, SSA-based (Static Single Assignment)
-  compiler IR rather than a C-wrapper API, it provides a much more rigorous and
-  detailed IR verification process. Structural inconsistencies, invalid memory
-  access patterns, and operand type mismatches are caught immediately with
-  precise, explicit diagnostic feedback, providing developers with much higher
-  visibility into kernel correctness than traditional CCE error reporting.
+Scalar, shared-register, address-register, and SPR state are part of the ISA
+contract, not compiler-internal decoration. Loop bounds, predicate generation,
+address progression, unaligned-store flushing, sort configuration, and filter
+configuration all depend on that state.
+
+#### How PTOAS Compiles Mixed Tiles, Vectors, And Scalars
+
+PTOAS compiles mixed tile, vector, and scalar code by keeping the storage
+boundary explicit instead of collapsing everything into one abstraction.
+
+1. `convert-to-pto-op` rewrites generic memory movement into `pto.tload`,
+   `pto.tstore`, or `pto.tmov`.
+2. `pto.alloc_tile` and `!pto.tile_buf<loc=vec,...>` define Vector tile buffer
+   tiles in the PTO tile world.
+3. `pto-to-a5vm` lowers `loc=vec` tile ops and vector-scoped compute into
+   vector-thread forms, introducing `pto.v*` families inside
+   `llvm.loop.aivector_scope` regions and threading the scalar, shared-register,
+   and special-register state required by those families.
+4. The A5VM text emitter serializes the resulting ISA-facing form without
+   reinterpreting the Vector tile buffer, vector-register, or scalar-control
+   contracts.
+
+The important boundary is structural rather than semantic: `pto.t*` and
+`pto.v*` describe the same Vector tile buffer storage system at different
+granularities. Tile ops describe tile-shaped movement and tile-shaped compute.
+VPTO ops describe the vector-thread instructions that consume or produce the
+same storage.
 
 ### Intended Audience
 
-This document is written for compiler engineers, library writers, and advanced
-performance architects. We expect the reader to have a working understanding of
-modern compiler infrastructure, specifically MLIR, the principles of Static
-Single Assignment (SSA) form, and a deep understanding of the vector-processing
-capabilities of the Ascend 950 architecture.
+This document is written for compiler engineers, library writers, runtime
+implementers, and performance engineers who need the ISA contract of PTO vector
+execution rather than a source-language wrapper view.
 
 ## Getting Started
 
-The Vector PTO (VPTO) IR is architected as a performance-critical layer within the compiler stack, specifically designed to exploit the **Decoupled Access-Execute** (DAE) nature of the Ascend 950 hardware.
+VPTO mirrors the decoupled access-execute structure of the ISA.
 
 ### Hardware Pipeline Modeling
-The IR is structured to mirror the three primary hardware pipelines of the Ascend 950 architecture. Correct VPTO authoring requires managing the interaction between these asynchronous units:
 
-**MTE2** (Memory Transfer Engine - Inbound): Responsible for moving data from Global Memory (GM) to the Vector tile buffer.
-
-**Vector Core** (Computation): The primary engine for executing SIMD operations on data stored in the Vector tile buffer.
-
-**MTE3** (Memory Transfer Engine - Outbound): Responsible for moving processed data from the Vector tile buffer back to GM.
+- **MTE2** stages data from GM into the Vector tile buffer.
+- **Vector Core** executes vector-thread instructions over vector registers,
+  predicate registers, align state, and shared or SPR inputs.
+- **MTE3** drains results from the Vector tile buffer back to GM.
 
 ### Memory and Synchronization Model
-VPTO enforces a strict memory hierarchy. The Vector tile buffer is the only valid operand source for vector compute instructions. Consequently, the architecture of a VPTO program is defined by the explicit management of data movement:
 
-**Address Space Isolation**: The IR uses LLVM pointer address spaces to distinguish between GM (`!llvm.ptr<1>`) and the Vector tile buffer (`!llvm.ptr<6>`). The verifier ensures that no compute operation attempts to access GM directly.
+VPTO keeps the memory hierarchy explicit.
 
-**Event-Based Synchronization**: Because the MTE and Vector pipelines operate asynchronously, VPTO utilizes a Flag/Event mechanism. Developers must explicitly insert set_flag and wait_flag operations to resolve Read-After-Write (RAW) and Write-After-Read (WAR) hazards between memory staging and computation.
+**Address Space Isolation**: `!llvm.ptr<1>` denotes GM-like storage and
+`!llvm.ptr<6>` denotes Vector tile buffer storage. Vector compute instructions
+never read GM directly; GM participates only through copy families and
+scalar-side control/setup.
+
+**Event-Based Synchronization**: MTE and vector stages execute asynchronously.
+`pto.vset_flag` and `pto.vwait_flag` therefore carry correctness, not just
+scheduling intent: they resolve RAW and WAR hazards between copies, vector
+compute, and storeback.
+
+**Tile/Vector Boundary**: tile ops own tile shapes, valid regions, and local
+domain placement. VPTO memory ops own byte-addressed Vector tile buffer access
+patterns, distribution tokens, post-update rules, and align-state behavior.
+PTOAS relies on both levels to represent mixed tile/vector kernels faithfully.
 
 ### Execution Scopes
-The IR introduces the concept of the **Vector Function** ({llvm.loop.aivector_scope}). This architectural boundary identifies regions of code where the Vector Core's SIMD capabilities are fully engaged. Inside this scope, the IR provides high-granularity control over vector registers (vreg), predicates (mask), and alignment states (align).
+
+`llvm.loop.aivector_scope` marks a vector-thread execution region. Inside this
+scope, `pto.v*` ops may read or write vector registers, predicates, align
+state, address-generation state, and Vector tile buffer-backed memory according
+to the contracts in this manual. Outside this scope, scalar control ops may
+still configure vector-thread work, but they do not themselves execute on the
+vector lanes.
 
 ## Example: Abs
 
 Example file:
-[build/vpto-doc-abs/Abs/abs-pto.cpp](/data/mouliangyu/projects/github.com/zhangstevenunity/PTOAS/build/vpto-doc-abs/Abs/abs-pto.cpp)
+[a5vm_vabs_kernel_shape.mlir](/Users/zhoubot/PTOAS/test/phase1/a5vm_vabs_kernel_shape.mlir)
 
 Representative excerpt:
 
@@ -167,17 +189,31 @@ pto.vcopy_ubuf_to_gm %8, %14, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c128_i64,
 
 ## Scope
 
-This document is the interface specification for the `mlir::pto` dialect.
+This document is the interface specification for the `mlir::pto` vector-thread
+ISA surface.
 
-It only describes:
+It normatively specifies:
 
 - operation names
 - operand and result lists
 - operand and result types
-- important attributes
-- corresponding CCE builtin or CCE wrapper family
+- important attributes and control tokens
+- architectural semantics, assertions, and exceptions
+- the structural boundary between `pto.t*` Vector tile buffer tiles and
+  `pto.v*` vector-thread instructions
 
-It does not describe lowering strategy.
+It informatively records:
+
+- CCE builtin or wrapper correspondence
+- current PTOAS pass names where that helps explain how mixed tile, vector, and
+  scalar programs are represented
+
+It does not define:
+
+- binary instruction encodings
+- microarchitectural scheduling beyond architecturally visible ordering and
+  synchronization rules
+- backend optimization strategy
 
 ## ISA Contract
 
@@ -420,26 +456,47 @@ Used by `pto.vlds`:
 
 - allowed values:
   `NORM | BLK | DINTLV_B32 | UNPK_B16`
+- semantic notes:
+  `NORM` is the aligned contiguous form and requires 32-byte alignment.
+  `BLK` is the 32-byte block-broadcast form and requires 32-byte alignment.
+  `DINTLV_B32` participates in the element de-interleave family and requires
+  32-byte alignment. `UNPK_B16` loads half-width source data and zero-extends it
+  into the destination lane width; its source alignment is `min(32, VL/2)`.
 
 Used by `pto.vpld`, `pto.vpldi`:
 
 - allowed values:
   `NORM | US | DS`
+- semantic notes:
+  `NORM` loads `VL/8` bytes and requires `VL/8` alignment. `US` loads `VL/16`
+  bytes, repeats each loaded bit twice, and requires `VL/16` alignment. `DS`
+  loads `2*VL/8` bytes, keeps every other bit, and requires `min(32, VL/4)`
+  alignment.
 
 Used by `pto.vpst`, `pto.vpsti`:
 
 - allowed values:
   `NORM | PK`
+- semantic notes:
+  `NORM` stores `VL/8` bytes and requires `VL/8` alignment. `PK` packs the
+  source predicate by keeping every other bit, stores `VL/16` bytes, and
+  requires `VL/16` alignment.
 
 Used by `pto.vldx2`:
 
 - allowed values:
   `DINTLV_B8 | DINTLV_B16 | DINTLV_B32 | BDINTLV`
+- semantic notes:
+  all x2 load distributions require 32-byte alignment and materialize the ISA's
+  even-register pair as two SSA results.
 
 Used by `pto.vstx2`:
 
 - allowed values:
   `INTLV_B8 | INTLV_B16 | INTLV_B32`
+- semantic notes:
+  all x2 store distributions require 32-byte alignment and write one
+  interleaved `2*VL` destination stream.
 
 ### Stride Tokens
 
@@ -545,8 +602,16 @@ Architectural assertions:
 - Vector compute, gather, scatter, predicate-load, and predicate-store families operate on Vector tile buffer-backed storage unless an op section states otherwise.
 - Distribution tokens, stride tokens, part selectors, and predicate patterns are semantically significant; changing them changes the operation, not just the encoding.
 - Alignment requirements are part of the contract. Violating the distribution-specific address-alignment rule raises an exception.
-- Stateful align-register behavior is explicit in VPTO through `!pto.align` values and state-threading results, not by implicit mutation of a hidden architectural register.
+- Store-side align-register behavior is explicit in VPTO through `!pto.align`
+  values and state-threading results; load-side priming is explicit through
+  `pto.vldas` and the addressed stream that consumes it.
 - Copy helper families preserve layout, burst geometry, and stride semantics as architecturally visible behavior.
+- Store families are architecturally out-of-order. Two stores or scatters that
+  may target the same Vector tile buffer byte range MUST be ordered by an
+  explicit barrier.
+- Inactive gather, scatter, and block-stride lanes or blocks do not issue
+  memory requests and therefore do not trigger overflow exceptions for their
+  suppressed addresses.
 
 Architectural exceptions:
 
@@ -557,6 +622,9 @@ Architectural exceptions:
 - Division by `+0` or `-0` raises an exception for `pto.vdiv` and `pto.vrec`; the same ISA rule also applies to reciprocal-square-root families not currently exposed here.
 - Negative input raises an exception for `pto.vln` and `pto.vsqrt`; the same ISA rule also applies to reciprocal-square-root families not currently exposed here.
 - Certain conversions from negative source values to unsigned integer destinations, including forms such as `f16 -> u8` and `s32 -> u16/u8`, raise an exception rather than silently wrapping.
+- Exiting a loop with dirty unaligned-store state and without a matching flush
+  form leaves pending tail bytes uncommitted; programs MUST flush that state by
+  `pto.vsta`, `pto.vstas`, `pto.vstar`, or a flushing exit form.
 
 ## __VEC_SCOPE__
 
@@ -828,7 +896,13 @@ ISA assertions for this family:
 - ISA family:
   `VLD` / `VLDS`
 - semantics:
-  Loads one vector from the Vector tile buffer at `source + offset` using the aligned-load form selected by `DIST`. The distribution token determines the lane arrangement and alignment requirement of the access, and any ISA-defined base update is represented outside this op rather than as an implicit side effect.
+  Let `addr = source + offset`. `pto.vlds` performs the aligned load form
+  selected by `DIST`. `NORM` reads one full vector from `addr`. Broadcast and
+  unpack forms read the ISA-defined smaller source footprint and expand it into
+  the destination lane layout. Any ISA form that conceptually produces two
+  destination registers is represented by `pto.vldx2` rather than by
+  `pto.vlds`. `addr` MUST satisfy the alignment rule of the selected
+  distribution token.
 - CCE correspondence:
   `vld(...)`, `vlds(...)`
   `__builtin_cce_vldsx1_*`
@@ -844,7 +918,10 @@ ISA assertions for this family:
 - ISA family:
   `VLDAS`
 - semantics:
-  Initializes align state for a subsequent unaligned load stream. The seeded state is derived from the aligned base corresponding to `source + offset`, with the ISA-required low address bits removed.
+  Let `addr = source + offset`. `pto.vldas` reads the 32-byte block at
+  `floor(addr / 32) * 32`, records the low address bits of `addr`, and produces
+  the align carrier required by a subsequent unaligned load stream. `addr`
+  itself need not be 32-byte aligned.
 - CCE correspondence:
   `vldas(...)`
   `__builtin_cce_vldas_*`
@@ -858,7 +935,13 @@ ISA assertions for this family:
 - ISA family:
   `VLDUS`
 - semantics:
-  Loads one unaligned vector by combining `%align` with the aligned data fetched from `source + offset`. `%align` must come from the same logical align stream, and the returned vector is the ISA contiguous lane sequence assembled across the alignment boundary.
+  Let `addr = source + offset` and let `aligned_tmp = ceil(addr / 32) * 32`.
+  `pto.vldus` forms the returned vector by concatenating the bytes in `%align`
+  that cover `[addr, aligned_tmp)` with the bytes fetched from the newly loaded
+  aligned vector that cover `[aligned_tmp, aligned_tmp + VL - (aligned_tmp -
+  addr))`. If `addr` is already 32-byte aligned, the result is the newly loaded
+  aligned vector itself. `%align` MUST have been produced by a matching
+  `pto.vldas` stream before the first dependent `pto.vldus`.
 - CCE correspondence:
   `vldus(...)`
   `__builtin_cce_vldus_*`, `__builtin_cce_vldus_post_*`
@@ -872,7 +955,11 @@ ISA assertions for this family:
 - ISA family:
   `PLDS`
 - semantics:
-  Loads predicate state from the Vector tile buffer at `source + offset` using the selected predicate-load distribution.
+  Loads predicate state from `source + offset` using the selected predicate
+  distribution. `DIST = "NORM"` loads `VL/8` bytes directly, `DIST = "US"`
+  loads `VL/16` bytes and duplicates each loaded bit twice, and `DIST = "DS"`
+  loads `2*VL/8` bytes and keeps every other bit. The effective address MUST
+  satisfy the alignment rule of the selected distribution.
 - CCE correspondence:
   `plds(...)`
   `__builtin_cce_plds_b8`
@@ -886,7 +973,9 @@ ISA assertions for this family:
 - ISA family:
   `PLD`
 - semantics:
-  Loads predicate state from the Vector tile buffer using an explicit index offset and predicate-load distribution token.
+  Loads predicate state from `source + offset` using the selected predicate-load
+  distribution token. `NORM`, `US`, and `DS` preserve the same bit-level
+  layouts and alignment rules as the corresponding `PLDS` forms.
 - CCE correspondence:
   `pld(...)`
   `__builtin_cce_pld_b8`
@@ -900,7 +989,9 @@ ISA assertions for this family:
 - ISA family:
   `PLDI`
 - semantics:
-  Loads predicate state from the Vector tile buffer using an immediate-style scalar offset and predicate-load distribution token.
+  Loads predicate state from `source + offset` using the immediate-offset
+  predicate-load form. The offset is scaled by the alignment size of the chosen
+  distribution token exactly as in the ISA immediate form.
 - CCE correspondence:
   `pldi(...)`
   `__builtin_cce_pldi_b8`, `__builtin_cce_pldi_post_b8`
@@ -914,7 +1005,11 @@ ISA assertions for this family:
 - ISA family:
   `Dual-result aligned-load distributions for VLD variants`
 - semantics:
-  Loads one Vector tile buffer vector stream at `source + offset` and splits the result into `%low` and `%high` according to the x2 distribution selected by `DIST`. The distribution token defines how lanes are deinterleaved between the two returned vectors.
+  Loads one `2*VL` source stream from `source + offset` and splits it into two
+  results according to `DIST`. `BDINTLV` de-interleaves 32-byte blocks between
+  `%low` and `%high`; `DINTLV_B8`, `DINTLV_B16`, and `DINTLV_B32` de-interleave
+  even and odd elements of the named width. The ISA even-register destination
+  pair is reified as the two SSA results `%low` and `%high`.
 - CCE correspondence:
   `vld(...)`
   `__builtin_cce_vldx2_*`
@@ -928,7 +1023,13 @@ ISA assertions for this family:
 - ISA family:
   `VGATHER2`
 - semantics:
-  For each active lane `i` with `i < active_lanes`, loads the element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
+  For each active lane `i < active_lanes`, computes
+  `addr[i] = source + offsets[i] * sizeof(element_type)` and loads one element
+  from `addr[i]` into result lane `i`. The address of each active lane MUST be
+  aligned to the element width. For inactive lanes, no address participates in
+  coalescing, no overflow exception is raised, and the returned lane is zero.
+  For 8-bit gather forms, the loaded byte is zero-extended before being placed
+  in the destination lane representation.
 - CCE correspondence:
   `vgather2(...)`
   `__builtin_cce_vgather2_*`, `__builtin_cce_vgather2_v300_*`
@@ -942,7 +1043,12 @@ ISA assertions for this family:
 - ISA family:
   `VGATHERB`
 - semantics:
-  For each active lane `i` with `i < active_lanes`, loads the byte-granular element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
+  `pto.vgatherb` is the block-gather form, not a byte-element gather. For each
+  active block `i < active_lanes`, it computes `block_addr[i] = source +
+  offsets[i]`, where each offset is a 32-bit byte offset that MUST be 32-byte
+  aligned, and loads one 32-byte block from `block_addr[i]` into block `i` of
+  the destination vector. `%source` MUST be 32-byte aligned. Inactive blocks do
+  not issue memory requests and their destination block is zeroed.
 - CCE correspondence:
   `vgatherb(...)`
   `__builtin_cce_vgatherb_*`, `__builtin_cce_vgatherb_v300_*`, `__builtin_cce_vgatherb_v310_*`
@@ -956,7 +1062,10 @@ ISA assertions for this family:
 - ISA family:
   `VGATHER2_BC`
 - semantics:
-  For each lane enabled by `%mask`, loads the element at Vector tile buffer address `source + offsets[i]` and writes it to result lane `i`.
+  Computes the same element-addressed gather as `pto.vgather2`, but uses an
+  explicit predicate mask instead of an active-prefix count. For a masked-off
+  lane, the address is suppressed from coalescing, no overflow exception is
+  raised, and the destination lane is zero.
 - CCE correspondence:
   `vgather2_bc(...)`
   `__builtin_cce_vgather2_bc_*`
@@ -970,7 +1079,13 @@ ISA assertions for this family:
 - ISA family:
   `VSLD`
 - semantics:
-  Loads `%result` from the Vector tile buffer using the address progression encoded by `STRIDE`. The stride token determines the spacing between consecutive source elements or packed groups.
+  Loads `%result` from the Vector tile buffer using the fixed stride pattern
+  encoded by `STRIDE`. `STRIDE_S3_B16` repeatedly loads one 16-bit element and
+  skips two 16-bit elements. `STRIDE_S4_B64` repeatedly loads one 64-bit
+  element and skips three 64-bit elements. `STRIDE_S8_B32` repeatedly loads one
+  32-bit element and skips seven 32-bit elements. `STRIDE_S2_B64` repeatedly
+  loads one 64-bit element and skips one 64-bit element. The effective address
+  MUST satisfy the stride-specific alignment requirement from the ISA table.
 - CCE correspondence:
   `vsld(...)`
   `__builtin_cce_vsld_*`
@@ -984,7 +1099,12 @@ ISA assertions for this family:
 - ISA family:
   `VSLDB`
 - semantics:
-  Loads a strided vector from the Vector tile buffer using the scalar displacement `%offset` and writes only the lanes enabled by `%mask`.
+  Interprets `%offset` as the packed block-stride configuration word whose
+  upper 16 bits are the block stride and whose lower 16 bits are the repeat
+  stride. The op loads `VL_BLK` 32-byte blocks. If any bit in the governing
+  32-bit predicate slice of a block is 1, the whole block is loaded. If that
+  predicate slice is all 0, the block load is suppressed, the destination block
+  is zeroed, and no overflow exception is raised for that block address.
 - CCE correspondence:
   `vsldb(...)`
   `__builtin_cce_vsldb_*`, `__builtin_cce_vsldb_post_*`
@@ -1069,7 +1189,8 @@ ISA assertions for this family:
 - ISA family:
   `PGE`
 - semantics:
-  Creates an 8-bit-granularity prefix predicate from the selected `PAT_*` pattern.
+  `PGE` is an ISA alias of `PSET`. This form therefore creates an 8-bit
+  predicate with exactly the same `PAT_*` interpretation as `pto.vpset_b8`.
 - CCE correspondence:
   `pge_b8(...)`
   `__builtin_cce_pge_b8`
@@ -1083,7 +1204,8 @@ ISA assertions for this family:
 - ISA family:
   `PGE`
 - semantics:
-  Creates a 16-bit-granularity prefix predicate from the selected `PAT_*` pattern.
+  `PGE` is an ISA alias of `PSET`. This form therefore creates a 16-bit
+  predicate with exactly the same `PAT_*` interpretation as `pto.vpset_b16`.
 - CCE correspondence:
   `pge_b16(...)`
   `__builtin_cce_pge_b16`
@@ -1097,7 +1219,8 @@ ISA assertions for this family:
 - ISA family:
   `PGE`
 - semantics:
-  Creates a 32-bit-granularity prefix predicate from the selected `PAT_*` pattern.
+  `PGE` is an ISA alias of `PSET`. This form therefore creates a 32-bit
+  predicate with exactly the same `PAT_*` interpretation as `pto.vpset_b32`.
 - CCE correspondence:
   `pge_b32(...)`
   `__builtin_cce_pge_b32`
@@ -1833,6 +1956,11 @@ ISA assertions for this family:
   `VCVTFI` / `VCVTFF` / `VCVTIF` / `VCVTII`
 - semantics:
   Converts `%input` lane-wise according to the source type, destination type, rounding rule, saturation rule, and part-selection rule encoded by the op form. Width-changing forms consume only the selected source part or produce only the selected destination part exactly as required by the ISA conversion family.
+  For conversions from wider lanes to narrower lanes, the selected destination
+  part receives the converted result and the unselected part is zero-filled. For
+  conversions from narrower lanes to wider lanes, only the selected input part
+  is consumed. Saturating signed-to-unsigned forms preserve the ISA special
+  case that negative `s16 -> u32` inputs saturate to zero.
 - CCE correspondence:
   `vcvt(...)`
   builtin families:
@@ -1861,7 +1989,13 @@ ISA assertions for this family:
 - ISA family:
   `VBS32`
 - semantics:
-  Sorts the proposal records named by `%source` and `%indices` and writes the ordered result stream to `%destination`. `repeat_times` controls how many consecutive sort iterations are performed, equal scores are ordered by lower original proposal index first, and the destination region must not overlap the source regions.
+  Sorts 32 proposals per iteration by score and writes the ordered proposal
+  structures to `%destination`, with the highest score at the lowest address.
+  `%source` supplies the score stream and `%indices` supplies the index stream;
+  the ISA combines them into one 8-byte `{index, score}` structure per sorted
+  proposal, with the index in the upper 4 bytes. When two scores are equal, the
+  proposal with the lower original index wins. `%destination`, `%source`, and
+  `%indices` MUST be 32-byte aligned. `repeat_times = 0` performs no execution.
 - CCE correspondence:
   `vbitsort(...)`
   `__builtin_cce_vbitsort_*`
@@ -1875,7 +2009,13 @@ ISA assertions for this family:
 - ISA family:
   `VMS4v2`
 - semantics:
-  Merges four sorted proposal lists from the Vector tile buffer into one sorted output stream. On equal scores, entries from the lower-numbered input list win; `%config` controls repeat and exhausted-input behavior; and source and destination regions must satisfy the ISA non-overlap rules.
+  Merges four sorted proposal lists from the Vector tile buffer into one sorted
+  output stream. The four source bases may be discrete, but each individual
+  input list MUST be continuous in the Vector tile buffer. On equal scores,
+  entries from the lower-numbered input list win. `%count` and `%config` carry
+  the ISA list-count and repeat-mode configuration, including the repeat-mode
+  restrictions that all four lists be continuous and have equal list lengths.
+  Source and destination regions MUST not overlap.
 - CCE correspondence:
   `vmrgsort4(...)`
   `__builtin_cce_vmrgsort4_*`
@@ -1891,7 +2031,10 @@ ISA assertions for this family:
 - ISA family:
   `VMULL`
 - semantics:
-  Multiplies lanes under `%mask` and returns the widened product split across low and high result vectors.
+  Performs a 32-bit widening multiply on each active lane and returns the full
+  64-bit product split across the two result vectors, with the low 32 bits in
+  `%low` and the high 32 bits in `%high`. No saturation or truncation is
+  applied.
 - CCE correspondence:
   `vmull(...)`
   `__builtin_cce_vmull_*`
@@ -1905,7 +2048,11 @@ ISA assertions for this family:
 - ISA family:
   `VMULA`
 - semantics:
-  Performs masked vector multiply-accumulate into `%acc`, with `mode` controlling the merge or zeroing behavior.
+  Performs the lane-wise fused multiply-add `result = lhs * rhs + acc` on the
+  active lanes selected by `%mask`. `mode` controls the inactive-lane behavior
+  of the destination. For floating-point types this fused arithmetic is
+  architecturally observable and is not interchangeable with a separate
+  multiply followed by add.
 - CCE correspondence:
   `vmula(...)`
   `__builtin_cce_vmula_*_m`
@@ -1928,7 +2075,11 @@ ISA assertions for this family:
 - ISA family:
   `VST` / `VSTI` / `VSTS`
 - semantics:
-  Stores `%value` to the Vector tile buffer at `destination + offset` using the store form selected by `DIST`. The distribution token determines the destination lane layout and alignment requirement of the access.
+  Stores `%value` to `destination + offset` using the store form selected by
+  `DIST`. `DIST` determines the stored element width, lane layout, packing or
+  channel-merge behavior, and the required destination alignment. Interleaving
+  forms that consume two source vectors are represented by `pto.vstx2` rather
+  than by `pto.vsts`.
 - CCE correspondence:
   `vst(...)`, `vsts(...)`
   `__builtin_cce_vstx1_*`, `__builtin_cce_vstsx1_*`
@@ -1942,7 +2093,14 @@ ISA assertions for this family:
 - ISA family:
   `VSCATTER`
 - semantics:
-  Scatters active vector lanes to Vector tile buffer addresses derived from `%destination` and `%offsets`.
+  For each active lane `i < active_lanes`, computes
+  `addr[i] = destination + offsets[i] * sizeof(element_type)` and stores the
+  corresponding lane of `%value` to `addr[i]`. The address of each active lane
+  MUST be aligned to the element width. For 8-bit forms, only the even-numbered
+  bytes of `%value` are architecturally valid store data. If two or more active
+  lanes resolve to the same destination address, the granted writer is
+  architecturally unspecified. Inactive lanes do not issue store requests and
+  do not raise overflow on their suppressed addresses.
 - CCE correspondence:
   `vscatter(...)`
   `__builtin_cce_vscatter_*`
@@ -1969,7 +2127,10 @@ ISA assertions for this family:
 - ISA family:
   `PSTS`
 - semantics:
-  Stores predicate state to the Vector tile buffer at `destination + offset`.
+  Stores predicate state to `destination + offset`. The stored predicate data
+  type is always `b8`, regardless of the surrounding vector element type. The
+  effective address MUST satisfy the alignment rule of the predicate-store
+  family.
 - CCE correspondence:
   `psts(...)`
   `__builtin_cce_psts_b8`, `__builtin_cce_psts_post_b8`
@@ -1983,7 +2144,10 @@ ISA assertions for this family:
 - ISA family:
   `PST`
 - semantics:
-  Stores predicate state to the Vector tile buffer using an explicit index offset and predicate-store distribution token.
+  Stores predicate state to `destination + offset` using the predicate-store
+  distribution token. `DIST = "NORM"` stores the full `VL/8` predicate image.
+  `DIST = "PK"` packs the source predicate by keeping every other bit and
+  stores `VL/16` bytes.
 - CCE correspondence:
   `pst(...)`
   `__builtin_cce_pst_b8`
@@ -1997,7 +2161,9 @@ ISA assertions for this family:
 - ISA family:
   `PSTI`
 - semantics:
-  Stores predicate state to the Vector tile buffer using an immediate-style scalar offset and predicate-store distribution token.
+  Stores predicate state using the immediate-offset predicate-store form. The
+  offset is scaled by the alignment size of the chosen distribution token
+  exactly as in the ISA immediate form.
 - CCE correspondence:
   `psti(...)`
   `__builtin_cce_psti_b8`, `__builtin_cce_psti_post_b8`
@@ -2011,7 +2177,9 @@ ISA assertions for this family:
 - ISA family:
   `VSST`
 - semantics:
-  Stores vector data to the Vector tile buffer using a stride token rather than a regular contiguous distribution.
+  Stores vector data using the fixed stride pattern encoded by `STRIDE` instead
+  of a contiguous distribution. The currently surfaced ISA stride form stores
+  one 16-bit element and skips seven 16-bit positions repeatedly.
 - CCE correspondence:
   `vsst(...)`
   `__builtin_cce_vsst_*`
@@ -2025,7 +2193,10 @@ ISA assertions for this family:
 - ISA family:
   `VST x2`
 - semantics:
-  Stores `%low` and `%high` to the Vector tile buffer as one x2 store operation. `DIST` determines how the two source vectors are interleaved into memory, and `%mask` gates which lanes update memory.
+  Stores `%low` and `%high` as one interleaved `2*VL` destination stream.
+  `DIST` chooses whether the interleave unit is 8-bit, 16-bit, or 32-bit. The
+  ISA even-register source pair is reified as the two SSA operands `%low` and
+  `%high`. `%mask` governs which lanes commit to memory.
 - CCE correspondence:
   `vst(...)`
   `__builtin_cce_vstx2_*`
@@ -2035,11 +2206,17 @@ ISA assertions for this family:
 - syntax:
   `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, !llvm.ptr<AS>, i32, !pto.mask`
 - operand roles:
-  `%value` is the vector being stored, `%destination` is the Vector tile buffer base pointer, `%offset` is the scalar displacement, and `%mask` is the predicate control.
+  `%value` is the vector being stored, `%destination` is the Vector tile buffer
+  base pointer, `%offset` is the packed block-stride configuration word, and
+  `%mask` is the predicate control.
 - ISA family:
   `VSSTB`
 - semantics:
-  Performs a masked strided vector store using a scalar offset and predicate mask.
+  Interprets `%offset` as the packed block-stride configuration word whose upper
+  16 bits are the block stride and whose lower 16 bits are the repeat stride.
+  For each 32-byte block whose governing predicate slice is active, writes that
+  block to the corresponding block-stride destination. A fully inactive block
+  does not issue a store and does not raise overflow on its suppressed address.
 - CCE correspondence:
   `vsstb(...)`
   `__builtin_cce_vsstb_*`, `__builtin_cce_vsstb_post_*`
@@ -2053,7 +2230,11 @@ ISA assertions for this family:
 - ISA family:
   `VSTA`
 - semantics:
-  Stores align-state payload to the Vector tile buffer at `destination + offset`.
+  Flushes the valid tail bytes buffered in `%value` to the aligned Vector tile
+  buffer address determined by `dst_addr = destination + offset` and
+  `aligned_addr = floor(dst_addr / 32) * 32`. The flush address MUST equal the
+  post-updated address of the last dependent unaligned-store stream that wrote
+  `%value`. After the flush, the align flag is cleared.
 - CCE correspondence:
   `vsta(...)`
   `__builtin_cce_vsta_*`
@@ -2067,7 +2248,8 @@ ISA assertions for this family:
 - ISA family:
   `VSTAS`
 - semantics:
-  Stores align-state payload to the Vector tile buffer using a scalar offset form.
+  Performs the same buffered-tail flush as `pto.vsta`, but with the scalar
+  register offset form of the addressed flush.
 - CCE correspondence:
   `vstas(...)`
   `__builtin_cce_vstas_*`, `__builtin_cce_vstas_post_*`
@@ -2081,7 +2263,10 @@ ISA assertions for this family:
 - ISA family:
   `VSTAR`
 - semantics:
-  Stores align-state payload using the base pointer carried directly by `%destination`.
+  Flushes the buffered tail bytes in `%value` using the base-plus-`AR`
+  addressing form of the ISA. The address implied by the live `AR` SPR MUST
+  equal the post-updated address of the last dependent `pto.vstur` stream.
+  After the flush, the align flag is cleared.
 - CCE correspondence:
   `vstar(...)`
   `__builtin_cce_vstar_*`
@@ -2106,7 +2291,14 @@ These ops make ISA reference-updated state explicit as SSA results.
 - ISA family:
   `PSTU`
 - semantics:
-  Stores predicate data through the stateful predicate-store form and returns the align state and base pointer state after the store. The returned state is the exact architected successor state for the next dependent store in the same stream.
+  Stores predicate data through the stateful packed-predicate form. For
+  `.b16`-like packing, the ISA keeps one bit from each 2-bit predicate pair and
+  stores `VL/16` bytes; for `.b32`-like packing, it keeps one bit from each
+  4-bit predicate group and stores `VL/32` bytes. If the write does not yet
+  cross a 32-byte boundary, the produced bytes remain buffered in
+  `%align_out`. If it crosses a boundary, the aligned portion is committed and
+  the residual suffix remains buffered in `%align_out`. `%base_out` is the
+  exact successor base pointer for the next dependent store in the same stream.
 - CCE correspondence:
   `pstu(...)`
   `__builtin_cce_pstu_b16`, `__builtin_cce_pstu_b32`
@@ -2120,7 +2312,13 @@ These ops make ISA reference-updated state explicit as SSA results.
 - ISA family:
   `VSTU`
 - semantics:
-  Stores `%value` through the stateful unaligned-store form addressed by `%base` and `%offset_in`, then returns the successor align state and successor index displacement. If `MODE` is `POST_UPDATE`, `%offset_out` is the ISA-updated displacement; if `MODE` is `NO_POST_UPDATE`, `%offset_out` preserves the incoming displacement.
+  Stores `%value` through the stateful unaligned-store form addressed by
+  `dst_addr = base + offset_in`. The store merges any valid prefix bytes held in
+  `%align_in` with the new vector data, commits every byte that reaches an
+  aligned 32-byte store boundary, and returns the residual suffix in
+  `%align_out`. If `MODE` is `POST_UPDATE`, `%offset_out` is the ISA successor
+  displacement after advancing by one vector length; otherwise `%offset_out`
+  preserves `%offset_in`.
 - CCE correspondence:
   `vstu(...)`
   `__builtin_cce_vstu_*`
@@ -2130,11 +2328,19 @@ These ops make ISA reference-updated state explicit as SSA results.
 - syntax:
   `%align_out, %base_out = pto.vstus %align_in, %offset, %value, %base, "MODE" : !pto.align, i32, !pto.vreg<NxT>, !llvm.ptr<AS> -> !pto.align, !llvm.ptr<AS>`
 - operand roles:
-  `%align_in` is the incoming align state, `%offset` is the scalar displacement, `%value` is the vector being stored, `%base` is the current base pointer, `"MODE"` selects post-update behavior, `%align_out` is the updated align state, and `%base_out` is the updated base pointer.
+  `%align_in` is the incoming align state, `%offset` is the variable byte count
+  to store and the post-update distance of the ISA form, `%value` is the vector
+  being stored, `%base` is the current base pointer, `"MODE"` selects
+  post-update behavior, `%align_out` is the updated align state, and
+  `%base_out` is the updated base pointer.
 - ISA family:
   `VSTUS`
 - semantics:
-  Stores `%value` through the scalar-offset stateful unaligned-store form and returns the successor align state and successor base pointer. If `MODE` is `POST_UPDATE`, `%base_out` is the ISA-updated base; if `MODE` is `NO_POST_UPDATE`, `%base_out` preserves the incoming base.
+  Stores only the least-significant `%offset` bytes of `%value` through the
+  variable-size unaligned-store form. Bytes that do not yet complete a 32-byte
+  aligned destination block remain buffered in `%align_out`; aligned destination
+  bytes are committed immediately. `%base_out` is the ISA successor base when
+  `MODE` requests post-update; otherwise it preserves the incoming base.
 - CCE correspondence:
   `vstus(...)`
   `__builtin_cce_vstus_*`, `__builtin_cce_vstus_post_*`
@@ -2148,7 +2354,12 @@ These ops make ISA reference-updated state explicit as SSA results.
 - ISA family:
   `VSTUR`
 - semantics:
-  Stores `%value` through the register-update stateful unaligned-store form and returns the successor align state. Any architected base update is controlled by `MODE` and is not hidden from surrounding VPTO state threading.
+  Stores a variable-size suffix of `%value` through the register-update
+  unaligned-store form. The effective address is `base + AR`, the stored byte
+  count is the live value of `SQZN`, and `%align_out` carries the residual
+  buffered tail after committing every full 32-byte aligned destination block.
+  If `MODE` requests post-update, the live `AR` SPR is advanced by `SQZN`; if
+  not, `AR` is preserved.
 - CCE correspondence:
   `vstur(...)`
   `__builtin_cce_vstur_*`
@@ -2231,8 +2442,13 @@ ISA assertions for this family:
   entry. Release consumes one scalar resource identifier.
 - semantics:
   `push` writes `{%xt, %xm, %xn, %xd}` into the next vector-thread parameter
-  buffer entry. `release` returns a previously used parameter-buffer identifier
-  to the implementation so it can be reused by a later vector loop.
+  buffer entry. In a multi-push parameter sequence, the lowest 32 bits of the
+  first pushed word are the SREG update bitmap; each set bit names one pair of
+  16-bit SREGs to initialize, and the reserved bitmap bits for the special SREG
+  slots, including the low pair and the final two pairs, MUST remain clear.
+  Additional pushes extend the same PB slot and do not carry a new bitmap.
+  `release` returns a previously used parameter-buffer identifier so software
+  may reuse that slot after the retained-parameter sequence is finished.
 
 ### `pto.vloop`
 
@@ -2259,8 +2475,9 @@ ISA assertions for this family:
 - assertions and exceptions:
   `%instr_count` MUST be non-zero. The `layer` / `last` fields MUST encode a
   valid nesting topology. The bound register used by a counted loop MUST NOT be
-  post-updated inside that loop body. `N` in an element-counted loop MUST be
-  greater than zero.
+  post-updated inside that loop body. There MUST NOT be any
+  `SJUMP` / `SJUMPI` / `SCBZ` / `SCBZI` / `SEND` instruction within the loop
+  body. `N` in an element-counted loop MUST be greater than zero.
 
 ### `pto.vpred_decl`
 
@@ -2329,7 +2546,9 @@ ISA assertions for this family:
   layers. When multiple declarations target the same address register, the last
   declaration overwrites earlier ones.
 - assertions and exceptions:
-  `VAG` MUST be outside `VLOOPv2` bodies. When the address register is also used
+  `VAG` MUST be outside `VLOOPv2` bodies. Its source shared registers are drawn
+  from the architecturally fixed `S0..S31` set and preserve the ISA even-ID
+  rule for 32-bit address contributions. When the address register is also used
   by post-update load/store forms, the resulting address stream MUST remain
   consecutive across loop boundaries.
 
@@ -2405,11 +2624,13 @@ ISA assertions for this family:
   Vector moves use `b8`, `b16`, or `b32` lane interpretation. Predicate moves
   always operate on `b8` predicate elements.
 - semantics:
-  Copies active source elements to the corresponding destination positions.
-  Unpredicated vector moves copy all elements. Predicated vector moves are an
-  alias of lane-select with merging behavior. Predicate moves are aliases of
-  `PAND` with identical source operands; the predicated form uses zeroing and
-  the unpredicated form uses the source predicate itself as the governing mask.
+  `VMOV` copies source vector lanes to the destination. The predicated vector
+  form is an alias of `VSEL` with merging behavior: active lanes take `%src`
+  and inactive lanes preserve the old destination contents. The unpredicated
+  vector form copies all lanes. `PMOV` copies predicate bits. The predicated
+  predicate form is an alias of `PAND dst, src, src, gov` with zeroing
+  predication; the unpredicated predicate form is the alias `PAND dst, src,
+  src, src`.
 
 ### `pto.vpack_family`
 
@@ -2468,9 +2689,11 @@ ISA assertions for this family:
   shared-register loop index.
 - semantics:
   `PLT` sets destination element `i` true when `i < limit`, then decrements the
-  shared-register count by `VL_t`, saturating the count at zero. `PLTM` sets
-  destination element `i` true when `i + loop_base * VL_t < limit`. Both forms
-  generate fresh predicate state rather than updating only active lanes.
+  underlying shared-register count by `VL_t`, saturating the remaining count at
+  zero. `PLTM` sets destination element `i` true when `i + loop_base * VL_t <
+  limit`. Both forms generate fresh predicate state rather than updating only
+  active lanes. The decremented remaining-count state is architectural even
+  though the current VPTO surface returns only the predicate result.
 
 ### `pto.vpredicate_logic`
 
