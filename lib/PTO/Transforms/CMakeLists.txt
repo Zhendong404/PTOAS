@@ -1,6 +1,7 @@
 add_mlir_dialect_library(PTOTransforms
   HIVMIntrinsicNaming.cpp
   A5VMTextEmitter.cpp
+  A5VMLLVMEmitter.cpp
   PTOToA5VM.cpp
   PTOToA5VMLowering.cpp
   InsertLoadStoreForMixCV.cpp
@@ -38,6 +39,9 @@ add_mlir_dialect_library(PTOTransforms
   PTOPassesIncGen
   PTOOpsIncGen
 
+  LINK_COMPONENTS
+  Analysis
+
   LINK_LIBS PUBLIC
   PTOIR
   MLIRIR
@@ -53,6 +57,10 @@ add_mlir_dialect_library(PTOTransforms
   MLIRTensorDialect
   MLIRSCFDialect
   MLIRSCFToEmitC
+  MLIRSCFToControlFlow
+  MLIRConvertToLLVMPass
+  MLIRTargetLLVMIRExport
+  MLIRToLLVMIRTranslationRegistration
 )
 
 install(TARGETS PTOTransforms

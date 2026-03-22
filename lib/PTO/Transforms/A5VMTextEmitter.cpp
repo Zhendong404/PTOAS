@@ -808,7 +808,7 @@ private:
         diagOS << "A5VM emission failed: expected one operand for plt_b32\n";
         return failure();
       }
-      llvm::Value *laneCount = castIntegerLikeToI16(rawOperands[0]);
+      llvm::Value *laneCount = castIntegerLikeToI32(rawOperands[0]);
       if (!laneCount) {
         diagOS << "A5VM emission failed: could not cast plt_b32 lane count\n";
         return failure();
@@ -879,7 +879,16 @@ private:
     }
 
     llvm::Type *resultType = nullptr;
-    if (op->getNumResults() == 1) {
+    if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
+      llvm::Type *maskType = convertType(plt.getMask().getType());
+      llvm::Type *scalarOutType = convertType(plt.getScalarOut().getType());
+      if (!maskType || !scalarOutType) {
+        diagOS << "A5VM emission failed: unsupported result type for "
+               << op->getName().getStringRef() << "\n";
+        return failure();
+      }
+      resultType = llvm::StructType::get(llvmContext, {maskType, scalarOutType});
+    } else if (op->getNumResults() == 1) {
       resultType = convertType(op->getResult(0).getType());
       if (!resultType) {
         diagOS << "A5VM emission failed: unsupported result type for "
@@ -898,8 +907,12 @@ private:
     llvm::Function *callee =
         getOrCreateDeclaration(selection.getEmittedCallee(), fnType);
     llvm::CallInst *call = builder.CreateCall(callee, argValues);
-    if (op->getNumResults() == 1)
+    if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
+      bind(plt.getMask(), builder.CreateExtractValue(call, {0}));
+      bind(plt.getScalarOut(), builder.CreateExtractValue(call, {1}));
+    } else if (op->getNumResults() == 1) {
       bind(op->getResult(0), call);
+    }
     return success();
   }
 

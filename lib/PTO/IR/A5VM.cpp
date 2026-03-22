@@ -695,11 +695,14 @@ LogicalResult PgeB32Op::verify() {
 
 template <typename PltOp>
 static LogicalResult verifyPredicateLaneCountOp(PltOp op) {
-  if (failed(verifyMaskTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
   Type scalarType = op.getScalar().getType();
-  if (!scalarType.isIndex() && !isa<IntegerType>(scalarType))
-    return op.emitOpError("requires scalar to be index or integer");
+  auto scalarIntType = dyn_cast<IntegerType>(scalarType);
+  if (!scalarIntType || scalarIntType.getWidth() != 32)
+    return op.emitOpError("requires scalar to be i32");
+  if (op.getScalarOut().getType() != scalarType)
+    return op.emitOpError("requires scalar_out to match scalar type");
   return success();
 }
 

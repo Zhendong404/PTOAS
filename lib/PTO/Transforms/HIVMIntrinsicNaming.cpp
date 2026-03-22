@@ -161,9 +161,10 @@ static FailureOr<IntrinsicSelection> selectPredicateIntrinsic(Operation *op) {
   llvm::SmallVector<std::string, 2> missingFields = {"confirmed_hivm_name"};
 
   if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
-    const std::string resultFragment = getVectorTypeFragment(plt.getResult().getType());
-    usedFields = {"family=plt", "bitwidth=32", "result=" + resultFragment};
-    return makeResolved(op, "llvm.hivm.plt.b32", usedFields, resultFragment);
+    const std::string resultFragment = getVectorTypeFragment(plt.getMask().getType());
+    usedFields = {"family=plt", "bitwidth=32", "result=" + resultFragment,
+                  "variant=v300", "scalar=i32", "scalar_out=i32"};
+    return makeResolved(op, "llvm.hivm.plt.b32.v300", usedFields, resultFragment);
   }
 
   return failure();

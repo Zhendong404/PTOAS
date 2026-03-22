@@ -9,6 +9,7 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/A5VMTextEmitter.h"
+#include "PTO/Transforms/A5VMLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
@@ -168,6 +169,11 @@ static llvm::cl::opt<bool> a5vmPrintIntrinsics(
 static llvm::cl::opt<bool> a5vmEmitHIVMText(
     "a5vm-emit-hivm-text",
     llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw A5VM IR"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialLLVM(
+    "a5vm-emit-hivm-llvm",
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via the official LLVM dialect export path"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> a5vmAllowUnresolved(
@@ -1027,7 +1033,7 @@ int main(int argc, char **argv) {
       llvm::errs() << "\n";
     }
 
-    if (!a5vmEmitHIVMText) {
+    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM) {
       module->print(outputFile.os());
       outputFile.os() << "\n";
       outputFile.keep();
@@ -1040,9 +1046,19 @@ int main(int argc, char **argv) {
     options.allowUnresolved = a5vmAllowUnresolved;
     options.unresolvedReportPath =
         !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : a5vmUnresolvedReport;
+    if (arch == "a5") {
+      options.targetTriple = "hiipu64-hisilicon-cce";
+      options.march = "dav-c310-vec";
+      options.aicoreArch = "dav-c310-vec";
+    }
 
-    if (failed(pto::translateA5VMModuleToText(*module, outputFile.os(), options,
-                                              llvm::errs()))) {
+    LogicalResult emissionStatus =
+        a5vmEmitHIVMOfficialLLVM
+            ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
+                                                 options, llvm::errs())
+            : pto::translateA5VMModuleToText(*module, outputFile.os(), options,
+                                             llvm::errs());
+    if (failed(emissionStatus)) {
       llvm::errs() << "Error: Failed to emit A5VM text.\n";
       return 1;
     }

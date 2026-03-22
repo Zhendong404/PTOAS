@@ -297,13 +297,13 @@ def A5VM_PgeB16Op : A5VM_PgeOp<"pge_b16">;
 def A5VM_PgeB32Op : A5VM_PgeOp<"pge_b32">;
 
 class A5VM_PltOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
-  let arguments = (ins AnyType:$scalar);
-  let results = (outs A5VM_MaskTypeConstraint:$result);
+  let arguments = (ins I32:$scalar);
+  let results = (outs A5VM_MaskTypeConstraint:$mask, I32:$scalar_out);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $scalar attr-dict `:` type($scalar) `->` type($result)
+    $scalar attr-dict `:` type($scalar) `->` type($mask) `,` type($scalar_out)
   }];
 }
 

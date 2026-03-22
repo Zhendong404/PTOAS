@@ -13,6 +13,9 @@ struct A5VMEmissionOptions {
   bool printIntrinsicSelections = false;
   bool allowUnresolved = true;
   std::string unresolvedReportPath;
+  std::string targetTriple;
+  std::string march;
+  std::string aicoreArch;
 };
 
 LogicalResult translateA5VMModuleToText(ModuleOp module, llvm::raw_ostream &os,

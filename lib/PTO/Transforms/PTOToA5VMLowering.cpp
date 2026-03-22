@@ -11,6 +11,8 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTOSyncUtils.h"
 
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -471,16 +473,20 @@ void normalizeMixedGlobalShapeAndStride(ArrayRef<OpFoldResult> shape,
 
 Value adjustPointerByElemOffset(Value ptr, Value elemOffsetI64, int64_t elemBytes,
                                 PatternRewriter &rewriter, Location loc) {
-  if (!ptr || !elemOffsetI64)
+  if (!ptr || !elemOffsetI64 || elemBytes <= 0)
     return {};
-  Value offsetBytes = elemOffsetI64;
+
+  Value offset = elemOffsetI64.getType().isIndex()
+                     ? rewriter.create<arith::IndexCastUIOp>(
+                           loc, rewriter.getI64Type(), elemOffsetI64)
+                     : elemOffsetI64;
+  Value byteOffset = offset;
   if (elemBytes != 1) {
     Value elemBytesValue = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-    offsetBytes = createI64Mul(elemOffsetI64, elemBytesValue, rewriter, loc);
+    byteOffset = createI64Mul(offset, elemBytesValue, rewriter, loc);
   }
-  Value baseInt = rewriter.create<LLVM::PtrToIntOp>(loc, rewriter.getI64Type(), ptr);
-  Value adjusted = createI64Add(baseInt, offsetBytes, rewriter, loc);
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptr.getType(), adjusted);
+  return rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
+                                      ptr, ValueRange{byteOffset});
 }
 
 LogicalResult buildVecNdLoadPlan(ArrayRef<OpFoldResult> shape,
@@ -1416,36 +1422,54 @@ Value materializeBufferPointer(Value value, Type elementType,
   }
 
   Value memrefValue = materializeTileBufferView(value, rewriter, loc);
-  if (!memrefValue || !isa<BaseMemRefType>(memrefValue.getType()))
+  auto memrefType = dyn_cast_or_null<MemRefType>(memrefValue.getType());
+  if (!memrefValue || !memrefType)
     return {};
 
-  Value ptrAsIndex =
-      rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc, memrefValue);
-  Value ptrAsI64 =
-      rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI64Type(), ptrAsIndex);
-  auto ptrType =
-      LLVM::LLVMPointerType::get(rewriter.getContext(),
-                                 getLLVMAddressSpace(memorySpace));
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, ptrAsI64);
+  unsigned llvmAddressSpace = getLLVMAddressSpace(
+      memrefType.getMemorySpace() ? memrefType.getMemorySpace() : memorySpace);
+  auto canonicalMemRefType = MemRefType::get(
+      memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
+      rewriter.getI64IntegerAttr(llvmAddressSpace));
+  if (memrefValue.getType() != canonicalMemRefType)
+    memrefValue = rewriter.create<memref::MemorySpaceCastOp>(loc,
+                                                             canonicalMemRefType,
+                                                             memrefValue);
+
+  LLVMTypeConverter typeConverter(rewriter.getContext());
+  Type llvmDescriptorType = typeConverter.convertType(canonicalMemRefType);
+  if (!llvmDescriptorType)
+    return {};
+
+  Value descriptor =
+      rewriter
+          .create<UnrealizedConversionCastOp>(loc, TypeRange{llvmDescriptorType},
+                                              memrefValue)
+          .getResult(0);
+  MemRefDescriptor memrefDescriptor(descriptor);
+  Value alignedPtr = memrefDescriptor.alignedPtr(rewriter, loc);
+  if (!alignedPtr)
+    return {};
+
+  auto ptrType = dyn_cast<LLVM::LLVMPointerType>(alignedPtr.getType());
+  if (!ptrType)
+    return {};
+  if (ptrType.getAddressSpace() != getLLVMAddressSpace(memorySpace))
+    return {};
+  return alignedPtr;
 }
 
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
                           PatternRewriter &rewriter, Location loc) {
-  int64_t elemBytes = getElementByteSize(elementType);
-  if (!basePtr || elemBytes <= 0)
+  if (!basePtr)
     return {};
 
-  Value baseI64 =
-      rewriter.create<LLVM::PtrToIntOp>(loc, rewriter.getI64Type(), basePtr);
   Value offsetI64 = elementOffset.getType().isIndex()
                         ? rewriter.create<arith::IndexCastUIOp>(
                               loc, rewriter.getI64Type(), elementOffset)
                         : elementOffset;
-  Value elemBytesI64 = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-  Value byteOffset = rewriter.create<arith::MulIOp>(loc, offsetI64, elemBytesI64);
-  Value shifted = rewriter.create<arith::AddIOp>(loc, baseI64, byteOffset);
-  auto ptrType = cast<LLVM::LLVMPointerType>(basePtr.getType());
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, shifted);
+  return rewriter.create<LLVM::GEPOp>(loc, basePtr.getType(), elementType, basePtr,
+                                      ValueRange{offsetI64});
 }
 
 Value buildPackedCountI64(PatternRewriter &rewriter, Location loc,
@@ -2000,32 +2024,53 @@ Value buildMinIndexValue(PatternRewriter &rewriter, Location loc, Value lhs,
   return rewriter.create<arith::SelectOp>(loc, lhsLtRhs, lhs, rhs);
 }
 
-Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
-                                     Type elementType, Value laneCount) {
+struct PredicateMaterialization {
+  Value mask;
+  Value nextScalar;
+};
+
+PredicateMaterialization buildPredicateForLaneCount(PatternRewriter &rewriter,
+                                                    Location loc,
+                                                    Type elementType,
+                                                    Value laneCount) {
   auto maskType = a5vm::MaskType::get(rewriter.getContext());
-  Value laneCountI16 = laneCount;
+  Value laneCountI32 = laneCount;
   if (laneCount.getType().isIndex()) {
-    laneCountI16 =
-        rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI16Type(), laneCount);
+    laneCountI32 =
+        rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(), laneCount);
   } else if (auto intType = dyn_cast<IntegerType>(laneCount.getType())) {
-    if (intType.getWidth() < 16)
-      laneCountI16 = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI16Type(), laneCount);
-    else if (intType.getWidth() > 16)
-      laneCountI16 =
-          rewriter.create<arith::TruncIOp>(loc, rewriter.getI16Type(), laneCount);
+    if (intType.getWidth() < 32)
+      laneCountI32 = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), laneCount);
+    else if (intType.getWidth() > 32)
+      laneCountI32 =
+          rewriter.create<arith::TruncIOp>(loc, rewriter.getI32Type(), laneCount);
   }
   unsigned bitWidth = 0;
   if (auto intType = dyn_cast<IntegerType>(elementType))
     bitWidth = intType.getWidth();
   else if (auto floatType = dyn_cast<FloatType>(elementType))
     bitWidth = floatType.getWidth();
-  if (bitWidth == 8)
-    return rewriter.create<a5vm::PltB8Op>(loc, maskType, laneCountI16).getResult();
-  if (bitWidth == 16)
-    return rewriter.create<a5vm::PltB16Op>(loc, maskType, laneCountI16).getResult();
-  if (bitWidth == 32)
-    return rewriter.create<a5vm::PltB32Op>(loc, maskType, laneCountI16).getResult();
+  if (bitWidth == 8) {
+    auto plt = rewriter.create<a5vm::PltB8Op>(loc, maskType, rewriter.getI32Type(),
+                                              laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
+  if (bitWidth == 16) {
+    auto plt = rewriter.create<a5vm::PltB16Op>(loc, maskType, rewriter.getI32Type(),
+                                               laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
+  if (bitWidth == 32) {
+    auto plt = rewriter.create<a5vm::PltB32Op>(loc, maskType, rewriter.getI32Type(),
+                                               laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
   llvm_unreachable("unsupported element type for predicate lane-count lowering");
+}
+
+Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
+                                     Type elementType, Value laneCount) {
+  return buildPredicateForLaneCount(rewriter, loc, elementType, laneCount).mask;
 }
 
 Value buildAllPredicateMask(PatternRewriter &rewriter, Location loc,
@@ -2719,8 +2764,8 @@ LogicalResult buildUnaryVecScope(StringRef family,
       rewriter.create<arith::MulIOp>(loc, validRowsValue, validColsValue);
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
-  Value vectorWidthValue =
-      rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
+  Value scalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
+                                                           totalElementsValue);
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -2728,15 +2773,17 @@ LogicalResult buildUnaryVecScope(StringRef family,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto chunkLoop =
-      rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
+  auto chunkLoop = rewriter.create<scf::ForOp>(loc, c0, totalElementsValue,
+                                               vectorStepValue,
+                                               ValueRange{scalarInit});
 
   OpBuilder::InsertionGuard chunkGuard(rewriter);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
-  Value remaining = rewriter.create<arith::SubIOp>(loc, totalElementsValue, offset);
-  Value predicate =
-      buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, remaining);
+  Value remaining = chunkLoop.getRegionIterArgs().front();
+  PredicateMaterialization predicateState =
+      buildPredicateForLaneCount(rewriter, loc, contract.elementType, remaining);
+  Value predicate = predicateState.mask;
   auto vlds = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, offset, StringAttr());
   Value computed;
   if (family == "abs")
@@ -2764,6 +2811,7 @@ LogicalResult buildUnaryVecScope(StringRef family,
     return emitError(loc) << "unsupported A5VM unary family: " << family;
   rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
                                 predicate);
+  rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
 
   return success();
 }
