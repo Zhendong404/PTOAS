@@ -19,12 +19,35 @@ Before running `npu_validation`, make sure:
 - `PTO_ISA_ROOT` points to a `pto-isa` checkout with:
   - `include/`
   - `tests/common/`
+- the shell can read `/dev/davinci*` if you intend to execute on real hardware
 
-Canonical external repo path on this machine:
+Example:
 
 ```bash
-export PTO_ISA_ROOT=/home/mouliangyu/projects/github.com/PTO-ISA/pto-isa
+export PTO_ISA_ROOT=/path/to/pto-isa
 ```
+
+Useful runtime check:
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+python3 - <<'PY'
+import ctypes
+lib = ctypes.cdll.LoadLibrary('libascendcl.so')
+aclInit = lib.aclInit; aclInit.argtypes=[ctypes.c_char_p]; aclInit.restype=ctypes.c_int
+aclrtGetDeviceCount = lib.aclrtGetDeviceCount; aclrtGetDeviceCount.argtypes=[ctypes.c_void_p]; aclrtGetDeviceCount.restype=ctypes.c_int
+aclrtSetDevice = lib.aclrtSetDevice; aclrtSetDevice.argtypes=[ctypes.c_int]; aclrtSetDevice.restype=ctypes.c_int
+cnt = ctypes.c_uint(0)
+print('aclInit', aclInit(None))
+print('aclrtGetDeviceCount', aclrtGetDeviceCount(ctypes.byref(cnt)), cnt.value)
+print('aclrtSetDevice', aclrtSetDevice(0))
+PY
+```
+
+Interpretation:
+- `aclInit` succeeds
+- `aclrtGetDeviceCount` should report at least one device if the runtime can enumerate hardware
+- if `aclrtSetDevice(0)` fails with `507033` (`ACL_ERROR_RT_DEV_SETUP_ERROR`), the user context can see a device but cannot open a usable runtime context
 
 ## Canonical Flow For Abs On A5
 
@@ -62,7 +85,7 @@ Expected output directory:
 ### 3. Configure and build
 
 ```bash
-export PTO_ISA_ROOT=/home/mouliangyu/projects/github.com/PTO-ISA/pto-isa
+export PTO_ISA_ROOT=/path/to/pto-isa
 source /usr/local/Ascend/cann/set_env.sh
 cmake -S /tmp/ptoas-npu-validation-run/Abs/abs \
   -B /tmp/ptoas-npu-validation-run/Abs/abs/build \
@@ -71,10 +94,10 @@ cmake -S /tmp/ptoas-npu-validation-run/Abs/abs \
 cmake --build /tmp/ptoas-npu-validation-run/Abs/abs/build --parallel
 ```
 
-Build expectations observed on this machine:
+Typical build expectations:
 - `libabs_kernel.so` builds
 - `abs` builds
-- `abs_sim` may fail to link if simulator runtime symbols are missing
+- `abs_sim` may also build if the simulator runtime is available
 
 ### 4. Generate golden inputs
 
@@ -87,6 +110,22 @@ Expected files:
 - `v1.bin`
 - `v2.bin`
 
+Important: for the generated `Abs` testcase, `golden.py` does **not** emit
+`golden_v2.bin`, but `compare.py` expects it. Build the oracle explicitly from
+the input:
+
+```bash
+cd /tmp/ptoas-npu-validation-run/Abs/abs
+python3 - <<'PY'
+import numpy as np
+v1 = np.fromfile('v1.bin', dtype=np.float32)
+np.abs(v1).astype(np.float32).tofile('golden_v2.bin')
+PY
+```
+
+Expected additional file:
+- `golden_v2.bin`
+
 ## Running
 
 ### NPU run
@@ -94,11 +133,23 @@ Expected files:
 Only attempt this on a shell that can actually see `/dev/davinci*`.
 
 ```bash
-export PTO_ISA_ROOT=/home/mouliangyu/projects/github.com/PTO-ISA/pto-isa
+export PTO_ISA_ROOT=/path/to/pto-isa
 source /usr/local/Ascend/cann/set_env.sh
 cd /tmp/ptoas-npu-validation-run/Abs/abs
-LD_LIBRARY_PATH="/usr/local/Ascend/cann-9.0.0/lib64:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
   ./build/abs
+```
+
+If the current user cannot open the device context but `sudo` is acceptable in
+your environment, retry with:
+
+```bash
+sudo bash -lc '
+  cd /tmp/ptoas-npu-validation-run/Abs/abs
+  source /usr/local/Ascend/cann/set_env.sh >/dev/null 2>&1
+  LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
+    ./build/abs
+'
 ```
 
 ### Simulator run
@@ -106,12 +157,28 @@ LD_LIBRARY_PATH="/usr/local/Ascend/cann-9.0.0/lib64:${LD_LIBRARY_PATH:-}" \
 If `abs_sim` links successfully, run it with simulator libraries in `LD_LIBRARY_PATH`.
 
 ```bash
-export PTO_ISA_ROOT=/home/mouliangyu/projects/github.com/PTO-ISA/pto-isa
+export PTO_ISA_ROOT=/path/to/pto-isa
 source /usr/local/Ascend/cann/set_env.sh
 cd /tmp/ptoas-npu-validation-run/Abs/abs
-LD_LIBRARY_PATH="/usr/local/Ascend/cann-9.0.0/aarch64-linux/simulator/dav_3102/lib:/usr/local/Ascend/cann-9.0.0/lib64:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/aarch64-linux/simulator/dav_3102/lib:${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}" \
   ./build/abs_sim
 ```
+
+Treat simulator execution as optional. Depending on the local CANN install, the
+simulator binary may link successfully but still fail at runtime due to missing
+simulator services or runtime symbols.
+
+## Compare
+
+After generating `golden_v2.bin` and running the NPU binary, compare with:
+
+```bash
+cd /tmp/ptoas-npu-validation-run/Abs/abs
+python3 ./compare.py
+```
+
+Expected success output:
+- `[INFO] compare passed`
 
 ## Known Failure Modes
 
@@ -125,6 +192,12 @@ LD_LIBRARY_PATH="/usr/local/Ascend/cann-9.0.0/aarch64-linux/simulator/dav_3102/l
   - `rtKernelLaunchWithFlagV2`
   - `rtFunctionRegister`
 - If `./build/abs` fails at `aclInit(nullptr)`, the shell likely does not have usable Ascend device access.
+- If non-`sudo` `./build/abs` fails at `aclrtSetDevice(0)` with `507033`, the
+  current user context can enumerate the device but cannot open it. Depending
+  on local policy, retrying with `sudo` may be necessary.
+- If `compare.py` reports `golden_v2.bin` missing, that is a testcase
+  generation gap, not a kernel execution result. Construct `golden_v2.bin`
+  explicitly from `abs(v1)`.
 - In sandboxed agent environments, `/dev/davinci*` may be invisible even if the host shell can see them.
 
 ## Reporting Back
@@ -132,5 +205,8 @@ LD_LIBRARY_PATH="/usr/local/Ascend/cann-9.0.0/aarch64-linux/simulator/dav_3102/l
 When you use this skill, report:
 - the generated testcase directory
 - whether `libabs_kernel.so`, `abs`, and `abs_sim` built
-- whether `golden.py` generated input/output bins
+- whether `golden.py` generated input bins and whether `golden_v2.bin` had to
+  be created explicitly
+- whether NPU execution worked directly or required elevated privileges
+- whether `compare.py` passed
 - the first concrete blocker for NPU or simulator execution
