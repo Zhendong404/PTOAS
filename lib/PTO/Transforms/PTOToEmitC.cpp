@@ -2395,6 +2395,52 @@ struct AffineApplyMulConstToEmitC
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Kernel inference helpers
+//===----------------------------------------------------------------------===//
+
+enum class KernelKind { VecAdd, Matmul, Unknown };
+
+static KernelKind inferKernelKind(func::FuncOp f) {
+  bool hasAdd = false;
+  bool hasMM  = false;
+  f.walk([&](Operation *op) {
+    if (isa<mlir::pto::TAddOp>(op)) hasAdd = true;
+    if (isa<mlir::pto::TMatmulOp>(op)) hasMM = true;
+    if (isa<mlir::pto::TMatmulAccOp>(op)) hasMM = true;
+  });
+  if (hasMM)  return KernelKind::Matmul;
+  if (hasAdd) return KernelKind::VecAdd;
+  return KernelKind::Unknown;
+}
+
+static void inferTileMNK(func::FuncOp f, int &M, int &N, int &K) {
+  M = 32; N = 32; K = 32;
+  SmallVector<memref::SubViewOp, 4> subs;
+  f.walk([&](memref::SubViewOp sv) { subs.push_back(sv); });
+
+  auto readShape2D = [&](memref::SubViewOp sv, int &d0, int &d1) {
+    auto resTy = mlir::cast<MemRefType>(sv.getResult().getType());
+    if (resTy.getRank() == 2 && resTy.hasStaticShape()) {
+      d0 = (int)resTy.getDimSize(0);
+      d1 = (int)resTy.getDimSize(1);
+    }
+  };
+
+  if (subs.empty()) return;
+
+  int a0=32, a1=32;
+  readShape2D(subs[0], a0, a1);
+  M = a0; N = a1;
+
+  if (subs.size() >= 2) {
+    int b0=32, b1=32;
+    readShape2D(subs[0], a0, a1);
+    readShape2D(subs[1], b0, b1);
+    M = a0; K = a1; N = b1;
+  }
+}
+
 static std::optional<StringRef> getKernelKindMacro(func::FuncOp funcOp) {
   auto kernelKindAttr =
       funcOp->getAttrOfType<FunctionKernelKindAttr>(FunctionKernelKindAttr::name);
@@ -2501,6 +2547,36 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
     return success();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// SubView lowering to GlobalTensor (keep your existing code)
+//===----------------------------------------------------------------------===
+
+enum class Role { A, B, C, Unknown };
+
+static Role inferSubviewRole(memref::SubViewOp sv) {
+  for (Operation *u : sv.getResult().getUsers()) {
+    if (auto ld = dyn_cast<mlir::pto::TLoadOp>(u)) {
+      Value ub = ld.getDst();
+      if (!ub) continue;
+      for (Operation *uu : ub.getUsers()) {
+        if (auto mm = dyn_cast<mlir::pto::TMatmulOp>(uu)) {
+          if (mm.getLhs() == ub) return Role::A;
+          if (mm.getRhs() == ub) return Role::B;
+        }
+        if (auto mmacc = dyn_cast<mlir::pto::TMatmulAccOp>(uu)) {
+          if (mmacc.getLhs() == ub) return Role::A;
+          if (mmacc.getRhs() == ub) return Role::B;
+        }
+      }
+    }
+
+    if (auto st = dyn_cast<mlir::pto::TStoreOp>(u)) {
+      if (st.getDst() == sv.getResult()) return Role::C;
+    }
+  }
+  return Role::Unknown;
+}
 
 // =============================================================================
 // 4. MemRef SubView -> Explicit Shape/Stride Construction (Full Implementation)
@@ -3770,6 +3846,26 @@ static std::string getAutoSyncTailModeToken(Operation *op) {
 
   // Fallback to the conservative behavior when seeing unknown policies.
   return kAutoSyncTailModeBarrierAllToken.str();
+}
+
+static std::string getPipeName(pto::PIPE pipe) {
+  switch (pipe) {
+    case pto::PIPE::PIPE_S: return "PIPE_S";
+    case pto::PIPE::PIPE_V: return "PIPE_V";
+    case pto::PIPE::PIPE_M: return "PIPE_M";
+    case pto::PIPE::PIPE_MTE1: return "PIPE_MTE1";
+    case pto::PIPE::PIPE_MTE2: return "PIPE_MTE2";
+    case pto::PIPE::PIPE_MTE3: return "PIPE_MTE3";
+    case pto::PIPE::PIPE_ALL: return "PIPE_ALL";
+    case pto::PIPE::PIPE_MTE4: return "PIPE_MTE4";
+    case pto::PIPE::PIPE_MTE5: return "PIPE_MTE5";
+    case pto::PIPE::PIPE_V2: return "PIPE_V2";
+    case pto::PIPE::PIPE_FIX: return "PIPE_FIX";
+    case pto::PIPE::VIRTUAL_PIPE_MTE2_L1A: return "VIRTUAL_PIPE_MTE2_L1A";
+    case pto::PIPE::VIRTUAL_PIPE_MTE2_L1B: return "VIRTUAL_PIPE_MTE2_L1B";
+    // 默认回退
+    default: return "PIPE_ALL"; 
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -5669,6 +5765,12 @@ struct PTOFillPadExpandToEmitC
 // - Index form: TGATHER(dst, src0, indices)
 // - Mask form : TGATHER<dstTileTok, srcTileTok, pto::MaskPattern::Pxxxx>(dst, src0)
 //===----------------------------------------------------------------------===//
+
+static std::string maskPatternTok(mlir::pto::MaskPatternAttr a) {
+
+  auto v = a.getValue(); // enum
+  return (std::string("pto::MaskPattern::") + mlir::pto::stringifyMaskPattern(v).str());
+}
 
 struct PTOGatherToEmitC : public OpConversionPattern<pto::TGatherOp> {
   using OpConversionPattern<pto::TGatherOp>::OpConversionPattern;

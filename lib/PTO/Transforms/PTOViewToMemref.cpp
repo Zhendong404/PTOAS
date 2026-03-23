@@ -260,6 +260,45 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
   return true;
 }
 
+// Helper: 递归拆解 AffineExpr
+static void flattenAddExpr(AffineExpr expr, SmallVectorImpl<AffineExpr> &terms) {
+  if (auto add = expr.dyn_cast<AffineBinaryOpExpr>()) {
+    if (add.getKind() == AffineExprKind::Add) {
+      flattenAddExpr(add.getLHS(), terms);
+      flattenAddExpr(add.getRHS(), terms);
+      return;
+    }
+  }
+  terms.push_back(expr);
+}
+
+// Helper: 从 AffineMap 提取 Strides
+static void decomposeStridedLayout(AffineMap map, SmallVectorImpl<int64_t> &strides) {
+  strides.assign(map.getNumDims(), 0);
+  if (map.getNumResults() != 1) return;
+  
+  SmallVector<AffineExpr, 4> terms;
+  flattenAddExpr(map.getResult(0), terms);
+
+  for (auto term : terms) {
+    if (auto mul = term.dyn_cast<AffineBinaryOpExpr>()) {
+      if (mul.getKind() == AffineExprKind::Mul) {
+        AffineExpr lhs = mul.getLHS();
+        AffineExpr rhs = mul.getRHS();
+        if (auto dim = lhs.dyn_cast<AffineDimExpr>()) {
+          if (auto cst = rhs.dyn_cast<AffineConstantExpr>())
+            strides[dim.getPosition()] = cst.getValue();
+        } else if (auto dim = rhs.dyn_cast<AffineDimExpr>()) {
+          if (auto cst = lhs.dyn_cast<AffineConstantExpr>())
+            strides[dim.getPosition()] = cst.getValue();
+        }
+      }
+    } else if (auto dim = term.dyn_cast<AffineDimExpr>()) {
+      strides[dim.getPosition()] = 1;
+    }
+  }
+}
+
 // 确保 Value 是 Index 类型
 static Value ensureIndex(IRRewriter &rewriter, Location loc, Value v,
                          Operation *anchorOp) {
