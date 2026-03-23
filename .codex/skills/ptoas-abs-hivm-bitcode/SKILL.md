@@ -41,6 +41,17 @@ Always load the repo environment before running the sample:
 source env.sh
 ```
 
+If the caller shell is using `set -u`, load it as:
+
+```bash
+set +u
+source env.sh
+set -u
+```
+
+because this repo's `env.sh` appends to variables such as `PYTHONPATH` and
+`LD_LIBRARY_PATH` without guarding every unset case.
+
 ### 3. Export `Abs` as LLVM bitcode
 
 ```bash
@@ -113,6 +124,7 @@ Expected result:
 If export fails, report the first concrete blocker:
 - `--a5vm-emit-hivm-bc` used without `--pto-backend=a5vm`
 - `env.sh` was not sourced
+- `env.sh` was sourced under `set -u` and aborted on an unset environment variable
 - `bisheng` not found in `PATH`
 - `llvm-dis` not available under `$LLVM_ROOT/bin`
 
