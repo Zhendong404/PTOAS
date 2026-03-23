@@ -3,7 +3,9 @@
 // Region interface regression:
 // DPS destination tiles that remain externally visible after the fused span
 // must become explicit pto.fusion_region results / pto.yield operands, while
-// scratch alloc_tile temporaries can be sunk into the region body.
+// external inputs stay implicitly captured and scratch alloc_tile temporaries
+// can be sunk into the region body. This also makes pto.yield the explicit
+// summary of which internal tiles still escape the region boundary.
 
 module {
   func.func @fusion_region_interface(
@@ -31,19 +33,18 @@ module {
 
 // CHECK-LABEL: IR Dump After PTOFusionRegionGen
 // CHECK-LABEL: func.func @fusion_region_interface(
-// CHECK: %[[REGION:.*]]:2 = pto.fusion_region(%arg0, %arg2, %arg1, %arg3) {
-// CHECK: ^bb0(%arg4: !pto.tile_buf
+// CHECK: %[[REGION:.*]]:2 = pto.fusion_region {
 // CHECK: %[[TMP0:[0-9]+]] = pto.alloc_tile
 // CHECK: %[[TMP1:[0-9]+]] = pto.alloc_tile
 // CHECK: %[[SUM:[0-9]+]] = pto.alloc_tile
-// CHECK: pto.trowexpandmul ins(%arg4, %arg5
+// CHECK: pto.trowexpandmul ins(%arg0, %arg2
 // CHECK-SAME: outs(%[[TMP0]]
-// CHECK: pto.trowexpandmul ins(%arg6, %arg7
+// CHECK: pto.trowexpandmul ins(%arg1, %arg3
 // CHECK-SAME: outs(%[[TMP1]]
 // CHECK: pto.tadd ins(%[[TMP0]], %[[TMP1]] :
 // CHECK-SAME: outs(%[[SUM]]
 // CHECK: pto.yield(%[[TMP0]], %[[SUM]]) : (!pto.tile_buf
-// CHECK: } {pto.fusion.group_id = 0 : i64} : (!pto.tile_buf
+// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf
 // CHECK: pto.ttrans ins(%[[REGION]]#0, %{{.*}})
 // CHECK: pto.ttrans ins(%[[REGION]]#1, %{{.*}})
 // CHECK: return

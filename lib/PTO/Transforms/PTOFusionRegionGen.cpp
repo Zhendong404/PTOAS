@@ -39,8 +39,11 @@ struct GroupSpan {
 };
 
 struct GroupSpanInterface {
-  SmallVector<Value, 8> externalInputs;
-  SmallVector<Value, 8> escapingOutputs;
+  // Values that remain visible outside the fusion_region after encapsulation.
+  // The final pto.yield/result list is derived exactly from this set so
+  // downstream passes can treat it as the region's external visibility
+  // frontier.
+  SmallVector<Value, 8> externallyVisibleValues;
   SmallVector<Operation *, 8> localDefs;
 };
 
@@ -140,21 +143,6 @@ static bool isNestedInSpan(Operation *op, const DenseSet<Operation *> &spanOps) 
   return false;
 }
 
-static bool valueDefinedByOps(Value value, const DenseSet<Operation *> &ops) {
-  if (auto blockArg = dyn_cast<BlockArgument>(value))
-    return isNestedInSpan(blockArg.getOwner()->getParentOp(), ops);
-
-  Operation *defOp = value.getDefiningOp();
-  return defOp && isNestedInSpan(defOp, ops);
-}
-
-static bool hasUseOutsideSpan(Value value, const DenseSet<Operation *> &spanOps) {
-  for (Operation *user : value.getUsers())
-    if (!isNestedInSpan(user, spanOps))
-      return true;
-  return false;
-}
-
 static void appendUniqueValue(SmallVectorImpl<Value> &values,
                               DenseSet<Value> &seen, Value value) {
   if (seen.insert(value).second)
@@ -176,11 +164,15 @@ static bool canReplaceUseWithRegionResult(OpOperand &use, Operation *boundary) {
   return boundary->isBeforeInBlock(topLevel);
 }
 
-static bool isDpsInitOperand(OpOperand &operand,
-                             pto::PTO_DpsInitOpInterface dpsIface) {
-  for (OpOperand &dpsInit : dpsIface.getDpsInitsMutable())
-    if (&dpsInit == &operand)
+static bool hasReplaceableUseOutsideSpan(Value value,
+                                         const DenseSet<Operation *> &spanOps,
+                                         Operation *boundary) {
+  for (OpOperand &use : value.getUses()) {
+    if (isNestedInSpan(use.getOwner(), spanOps))
+      continue;
+    if (canReplaceUseWithRegionResult(use, boundary))
       return true;
+  }
   return false;
 }
 
@@ -206,15 +198,13 @@ static bool canSinkAllocTileDefToRegion(Value value, const GroupSpan &span,
 
 static GroupSpanInterface buildGroupSpanInterface(const GroupSpan &span) {
   GroupSpanInterface iface;
-  DenseSet<Value> seenInputs;
   DenseSet<Value> seenOutputs;
   DenseSet<Operation *> spanOps;
-  DenseSet<Operation *> regionOwnedOps;
   DenseSet<Operation *> seenLocalDefs;
+  Operation *boundary = span.members.front().op;
 
   for (const GroupSpanMember &member : span.members)
     spanOps.insert(member.op);
-  regionOwnedOps = spanOps;
 
   for (const GroupSpanMember &member : span.members) {
     if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(member.op)) {
@@ -224,53 +214,28 @@ static GroupSpanInterface buildGroupSpanInterface(const GroupSpan &span) {
         Operation *defOp = init.getDefiningOp();
         if (seenLocalDefs.insert(defOp).second) {
           iface.localDefs.push_back(defOp);
-          regionOwnedOps.insert(defOp);
         }
       }
     }
   }
 
-  for (const GroupSpanMember &member : span.members) {
-    member.op->walk([&](Operation *nestedOp) {
-      auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(nestedOp);
-      for (OpOperand &operand : nestedOp->getOpOperands()) {
-        Value value = operand.get();
-        if (dpsIface && isDpsInitOperand(operand, dpsIface) &&
-            value.getDefiningOp() &&
-            regionOwnedOps.contains(value.getDefiningOp()))
-          continue;
-        if (!valueDefinedByOps(value, regionOwnedOps))
-          appendUniqueValue(iface.externalInputs, seenInputs, value);
-      }
-    });
-  }
-
+  // Keep only values that are still used outside the scheduled span. Values
+  // without replaceable outside uses stay internal to the region and must not
+  // be yielded. Enumeration follows span order so the pto.yield/result order
+  // is stable.
   for (const GroupSpanMember &member : span.members) {
     for (Value result : member.op->getResults())
-      if (hasUseOutsideSpan(result, spanOps))
-        appendUniqueValue(iface.escapingOutputs, seenOutputs, result);
+      if (hasReplaceableUseOutsideSpan(result, spanOps, boundary))
+        appendUniqueValue(iface.externallyVisibleValues, seenOutputs, result);
 
     if (auto dpsIface = dyn_cast<pto::PTO_DpsInitOpInterface>(member.op)) {
       for (Value init : dpsIface.getDpsInits())
-        if (hasUseOutsideSpan(init, spanOps))
-          appendUniqueValue(iface.escapingOutputs, seenOutputs, init);
+        if (hasReplaceableUseOutsideSpan(init, spanOps, boundary))
+          appendUniqueValue(iface.externallyVisibleValues, seenOutputs, init);
     }
   }
 
   return iface;
-}
-
-static void remapSpanExternalOperands(const GroupSpan &span,
-                                      DenseMap<Value, Value> &inputMap) {
-  for (const GroupSpanMember &member : span.members) {
-    member.op->walk([&](Operation *nestedOp) {
-      for (OpOperand &operand : nestedOp->getOpOperands()) {
-        auto it = inputMap.find(operand.get());
-        if (it != inputMap.end())
-          operand.set(it->second);
-      }
-    });
-  }
 }
 
 static void replaceEscapingUsesOutsideRegion(pto::FusionRegionOp fusionRegion,
@@ -299,41 +264,32 @@ static LogicalResult encapsulateGroupSpan(const GroupSpan &span) {
   GroupSpanInterface iface = buildGroupSpanInterface(span);
 
   SmallVector<Type, 8> outputTypes;
-  outputTypes.reserve(iface.escapingOutputs.size());
-  for (Value output : iface.escapingOutputs)
+  outputTypes.reserve(iface.externallyVisibleValues.size());
+  for (Value output : iface.externallyVisibleValues)
     outputTypes.push_back(output.getType());
 
   Operation *firstOp = span.members.front().op;
   Location loc = firstOp->getLoc();
   OpBuilder builder(firstOp);
-  auto fusionRegion = builder.create<pto::FusionRegionOp>(
-      loc, TypeRange(outputTypes), ValueRange(iface.externalInputs));
+  auto fusionRegion = builder.create<pto::FusionRegionOp>(loc,
+                                                          TypeRange(outputTypes));
   fusionRegion->setAttr(kFusionGroupIdAttr,
                         builder.getI64IntegerAttr(span.groupId));
 
   Block *body = new Block();
   fusionRegion.getBody().push_back(body);
-  for (Value input : iface.externalInputs)
-    body->addArgument(input.getType(), loc);
-
-  DenseMap<Value, Value> inputMap;
-  for (auto [input, arg] : llvm::zip(iface.externalInputs, body->getArguments()))
-    inputMap[input] = arg;
 
   for (Operation *localDef : iface.localDefs)
     localDef->moveBefore(body, body->end());
   for (const GroupSpanMember &member : span.members)
     member.op->moveBefore(body, body->end());
 
-  remapSpanExternalOperands(span, inputMap);
   clearSpanFusionMetadata(span);
 
   SmallVector<Value, 8> yieldValues;
-  yieldValues.reserve(iface.escapingOutputs.size());
-  for (Value output : iface.escapingOutputs) {
-    auto it = inputMap.find(output);
-    yieldValues.push_back(it != inputMap.end() ? it->second : output);
-  }
+  yieldValues.reserve(iface.externallyVisibleValues.size());
+  for (Value output : iface.externallyVisibleValues)
+    yieldValues.push_back(output);
 
   OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
   bodyBuilder.create<pto::YieldOp>(loc, ValueRange(yieldValues));
@@ -341,7 +297,7 @@ static LogicalResult encapsulateGroupSpan(const GroupSpan &span) {
   if (failed(verify(fusionRegion.getOperation())))
     return failure();
 
-  replaceEscapingUsesOutsideRegion(fusionRegion, iface.escapingOutputs);
+  replaceEscapingUsesOutsideRegion(fusionRegion, iface.externallyVisibleValues);
   return success();
 }
 

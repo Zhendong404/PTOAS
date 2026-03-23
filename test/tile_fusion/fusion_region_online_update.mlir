@@ -8,7 +8,7 @@
 // CHECK-LABEL: func.func @kernel_online_update(
 
 // 1x16 diamond hotspot: one region carrying the softmax-like chain.
-// CHECK: pto.fusion_region(
+// CHECK: pto.fusion_region {
 // CHECK: pto.tmax
 // CHECK-NEXT: pto.tsub
 // CHECK-NEXT: pto.texp
@@ -24,9 +24,9 @@
 // the final tadd join after the reshapes are hoisted.
 // CHECK: %[[ROW0:[0-9]+]] = pto.treshape
 // CHECK: %[[ROW1:[0-9]+]] = pto.treshape
-// CHECK: pto.fusion_region(%{{[0-9]+}}, %[[ROW0]], %{{[0-9]+}}, %{{[0-9]+}}, %[[ROW1]]) {
-// CHECK: pto.trowexpandmul ins(%arg{{[0-9]+}}, %arg{{[0-9]+}}
-// CHECK-NEXT: pto.trowexpandmul ins(%arg{{[0-9]+}}, %arg{{[0-9]+}}
-// CHECK-NEXT: pto.tadd ins(%arg{{[0-9]+}}, %arg{{[0-9]+}}
-// CHECK-NEXT: pto.yield(%{{.*}}, %{{.*}}, %{{.*}}) : (!pto.tile_buf
+// CHECK: pto.fusion_region {
+// CHECK: pto.trowexpandmul ins(%{{[0-9]+}}, %[[ROW0]]
+// CHECK-NEXT: pto.trowexpandmul ins(%{{[0-9]+}}, %[[ROW1]]
+// CHECK-NEXT: pto.tadd ins(%{{[0-9]+}}, %{{[0-9]+}}
+// CHECK-NEXT: pto.yield(%{{.*}}, %{{.*}}) : (!pto.tile_buf
 // CHECK: {pto.fusion.group_id = 1 : i64}

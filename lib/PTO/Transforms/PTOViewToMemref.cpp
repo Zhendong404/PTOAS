@@ -477,6 +477,43 @@ static LogicalResult reconcileSCFIfResultTypes(func::FuncOp func) {
   return success();
 }
 
+// Ensure pto.fusion_region result types follow the rewritten pto.yield operand
+// types after tile_buf values inside the region have been lowered to memref.
+static LogicalResult reconcileFusionRegionResultTypes(func::FuncOp func) {
+  SmallVector<pto::FusionRegionOp, 8> fusionRegions;
+  func.walk([&](pto::FusionRegionOp fusionRegion) {
+    fusionRegions.push_back(fusionRegion);
+  });
+
+  for (pto::FusionRegionOp fusionRegion : fusionRegions) {
+    Region &bodyRegion = fusionRegion.getBody();
+    if (bodyRegion.empty()) {
+      fusionRegion.emitError("expects a non-empty body region");
+      return failure();
+    }
+
+    auto yield =
+        dyn_cast<pto::YieldOp>(bodyRegion.front().getTerminator());
+    if (!yield) {
+      fusionRegion.emitError("expects body to terminate with pto.yield");
+      return failure();
+    }
+
+    if (yield.getNumOperands() != fusionRegion.getNumResults()) {
+      fusionRegion.emitError("result count does not match yielded values");
+      return failure();
+    }
+
+    for (unsigned i = 0; i < fusionRegion.getNumResults(); ++i) {
+      Type yieldedTy = yield.getOperand(i).getType();
+      if (fusionRegion.getResult(i).getType() != yieldedTy)
+        fusionRegion.getResult(i).setType(yieldedTy);
+    }
+  }
+
+  return success();
+}
+
 static LogicalResult markLoweredSetValidShapeOps(func::FuncOp func,
                                                  MLIRContext *ctx) {
   WalkResult result = func.walk([&](mlir::pto::SetValidShapeOp op) {
@@ -2638,6 +2675,11 @@ struct PTOViewToMemrefPass
       // Stage 4: Reconcile control-flow result types
       // ------------------------------------------------------------------
       if (failed(reconcileSCFIfResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+
+      if (failed(reconcileFusionRegionResultTypes(func))) {
         signalPassFailure();
         return;
       }

@@ -31,13 +31,12 @@ module {
 
 // CHECK-LABEL: IR Dump After PTOFusionRegionGen
 // CHECK-LABEL: func.func @fusion_region_basic(
-// CHECK: pto.fusion_region(
-// CHECK: ^bb0(
+// CHECK: pto.fusion_region {
 // CHECK: pto.trowexpandmul
 // CHECK-NEXT: pto.trowexpandmul
 // CHECK-NEXT: pto.tadd
 // CHECK-NEXT: pto.yield() : () -> ()
-// CHECK: {pto.fusion.group_id = 0 : i64}
+// CHECK: } {pto.fusion.group_id = 0 : i64} :
 // CHECK-NOT: pto.fusion_region(
 // CHECK: pto.tadd ins(%arg2, %arg3
 // CHECK-NEXT: pto.tmul ins(%arg2, %arg3

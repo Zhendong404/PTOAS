@@ -1053,16 +1053,16 @@ def FusionRegionOp : PTO_Op<"fusion_region", [SingleBlock]> {
   let summary = "Structured region container for one scheduled tile fusion group";
   let description = [{
     `pto.fusion_region` wraps one already-scheduled fusion group inside the
-    current function, exposing explicit external inputs as operands and
-    explicit escaping values as results.
+    current function and exposes explicit escaping values as results.
+    The body is a lightweight single-block container and may implicitly capture
+    surrounding SSA values from the parent scope.
   }];
 
-  let arguments = (ins Variadic<AnyType>:$inputs);
   let results = (outs Variadic<AnyType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
   let hasVerifier = 1;
   let assemblyFormat = [{
-    `(` $inputs `)` $body attr-dict `:` functional-type($inputs, results)
+    $body attr-dict `:` type(results)
   }];
 }
 
@@ -1070,8 +1070,10 @@ def YieldOp : PTO_Op<"yield", [Terminator, ParentOneOf<["FusionRegionOp"]>]> {
   let summary = "Terminate a pto.fusion_region and return its visible outputs";
   let description = [{
     `pto.yield` is the dedicated terminator for `pto.fusion_region`. Its
-    operands define the region outputs in the same order as the parent
-    `pto.fusion_region` results.
+    operands enumerate the tile/value set that remains externally visible after
+    encapsulation. They define the region outputs in the same order as the
+    parent `pto.fusion_region` results, giving downstream passes a compact
+    summary of which internal tiles still escape the region boundary.
   }];
 
   let arguments = (ins Variadic<AnyType>:$values);
