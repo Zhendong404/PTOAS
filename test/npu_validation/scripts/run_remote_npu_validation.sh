@@ -155,24 +155,28 @@ if [[ "${STAGE}" == "run" ]]; then
   python3 -c "import numpy as np; print('numpy', np.__version__)" >/dev/null
 fi
 
-PTO_ISA_ROOT="${ROOT_DIR}/pto-isa"
-# Allow CI to vendor a pto-isa working tree into the payload (no `.git`).
-# This avoids requiring outbound GitHub connectivity on the remote NPU host.
-if [[ -d "${PTO_ISA_ROOT}" && ! -d "${PTO_ISA_ROOT}/.git" ]]; then
-  log "Using vendored pto-isa tree at ${PTO_ISA_ROOT} (no .git); skipping clone/fetch/checkout."
+if [[ -n "${PTO_ISA_ROOT:-}" ]]; then
+  log "Using PTO_ISA_ROOT from environment: ${PTO_ISA_ROOT}"
 else
-  if [[ ! -d "${PTO_ISA_ROOT}/.git" ]]; then
-    log "Cloning pto-isa into ${PTO_ISA_ROOT} ..."
-    git clone "${PTO_ISA_REPO}" "${PTO_ISA_ROOT}"
-  fi
-  log "Fetching pto-isa updates ..."
-  git -C "${PTO_ISA_ROOT}" fetch --all --prune
-  if [[ -n "${PTO_ISA_COMMIT}" ]]; then
-    log "Checking out pto-isa ${PTO_ISA_COMMIT} ..."
-    git -C "${PTO_ISA_ROOT}" checkout -f "${PTO_ISA_COMMIT}"
+  PTO_ISA_ROOT="${ROOT_DIR}/pto-isa"
+  # Allow CI to vendor a pto-isa working tree into the payload (no `.git`).
+  # This avoids requiring outbound GitHub connectivity on the remote NPU host.
+  if [[ -d "${PTO_ISA_ROOT}" && ! -d "${PTO_ISA_ROOT}/.git" ]]; then
+    log "Using vendored pto-isa tree at ${PTO_ISA_ROOT} (no .git); skipping clone/fetch/checkout."
   else
-    log "Checking out pto-isa origin/HEAD (remote default branch) ..."
-    git -C "${PTO_ISA_ROOT}" checkout -f origin/HEAD
+    if [[ ! -d "${PTO_ISA_ROOT}/.git" ]]; then
+      log "Cloning pto-isa into ${PTO_ISA_ROOT} ..."
+      git clone "${PTO_ISA_REPO}" "${PTO_ISA_ROOT}"
+    fi
+    log "Fetching pto-isa updates ..."
+    git -C "${PTO_ISA_ROOT}" fetch --all --prune
+    if [[ -n "${PTO_ISA_COMMIT}" ]]; then
+      log "Checking out pto-isa ${PTO_ISA_COMMIT} ..."
+      git -C "${PTO_ISA_ROOT}" checkout -f "${PTO_ISA_COMMIT}"
+    else
+      log "Checking out pto-isa origin/HEAD (remote default branch) ..."
+      git -C "${PTO_ISA_ROOT}" checkout -f origin/HEAD
+    fi
   fi
 fi
 
