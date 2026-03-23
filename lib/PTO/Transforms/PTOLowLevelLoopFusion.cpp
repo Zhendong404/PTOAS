@@ -440,6 +440,26 @@ static bool fuseStageRunsInBlock(Block &block) {
   return changed;
 }
 
+static bool fuseStageRunsInRegion(Region &region) {
+  bool changed = false;
+
+  for (Block &block : region.getBlocks()) {
+    SmallVector<Region *, 4> nestedRegions;
+    for (Operation &op : block)
+      for (Region &nested : op.getRegions())
+        nestedRegions.push_back(&nested);
+
+    for (Region *nested : nestedRegions)
+      if (fuseStageRunsInRegion(*nested))
+        changed = true;
+
+    if (fuseStageRunsInBlock(block))
+      changed = true;
+  }
+
+  return changed;
+}
+
 struct PTOLowLevelLoopFusionPass
     : public pto::impl::PTOLowLevelLoopFusionBase<PTOLowLevelLoopFusionPass> {
   using pto::impl::PTOLowLevelLoopFusionBase<
@@ -450,23 +470,20 @@ struct PTOLowLevelLoopFusionPass
 
     int fusedFuncs = 0;
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (!func.getSymName().starts_with("__pto_fused_group_"))
+      if (func.isExternal())
+        continue;
+      if (func.getSymName().starts_with("__pto_oplib_"))
         continue;
       if (func.empty())
         continue;
 
-      bool changed = false;
-      for (Block &block : func.getBody())
-        if (fuseStageRunsInBlock(block))
-          changed = true;
-
-      if (changed)
+      if (fuseStageRunsInRegion(func.getBody()))
         ++fusedFuncs;
     }
 
     if (debug) {
       llvm::errs() << "[op-fusion] low-level loop fusion changed " << fusedFuncs
-                   << " fused function(s)\n";
+                   << " function(s)\n";
     }
   }
 };

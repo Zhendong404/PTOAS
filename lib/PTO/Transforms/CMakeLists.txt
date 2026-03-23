@@ -33,11 +33,13 @@ add_mlir_dialect_library(PTOTransforms
   PTOFusionPlan.cpp
   PTOOpScheduling.cpp
   PTOFusionRegionGen.cpp
+  PTOFlattenFusionRegion.cpp
   PTOLowerToOpLibCalls.cpp
   PTOInstantiateAndInlineOpLib.cpp
   PTOValidateSimdIR.cpp
   PTOLowerSimdToVector.cpp
   PTOLowLevelLoopFusion.cpp
+  PTOTranslateToCpp.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/PTO

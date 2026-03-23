@@ -9851,26 +9851,6 @@ struct SectionToEmitC : public OpConversionPattern<SectionOpTy> {
   }
 };
 
-struct SimdVecScopeToEmitC : public OpConversionPattern<pto::SimdVecScopeOp> {
-  using OpConversionPattern<pto::SimdVecScopeOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(pto::SimdVecScopeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    rewriter.create<emitc::VerbatimOp>(loc, "__VEC_SCOPE__ {");
-
-    Block &innerBlock = op.getBody().front();
-    if (!innerBlock.empty()) {
-      rewriter.inlineBlockBefore(&innerBlock, op.getOperation(), ValueRange{});
-    }
-
-    rewriter.create<emitc::VerbatimOp>(loc, "}");
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 struct SimdTileToMemrefToEmitC
     : public OpConversionPattern<pto::SimdTileToMemrefOp> {
   using OpConversionPattern<pto::SimdTileToMemrefOp>::OpConversionPattern;
@@ -10584,7 +10564,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOSyncWaitToEmitC>(typeConverter, ctx, targetArch);
   patterns.add<SectionToEmitC<pto::SectionCubeOp>>(typeConverter, ctx);
   patterns.add<SectionToEmitC<pto::SectionVectorOp>>(typeConverter, ctx);
-  patterns.add<SimdVecScopeToEmitC>(typeConverter, ctx);
   patterns.add<SimdTileToMemrefToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockIdxToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBlockNumToEmitC>(typeConverter, ctx);
@@ -11269,6 +11248,7 @@ static AICORE inline void ptoas_auto_sync_tail(
 
     target.addLegalDialect<emitc::EmitCDialect>();
     target.addLegalOp<ModuleOp>();
+    target.addLegalOp<pto::SimdVecScopeOp>();
 
     auto solver = std::make_unique<DataFlowSolver>();
     solver->load<dataflow::DeadCodeAnalysis>();

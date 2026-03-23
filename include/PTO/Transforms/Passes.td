@@ -168,7 +168,7 @@ def PrintPreFusionAnalysis
 }
 
 def PTOInstantiateAndLowerToLibCall
-    : Pass<"pto-instantiate-lower-to-libcall", "ModuleOp"> {
+    : Pass<"pto-lower-to-oplib-calls", "ModuleOp"> {
   let summary =
       "Instantiate OP-Lib variants and lower PTO binary ops to OP-Lib calls";
   let description = [{
@@ -257,6 +257,18 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
       "debug", "debug", "bool",
       /*default=*/"false",
       "Enable verbose debug logging for low-level loop fusion">];
+}
+
+def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
+  let summary = "Flatten pto.fusion_region wrappers back into the parent block";
+  let description = [{
+    Eliminates residual pto.fusion_region wrappers after region-local lowering
+    is complete by moving body operations back to the parent block, replacing
+    region results with pto.yield operands, and erasing both pto.yield and the
+    wrapper op.
+  }];
+  let constructor = "mlir::pto::createPTOFlattenFusionRegionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
 #endif // MLIR_DIALECT_PTO_PASSES

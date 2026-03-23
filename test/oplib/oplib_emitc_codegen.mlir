@@ -20,6 +20,7 @@
 // BIN6-DAG: vmin(
 // BIN6-DAG: CreatePredicate<float>(
 // BIN6-DAG: __VEC_SCOPE__ {
+// BIN6-NOT: __VEC_SCOPE__ {;
 // BIN6-DAG: for (uint16_t
 // BIN6-DAG: for (uint16_t {{.*}} = 0; {{.*}} < 32; {{.*}} += 1) {
 // BIN6-NOT: for (uint16_t {{.*}} = 0; {{.*}} < {{.*}}; {{.*}} += 64)
@@ -32,6 +33,7 @@
 // SOFTMAX: vadd(
 // SOFTMAX: CreatePredicate<float>(
 // SOFTMAX-DAG: __VEC_SCOPE__ {
+// SOFTMAX-NOT: __VEC_SCOPE__ {;
 // SOFTMAX-NOT: vlds_mask(
 // SOFTMAX-NOT: PTOAS__OPLIB_
 

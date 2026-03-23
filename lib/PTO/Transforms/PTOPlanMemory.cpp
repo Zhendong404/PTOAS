@@ -105,6 +105,9 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
       RecursiveForOp(forOp, live);
       return WalkResult::skip();
+    } else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
+      RecursiveFusionRegionOp(fusionRegion, live);
+      return WalkResult::skip();
     }
 
     // process operation
@@ -290,6 +293,32 @@ void MemLivenessAnalysis::RecursiveIfOp(scf::IfOp ifOp, Liveness live) {
   OpKillHandle(curIfEnd, live, ifOp->getBlock());
 }
 
+void MemLivenessAnalysis::UpdateFusionRegionBufferAlias(
+    pto::FusionRegionOp fusionRegion, pto::YieldOp yieldOp) {
+  if (fusionRegion.getResults().empty()) {
+    return;
+  }
+  assert(fusionRegion->getResults().size() == yieldOp->getOperands().size());
+  for (auto [i, yieldedValue] : llvm::enumerate(yieldOp->getOperands())) {
+    UpdateBufferAlias(fusionRegion->getResult(i), yieldedValue);
+  }
+}
+
+void MemLivenessAnalysis::RecursiveFusionRegionOp(pto::FusionRegionOp fusionRegion,
+                                                  Liveness live) {
+  auto fusionBeginSeq = UpdateLinearOperation(fusionRegion.getOperation());
+  (void)fusionBeginSeq;
+  RecursionIR(&fusionRegion.getBody(), live);
+
+  auto yieldOp = dyn_cast<pto::YieldOp>(
+      fusionRegion.getBody().front().getTerminator());
+  assert(yieldOp && "pto.fusion_region body must terminate with pto.yield");
+  UpdateFusionRegionBufferAlias(fusionRegion, yieldOp);
+
+  auto fusionEndSeq = UpdateLinearOperation(fusionRegion.getOperation());
+  OpKillHandle(fusionEndSeq, live, fusionRegion->getBlock());
+}
+
 SmallVector<Value> MemLivenessAnalysis::GetLiveBuffersInLoop(scf::ForOp forOp,
                                                              Liveness live) {
   SmallVector<Value> allocBeforeLoopBuffers;
@@ -351,7 +380,7 @@ bool MemLivenessAnalysis::isSkippableOp(Operation *op) const {
   // TODO: Can Func CallOp be skipped?
   // return isa<func::ReturnOp, scf::YieldOp, memref::DimOp, pto::PrintOp,
   //            pto::DCCIOp>(op);
-  return isa<func::ReturnOp, scf::YieldOp, memref::DimOp>(op);
+  return isa<func::ReturnOp, scf::YieldOp, pto::YieldOp, memref::DimOp>(op);
 }
 
 LogicalResult

@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
+#include "PTO/Transforms/CppEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -28,7 +29,6 @@
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Target/Cpp/CppEmitter.h"
 #include "ptobc/ptobc_decode.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -344,8 +344,10 @@ static llvm::cl::opt<bool> enableInsertSync(
 
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
-    llvm::cl::desc("Enable OP fusion passes (A5 only: "
-                   "create-groups/outline/low-level-loop-fusion)"),
+    llvm::cl::desc("Enable A5 OP fusion pipeline "
+                   "(FusionPlan/OpScheduling/FusionRegionGen/"
+                   "LowerToOpLib/InlineLibCall/LowLevelLoopFusion/"
+                   "FlattenFusionRegion)"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> testOnlyFusionRegionGen(
@@ -1250,7 +1252,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Stage 1: front-end lowering to memref-level IR.
+  // Stage 1: front-end lowering plus fusion-region formation.
+  // For the A5 op-fusion path, build pto.fusion_region in tile_buf world
+  // first, then carry that structured boundary through PTOViewToMemref so the
+  // remaining passes can work in memref world without losing region lifetime
+  // information.
   if (enableA5OplibPipeline) {
     if (failed(pto::importPTOOpLibTemplates(*module, resolvedOpLibDir,
                                             opFusionDebug))) {
@@ -1285,12 +1291,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Stage 2: remaining optimization + codegen pipeline.
+  // Stage 2: memref-world analysis and region-preserving lowering.
+  // The fixed A5 + fusion order is:
+  //   PlanMemory -> InsertSync -> LowerToOpLibCalls -> InlineLibCall
+  //   -> LowLevelLoopFusion -> FlattenFusionRegion -> canonicalize/CSE.
+  // LowerToOpLib/inline/loop fusion must work in-place on fusion_region body,
+  // while FlattenFusionRegion is the single explicit exit point before Emit.
   PassManager pm(&context);
   maybeEnablePrintIRAfterAll(pm, inputFuncNames);
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  pm.addPass(pto::createPTOViewToMemrefPass());
+  // Stage 1 has already lowered tile/view values into memref world.
+  // Running PTOViewToMemref again here is not idempotent and can fail on IR
+  // that already contains lowered bind_tile/partition_view structure.
   // bufferizationPipeline(pm);
   // pm.addPass(createInferPTOMemScopePass());
 
@@ -1307,6 +1320,9 @@ int main(int argc, char **argv) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
 
   if (enableA5OplibPipeline) {
+    // Keep pto.fusion_region alive across the grouped OP-Lib lowering stages.
+    // Flatten only after low-level loop fusion so Emit never sees residual
+    // fusion_region / pto.yield wrappers.
     pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
     instantiateLowerOptions.opLibDir = resolvedOpLibDir;
     instantiateLowerOptions.debug = opFusionDebug;
@@ -1321,12 +1337,13 @@ int main(int argc, char **argv) {
       pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
       loopFusionOptions.debug = opFusionDebug;
       pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOFlattenFusionRegionPass());
     }
 
-    // Keep OP-Lib lowered loop nests intact until PTOLowLevelLoopFusion runs.
-    // In particular, avoid pre-fusion canonicalization folding away
-    // single-trip loops, otherwise the fusion pass no longer sees the regular
-    // loop structure emitted by OP-Lib lowering.
+    // Canonicalize only after the region-preserving fusion stages. Running
+    // this earlier can fold single-trip loops before PTOLowLevelLoopFusion
+    // sees the regular OP-Lib loop nests it expects to merge.
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
   }
@@ -1387,7 +1404,7 @@ int main(int argc, char **argv) {
       }
     }
   }
-  if (failed(emitc::translateToCpp(
+  if (failed(pto::translateToCpp(
           *module, cppOS,
           /*declareVariablesAtTop=*/declareVariablesAtTop))) {
     llvm::errs() << "Error: Failed to emit C++.\n";

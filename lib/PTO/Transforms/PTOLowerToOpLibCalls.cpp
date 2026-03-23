@@ -149,6 +149,7 @@ static constexpr int64_t kA5VectorLengthBits = 256 * 8;
 
 struct GroupInfo {
   int64_t groupId = -1;
+  pto::FusionRegionOp region;
   SmallVector<Operation *, 8> ops;
 };
 
@@ -531,6 +532,7 @@ static bool isTileFusionOpLibAllowlisted(StringRef opName) {
   return llvm::StringSwitch<bool>(opName)
       .Cases("tadd", "tsub", "tmul", "tdiv", "tmax", "tmin", true)
       .Cases("tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins", true)
+      .Cases("trowexpandmul", "texp", true)
       .Default(false);
 }
 
@@ -541,9 +543,9 @@ static bool shouldLowerViaOpLib(Operation *op,
   if (!entry || entry->status != A5ManifestStatus::Implemented)
     return false;
 
-  // Temporarily keep OP-Lib lowering scoped to the 12 tile-fusion arithmetic
-  // ops so grouped/single-op behavior stays aligned while other ops fall back
-  // to the pre-existing non-OP-Lib lowering path.
+  // Temporarily keep OP-Lib lowering scoped to the active tile-fusion grouped
+  // surface so grouped/single-op behavior stays aligned while other ops fall
+  // back to the pre-existing non-OP-Lib lowering path.
   if (!isTileFusionOpLibAllowlisted(opName))
     return false;
 
@@ -3332,62 +3334,80 @@ static void pruneUnusedOplibFuncs(ModuleOp module, bool debug) {
   }
 }
 
-struct PTOInstantiateAndLowerToLibCallPass
+struct PTOLowerToOpLibCallsPass
     : public pto::impl::PTOInstantiateAndLowerToLibCallBase<
-          PTOInstantiateAndLowerToLibCallPass> {
+          PTOLowerToOpLibCallsPass> {
   using pto::impl::PTOInstantiateAndLowerToLibCallBase<
-      PTOInstantiateAndLowerToLibCallPass>::PTOInstantiateAndLowerToLibCallBase;
+      PTOLowerToOpLibCallsPass>::PTOInstantiateAndLowerToLibCallBase;
 
-  void collectGroupsInRegion(Region &region, const A5OpLibManifest &manifest,
-                             SmallVectorImpl<GroupInfo> &groups) {
+  LogicalResult collectGroupedLoweringUnitFromFusionRegion(
+      pto::FusionRegionOp fusionRegion, const A5OpLibManifest &manifest,
+      SmallVectorImpl<GroupInfo> &groups) {
+    GroupInfo group;
+    group.region = fusionRegion;
+    if (auto gidAttr =
+            fusionRegion->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr))
+      group.groupId = gidAttr.getInt();
+
+    SmallVector<Operation *, 8> unsupportedComputeOps;
+    fusionRegion.walk([&](Operation *op) {
+      if (op == fusionRegion.getOperation())
+        return WalkResult::advance();
+      if (isa<pto::YieldOp>(op))
+        return WalkResult::advance();
+      if (auto nestedFusionRegion = dyn_cast<pto::FusionRegionOp>(op);
+          nestedFusionRegion && nestedFusionRegion != fusionRegion)
+        return WalkResult::skip();
+
+      if (!isa<pto::OpLibOpInterface>(op))
+        return WalkResult::advance();
+
+      if (!shouldLowerViaOpLib(op, manifest)) {
+        unsupportedComputeOps.push_back(op);
+        return WalkResult::advance();
+      }
+
+      group.ops.push_back(op);
+      return WalkResult::advance();
+    });
+
+    if (!group.ops.empty() && !unsupportedComputeOps.empty()) {
+      InFlightDiagnostic diag = fusionRegion.emitError(
+          "fusion_region contains partially-supported OpLib lowering scope");
+      if (group.groupId >= 0)
+        diag << " for group_id=" << group.groupId;
+      diag << ": active grouped lowering cannot mix supported compute op '"
+           << getPTOMnemonic(group.ops.front()) << "' with unsupported compute "
+           << "op '" << getPTOMnemonic(unsupportedComputeOps.front()) << "'";
+      return failure();
+    }
+
+    if (!group.ops.empty())
+      groups.push_back(std::move(group));
+    return success();
+  }
+
+  LogicalResult collectGroupedLoweringUnitsInRegion(
+      Region &region, const A5OpLibManifest &manifest,
+      SmallVectorImpl<GroupInfo> &groups) {
     for (Block &block : region.getBlocks()) {
-      GroupInfo current;
-      int64_t expectedOrder = 0;
-
-      auto flush = [&]() {
-        if (current.ops.size() >= 2)
-          groups.push_back(current);
-        current = GroupInfo();
-        expectedOrder = 0;
-      };
-
       for (Operation &op : block.getOperations()) {
         Operation *curOp = &op;
 
-        if (hasFusionGroupAttrs(curOp) &&
-            shouldLowerViaOpLib(curOp, manifest)) {
-          auto gidAttr = curOp->getAttrOfType<IntegerAttr>(kFusionGroupIdAttr);
-          auto orderAttr = curOp->getAttrOfType<IntegerAttr>(kFusionOrderAttr);
-
-          if (!gidAttr || !orderAttr) {
-            flush();
-          } else {
-            int64_t gid = gidAttr.getInt();
-            int64_t order = orderAttr.getInt();
-            if (current.ops.empty()) {
-              current.groupId = gid;
-              current.ops.push_back(curOp);
-              expectedOrder = order + 1;
-            } else if (current.groupId == gid && order == expectedOrder) {
-              current.ops.push_back(curOp);
-              ++expectedOrder;
-            } else {
-              flush();
-              current.groupId = gid;
-              current.ops.push_back(curOp);
-              expectedOrder = order + 1;
-            }
-          }
-        } else {
-          flush();
+        if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(curOp)) {
+          if (failed(collectGroupedLoweringUnitFromFusionRegion(
+                  fusionRegion, manifest, groups)))
+            return failure();
+          continue;
         }
 
         for (Region &nested : curOp->getRegions())
-          collectGroupsInRegion(nested, manifest, groups);
+          if (failed(
+                  collectGroupedLoweringUnitsInRegion(nested, manifest, groups)))
+            return failure();
       }
-
-      flush();
     }
+    return success();
   }
 
   LogicalResult
@@ -3409,26 +3429,32 @@ struct PTOInstantiateAndLowerToLibCallPass
     if (group.ops.empty())
       return success();
 
+    Operation *anchor =
+        group.region ? group.region.getOperation() : group.ops.front();
+
     SmallVector<PlannedOpLowering, 8> planned;
     if (failed(planGroupLowerings(group, manifest, registry, planned))) {
-      group.ops.front()->emitError()
-          << "fusion-group lowering required but failed for group_id="
-          << group.groupId;
+      InFlightDiagnostic diag =
+          anchor->emitError("fusion-region lowering required but failed");
+      if (group.groupId >= 0)
+        diag << " for group_id=" << group.groupId;
       return failure();
     }
 
     for (const PlannedOpLowering &plan : planned) {
       if (failed(rewriteOneGroupedOpAsCall(plan))) {
-        group.ops.front()->emitError()
-            << "fusion-group lowering required but failed to rewrite selected "
+        anchor->emitError()
+            << "fusion-region lowering required but failed to rewrite selected "
                "OP-Lib call(s)";
         return failure();
       }
     }
 
     if (debug) {
-      llvm::errs() << "[op-fusion] lowered group_id=" << group.groupId
-                   << " to OP-Lib calls (" << planned.size() << " op(s))\n";
+      llvm::errs() << "[op-fusion] lowered fusion_region";
+      if (group.groupId >= 0)
+        llvm::errs() << " group_id=" << group.groupId;
+      llvm::errs() << " to OP-Lib calls (" << planned.size() << " op(s))\n";
     }
 
     return success();
@@ -3440,6 +3466,8 @@ struct PTOInstantiateAndLowerToLibCallPass
     SmallVector<Operation *, 32> toRewrite;
 
     func.walk([&](Operation *op) {
+      if (op->getParentOfType<pto::FusionRegionOp>())
+        return;
       if (!isA5OpLibV1TargetOp(op, manifest))
         return;
       if (!shouldLowerViaOpLib(op, manifest))
@@ -3548,10 +3576,16 @@ struct PTOInstantiateAndLowerToLibCallPass
         continue;
 
       SmallVector<GroupInfo, 8> groups;
-      collectGroupsInRegion(func.getRegion(), manifest, groups);
+      if (failed(
+              collectGroupedLoweringUnitsInRegion(func.getRegion(), manifest,
+                                                  groups))) {
+        signalPassFailure();
+        return;
+      }
       if (debug && !groups.empty()) {
         llvm::errs() << "[op-fusion] found " << groups.size()
-                     << " group(s) in @" << func.getSymName() << "\n";
+                     << " fusion_region lowering unit(s) in @"
+                     << func.getSymName() << "\n";
       }
 
       for (GroupInfo &group : groups) {
@@ -3580,7 +3614,7 @@ struct PTOInstantiateAndLowerToLibCallPass
 
 std::unique_ptr<Pass> mlir::pto::createPTOInstantiateAndLowerToLibCallPass(
     const PTOInstantiateAndLowerToLibCallOptions &options) {
-  return std::make_unique<PTOInstantiateAndLowerToLibCallPass>(options);
+  return std::make_unique<PTOLowerToOpLibCallsPass>(options);
 }
 
 LogicalResult mlir::pto::importPTOOpLibTemplates(ModuleOp module,

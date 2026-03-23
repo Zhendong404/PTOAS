@@ -121,6 +121,64 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
   vCol = Value();
 }
 
+// Resolve tile-like wrapper values back to the memref that already owns the
+// storage. This is needed for region results such as pto.fusion_region: the
+// wrapper result can still be tile_buf while the body yield has already been
+// rewritten to memref.
+static Value resolveTileBufViewMemRefSource(Value v) {
+  int loopBound = 256;
+  while (v && !isa<MemRefType>(v.getType())) {
+    if (loopBound-- < 0)
+      return Value();
+
+    if (auto arg = dyn_cast<BlockArgument>(v)) {
+      if (auto forOp =
+              dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())) {
+        unsigned argNum = arg.getArgNumber();
+        if (argNum > 0 && argNum - 1 < forOp.getInitArgs().size()) {
+          v = forOp.getInitArgs()[argNum - 1];
+          continue;
+        }
+      }
+      return Value();
+    }
+
+    auto result = dyn_cast<OpResult>(v);
+    if (!result)
+      return Value();
+
+    Operation *def = result.getOwner();
+    unsigned resultIdx = result.getResultNumber();
+
+    if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(def)) {
+      Region &bodyRegion = fusionRegion.getBody();
+      if (bodyRegion.empty())
+        return Value();
+      auto yield = dyn_cast<pto::YieldOp>(bodyRegion.front().getTerminator());
+      if (!yield || resultIdx >= yield.getNumOperands())
+        return Value();
+      v = yield.getOperand(resultIdx);
+      continue;
+    }
+
+    if (auto forOp = dyn_cast<scf::ForOp>(def)) {
+      if (resultIdx >= forOp.getInitArgs().size())
+        return Value();
+      v = forOp.getInitArgs()[resultIdx];
+      continue;
+    }
+
+    if (auto bind = dyn_cast<pto::BindTileOp>(def)) {
+      v = bind.getSource();
+      continue;
+    }
+
+    return Value();
+  }
+
+  return isa<MemRefType>(v.getType()) ? v : Value();
+}
+
 // =============================================================================
 // Helper Functions for Layout Normalization
 // =============================================================================
@@ -1205,6 +1263,25 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
+      // Stage 2.5: Reconcile control-flow / region result types before
+      //            lowering SSA tile_buf views.
+      //
+      // Region bodies can already yield lowered memref values here, while the
+      // wrapper results still keep their original tile_buf types. Later
+      // pto.treshape / pto.bitcast and Stage 3 compute rewrites need to see
+      // those wrapper results as memrefs.
+      // ------------------------------------------------------------------
+      if (failed(reconcileSCFIfResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+
+      if (failed(reconcileFusionRegionResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+
+      // ------------------------------------------------------------------
       // Stage 2.75: Lower SSA tile_buf view ops (pto.treshape / pto.bitcast)
       // ------------------------------------------------------------------
       auto lowerTileBufViewLike = [&](Operation *anchorOp, Value src,
@@ -1214,7 +1291,12 @@ struct PTOViewToMemrefPass
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(anchorOp);
 
-        auto srcMrTy = dyn_cast<MemRefType>(src.getType());
+        Value resolvedSrc = isa<MemRefType>(src.getType())
+                                ? src
+                                : resolveTileBufViewMemRefSource(src);
+        auto srcMrTy =
+            resolvedSrc ? dyn_cast<MemRefType>(resolvedSrc.getType())
+                        : MemRefType();
         if (!srcMrTy) {
           anchorOp->emitError(
               "tile_buf view op src must be lowered to memref first");
@@ -1243,7 +1325,7 @@ struct PTOViewToMemrefPass
         // Re-bind (possibly-updated) tile metadata.
         Value parentVRow;
         Value parentVCol;
-        lookupValidDims(src, parentVRow, parentVCol);
+        lookupValidDims(resolvedSrc, parentVRow, parentVCol);
 
         Value vRow = parentVRow;
         Value vCol = parentVCol;
@@ -1270,8 +1352,8 @@ struct PTOViewToMemrefPass
           configAttr = pto::TileBufConfigAttr::getDefault(ctx);
 
         auto bindOp = rewriter.create<pto::BindTileOp>(
-            loc, targetType, src, vRow ? vRow : Value(), vCol ? vCol : Value(),
-            configAttr);
+            loc, targetType, resolvedSrc, vRow ? vRow : Value(),
+            vCol ? vCol : Value(), configAttr);
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
         if (!viewSemantics.empty())
           bindOp->setAttr("pto.view_semantics",
