@@ -348,6 +348,16 @@ static llvm::cl::opt<bool> enableOpFusion(
                    "create-groups/outline/low-level-loop-fusion)"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> testOnlyFusionRegionGen(
+    "test-only-fusion-region-gen",
+    llvm::cl::desc("Run only PTOFusionRegionGen and exit (test-only)"),
+    llvm::cl::Hidden, llvm::cl::init(false));
+
+static llvm::cl::opt<bool> testOnlyOpScheduling(
+    "test-only-op-scheduling",
+    llvm::cl::desc("Run only FusionPlan + OpScheduling and exit (test-only)"),
+    llvm::cl::Hidden, llvm::cl::init(false));
+
 static llvm::cl::opt<std::string>
     opLibDir("op-lib-dir",
              llvm::cl::desc("Directory containing OP-Lib template .mlir files "
@@ -1209,6 +1219,29 @@ int main(int argc, char **argv) {
                     "without --print-ir-after-all.\n";
   }
 
+  if (testOnlyFusionRegionGen) {
+    PassManager testPm(&context);
+    maybeEnablePrintIRAfterAll(testPm, inputFuncNames);
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+    if (failed(testPm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+    return 0;
+  }
+
+  if (testOnlyOpScheduling) {
+    PassManager testPm(&context);
+    maybeEnablePrintIRAfterAll(testPm, inputFuncNames);
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    testPm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+    if (failed(testPm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+    return 0;
+  }
+
   // [Fix] ToolOutputFile Usage
   std::error_code ec;
   llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
@@ -1240,6 +1273,8 @@ int main(int argc, char **argv) {
       preCodegenPm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
       preCodegenPm.addNestedPass<mlir::func::FuncOp>(
           pto::createOpSchedulingPass());
+      preCodegenPm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOFusionRegionGenPass());
     }
   }
 
@@ -1272,12 +1307,6 @@ int main(int argc, char **argv) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
 
   if (enableA5OplibPipeline) {
-    if (enableOpFusion) {
-      pto::PTOOutlineFusionGroupsOptions outlineGroupsOptions;
-      outlineGroupsOptions.debug = opFusionDebug;
-      pm.addPass(pto::createPTOOutlineFusionGroupsPass(outlineGroupsOptions));
-    }
-
     pto::PTOInstantiateAndLowerToLibCallOptions instantiateLowerOptions;
     instantiateLowerOptions.opLibDir = resolvedOpLibDir;
     instantiateLowerOptions.debug = opFusionDebug;

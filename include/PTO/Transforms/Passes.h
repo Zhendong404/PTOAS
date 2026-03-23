@@ -67,12 +67,11 @@ std::unique_ptr<Pass> createPreFusionAnalysisPass();
 std::unique_ptr<Pass> createPrintPreFusionAnalysisPass();
 std::unique_ptr<Pass> createFusionPlanPass();
 std::unique_ptr<Pass> createOpSchedulingPass();
+std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 LogicalResult importPTOOpLibTemplates(ModuleOp module, StringRef opLibDir,
                                       bool debug = false);
 std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
     const PTOInstantiateAndLowerToLibCallOptions &options = {});
-std::unique_ptr<Pass> createPTOOutlineFusionGroupsPass(
-    const PTOOutlineFusionGroupsOptions &options = {});
 std::unique_ptr<Pass>
 createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
 std::unique_ptr<Pass> createPTOValidateSimdIRPass();

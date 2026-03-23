@@ -133,6 +133,17 @@ def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def PTOFusionRegionGen : Pass<"pto-fusion-region-gen", "func::FuncOp"> {
+  let summary = "Wrap one scheduled fusion span into one pto.fusion_region";
+  let description = [{
+    Consumes scheduled tile-fusion metadata and will encapsulate one contiguous
+    fusion group span into one pto.fusion_region without redefining group
+    membership or physical order.
+  }];
+  let constructor = "mlir::pto::createPTOFusionRegionGenPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def PreFusionAnalysis : Pass<"pto-pre-fusion-analysis", "func::FuncOp"> {
   let summary = "Analyze block-local tile-fusion candidates before planning";
   let description = [{
@@ -180,21 +191,6 @@ def PTOInstantiateAndLowerToLibCall
                  Option<"debug", "debug", "bool",
                         /*default=*/"false",
                         "Enable verbose debug logging for OP-Lib lowering">];
-}
-
-def PTOOutlineFusionGroups : Pass<"pto-outline-fusion-groups", "ModuleOp"> {
-  let summary =
-      "Outline grouped OP-Lib call chains into fused helper functions";
-  let description = [{
-    Outlines contiguous call chains annotated with fusion group metadata into
-    synthesized @__pto_fused_group_* helper functions and replaces the chain
-    with a single call boundary in caller functions.
-  }];
-  let constructor = "mlir::pto::createPTOOutlineFusionGroupsPass()";
-  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect"];
-  let options = [Option<"debug", "debug", "bool",
-                        /*default=*/"false",
-                        "Enable verbose debug logging for group outlining">];
 }
 
 def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {

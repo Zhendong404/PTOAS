@@ -89,6 +89,8 @@ enum class VerifierTargetArch {
   A2A3,
   A5,
 };
+static bool isNestedInOp(Operation *op, Operation *ancestor);
+static bool isValueDefinedInsideRegion(Value value, Region &region);
 static VerifierTargetArch getVerifierTargetArch(Operation *op);
 static std::optional<StringRef> getVerifierArchName(Operation *op);
 static bool isSupportedVecElemType(Type ty, bool allowBf16 = true,
@@ -6753,6 +6755,111 @@ computeExpectedTileBufMemrefStrides(TileBufType tileTy,
 
   expectedStrides.push_back(shape[1]);
   expectedStrides.push_back(innerRows);
+  return success();
+}
+
+// ---- Tile Fusion Region Ops ----
+static bool isNestedInOp(Operation *op, Operation *ancestor) {
+  for (Operation *cur = op; cur; cur = cur->getParentOp())
+    if (cur == ancestor)
+      return true;
+  return false;
+}
+
+static bool isValueDefinedInsideRegion(Value value, Region &region) {
+  Operation *regionOwner = region.getParentOp();
+  if (!regionOwner)
+    return false;
+
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    Block *owner = blockArg.getOwner();
+    if (!owner)
+      return false;
+    Operation *ownerOp = owner->getParentOp();
+    return ownerOp && isNestedInOp(ownerOp, regionOwner);
+  }
+
+  Operation *defOp = value.getDefiningOp();
+  return defOp && isNestedInOp(defOp, regionOwner);
+}
+
+LogicalResult FusionRegionOp::verify() {
+  Region &bodyRegion = getBody();
+  if (bodyRegion.empty())
+    return emitOpError("expects a non-empty body region");
+
+  Block &body = bodyRegion.front();
+  if (body.getNumArguments() != getInputs().size())
+    return emitOpError() << "expects " << getInputs().size()
+                         << " body block arguments to match region inputs, got "
+                         << body.getNumArguments();
+
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(body.getArguments(), getInputs()))) {
+    BlockArgument arg = std::get<0>(pair);
+    Value input = std::get<1>(pair);
+    if (arg.getType() != input.getType())
+      return emitOpError() << "expects body block argument #" << idx
+                           << " to have type " << input.getType() << ", got "
+                           << arg.getType();
+  }
+
+  auto yield = dyn_cast_or_null<YieldOp>(body.getTerminator());
+  if (!yield)
+    return emitOpError("expects body to terminate with pto.yield");
+
+  if (yield.getValues().size() != getOutputs().size())
+    return emitOpError() << "expects pto.yield to return "
+                         << getOutputs().size() << " values, got "
+                         << yield.getValues().size();
+
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(yield.getValues(), getOutputs()))) {
+    Value yielded = std::get<0>(pair);
+    Value output = std::get<1>(pair);
+    if (yielded.getType() != output.getType())
+      return emitOpError() << "expects yielded value #" << idx << " to have "
+                           << "type " << output.getType() << ", got "
+                           << yielded.getType();
+  }
+
+  WalkResult captureCheck = bodyRegion.walk([&](Operation *nestedOp) {
+    for (Value operand : nestedOp->getOperands()) {
+      if (isValueDefinedInsideRegion(operand, bodyRegion))
+        continue;
+      emitOpError() << "expects body to be closed over explicit inputs, but "
+                       "captures external value "
+                    << operand;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (captureCheck.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+LogicalResult YieldOp::verify() {
+  auto parent = dyn_cast_or_null<FusionRegionOp>(getOperation()->getParentOp());
+  if (!parent)
+    return emitOpError("expects parent op to be pto.fusion_region");
+
+  if (getValues().size() != parent.getOutputs().size())
+    return emitOpError() << "expects " << parent.getOutputs().size()
+                         << " yielded values to match parent results, got "
+                         << getValues().size();
+
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(getValues(), parent.getOutputs()))) {
+    Value yielded = std::get<0>(pair);
+    Value output = std::get<1>(pair);
+    if (yielded.getType() != output.getType())
+      return emitOpError() << "expects yielded value #" << idx << " to have "
+                           << "type " << output.getType() << ", got "
+                           << yielded.getType();
+  }
+
   return success();
 }
 

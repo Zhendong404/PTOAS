@@ -32,8 +32,8 @@ add_mlir_dialect_library(PTOTransforms
   PTOPreFusionAnalysis.cpp
   PTOFusionPlan.cpp
   PTOOpScheduling.cpp
+  PTOFusionRegionGen.cpp
   PTOLowerToOpLibCalls.cpp
-  PTOOutlineFusionGroups.cpp
   PTOInstantiateAndInlineOpLib.cpp
   PTOValidateSimdIR.cpp
   PTOLowerSimdToVector.cpp
