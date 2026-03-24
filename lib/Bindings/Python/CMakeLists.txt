@@ -38,7 +38,6 @@ target_link_libraries(_pto PRIVATE
   MLIRCAPIIR
   MLIRSupport
   MLIRArithDialect
-  MLIRMemRefDialect
   MLIRSCFDialect
   MLIRDestinationStyleOpInterface
   MLIRInferTypeOpInterface

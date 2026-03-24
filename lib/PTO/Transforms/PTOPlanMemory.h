@@ -13,11 +13,11 @@
 
 #include "PTO/IR/PTO.h"
 #include "OptMemPlanForPipeline.h"
+#include "TileBufferSemantics.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/ADT/SmallSet.h"
 
 
@@ -70,12 +70,22 @@ constexpr const int SPEC_LEVEL_2 = 2;
 struct BufferInfo {
   /// Alloc operation of buffer.
   Operation *operation{nullptr};
+  /// Root storage value traced from alias/view chains.
+  Value rootBuffer;
   /// Space corresponding to buffer.
   pto::AddressSpace bufferScope;
   /// The size required for the buffer.
   int64_t constBits{0};
   /// The type of element in the buffer.
   Type bufferType;
+  /// Logical shape used for memory planning/debug.
+  SmallVector<int64_t, 4> bufferShape;
+  /// Logical valid shape if tile metadata is available.
+  SmallVector<int64_t, 4> bufferValidShape;
+  /// Tile config when the buffer comes from tile semantics.
+  TileBufConfigAttr tileConfig;
+  /// View-like kind of the queried buffer.
+  TileViewKind viewKind{TileViewKind::Unknown};
   /// Alias buffer does not participate in inplace.
   /// e.g :
   ///  alloc A
@@ -262,7 +272,9 @@ public:
   MemLivenessAnalysis(func::FuncOp func, MemPlanMode planMode)
       : func_(func), planMode(planMode) {}
 
-  void build();
+  /// Builds alias/gen-kill/lifetime data used by PlanMemory.
+  /// Returns failure if traversal encounters unsupported local-memory patterns.
+  LogicalResult build();
 
   /// linear operation info.
   SmallVector<std::unique_ptr<OpInfo>> linearOperation;
@@ -324,15 +336,19 @@ private:
   /// Update and obtain op info information.
   OpInfo *UpdateLinearOperation(Operation *op);
 
-  /// Obtain all information about the buffer.
-  void UpdateOpBufferInfo(Operation *op, const ValueRange &results);
+  /// Materialize planning buffer-info for op results.
+  /// Returns failure when any result cannot be expressed as tilebuf semantics.
+  LogicalResult UpdateOpBufferInfo(Operation *op, const ValueRange &results);
 
-  /// Generate buffer info.
-  BufferInfo GenerateBufferInfo(Operation *op, Value operand);
+  /// Build planning metadata for one operand.
+  /// Returns failure when tilebuf semantic inference fails.
+  LogicalResult GenerateBufferInfo(Operation *op, Value operand,
+                                   BufferInfo &out);
 
-  /// Obtain the buffer info of plan operation.
-  BufferInfo GetBufferInfo(Operation *op, Value operand,
-                           pto::AddressSpace bufferScope);
+  /// Populate `out` from tilebuf semantic inference in the target scope.
+  /// Legacy fallback paths are disallowed in tilebuf-only PlanMemory mode.
+  LogicalResult GetBufferInfo(Operation *op, Value operand,
+                              pto::AddressSpace bufferScope, BufferInfo &out);
 
   /// Process gen buffer based on the result value of op.
   void UpdateOpGenInfo(OpInfo *opInfo, const ValueRange &results);
@@ -363,8 +379,9 @@ private:
   /// Update store op information.
   void UpdateStoreOpInfo(OpInfo *opInfo, const Value storeValue, Liveness live);
 
-  /// Check if it is local buffer with memory space
-  LogicalResult CheckLocalBufferAllocOp(Operation *op) const;
+  /// Check whether a local-buffer defining op (`pto.alloc_tile`) is placed in
+  /// a supported local address space.
+  LogicalResult CheckLocalBufferDefOp(Operation *op) const;
 
   /// kill buffer handle.
   void OpKillHandle(OpInfo *opInfo, Liveness live, Block *block);
@@ -382,9 +399,8 @@ private:
   /// Generate buffer's life time.
   void GenerateBufferLife();
 
-  /// initialize the buffers that must be inplaced together
-  /// namely, the alias buffers of memref.alloc,
-  /// e.g. for iter arg and for yield.
+  /// Initialize buffers that must be inplaced together, such as aliases tied
+  /// through iter_args / yields.
   void InitializeInplacePairList();
 
   /// Record semantic non-reuse pairs for buffers that may be used
@@ -401,6 +417,9 @@ private:
 
   /// map on buffer alias
   DenseMap<Value, SetVector<Value>> buffer2AliasVec;
+
+  /// Set when IR traversal already emitted a semantic/validation diagnostic.
+  bool hasAnalysisError{false};
 
   int seqIndex{0};
 };
@@ -485,10 +504,10 @@ private:
   /// Post-plan sanity check for local memory overflow.
   bool RecordOverflowIfAny();
 
-  /// Prepare the memref.alloc plan.
+  /// Prepare the local tile-buffer address plan.
   PlanStatus PlanLocalMemAddress();
 
-  /// Prepare the memrefExt.alloc_workspace plan.
+  /// Prepare the global workspace plan.
   PlanStatus PlanWorkSpaceMemAddress();
 
   /// merge all storage entry to the first storage entry for WorkSpaceArg.
@@ -668,7 +687,7 @@ private:
   /// Report tensor life time for debug.
   void MemLifeDebugInfo(StorageEntry *storageEntry);
 
-  /// Report tensor which is defined by memref allco.
+  /// Report tensor defined by a disallowed legacy allocation op.
   void ReportCurEntryDebugInfo(const StorageEntry *curEntry);
 
   /// Report tensor allocate info.
@@ -702,7 +721,7 @@ private:
   /// Whether to adopt a split strategy.
   bool splitOutline{false};
 
-  /// map from memref buffer to plan memory address.
+  /// map from root buffer to plan memory address.
   DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
 
   /// map from each scope to its root StorageEntry.

@@ -1,4 +1,4 @@
-// RUN: ptoas --mlir-print-ir-before=pto-view-to-memref %s 2>&1 | FileCheck %s
+// RUN: ptoas --mlir-print-ir-before=pto-plan-memory %s 2>&1 | FileCheck %s
 
 module {
   func.func @new_format_static(%src: !pto.ptr<f32>) {

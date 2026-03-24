@@ -36,16 +36,7 @@ def PTOInsertSync : Pass<"pto-insert-sync", "func::FuncOp"> {
 
   let dependentDialects = [
     "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect" 
-  ];
-}
-
-def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
-  let summary = "Convert Ops from other dialects to PTO Ops";
-  let constructor = "mlir::pto::createConvertToPTOOpPass()";
-  let dependentDialects = ["arith::ArithDialect", "pto::PTODialect",
-                           "tensor::TensorDialect",
   ];
 }
 
@@ -74,12 +65,6 @@ def PTOA5NormalizeTMov : Pass<"pto-a5-normalize-tmov", "func::FuncOp"> {
 }
 
 
-def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
-  let summary = "Infer memory scope for PTO Ops";
-  let constructor = "mlir::pto::createInferPTOMemScopePass()";
-  let dependentDialects = ["pto::PTODialect", "memref::MemRefDialect", ];
-}
-
 def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
   let summary = "Plan memory for PTO Ops";
   let constructor = "mlir::pto::createPlanMemoryPass()";
@@ -90,11 +75,11 @@ def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
            "plan mem mode (default is LOCAL_MEM_PLAN)",
            [{::llvm::cl::values(
                clEnumValN(pto::MemPlanMode::LOCAL_MEM_PLAN, "local-mem-plan",
-                          "plan mem mode is for memref.alloc"),
+                          "plan mem mode is for local tile buffers"),
                clEnumValN(
                    pto::MemPlanMode::GLOBAL_WORKSPACE_PLAN,
                    "global-work-space-plan",
-                   "plan mem mode is for memref_ext.alloc_workspace"))}]>,
+                   "plan mem mode is for global workspace allocation"))}]>,
     Option<"enableGlobalReuse", "enable-global-workspace-reuse", "bool",
            /*default=*/"false",
            "Enable global workspace reuse ,default : false">,
@@ -340,23 +325,6 @@ def PTOVerifyTFree : Pass<"pto-verify-tfree", "func::FuncOp"> {
 
   let dependentDialects = [
     "mlir::pto::PTODialect"
-  ];
-}
-
-def PTOViewToMemref : Pass<"pto-view-to-memref", "ModuleOp"> {
-  let summary = "Lower PTO views to memref with Metadata Binding";
-  let description = [{
-    Lower PTO tile/view operations to memref-based IR while preserving tile
-    metadata through binding ops and SSA backtracking.
-  }];
-
-  let constructor = "mlir::pto::createPTOViewToMemrefPass()";
-
-  let dependentDialects = [
-    "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::func::FuncDialect"
   ];
 }
 

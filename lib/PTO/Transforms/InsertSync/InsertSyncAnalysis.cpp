@@ -13,7 +13,6 @@
 
 #include "PTO/Transforms/InsertSync/InsertSyncAnalysis.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -507,14 +506,6 @@ void InsertSyncAnalysis::InsertLastPipeAll() {
     element->pipeAfter.push_back(barrierRawPtr);
     return;
   }
-}
-
-// ==============================================================================
-// 7. Helpers
-// ==============================================================================
-
-bool InsertSyncAnalysis::IsMemAllocOp(Operation *op) const {
-  return isa<memref::AllocOp>(op) || isa<pto::PointerCastOp>(op);
 }
 
 SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(

@@ -9,7 +9,6 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
-#include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -22,7 +21,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include <cctype>
 #include <cstring>
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
@@ -31,7 +29,6 @@
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "llvm/Support/Path.h"
 #include "ptobc/ptobc_decode.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
@@ -1363,22 +1360,15 @@ int main(int argc, char **argv) {
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
   registry.insert<mlir::arith::ArithDialect>();
-  registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::affine::AffineDialect>();
   registry.insert<mlir::cf::ControlFlowDialect>();
-  registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
-  arith::registerBufferizableOpInterfaceExternalModels(registry);
-  tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  pto::registerBufferizableOpInterfaceExternalModels(registry);
-
   registry.insert<emitc::EmitCDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
   mlir::registerAllPasses();
   ::registerPTOPasses();
-  mlir::pto::registerPTOViewToMemrefPass();
   ::registerPTOInlineLibCall();
   ::registerFoldTileBufIntrinsics();
   ::registerExpandTileOp();
@@ -1447,7 +1437,6 @@ int main(int argc, char **argv) {
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
-  context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
 
@@ -1634,7 +1623,8 @@ int main(int argc, char **argv) {
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
-  pm.addPass(pto::createPTOViewToMemrefPass());
+  // Tile-native pipeline: keep tile_buf descriptors through PlanMemory/EmitC.
+  // The legacy bridge has been removed from this pipeline.
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;

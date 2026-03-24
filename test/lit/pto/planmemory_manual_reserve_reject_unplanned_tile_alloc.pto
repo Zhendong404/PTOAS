@@ -1,0 +1,22 @@
+// RUN: not ptoas %s 2>&1 | FileCheck %s
+
+module {
+  func.func @manual_reserve_reject_unplanned_tile_alloc() {
+    %fifo = pto.reserve_buffer {
+      name = "fifo",
+      size = 8192,
+      location = #pto.address_space<vec>,
+      auto = false,
+      base = 0
+    } -> i32
+    %buf = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tprint ins(%buf : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
+                                      v_row=16, v_col=16, blayout=row_major,
+                                      slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// CHECK: error: 'pto.reserve_buffer' op pto.reserve_buffer with explicit 'base' (auto = false) is not supported in PlanMemory; use --pto-level=level3 or set auto = true

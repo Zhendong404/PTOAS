@@ -867,16 +867,25 @@ process_one_dir() {
     fi
 
     # Regression guard for Issue #207:
-    # SSA `pto.treshape` (lowered into `pto.bind_tile`) must lower to a single
-    # `TRESHAPE(dst, src)` instead of an invalid Tile-to-pointer cast sequence.
+    # SSA view-like ops must preserve tile alias semantics in EmitC. Depending on
+    # the lowering path, this may appear as `TRESHAPE(dst, src)` or as
+    # pointer-cast-style sibling tile rebinding (`TASSIGN`).
     if [[ "$base" == "reshape" ]]; then
-      if ! grep -Fq "TRESHAPE(" "$cpp"; then
-        echo -e "${A}(${base}.py)	FAIL	missing TRESHAPE() lowering for SSA treshape"
+      if ! grep -Fq "TRESHAPE(" "$cpp" && ! grep -Fq "TASSIGN(" "$cpp"; then
+        echo -e "${A}(${base}.py)	FAIL	missing alias-preserving lowering (TRESHAPE/TASSIGN) for SSA treshape"
         overall=1
         continue
       fi
       if grep -Eq "= \(__ubuf__ [^)]+\*\) v[0-9]+;" "$cpp"; then
         echo -e "${A}(${base}.py)	FAIL	found invalid Tile-to-__ubuf__ pointer cast (issue #207)"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tilebuf_alias_chain" ]]; then
+      if ! grep -Fq "TASSIGN(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TASSIGN() lowering in alias chain"
         overall=1
         continue
       fi
@@ -900,6 +909,19 @@ process_one_dir() {
       fi
       if ! grep -Eq "(PTOAS__TILE_DATA|\.data\(\))" "$cpp"; then
         echo -e "${A}(${base}.py)	FAIL	missing tile-address alias lowering for pto.bitcast"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tilebuf_planmemory_auto_addr" ]]; then
+      if ! grep -Fq "TASSIGN(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TASSIGN() lowering for auto-address tilebuf"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "TPRINT(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TPRINT() lowering for auto-address tilebuf"
         overall=1
         continue
       fi
@@ -1034,26 +1056,27 @@ PY
       fi
     fi
 
-	    # Regression guard for Issue #190:
-	    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
-	    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
-	      if ! grep -Eq "pto::Shape<1, 1, 1, 16, 1>.*pto::Layout::DN" "$cpp"; then
-	        echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::DN for shape (16 x 1) GlobalTensor"
-	        overall=1
-	        continue
-	      fi
-	    fi
+    # Regression guard for Issue #190:
+    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
+    # EmitC prints Shape and Layout on different lines, so match across lines.
+    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then
+      if ! perl -0ne 'exit((/pto::Shape<1, 1, 1, 16, 1>.*?pto::Layout::DN/s) ? 0 : 1)' "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::DN for shape (16 x 1) GlobalTensor"
+        overall=1
+        continue
+      fi
+    fi
 
     # Regression guard for row-reduction kernels:
     # (32 x 1) row-major outputs are minor-2D ambiguous; layout must align with
     # row-major tiles (ND), otherwise pto-isa can hit layout/tile static_assert.
     if [[ "$base" == "rowmin" || "$base" == "rowsum" || "$base" == "rowmax" || "$base" == "rowprod" ]]; then
-      if ! grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::ND" "$cpp"; then
+      if ! perl -0ne 'exit((/pto::Shape<1, 1, 1, 32, 1>.*?pto::Layout::ND/s) ? 0 : 1)' "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\texpected pto::Layout::ND for shape (32 x 1) GlobalTensor"
         overall=1
         continue
       fi
-      if grep -Eq "pto::Shape<1, 1, 1, 32, 1>.*pto::Layout::DN" "$cpp"; then
+      if perl -0ne 'exit((/pto::Shape<1, 1, 1, 32, 1>.*?pto::Layout::DN/s) ? 0 : 1)' "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tunexpected pto::Layout::DN for shape (32 x 1) GlobalTensor"
         overall=1
         continue
@@ -1211,7 +1234,7 @@ PY
       fi
 
       # Regression guard: scf.if yielding tile result in loop should lower
-      # through memref + EmitC without type-mismatch failures.
+      # through partition-view + EmitC without type-mismatch failures.
       if [[ "$base" == "test_if_else_tile_result" ]]; then
         if ! grep -Fq "TADD(" "$cpp" || ! grep -Fq "TMUL(" "$cpp" || ! grep -Fq "TSTORE(" "$cpp"; then
           echo -e "${A}(${base}.pto)\tFAIL\tmissing expected if-else tile result lowering"

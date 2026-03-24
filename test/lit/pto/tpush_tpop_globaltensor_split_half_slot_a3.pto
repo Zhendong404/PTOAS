@@ -1,9 +1,9 @@
 // RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s
 
 module {
-  func.func @call_both(%ffts : memref<256xi64>, %fifo_mem : !pto.ptr<f32>)
+  func.func @call_both(%ffts : !pto.ptr<i64>, %fifo_mem : !pto.ptr<f32>)
       attributes {pto.entry} {
-    pto.set_ffts %ffts : memref<256xi64>
+    pto.set_ffts %ffts : !pto.ptr<i64>
     func.call @cube_kernel(%fifo_mem) : (!pto.ptr<f32>) -> ()
     func.call @vector_kernel(%fifo_mem) : (!pto.ptr<f32>) -> ()
     return
@@ -63,7 +63,9 @@ module {
 // CHECK-LABEL: AICORE void vector_kernel
 // CHECK: TPipe<0, Direction::DIR_C2V, 262144, 8, 8, false>
 // CHECK: TPOP<TPipe<0, Direction::DIR_C2V, 262144, 8, 8, false>, GlobalTensor<float, pto::Shape<1, 1, 4, 64, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>, TileSplitAxis::TILE_UP_DOWN>
-// CHECK: GlobalTensor<float, pto::Shape<1, 1, 4, 16, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>
+// CHECK: pto::Shape<1, 1, 4, 16, 128>
+// CHECK: pto::Stride<65536, 65536, 16384, 128, 1>
+// CHECK: GlobalTensor<float
 // CHECK: TFREE<TPipe<0, Direction::DIR_C2V, 262144, 8, 8, false>, GlobalTensor<float, pto::Shape<1, 1, 4, 64, 128>, pto::Stride<65536, 65536, 16384, 128, 1>, pto::Layout::ND>, TileSplitAxis::TILE_UP_DOWN>
 // CHECK-LABEL: __global__ AICORE void call_both
 // CHECK: set_ffts_base_addr
