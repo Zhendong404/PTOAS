@@ -1627,7 +1627,7 @@ else()
     set(ASCEND_HOME_PATH $ENV{{ASCEND_HOME_PATH}})
 endif()
 
-set(PTO_ISA_ROOT "" CACHE PATH "Path to pto-isa repo")
+set(PTO_ISA_ROOT "$ENV{{PTO_ISA_ROOT}}" CACHE PATH "Path to pto-isa repo")
 if(NOT PTO_ISA_ROOT)
     set(_PTO_ISA_CANDIDATES
         "${{CMAKE_CURRENT_LIST_DIR}}/../../../../pto-isa"

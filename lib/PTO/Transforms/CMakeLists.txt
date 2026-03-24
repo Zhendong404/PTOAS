@@ -1,6 +1,11 @@
 add_mlir_dialect_library(PTOTransforms
   TileFusion/FusionAnalysis.cpp
   TileFusion/FusionOpSemantics.cpp
+  HIVMIntrinsicNaming.cpp
+  A5VMTextEmitter.cpp
+  A5VMLLVMEmitter.cpp
+  PTOToA5VM.cpp
+  PTOToA5VMLowering.cpp
   InsertLoadStoreForMixCV.cpp
   TileFusion/PTOPrintPreFusionAnalysis.cpp
   PTOInsertCVMov.cpp
@@ -49,6 +54,9 @@ add_mlir_dialect_library(PTOTransforms
   PTOPassesIncGen
   PTOOpsIncGen
 
+  LINK_COMPONENTS
+  Analysis
+
   LINK_LIBS PUBLIC
   PTOIR
   MLIRIR
@@ -62,7 +70,12 @@ add_mlir_dialect_library(PTOTransforms
   MLIRTransformUtils
   MLIRTransforms
   MLIRTensorDialect
+  MLIRSCFDialect
   MLIRSCFToEmitC
+  MLIRSCFToControlFlow
+  MLIRConvertToLLVMPass
+  MLIRTargetLLVMIRExport
+  MLIRToLLVMIRTranslationRegistration
 )
 
 install(TARGETS PTOTransforms

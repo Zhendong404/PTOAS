@@ -6,7 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/A5VMLLVMEmitter.h"
+#include "PTO/Transforms/A5VMTextEmitter.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "PTO/Transforms/CppEmitter.h"
 #include "PTO/Transforms/Passes.h"
@@ -37,6 +40,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -416,6 +420,70 @@ static llvm::cl::opt<std::string>
                   llvm::cl::value_desc("level1|level2|level3"),
                   llvm::cl::init("level2"));
 
+static llvm::cl::opt<std::string> ptoBackend(
+    "pto-backend",
+    llvm::cl::desc("Final PTOAS backend: emitc or a5vm (default: emitc)"),
+    llvm::cl::value_desc("emitc|a5vm"), llvm::cl::init("emitc"));
+
+static llvm::cl::opt<bool> a5vmPrintIR(
+    "a5vm-print-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> dumpA5VMIR(
+    "dump-a5vm-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> ptoPrintSeamIR(
+    "pto-print-seam-ir",
+    llvm::cl::desc("Print shared pre-backend seam IR to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> ptoSeamIRFile(
+    "pto-seam-ir-file",
+    llvm::cl::desc("Write shared pre-backend seam IR to a file"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+static llvm::cl::opt<bool> a5vmPrintIntrinsics(
+    "a5vm-print-intrinsics",
+    llvm::cl::desc("Print A5VM intrinsic selection decisions to stderr"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMText(
+    "a5vm-emit-hivm-text",
+    llvm::cl::desc(
+        "After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw "
+        "A5VM IR"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialLLVM(
+    "a5vm-emit-hivm-llvm",
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via "
+                   "the official LLVM dialect export path"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialBitcode(
+    "a5vm-emit-hivm-bc",
+    llvm::cl::desc("After lowering to A5VM IR, emit LLVM bitcode via the "
+                   "official LLVM dialect export path"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmAllowUnresolved(
+    "a5vm-allow-unresolved",
+    llvm::cl::desc("Emit explicit unresolved A5VM comments instead of failing"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<std::string> a5vmUnresolvedReport(
+    "a5vm-unresolved-report",
+    llvm::cl::desc("Write unresolved A5VM mappings to a sidecar report"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> hivmUnresolvedReport(
+    "hivm-unresolved-report",
+    llvm::cl::desc("Write unresolved HIVM mappings to a sidecar report"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
 enum class PTOBuildLevel {
   Level1,
   Level2,
@@ -425,6 +493,11 @@ enum class PTOBuildLevel {
 enum class PTOTargetArch {
   A3,
   A5,
+};
+
+enum class PTOBackend {
+  EmitC,
+  A5VM,
 };
 
 static std::string asciiLowercaseCopy(llvm::StringRef text) {
@@ -483,6 +556,19 @@ static bool parseTargetArch(llvm::StringRef archStr, PTOTargetArch &out) {
   }
   if (s == "a5") {
     out = PTOTargetArch::A5;
+    return true;
+  }
+  return false;
+}
+
+static bool parseBackend(llvm::StringRef backendStr, PTOBackend &out) {
+  std::string s = asciiLowercaseCopy(backendStr);
+  if (s == "emitc") {
+    out = PTOBackend::EmitC;
+    return true;
+  }
+  if (s == "a5vm") {
+    out = PTOBackend::A5VM;
     return true;
   }
   return false;
@@ -665,6 +751,87 @@ static void maybeEnablePrintIRAfterAll(PassManager &pm,
 
   pm.enableIRPrinting(std::make_unique<UserRelevantIRPrinterConfig>(
       userFuncNames, llvm::errs()));
+}
+
+static void addSharedPreBackendPasses(OpPassManager &pm,
+                                      PTOBuildLevel effectiveLevel) {
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+
+  if (!disableInferLayout)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addPass(pto::createPTOViewToMemrefPass());
+
+  if (effectiveLevel != PTOBuildLevel::Level3) {
+    PlanMemoryOptions planMemoryOption;
+    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
+    planMemoryOption.enableGlobalReuse = false;
+    planMemoryOption.enablePrintMemoryAllocatedSize = false;
+    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+  }
+
+  if (enableInsertSync) {
+    if (effectiveLevel == PTOBuildLevel::Level3) {
+      llvm::errs() << "Warning: --enable-insert-sync is ignored because "
+                      "--pto-level=level3.\n";
+    } else {
+      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+    }
+  }
+
+  pm.addPass(createCSEPass());
+}
+
+static void printA5VMIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
+  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+    for (Operation &op : func.getBody().front().getOperations()) {
+      os << "A5VM IR op: " << op.getName().getStringRef() << "\n";
+      for (Region &region : op.getRegions()) {
+        for (Block &block : region) {
+          for (Operation &nested : block.getOperations())
+            os << "A5VM IR op: " << nested.getName().getStringRef() << "\n";
+        }
+      }
+    }
+  }
+}
+
+static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
+                                                llvm::StringRef outputPath) {
+  if (outputPath.empty())
+    return success();
+
+  if (outputPath == "-") {
+    module->print(llvm::outs());
+    llvm::outs() << "\n";
+    llvm::outs().flush();
+    return success();
+  }
+
+  std::error_code ec;
+  llvm::ToolOutputFile outputFile(outputPath, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << "Error: failed to open seam IR file '" << outputPath
+                 << "': " << ec.message() << "\n";
+    return failure();
+  }
+
+  module->print(outputFile.os());
+  outputFile.os() << "\n";
+  outputFile.keep();
+  return success();
+}
+
+static bool containsA5VMIR(llvm::StringRef input) {
+  llvm::StringRef rest = input;
+  while (!rest.empty()) {
+    auto split = rest.split('\n');
+    llvm::StringRef line = split.first.trim();
+    if (!line.starts_with("//") &&
+        (line.contains("!a5vm.vec<") || line.contains("a5vm.")))
+      return true;
+    rest = split.second;
+  }
+  return false;
 }
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
@@ -1040,6 +1207,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::scf::SCFDialect>();
   registry.insert<mlir::vector::VectorDialect>();
 
+  registry.insert<mlir::a5vm::A5VMDialect>();
   registry.insert<mlir::pto::PTODialect>();
   // mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
@@ -1054,6 +1222,30 @@ int main(int argc, char **argv) {
 
   // Parse command line options
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
+
+  PTOBackend effectiveBackend = PTOBackend::EmitC;
+  if (!parseBackend(ptoBackend, effectiveBackend)) {
+    llvm::errs() << "Error: invalid --pto-backend='" << ptoBackend
+                 << "'. Expected 'emitc' or 'a5vm'.\n";
+    return 1;
+  }
+
+  if (a5vmEmitHIVMOfficialLLVM && a5vmEmitHIVMOfficialBitcode) {
+    llvm::errs() << "Error: --a5vm-emit-hivm-llvm and --a5vm-emit-hivm-bc "
+                    "cannot be used together.\n";
+    return 1;
+  }
+
+  if (effectiveBackend != PTOBackend::A5VM &&
+      (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
+       a5vmEmitHIVMOfficialBitcode || a5vmPrintIR || dumpA5VMIR ||
+       a5vmPrintIntrinsics || a5vmAllowUnresolved ||
+       !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty() ||
+       ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
+    llvm::errs() << "Error: A5VM-specific flags require "
+                    "--pto-backend=a5vm.\n";
+    return 1;
+  }
 
   // Read whole input first (so we can auto-detect .ptobc by magic).
   auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
@@ -1071,6 +1263,7 @@ int main(int argc, char **argv) {
     context.disableMultithreading();
 
   context.getOrLoadDialect<emitc::EmitCDialect>();
+  context.getOrLoadDialect<mlir::a5vm::A5VMDialect>();
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
@@ -1093,6 +1286,7 @@ int main(int argc, char **argv) {
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
   const bool isPTOBC =
       (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
+  const bool inputIsA5VMIR = containsA5VMIR(buf);
 
   if (isPTOBC) {
     // Decode PTO bytecode directly into an MLIR module.
@@ -1173,7 +1367,9 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  const bool enableA5OplibPipeline = (effectiveArch == PTOTargetArch::A5);
+  const bool enableA5OplibPipeline =
+      (effectiveBackend == PTOBackend::EmitC &&
+       effectiveArch == PTOTargetArch::A5);
   std::string resolvedOpLibDir = opLibDir;
 
   if (effectiveLevel == PTOBuildLevel::Level3) {
@@ -1216,6 +1412,21 @@ int main(int argc, char **argv) {
                     "--pto-arch!=a5.\n";
   }
 
+  if (effectiveBackend == PTOBackend::A5VM) {
+    if (enableOpFusion) {
+      llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
+    }
+    if (!opLibDir.empty()) {
+      llvm::errs() << "Warning: --op-lib-dir is ignored because "
+                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
+    }
+    if (opFusionDebug) {
+      llvm::errs() << "Warning: --op-fusion-debug is ignored because "
+                      "--pto-backend=a5vm bypasses the OP-Lib pipeline.\n";
+    }
+  }
+
   if (!printIRAfterAll && !printIRAfterAllFuncFilter.empty()) {
     llvm::errs() << "Warning: --print-ir-after-all-func-filter has no effect "
                     "without --print-ir-after-all.\n";
@@ -1241,6 +1452,102 @@ int main(int argc, char **argv) {
       llvm::errs() << "Error: Pass execution failed.\n";
       return 1;
     }
+    return 0;
+  }
+
+  if (effectiveBackend == PTOBackend::A5VM) {
+    const bool skipPreBackendPasses = inputIsA5VMIR;
+
+    if (!skipPreBackendPasses) {
+      PassManager preBackendPM(&context);
+      maybeEnablePrintIRAfterAll(preBackendPM, inputFuncNames);
+      addSharedPreBackendPasses(preBackendPM, effectiveLevel);
+      module->getOperation()->setAttr("pto.target_arch",
+                                      mlir::StringAttr::get(&context, arch));
+      if (failed(preBackendPM.run(*module))) {
+        llvm::errs() << "Error: shared pre-backend pass execution failed.\n";
+        return 1;
+      }
+    }
+
+    if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
+      if (skipPreBackendPasses) {
+        llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
+                        "the input is already A5VM IR.\n";
+        return 1;
+      }
+      if (ptoPrintSeamIR) {
+        module->print(llvm::errs());
+        llvm::errs() << "\n";
+      }
+      if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
+        return 1;
+    }
+
+    if (!skipPreBackendPasses) {
+      PassManager backendPM(&context);
+      maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
+      backendPM.addPass(pto::createLowerPTOToA5VMPass());
+      backendPM.addPass(mlir::createCSEPass());
+      if (failed(backendPM.run(*module))) {
+        llvm::errs() << "Error: A5VM backend lowering pass execution failed.\n";
+        return 1;
+      }
+    }
+
+    std::error_code ec;
+    llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+      llvm::errs() << ec.message() << "\n";
+      return 1;
+    }
+
+    if (a5vmPrintIR || dumpA5VMIR) {
+      printA5VMIROpSummary(*module, llvm::errs());
+      module->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+
+    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
+        !a5vmEmitHIVMOfficialBitcode) {
+      module->print(outputFile.os());
+      outputFile.os() << "\n";
+      outputFile.keep();
+      return 0;
+    }
+
+    pto::A5VMEmissionOptions options;
+    options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
+    options.printIntrinsicSelections = a5vmPrintIntrinsics;
+    options.allowUnresolved = a5vmAllowUnresolved;
+    options.unresolvedReportPath = !hivmUnresolvedReport.empty()
+                                       ? hivmUnresolvedReport
+                                       : a5vmUnresolvedReport;
+    if (arch == "a5") {
+      options.targetTriple = "hiipu64-hisilicon-cce";
+      options.march = "dav-c310-vec";
+      options.aicoreArch = "dav-c310-vec";
+      options.defaultTargetCPU = "dav-c310-vec";
+      options.defaultTargetFeatures =
+          "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
+          "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
+          "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
+    }
+
+    LogicalResult emissionStatus =
+        a5vmEmitHIVMOfficialBitcode
+            ? pto::translateA5VMModuleToLLVMBitcode(*module, outputFile.os(),
+                                                    options, llvm::errs())
+            : a5vmEmitHIVMOfficialLLVM
+                  ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
+                                                       options, llvm::errs())
+                  : pto::translateA5VMModuleToText(*module, outputFile.os(),
+                                                   options, llvm::errs());
+    if (failed(emissionStatus)) {
+      llvm::errs() << "Error: Failed to emit A5VM text.\n";
+      return 1;
+    }
+    outputFile.keep();
     return 0;
   }
 

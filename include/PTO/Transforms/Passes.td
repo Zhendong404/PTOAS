@@ -12,6 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// The A5VM backend is emitted from tools/ptoas rather than a TableGen pass;
+// these registrations continue to describe the shared pre-backend pipeline.
+
 #ifndef MLIR_DIALECT_PTO_PASSES
 #define MLIR_DIALECT_PTO_PASSES
 
@@ -284,6 +287,19 @@ def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
   }];
   let constructor = "mlir::pto::createPTOFlattenFusionRegionPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
+  let summary = "Lower PTO tile ops to A5VM backend ops";
+  let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
+  let dependentDialects = [
+    "pto::PTODialect",
+    "a5vm::A5VMDialect",
+    "func::FuncDialect",
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 #endif // MLIR_DIALECT_PTO_PASSES

@@ -35,6 +35,9 @@ enum class PTOArch {
   A5,
 };
 
+// EmitC remains the pass-driven backend; the A5VM backend is emitted directly
+// from tools/ptoas at the final backend boundary.
+
 std::unique_ptr<Pass> createPTOHighDimLoweringPass();
 std::unique_ptr<Pass> createPTOVFloopGatherPass();
 std::unique_ptr<Pass> createLoweringSyncToPipePass();
@@ -80,6 +83,7 @@ std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
     const PTOLowLevelLoopFusionOptions &options = {});
 std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
+std::unique_ptr<Pass> createLowerPTOToA5VMPass();
 // Declare register function
 void registerPTOPasses();
 
