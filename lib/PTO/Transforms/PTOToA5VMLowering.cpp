@@ -11,6 +11,8 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTOSyncUtils.h"
 
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -471,16 +473,20 @@ void normalizeMixedGlobalShapeAndStride(ArrayRef<OpFoldResult> shape,
 
 Value adjustPointerByElemOffset(Value ptr, Value elemOffsetI64, int64_t elemBytes,
                                 PatternRewriter &rewriter, Location loc) {
-  if (!ptr || !elemOffsetI64)
+  if (!ptr || !elemOffsetI64 || elemBytes <= 0)
     return {};
-  Value offsetBytes = elemOffsetI64;
+
+  Value offset = elemOffsetI64.getType().isIndex()
+                     ? rewriter.create<arith::IndexCastUIOp>(
+                           loc, rewriter.getI64Type(), elemOffsetI64)
+                     : elemOffsetI64;
+  Value byteOffset = offset;
   if (elemBytes != 1) {
     Value elemBytesValue = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-    offsetBytes = createI64Mul(elemOffsetI64, elemBytesValue, rewriter, loc);
+    byteOffset = createI64Mul(offset, elemBytesValue, rewriter, loc);
   }
-  Value baseInt = rewriter.create<LLVM::PtrToIntOp>(loc, rewriter.getI64Type(), ptr);
-  Value adjusted = createI64Add(baseInt, offsetBytes, rewriter, loc);
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptr.getType(), adjusted);
+  return rewriter.create<LLVM::GEPOp>(loc, ptr.getType(), rewriter.getI8Type(),
+                                      ptr, ValueRange{byteOffset});
 }
 
 LogicalResult buildVecNdLoadPlan(ArrayRef<OpFoldResult> shape,
@@ -735,6 +741,45 @@ StringRef stringifyCmpModeAttr(CmpModeAttr cmpMode) {
   return "eq";
 }
 
+StringRef stringifyElementTypeFragment(Type type) {
+  if (!type)
+    return "unknown";
+  if (type.isF16())
+    return "f16";
+  if (type.isBF16())
+    return "bf16";
+  if (type.isF32())
+    return "f32";
+  if (auto intType = dyn_cast<IntegerType>(type)) {
+    if (intType.isUnsigned())
+      switch (intType.getWidth()) {
+      case 8:
+        return "u8";
+      case 16:
+        return "u16";
+      case 32:
+        return "u32";
+      case 64:
+        return "u64";
+      default:
+        break;
+      }
+    switch (intType.getWidth()) {
+    case 8:
+      return "s8";
+    case 16:
+      return "s16";
+    case 32:
+      return "s32";
+    case 64:
+      return "s64";
+    default:
+      break;
+    }
+  }
+  return "unknown";
+}
+
 A5VMTileDomain deriveTileDomain(Attribute memorySpace) {
   if (auto addrSpace = dyn_cast_or_null<AddressSpaceAttr>(memorySpace)) {
     switch (addrSpace.getAddressSpace()) {
@@ -766,6 +811,36 @@ void getValidShape(TileBufType type, int64_t &rows, int64_t &cols) {
   cols = validShape.size() > 1 ? validShape[1] : ShapedType::kDynamic;
 }
 
+static std::pair<Value, Value> getIfResultYieldedValues(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return {Value(), Value()};
+  auto ifOp = dyn_cast<scf::IfOp>(result.getOwner());
+  if (!ifOp)
+    return {Value(), Value()};
+  unsigned resultNumber = result.getResultNumber();
+  auto thenYield = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+  auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+  if (!thenYield || !elseYield)
+    return {Value(), Value()};
+  if (resultNumber >= thenYield.getNumOperands() ||
+      resultNumber >= elseYield.getNumOperands())
+    return {Value(), Value()};
+  return {thenYield.getOperand(resultNumber), elseYield.getOperand(resultNumber)};
+}
+
+static bool equalOrBothNull(Value lhs, Value rhs) {
+  if (!lhs && !rhs)
+    return true;
+  if (!lhs || !rhs)
+    return false;
+  if (lhs == rhs)
+    return true;
+  auto lhsConst = getConstInt(lhs);
+  auto rhsConst = getConstInt(rhs);
+  return lhsConst && rhsConst && *lhsConst == *rhsConst;
+}
+
 TileBufConfigAttr lookupTileConfig(Value value) {
   if (!value)
     return {};
@@ -779,6 +854,13 @@ TileBufConfigAttr lookupTileConfig(Value value) {
     return lookupTileConfig(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return lookupTileConfig(cast.getSource());
+  if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
+      thenValue && elseValue) {
+    TileBufConfigAttr thenConfig = lookupTileConfig(thenValue);
+    TileBufConfigAttr elseConfig = lookupTileConfig(elseValue);
+    if (thenConfig && elseConfig && thenConfig == elseConfig)
+      return thenConfig;
+  }
   return {};
 }
 
@@ -795,6 +877,10 @@ bool hasStructuredTileDriver(Value value) {
     return hasStructuredTileDriver(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return hasStructuredTileDriver(cast.getSource());
+  if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
+      thenValue && elseValue) {
+    return hasStructuredTileDriver(thenValue) && hasStructuredTileDriver(elseValue);
+  }
   return false;
 }
 
@@ -824,6 +910,18 @@ void lookupValidDims(Value value, Value &validRow, Value &validCol) {
   }
   if (auto cast = value.getDefiningOp<memref::CastOp>()) {
     lookupValidDims(cast.getSource(), validRow, validCol);
+    return;
+  }
+  if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
+      thenValue && elseValue) {
+    Value thenRow;
+    Value thenCol;
+    Value elseRow;
+    Value elseCol;
+    lookupValidDims(thenValue, thenRow, thenCol);
+    lookupValidDims(elseValue, elseRow, elseCol);
+    validRow = equalOrBothNull(thenRow, elseRow) ? thenRow : Value();
+    validCol = equalOrBothNull(thenCol, elseCol) ? thenCol : Value();
     return;
   }
   validRow = {};
@@ -1324,36 +1422,54 @@ Value materializeBufferPointer(Value value, Type elementType,
   }
 
   Value memrefValue = materializeTileBufferView(value, rewriter, loc);
-  if (!memrefValue || !isa<BaseMemRefType>(memrefValue.getType()))
+  auto memrefType = dyn_cast_or_null<MemRefType>(memrefValue.getType());
+  if (!memrefValue || !memrefType)
     return {};
 
-  Value ptrAsIndex =
-      rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc, memrefValue);
-  Value ptrAsI64 =
-      rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI64Type(), ptrAsIndex);
-  auto ptrType =
-      LLVM::LLVMPointerType::get(rewriter.getContext(),
-                                 getLLVMAddressSpace(memorySpace));
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, ptrAsI64);
+  unsigned llvmAddressSpace = getLLVMAddressSpace(
+      memrefType.getMemorySpace() ? memrefType.getMemorySpace() : memorySpace);
+  auto canonicalMemRefType = MemRefType::get(
+      memrefType.getShape(), memrefType.getElementType(), memrefType.getLayout(),
+      rewriter.getI64IntegerAttr(llvmAddressSpace));
+  if (memrefValue.getType() != canonicalMemRefType)
+    memrefValue = rewriter.create<memref::MemorySpaceCastOp>(loc,
+                                                             canonicalMemRefType,
+                                                             memrefValue);
+
+  LLVMTypeConverter typeConverter(rewriter.getContext());
+  Type llvmDescriptorType = typeConverter.convertType(canonicalMemRefType);
+  if (!llvmDescriptorType)
+    return {};
+
+  Value descriptor =
+      rewriter
+          .create<UnrealizedConversionCastOp>(loc, TypeRange{llvmDescriptorType},
+                                              memrefValue)
+          .getResult(0);
+  MemRefDescriptor memrefDescriptor(descriptor);
+  Value alignedPtr = memrefDescriptor.alignedPtr(rewriter, loc);
+  if (!alignedPtr)
+    return {};
+
+  auto ptrType = dyn_cast<LLVM::LLVMPointerType>(alignedPtr.getType());
+  if (!ptrType)
+    return {};
+  if (ptrType.getAddressSpace() != getLLVMAddressSpace(memorySpace))
+    return {};
+  return alignedPtr;
 }
 
 Value offsetBufferPointer(Value basePtr, Type elementType, Value elementOffset,
                           PatternRewriter &rewriter, Location loc) {
-  int64_t elemBytes = getElementByteSize(elementType);
-  if (!basePtr || elemBytes <= 0)
+  if (!basePtr)
     return {};
 
-  Value baseI64 =
-      rewriter.create<LLVM::PtrToIntOp>(loc, rewriter.getI64Type(), basePtr);
   Value offsetI64 = elementOffset.getType().isIndex()
                         ? rewriter.create<arith::IndexCastUIOp>(
                               loc, rewriter.getI64Type(), elementOffset)
                         : elementOffset;
-  Value elemBytesI64 = rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-  Value byteOffset = rewriter.create<arith::MulIOp>(loc, offsetI64, elemBytesI64);
-  Value shifted = rewriter.create<arith::AddIOp>(loc, baseI64, byteOffset);
-  auto ptrType = cast<LLVM::LLVMPointerType>(basePtr.getType());
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrType, shifted);
+  return rewriter.create<LLVM::GEPOp>(loc, basePtr.getType(), elementType, basePtr,
+                                      ValueRange{offsetI64});
 }
 
 Value buildPackedCountI64(PatternRewriter &rewriter, Location loc,
@@ -1540,6 +1656,7 @@ static FailureOr<StringAttr> stringifyA5RoundMode(TCvtOp op,
 enum class A5VMCvtLoweringKind {
   Vtrc,
   F32ToBF16,
+  F16ToF32,
   BF16ToF32,
 };
 
@@ -1549,6 +1666,8 @@ static FailureOr<A5VMCvtLoweringKind> classifyA5CvtLowering(Type srcElemType,
     return A5VMCvtLoweringKind::Vtrc;
   if (srcElemType.isF32() && dstElemType.isBF16())
     return A5VMCvtLoweringKind::F32ToBF16;
+  if (srcElemType.isF16() && dstElemType.isF32())
+    return A5VMCvtLoweringKind::F16ToF32;
   if (srcElemType.isBF16() && dstElemType.isF32())
     return A5VMCvtLoweringKind::BF16ToF32;
   return failure();
@@ -1905,26 +2024,83 @@ Value buildMinIndexValue(PatternRewriter &rewriter, Location loc, Value lhs,
   return rewriter.create<arith::SelectOp>(loc, lhsLtRhs, lhs, rhs);
 }
 
+struct PredicateMaterialization {
+  Value mask;
+  Value nextScalar;
+};
+
+PredicateMaterialization buildPredicateForLaneCount(PatternRewriter &rewriter,
+                                                    Location loc,
+                                                    Type elementType,
+                                                    Value laneCount) {
+  auto maskType = a5vm::MaskType::get(rewriter.getContext());
+  Value laneCountI32 = laneCount;
+  if (laneCount.getType().isIndex()) {
+    laneCountI32 =
+        rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(), laneCount);
+  } else if (auto intType = dyn_cast<IntegerType>(laneCount.getType())) {
+    if (intType.getWidth() < 32)
+      laneCountI32 = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), laneCount);
+    else if (intType.getWidth() > 32)
+      laneCountI32 =
+          rewriter.create<arith::TruncIOp>(loc, rewriter.getI32Type(), laneCount);
+  }
+  unsigned bitWidth = 0;
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    bitWidth = intType.getWidth();
+  else if (auto floatType = dyn_cast<FloatType>(elementType))
+    bitWidth = floatType.getWidth();
+  if (bitWidth == 8) {
+    auto plt = rewriter.create<a5vm::PltB8Op>(loc, maskType, rewriter.getI32Type(),
+                                              laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
+  if (bitWidth == 16) {
+    auto plt = rewriter.create<a5vm::PltB16Op>(loc, maskType, rewriter.getI32Type(),
+                                               laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
+  if (bitWidth == 32) {
+    auto plt = rewriter.create<a5vm::PltB32Op>(loc, maskType, rewriter.getI32Type(),
+                                               laneCountI32);
+    return {plt.getMask(), plt.getScalarOut()};
+  }
+  llvm_unreachable("unsupported element type for predicate lane-count lowering");
+}
+
+Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
+                                     Type elementType, Value laneCount) {
+  return buildPredicateForLaneCount(rewriter, loc, elementType, laneCount).mask;
+}
+
+Value buildAllPredicateMask(PatternRewriter &rewriter, Location loc,
+                            Type elementType) {
+  auto maskType = a5vm::MaskType::get(rewriter.getContext());
+  StringAttr allPattern = rewriter.getStringAttr("PAT_ALL");
+  unsigned bitWidth = 0;
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    bitWidth = intType.getWidth();
+  else if (auto floatType = dyn_cast<FloatType>(elementType))
+    bitWidth = floatType.getWidth();
+  if (bitWidth == 8)
+    return rewriter.create<a5vm::PsetB8Op>(loc, maskType, allPattern).getResult();
+  if (bitWidth == 16)
+    return rewriter.create<a5vm::PsetB16Op>(loc, maskType, allPattern).getResult();
+  if (bitWidth == 32)
+    return rewriter.create<a5vm::PsetB32Op>(loc, maskType, allPattern).getResult();
+  llvm_unreachable("unsupported element type for full predicate mask lowering");
+}
+
 LogicalResult buildMaskedVectorStore(PatternRewriter &rewriter, Location loc,
                                      Value value, Value dstBuffer,
                                      Value dstOffset, Value activeLanes,
                                      int64_t vectorWidth) {
-  Value vectorWidthValue =
-      rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
-  auto needsTail = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
-                                                  activeLanes, vectorWidthValue);
-  auto storeIf = rewriter.create<scf::IfOp>(loc, needsTail, true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.thenBlock());
-    rewriter.create<a5vm::VstsPredOp>(loc, value, dstBuffer, dstOffset, activeLanes,
-                                      StringAttr());
-  }
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.elseBlock());
-    rewriter.create<a5vm::VstsOp>(loc, value, dstBuffer, dstOffset, StringAttr());
-  }
+  auto vecType = cast<a5vm::VecType>(value.getType());
+  Value mask = buildPredicateMaskForLaneCount(rewriter, loc,
+                                              vecType.getElementType(),
+                                              activeLanes);
+  rewriter.create<a5vm::VstsOp>(loc, value, dstBuffer, dstOffset, StringAttr(),
+                                mask);
   return success();
 }
 
@@ -2069,6 +2245,8 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   Value dstRowStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstRowStride);
   Value vectorWidthValue = rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value initScalar = rewriter.create<arith::ConstantOp>(loc, cast<TypedAttr>(initValue));
+  Value dstPredicate =
+      buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, c1);
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -2092,16 +2270,24 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   Value rowBase = rewriter.create<arith::MulIOp>(loc, row, srcRowStrideValue);
   Value repeatBase = rewriter.create<arith::MulIOp>(loc, repeat, vectorWidthValue);
   Value srcOffset = rewriter.create<arith::AddIOp>(loc, rowBase, repeatBase);
+  Value remainingCols =
+      rewriter.create<arith::SubIOp>(loc, rewriter.create<arith::ConstantIndexOp>(loc, contract.validCols),
+                                     repeatBase);
+  Value srcPredicate =
+      buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, remainingCols);
   Value srcVec =
       rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, srcOffset, StringAttr()).getResult();
 
   Value reduced;
   if (family == "rowsum")
-    reduced = rewriter.create<a5vm::VcaddOp>(loc, vecType, srcVec);
+    reduced = rewriter.create<a5vm::VcaddOp>(loc, vecType, srcVec, srcPredicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "rowmax")
-    reduced = rewriter.create<a5vm::VcmaxOp>(loc, vecType, srcVec);
+    reduced = rewriter.create<a5vm::VcmaxOp>(loc, vecType, srcVec, srcPredicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "rowmin")
-    reduced = rewriter.create<a5vm::VcminOp>(loc, vecType, srcVec);
+    reduced = rewriter.create<a5vm::VcminOp>(loc, vecType, srcVec, srcPredicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else
     return emitError(loc) << "unsupported A5VM row-reduce family: " << family;
 
@@ -2116,8 +2302,8 @@ LogicalResult buildRowReduceVecScope(StringRef family,
 
   rewriter.setInsertionPointAfter(repeatLoop);
   Value dstOffset = rewriter.create<arith::MulIOp>(loc, row, dstRowStrideValue);
-  rewriter.create<a5vm::VstsOp>(loc, repeatLoop.getResult(0), dstBuffer, dstOffset,
-                                StringAttr());
+  rewriter.create<a5vm::VstsOp>(
+      loc, repeatLoop.getResult(0), dstBuffer, dstOffset, StringAttr(), dstPredicate);
   return success();
 }
 
@@ -2205,8 +2391,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
 
     rewriter.setInsertionPointAfter(rowLoop);
     Value dstOffset = chunkOffset;
-    rewriter.create<a5vm::VstsOp>(loc, rowLoop.getResult(0), dstBuffer, dstOffset,
-                                  StringAttr());
+    rewriter.create<a5vm::VstsOp>(
+        loc, rowLoop.getResult(0), dstBuffer, dstOffset, StringAttr(),
+        buildAllPredicateMask(rewriter, loc, contract.elementType));
     return success();
   }
 
@@ -2237,7 +2424,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
     Value rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, src1Offset, StringAttr()).getResult();
     Value sum = reducePair(lhs, rhs);
     Value tmpOffset = rewriter.create<arith::MulIOp>(loc, pair, tmpRowStrideValue);
-    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, tmpOffset, StringAttr());
+    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, tmpOffset, StringAttr(),
+                                  buildAllPredicateMask(rewriter, loc,
+                                                        contract.elementType));
   }
 
   if (remainStatic && nLoopStatic > 0) {
@@ -2252,7 +2441,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
     Value lhs = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, lastRowOffset, StringAttr()).getResult();
     Value rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, tmpBuffer, tmpOffset, StringAttr()).getResult();
     Value sum = reducePair(lhs, rhs);
-    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, tmpOffset, StringAttr());
+    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, tmpOffset, StringAttr(),
+                                  buildAllPredicateMask(rewriter, loc,
+                                                        contract.elementType));
   }
 
   int64_t currentRows = nLoopStatic;
@@ -2273,7 +2464,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
     Value rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, tmpBuffer, rhsOff, StringAttr()).getResult();
     Value sum = reducePair(lhs, rhs);
     Value outOff = rewriter.create<arith::MulIOp>(loc, pair, tmpRowStrideValue);
-    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, outOff, StringAttr());
+    rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, outOff, StringAttr(),
+                                  buildAllPredicateMask(rewriter, loc,
+                                                        contract.elementType));
 
     rewriter.setInsertionPointAfter(foldLoop);
     if (remain && nextRows > 0) {
@@ -2284,7 +2477,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
       Value lhs = rewriter.create<a5vm::VldsOp>(loc, vecType, tmpBuffer, lhsOff, StringAttr()).getResult();
       Value rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, tmpBuffer, rhsOff, StringAttr()).getResult();
       Value sum = reducePair(lhs, rhs);
-      rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, lhsOff, StringAttr());
+      rewriter.create<a5vm::VstsOp>(loc, sum, tmpBuffer, lhsOff, StringAttr(),
+                                    buildAllPredicateMask(rewriter, loc,
+                                                          contract.elementType));
     }
     currentRows = nextRows;
   }
@@ -2296,7 +2491,9 @@ LogicalResult buildColReduceVecScope(StringRef family,
     finalVec = rewriter.create<a5vm::VldsOp>(loc, vecType, tmpBuffer, c0, StringAttr()).getResult();
   }
   Value dstOffset = chunkOffset;
-  rewriter.create<a5vm::VstsOp>(loc, finalVec, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, finalVec, dstBuffer, dstOffset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -2328,7 +2525,9 @@ LogicalResult buildPartFill(StringRef family, const A5VMPartContract &contract,
   Value rowBase = rewriter.create<arith::MulIOp>(loc, row, dstStrideValue);
   Value chunkBase = rewriter.create<arith::MulIOp>(loc, chunk, vectorWidthValue);
   Value dstOffset = rewriter.create<arith::AddIOp>(loc, rowBase, chunkBase);
-  rewriter.create<a5vm::VstsOp>(loc, initVec, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, initVec, dstBuffer, dstOffset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      vecType.getElementType()));
   rewriter.setInsertionPointAfter(chunkLoop);
   return success();
 }
@@ -2362,7 +2561,9 @@ LogicalResult buildPartCopyRegion(Value srcBuffer, Value dstBuffer, a5vm::VecTyp
   Value srcOffset = rewriter.create<arith::AddIOp>(loc, rowSrc, chunkBase);
   Value dstOffset = rewriter.create<arith::AddIOp>(loc, rowDst, chunkBase);
   Value vec = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, srcOffset, StringAttr()).getResult();
-  rewriter.create<a5vm::VstsOp>(loc, vec, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, vec, dstBuffer, dstOffset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      vecType.getElementType()));
   rewriter.setInsertionPointAfter(chunkLoop);
   return success();
 }
@@ -2409,7 +2610,9 @@ LogicalResult buildPartBinaryRegion(StringRef family, Value src0Buffer, Value sr
     out = rewriter.create<a5vm::VminOp>(loc, vecType, lhs, rhs);
   else
     return emitError(loc) << "unsupported part family: " << family;
-  rewriter.create<a5vm::VstsOp>(loc, out, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, out, dstBuffer, dstOffset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      vecType.getElementType()));
   rewriter.setInsertionPointAfter(chunkLoop);
   return success();
 }
@@ -2561,8 +2764,8 @@ LogicalResult buildUnaryVecScope(StringRef family,
       rewriter.create<arith::MulIOp>(loc, validRowsValue, validColsValue);
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
-  Value vectorWidthValue =
-      rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
+  Value scalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
+                                                           totalElementsValue);
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
@@ -2570,45 +2773,45 @@ LogicalResult buildUnaryVecScope(StringRef family,
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto chunkLoop =
-      rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
+  auto chunkLoop = rewriter.create<scf::ForOp>(loc, c0, totalElementsValue,
+                                               vectorStepValue,
+                                               ValueRange{scalarInit});
 
   OpBuilder::InsertionGuard chunkGuard(rewriter);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
-  Value remaining = rewriter.create<arith::SubIOp>(loc, totalElementsValue, offset);
-  Value needsTail = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::slt, remaining, vectorWidthValue);
+  Value remaining = chunkLoop.getRegionIterArgs().front();
+  PredicateMaterialization predicateState =
+      buildPredicateForLaneCount(rewriter, loc, contract.elementType, remaining);
+  Value predicate = predicateState.mask;
   auto vlds = rewriter.create<a5vm::VldsOp>(loc, vecType, srcBuffer, offset, StringAttr());
   Value computed;
   if (family == "abs")
-    computed = rewriter.create<a5vm::VabsOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VabsOp>(loc, vecType, vlds.getResult(), predicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "exp")
-    computed = rewriter.create<a5vm::VexpOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VexpOp>(loc, vecType, vlds.getResult(), predicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "log")
-    computed = rewriter.create<a5vm::VlnOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VlnOp>(loc, vecType, vlds.getResult(), predicate,
+                                            rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "sqrt")
-    computed = rewriter.create<a5vm::VsqrtOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VsqrtOp>(loc, vecType, vlds.getResult(), predicate,
+                                              rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "recip")
-    computed = rewriter.create<a5vm::VrecOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VrecOp>(loc, vecType, vlds.getResult(), predicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "relu")
-    computed = rewriter.create<a5vm::VreluOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VreluOp>(loc, vecType, vlds.getResult(), predicate,
+                                              rewriter.getStringAttr("MODE_ZEROING"));
   else if (family == "not")
-    computed = rewriter.create<a5vm::VnotOp>(loc, vecType, vlds.getResult());
+    computed = rewriter.create<a5vm::VnotOp>(loc, vecType, vlds.getResult(), predicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
   else
     return emitError(loc) << "unsupported A5VM unary family: " << family;
-  auto storeIf = rewriter.create<scf::IfOp>(loc, needsTail, true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.thenBlock());
-    rewriter.create<a5vm::VstsPredOp>(loc, computed, dstBuffer, offset, remaining,
-                                      StringAttr());
-  }
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.elseBlock());
-    rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
-  }
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                predicate);
+  rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
 
   return success();
 }
@@ -2661,8 +2864,10 @@ LogicalResult buildBinaryVecScope(StringRef family,
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
   Value remaining = rewriter.create<arith::SubIOp>(loc, totalElementsValue, offset);
-  Value needsTail = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::slt, remaining, vectorWidthValue);
+  Value activeLanes =
+      buildMinIndexValue(rewriter, loc, remaining, vectorWidthValue);
+  Value predicate =
+      buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, activeLanes);
   auto lhs = rewriter.create<a5vm::VldsOp>(loc, vecType, src0Buffer, offset, StringAttr());
   auto rhs = rewriter.create<a5vm::VldsOp>(loc, vecType, src1Buffer, offset, StringAttr());
 
@@ -2687,18 +2892,8 @@ LogicalResult buildBinaryVecScope(StringRef family,
     computed = rewriter.create<a5vm::VxorOp>(loc, vecType, lhs.getResult(), rhs.getResult());
   else
     return emitError(loc) << "unsupported A5VM binary family: " << family;
-  auto storeIf = rewriter.create<scf::IfOp>(loc, needsTail, true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.thenBlock());
-    rewriter.create<a5vm::VstsPredOp>(loc, computed, dstBuffer, offset, remaining,
-                                      StringAttr());
-  }
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.elseBlock());
-    rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
-  }
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                predicate);
   return success();
 }
 
@@ -2754,7 +2949,9 @@ LogicalResult buildExpandScalarVecScope(const A5VMUnaryContract &contract,
       loc, vecType, scalar,
       rewriter.getStringAttr("POS_LOWEST"),
       rewriter.getStringAttr("MODE_ZEROING"));
-  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -2825,7 +3022,9 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
     computed = rewriter.create<a5vm::VlreluOp>(loc, vecType, loaded.getResult(), scalar);
   else
     return emitError(loc) << "unsupported A5VM scalar-unary family: " << family;
-  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -2879,8 +3078,10 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
   Value remaining = rewriter.create<arith::SubIOp>(loc, totalElementsValue, offset);
-  Value needsTail = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::slt, remaining, vectorWidthValue);
+  Value activeLanes =
+      buildMinIndexValue(rewriter, loc, remaining, vectorWidthValue);
+  Value predicate =
+      buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, activeLanes);
   Value scalarVec = rewriter.create<a5vm::VdupOp>(
       loc, vecType, scalar, rewriter.getStringAttr("POS_LOWEST"),
       rewriter.getStringAttr("MODE_ZEROING"));
@@ -2896,19 +3097,8 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
     computed = rewriter.create<a5vm::VxorOp>(loc, vecType, loaded.getResult(), scalarVec);
   else
     return emitError(loc) << "unsupported A5VM scalar-bitwise family: " << family;
-
-  auto storeIf = rewriter.create<scf::IfOp>(loc, needsTail, true);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.thenBlock());
-    rewriter.create<a5vm::VstsPredOp>(loc, computed, dstBuffer, offset, remaining,
-                                      StringAttr());
-  }
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(storeIf.elseBlock());
-    rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
-  }
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                predicate);
   return success();
 }
 
@@ -2998,7 +3188,9 @@ LogicalResult buildScalarDivVecScope(const A5VMUnaryContract &contract,
            << "divs lowering currently supports only f16 and f32 element types";
   }
 
-  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, computed, dstBuffer, offset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -3089,7 +3281,9 @@ LogicalResult buildRowExpandVecScope(const A5VMExpandContract &contract,
   Value expanded = rewriter.create<a5vm::VdupOp>(
       loc, vecType, loaded.getResult(), rewriter.getStringAttr("POS_LOWEST"),
       rewriter.getStringAttr("MODE_ZEROING"));
-  rewriter.create<a5vm::VstsOp>(loc, expanded, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(loc, expanded, dstBuffer, dstOffset, StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -3145,7 +3339,9 @@ LogicalResult buildColExpandVecScope(const A5VMExpandContract &contract,
   auto loaded = rewriter.create<a5vm::VldsOp>(
       loc, vecType, srcBuffer, chunkLoop.getInductionVar(), StringAttr());
   rewriter.create<a5vm::VstsOp>(loc, loaded.getResult(), dstBuffer, dstOffset,
-                                StringAttr());
+                                StringAttr(),
+                                buildAllPredicateMask(rewriter, loc,
+                                                      contract.elementType));
   return success();
 }
 
@@ -3442,12 +3638,14 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
                                               plan.loop1Size);
 
   auto emitCopy = [&](Value srcPtr, Value dstPtr) {
-    rewriter.create<a5vm::CopyGmToUbufOp>(
+    auto copy = rewriter.create<a5vm::CopyGmToUbufOp>(
         op.getLoc(), srcPtr, dstPtr, validRowsValue, validColsValue, sidValue,
         plan.nBurst, plan.lenBurst, leftPaddingValue, rightPaddingValue,
         cacheCtlValue, plan.firstStrideBytes, plan.secondStrideBytes,
         rewriter.getStringAttr(sourceLayout), rewriter.getBoolAttr(ubPad),
         rewriter.getBoolAttr(ubPad));
+    copy->setAttr("a5vm.element_type",
+                  rewriter.getStringAttr(stringifyElementTypeFragment(contract.elementType)));
   };
 
   if (std::optional<int64_t> outerConst = getConstInt(plan.outerCount); outerConst && *outerConst == 1) {
@@ -3772,10 +3970,18 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
   if (!validRowsValue || !validColsValue)
     return op.emitOpError("trsqrt lowering requires valid rows and cols");
 
+  int64_t srcRowStride = deriveStaticRowStride(op.getSrc());
+  int64_t dstRowStride = deriveStaticRowStride(op.getDst());
+  if (srcRowStride == ShapedType::kDynamic || dstRowStride == ShapedType::kDynamic)
+    return op.emitOpError("trsqrt lowering requires static row-major row strides");
+
   int64_t vectorWidth = vecType.getElementCount();
   Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
   Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-  Value rowStride = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), contract.validCols);
+  Value srcRowStrideValue =
+      rewriter.create<arith::ConstantIndexOp>(op.getLoc(), srcRowStride);
+  Value dstRowStrideValue =
+      rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstRowStride);
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vectorWidth);
   TypedAttr oneAttr = FloatAttr::get(contract.elementType, 1.0);
@@ -3789,19 +3995,32 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
   rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, validRowsValue, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
+  auto ones =
+      rewriter.create<a5vm::VdupOp>(op.getLoc(), vecType, one, StringAttr(), StringAttr());
   auto chunkLoop =
       rewriter.create<scf::ForOp>(op.getLoc(), c0, validColsValue, vectorStepValue);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
-  Value rowBase =
-      rewriter.create<arith::MulIOp>(op.getLoc(), rowLoop.getInductionVar(), rowStride);
-  Value offset =
-      rewriter.create<arith::AddIOp>(op.getLoc(), rowBase, chunkLoop.getInductionVar());
+  Value srcRowBase = rewriter.create<arith::MulIOp>(
+      op.getLoc(), rowLoop.getInductionVar(), srcRowStrideValue);
+  Value dstRowBase = rewriter.create<arith::MulIOp>(
+      op.getLoc(), rowLoop.getInductionVar(), dstRowStrideValue);
+  Value chunkOffset = chunkLoop.getInductionVar();
+  Value srcOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), srcRowBase, chunkOffset);
+  Value dstOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), dstRowBase, chunkOffset);
+  Value remaining = rewriter.create<arith::SubIOp>(op.getLoc(), validColsValue, chunkOffset);
+  Value predicate =
+      buildPredicateMaskForLaneCount(rewriter, op.getLoc(), contract.elementType, remaining);
   auto loaded = rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, srcBuffer,
-                                              offset, StringAttr());
-  auto ones = rewriter.create<a5vm::VdupOp>(op.getLoc(), vecType, one, StringAttr(), StringAttr());
-  auto sqrt = rewriter.create<a5vm::VsqrtOp>(op.getLoc(), vecType, loaded.getResult());
-  auto result = rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, ones.getResult(), sqrt.getResult());
-  rewriter.create<a5vm::VstsOp>(op.getLoc(), result.getResult(), dstBuffer, offset, StringAttr());
+                                              srcOffset, StringAttr());
+  auto sqrt = rewriter.create<a5vm::VsqrtOp>(op.getLoc(), vecType, loaded.getResult(),
+                                             predicate,
+                                             rewriter.getStringAttr("MODE_ZEROING"));
+  auto result = rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, ones.getResult(),
+                                              sqrt.getResult());
+  rewriter.create<a5vm::VstsOp>(
+      op.getLoc(), result.getResult(), dstBuffer, dstOffset, StringAttr(), predicate);
   return success();
 }
 
@@ -3861,8 +4080,8 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
   A5VMUnaryContract contract = buildUnaryContract("cvt", op.getSrc());
   if (failed(checkGenericUnaryContract(
           op, contract, op.getDst(),
-          [](Type type) { return type.isF32() || type.isBF16(); },
-          "f32 or bf16 element type")))
+          [](Type type) { return type.isF16() || type.isF32() || type.isBF16(); },
+          "f16, f32, or bf16 element type")))
     return failure();
 
   Type dstElementType = getElementType(op.getDst());
@@ -3870,7 +4089,7 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
       classifyA5CvtLowering(contract.elementType, dstElementType);
   if (failed(loweringKind))
     return op.emitOpError(
-        "current tcvt lowering supports only f32->f32, f32->bf16, and bf16->f32");
+        "current tcvt lowering supports only f32->f32, f32->bf16, f16->f32, and bf16->f32");
 
   FailureOr<StringAttr> roundMode = stringifyA5RoundMode(op, rewriter);
   if (failed(roundMode))
@@ -3932,7 +4151,9 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
         rewriter.create<a5vm::VldsOp>(op.getLoc(), srcVecType, srcBuffer, offset, StringAttr());
     Value converted = rewriter.create<a5vm::VtrcOp>(op.getLoc(), dstVecType,
                                                     loaded.getResult(), *roundMode);
-    rewriter.create<a5vm::VstsOp>(op.getLoc(), converted, dstBuffer, offset, StringAttr());
+    rewriter.create<a5vm::VstsOp>(
+        op.getLoc(), converted, dstBuffer, offset, StringAttr(),
+        buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
     break;
   }
   case A5VMCvtLoweringKind::F32ToBF16: {
@@ -3952,7 +4173,20 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
         rewriter.getStringAttr("RS_ENABLE"), rewriter.getStringAttr("PART_EVEN"));
     Value merged =
         rewriter.create<a5vm::VorOp>(op.getLoc(), dstVecType, even, odd);
-    rewriter.create<a5vm::VstsOp>(op.getLoc(), merged, dstBuffer, offset, StringAttr());
+    rewriter.create<a5vm::VstsOp>(
+        op.getLoc(), merged, dstBuffer, offset, StringAttr(),
+        buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
+    break;
+  }
+  case A5VMCvtLoweringKind::F16ToF32: {
+    auto loaded = rewriter.create<a5vm::VldsOp>(
+        op.getLoc(), srcVecType, srcBuffer, offset, rewriter.getStringAttr("UNPK_B16"));
+    Value converted = rewriter.create<a5vm::VcvtOp>(
+        op.getLoc(), dstVecType, loaded.getResult(), StringAttr(),
+        StringAttr(), rewriter.getStringAttr("PART_EVEN"));
+    rewriter.create<a5vm::VstsOp>(
+        op.getLoc(), converted, dstBuffer, offset, StringAttr(),
+        buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
     break;
   }
   case A5VMCvtLoweringKind::BF16ToF32: {
@@ -3961,7 +4195,9 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
     Value converted = rewriter.create<a5vm::VcvtOp>(
         op.getLoc(), dstVecType, loaded.getResult(), StringAttr(),
         StringAttr(), rewriter.getStringAttr("PART_EVEN"));
-    rewriter.create<a5vm::VstsOp>(op.getLoc(), converted, dstBuffer, offset, StringAttr());
+    rewriter.create<a5vm::VstsOp>(
+        op.getLoc(), converted, dstBuffer, offset, StringAttr(),
+        buildAllPredicateMask(rewriter, op.getLoc(), dstElementType));
     break;
   }
   }
@@ -4328,8 +4564,9 @@ LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
   Value dstBase =
       rewriter.create<arith::MulIOp>(op.getLoc(), colLoop.getInductionVar(), dstStrideValue);
   Value dstOffset = rewriter.create<arith::AddIOp>(op.getLoc(), dstBase, chunkBase);
-  rewriter.create<a5vm::VstsOp>(op.getLoc(), gathered.getResult(), dstBuffer,
-                                dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(
+      op.getLoc(), gathered.getResult(), dstBuffer, dstOffset, StringAttr(),
+      buildAllPredicateMask(rewriter, op.getLoc(), contract.elementType));
   return success();
 }
 
@@ -4427,8 +4664,10 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
                                                        copyRemaining, vectorStep);
   Value copyActiveLanes =
       rewriter.create<arith::SelectOp>(op.getLoc(), copyNeedsClamp, copyRemaining, vectorStep);
-  rewriter.create<a5vm::VstsPredOp>(op.getLoc(), loaded.getResult(), dstBuffer,
-                                    copyDstOffset, copyActiveLanes, StringAttr());
+  Value copyMask = buildPredicateMaskForLaneCount(
+      rewriter, op.getLoc(), contract.elementType, copyActiveLanes);
+  rewriter.create<a5vm::VstsOp>(op.getLoc(), loaded.getResult(), dstBuffer,
+                                copyDstOffset, StringAttr(), copyMask);
 
   rewriter.setInsertionPointAfter(copyChunkLoop);
   if (padCols > 0) {
@@ -4444,8 +4683,10 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
                                                         padRemaining, vectorStep);
     Value padActiveLanes =
         rewriter.create<arith::SelectOp>(op.getLoc(), padNeedsClamp, padRemaining, vectorStep);
-    rewriter.create<a5vm::VstsPredOp>(op.getLoc(), padVec.getResult(), dstBuffer, padDstOffset,
-                                      padActiveLanes, StringAttr());
+    Value padMask = buildPredicateMaskForLaneCount(
+        rewriter, op.getLoc(), contract.elementType, padActiveLanes);
+    rewriter.create<a5vm::VstsOp>(op.getLoc(), padVec.getResult(), dstBuffer,
+                                  padDstOffset, StringAttr(), padMask);
   }
 
   rewriter.setInsertionPointAfter(rowLoop);
@@ -4466,8 +4707,10 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
         op.getLoc(), arith::CmpIPredicate::slt, bottomRemaining, vectorStep);
     Value bottomActiveLanes = rewriter.create<arith::SelectOp>(
         op.getLoc(), bottomNeedsClamp, bottomRemaining, vectorStep);
-    rewriter.create<a5vm::VstsPredOp>(op.getLoc(), padVec.getResult(), dstBuffer, bottomDstOffset,
-                                      bottomActiveLanes, StringAttr());
+    Value bottomMask = buildPredicateMaskForLaneCount(
+        rewriter, op.getLoc(), contract.elementType, bottomActiveLanes);
+    rewriter.create<a5vm::VstsOp>(op.getLoc(), padVec.getResult(), dstBuffer,
+                                  bottomDstOffset, StringAttr(), bottomMask);
   }
 
   return success();
@@ -5317,7 +5560,9 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
                        .create<a5vm::VselOp>(op.getLoc(), vecType, src0Vec.getResult(),
                                              src1Vec.getResult(), mask)
                        .getResult();
-  rewriter.create<a5vm::VstsOp>(op.getLoc(), selected, dstBuffer, offset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(
+      op.getLoc(), selected, dstBuffer, offset, StringAttr(),
+      buildAllPredicateMask(rewriter, op.getLoc(), contract.elementType));
   return success();
 }
 
@@ -5444,9 +5689,11 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
                           .create<a5vm::VselOp>(op.getLoc(), vecType, lhs0.getResult(),
                                                 rhs0.getResult(), splitMask.getLow())
                           .getResult();
-    rewriter.create<a5vm::VstsPredOp>(
-        op.getLoc(), selected0, dstBuffer, dataOffset0,
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count0), StringAttr());
+    Value storeMask0 = buildPredicateMaskForLaneCount(
+        rewriter, op.getLoc(), contract.elementType,
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count0));
+    rewriter.create<a5vm::VstsOp>(op.getLoc(), selected0, dstBuffer, dataOffset0,
+                                  StringAttr(), storeMask0);
 
     Value dataOffset1 = rewriter.create<arith::AddIOp>(
         op.getLoc(), rowBase,
@@ -5459,9 +5706,11 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
                           .create<a5vm::VselOp>(op.getLoc(), vecType, lhs1.getResult(),
                                                 rhs1.getResult(), splitMask.getHigh())
                           .getResult();
-    rewriter.create<a5vm::VstsPredOp>(
-        op.getLoc(), selected1, dstBuffer, dataOffset1,
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count1), StringAttr());
+    Value storeMask1 = buildPredicateMaskForLaneCount(
+        rewriter, op.getLoc(), contract.elementType,
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count1));
+    rewriter.create<a5vm::VstsOp>(op.getLoc(), selected1, dstBuffer, dataOffset1,
+                                  StringAttr(), storeMask1);
   }
 
   for (int64_t j = 0; j < remainRepeat; ++j) {
@@ -5495,9 +5744,11 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
                          .create<a5vm::VselOp>(op.getLoc(), vecType, lhs.getResult(),
                                                rhs.getResult(), unpackedMask)
                          .getResult();
-    rewriter.create<a5vm::VstsPredOp>(
-        op.getLoc(), selected, dstBuffer, dataOffset,
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count), StringAttr());
+    Value storeMask = buildPredicateMaskForLaneCount(
+        rewriter, op.getLoc(), contract.elementType,
+        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), count));
+    rewriter.create<a5vm::VstsOp>(op.getLoc(), selected, dstBuffer, dataOffset,
+                                  StringAttr(), storeMask);
   }
   return success();
 }
@@ -6008,7 +6259,9 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   } else {
     return op.emitOpError() << "unsupported rowexpand binary family";
   }
-  rewriter.create<a5vm::VstsOp>(op.getLoc(), computed, dstBuffer, dstOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(
+      op.getLoc(), computed, dstBuffer, dstOffset, StringAttr(),
+      buildAllPredicateMask(rewriter, op.getLoc(), elementType));
   return success();
 }
 
@@ -6156,7 +6409,9 @@ LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) 
   Value sub = src0EqDst
                   ? rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, lhs, expandedVec).getResult()
                   : rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, expandedVec, lhs).getResult();
-  rewriter.create<a5vm::VstsOp>(op.getLoc(), sub, dstBuffer, outOffset, StringAttr());
+  rewriter.create<a5vm::VstsOp>(
+      op.getLoc(), sub, dstBuffer, outOffset, StringAttr(),
+      buildAllPredicateMask(rewriter, op.getLoc(), elementType));
   return success();
 }
 
@@ -6264,10 +6519,12 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
       op.getLoc(), plan.loop2FirstStrideBytes, plan.loop2SecondStrideBytes);
 
   auto emitCopy = [&](Value srcPtr, Value dstPtr) {
-    rewriter.create<a5vm::CopyUbufToGmOp>(
+    auto copy = rewriter.create<a5vm::CopyUbufToGmOp>(
         op.getLoc(), srcPtr, dstPtr, validRowsValue, validColsValue, sidValue,
         plan.nBurst, plan.lenBurst, reservedValue, plan.firstStrideBytes,
         plan.secondStrideBytes, rewriter.getStringAttr(destinationLayout));
+    copy->setAttr("a5vm.element_type",
+                  rewriter.getStringAttr(stringifyElementTypeFragment(contract.elementType)));
   };
 
   if (std::optional<int64_t> outerConst = getConstInt(plan.outerCount); outerConst && *outerConst == 1) {

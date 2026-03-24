@@ -9,6 +9,7 @@
 #include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/A5VMTextEmitter.h"
+#include "PTO/Transforms/A5VMLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/MLIRContext.h"
@@ -144,6 +145,11 @@ static llvm::cl::opt<bool> a5vmPrintIR(
     llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> dumpA5VMIR(
+    "dump-a5vm-ir",
+    llvm::cl::desc("Print post-pass A5VM backend IR to stderr"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> ptoPrintSeamIR(
     "pto-print-seam-ir",
     llvm::cl::desc("Print shared pre-backend seam IR to stderr"),
@@ -160,6 +166,21 @@ static llvm::cl::opt<bool> a5vmPrintIntrinsics(
     llvm::cl::desc("Print A5VM intrinsic selection decisions to stderr"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> a5vmEmitHIVMText(
+    "a5vm-emit-hivm-text",
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM instead of raw A5VM IR"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialLLVM(
+    "a5vm-emit-hivm-llvm",
+    llvm::cl::desc("After lowering to A5VM IR, emit textual LLVM/HIVM via the official LLVM dialect export path"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> a5vmEmitHIVMOfficialBitcode(
+    "a5vm-emit-hivm-bc",
+    llvm::cl::desc("After lowering to A5VM IR, emit LLVM bitcode via the official LLVM dialect export path"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> a5vmAllowUnresolved(
     "a5vm-allow-unresolved",
     llvm::cl::desc("Emit explicit unresolved A5VM comments instead of failing"),
@@ -168,6 +189,12 @@ static llvm::cl::opt<bool> a5vmAllowUnresolved(
 static llvm::cl::opt<std::string> a5vmUnresolvedReport(
     "a5vm-unresolved-report",
     llvm::cl::desc("Write unresolved A5VM mappings to a sidecar report"),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""));
+
+static llvm::cl::opt<std::string> hivmUnresolvedReport(
+    "hivm-unresolved-report",
+    llvm::cl::desc("Write unresolved HIVM mappings to a sidecar report"),
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
@@ -840,6 +867,22 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (a5vmEmitHIVMOfficialLLVM && a5vmEmitHIVMOfficialBitcode) {
+    llvm::errs() << "Error: --a5vm-emit-hivm-llvm and --a5vm-emit-hivm-bc "
+                    "cannot be used together.\n";
+    return 1;
+  }
+
+  if (effectiveBackend != PTOBackend::A5VM &&
+      (a5vmEmitHIVMText || a5vmEmitHIVMOfficialLLVM ||
+       a5vmEmitHIVMOfficialBitcode || a5vmPrintIR || dumpA5VMIR ||
+       a5vmPrintIntrinsics || a5vmAllowUnresolved ||
+       !a5vmUnresolvedReport.empty() || !hivmUnresolvedReport.empty())) {
+    llvm::errs() << "Error: A5VM-specific flags require "
+                    "--pto-backend=a5vm.\n";
+    return 1;
+  }
+
   // Read whole input first (so we can auto-detect .ptobc by magic).
   auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!fileOrErr) {
@@ -1005,19 +1048,47 @@ int main(int argc, char **argv) {
   }
 
   if (effectiveBackend == PTOBackend::A5VM) {
-    if (a5vmPrintIR) {
+    if (a5vmPrintIR || dumpA5VMIR) {
       printA5VMIROpSummary(*module, llvm::errs());
       module->print(llvm::errs());
       llvm::errs() << "\n";
     }
 
+    if (!a5vmEmitHIVMText && !a5vmEmitHIVMOfficialLLVM &&
+        !a5vmEmitHIVMOfficialBitcode) {
+      module->print(outputFile.os());
+      outputFile.os() << "\n";
+      outputFile.keep();
+      return 0;
+    }
+
     pto::A5VMEmissionOptions options;
+    options.dumpA5VMIR = a5vmPrintIR || dumpA5VMIR;
     options.printIntrinsicSelections = a5vmPrintIntrinsics;
     options.allowUnresolved = a5vmAllowUnresolved;
-    options.unresolvedReportPath = a5vmUnresolvedReport;
+    options.unresolvedReportPath =
+        !hivmUnresolvedReport.empty() ? hivmUnresolvedReport : a5vmUnresolvedReport;
+    if (arch == "a5") {
+      options.targetTriple = "hiipu64-hisilicon-cce";
+      options.march = "dav-c310-vec";
+      options.aicoreArch = "dav-c310-vec";
+      options.defaultTargetCPU = "dav-c310-vec";
+      options.defaultTargetFeatures =
+          "+ATOMIC,+ArchV130,+AregRedefinable,+ArithmeticBf16,+AtomicForB8 ,"
+          "+F8e4m3,+F8e5m2,+F8e8m0,+FFTSBlk,+Fp4e1m2x2,+Fp4e2m1x2,+LDExtRefine,"
+          "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
+    }
 
-    if (failed(pto::translateA5VMModuleToText(*module, outputFile.os(), options,
-                                              llvm::errs()))) {
+    LogicalResult emissionStatus =
+        a5vmEmitHIVMOfficialBitcode
+            ? pto::translateA5VMModuleToLLVMBitcode(*module, outputFile.os(),
+                                                    options, llvm::errs())
+            : a5vmEmitHIVMOfficialLLVM
+            ? pto::translateA5VMModuleToLLVMText(*module, outputFile.os(),
+                                                 options, llvm::errs())
+            : pto::translateA5VMModuleToText(*module, outputFile.os(), options,
+                                             llvm::errs());
+    if (failed(emissionStatus)) {
       llvm::errs() << "Error: Failed to emit A5VM text.\n";
       return 1;
     }

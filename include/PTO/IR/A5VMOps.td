@@ -296,6 +296,21 @@ def A5VM_PgeB8Op : A5VM_PgeOp<"pge_b8">;
 def A5VM_PgeB16Op : A5VM_PgeOp<"pge_b16">;
 def A5VM_PgeB32Op : A5VM_PgeOp<"pge_b32">;
 
+class A5VM_PltOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
+  let arguments = (ins I32:$scalar);
+  let results = (outs A5VM_MaskTypeConstraint:$mask, I32:$scalar_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $scalar attr-dict `:` type($scalar) `->` type($mask) `,` type($scalar_out)
+  }];
+}
+
+def A5VM_PltB8Op : A5VM_PltOp<"plt_b8">;
+def A5VM_PltB16Op : A5VM_PltOp<"plt_b16">;
+def A5VM_PltB32Op : A5VM_PltOp<"plt_b32">;
+
 class A5VM_MaskUnaryOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
   let arguments = (ins A5VM_MaskTypeConstraint:$input);
   let results = (outs A5VM_MaskTypeConstraint:$result);
@@ -440,24 +455,32 @@ def A5VM_PstiOp : A5VM_Op<"psti", [
 }
 
 def A5VM_VabsOp : A5VM_Op<"vabs", [Pure]> {
-  let arguments = (ins A5VM_VectorType:$input);
+  let arguments = (ins
+    A5VM_VectorType:$input,
+    A5VM_MaskTypeConstraint:$mask,
+    OptionalAttr<StrAttr>:$mode
+  );
   let results = (outs A5VM_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $input attr-dict `:` type($input) `->` type($result)
+    $input `,` $mask attr-dict `:` type($input) `,` type($mask) `->` type($result)
   }];
 }
 
 class A5VM_UnaryVecOp<string mnemonic> : A5VM_Op<mnemonic, [Pure]> {
-  let arguments = (ins A5VM_VectorType:$input);
+  let arguments = (ins
+    A5VM_VectorType:$input,
+    A5VM_MaskTypeConstraint:$mask,
+    OptionalAttr<StrAttr>:$mode
+  );
   let results = (outs A5VM_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $input attr-dict `:` type($input) `->` type($result)
+    $input `,` $mask attr-dict `:` type($input) `,` type($mask) `->` type($result)
   }];
 }
 
@@ -838,7 +861,8 @@ def A5VM_VstsOp : A5VM_Op<"vsts", [
     A5VM_VectorType:$value,
     A5VM_BufferType:$destination,
     Index:$offset,
-    OptionalAttr<StrAttr>:$dist
+    OptionalAttr<StrAttr>:$dist,
+    A5VM_MaskTypeConstraint:$mask
   );
 
   let results = (outs);
@@ -846,7 +870,7 @@ def A5VM_VstsOp : A5VM_Op<"vsts", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $value `,` $destination `[` $offset `]` attr-dict `:` type($value) `,` type($destination)
+    $value `,` $destination `[` $offset `]` `,` $mask attr-dict `:` type($value) `,` type($destination) `,` type($mask)
   }];
 }
 
@@ -866,26 +890,6 @@ def A5VM_VscatterOp : A5VM_Op<"vscatter", [
 
   let assemblyFormat = [{
     $value `,` $destination `,` $offsets `,` $active_lanes attr-dict `:` type($value) `,` type($destination) `,` type($offsets) `,` type($active_lanes)
-  }];
-}
-
-def A5VM_VstsPredOp : A5VM_Op<"vsts_pred", [
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
-  let arguments = (ins
-    A5VM_VectorType:$value,
-    A5VM_BufferType:$destination,
-    Index:$offset,
-    Index:$active_lanes,
-    OptionalAttr<StrAttr>:$dist
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    $value `,` $destination `[` $offset `]` `,` $active_lanes attr-dict `:` type($value) `,` type($destination) `,` type($active_lanes)
   }];
 }
 
