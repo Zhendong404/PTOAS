@@ -2,50 +2,78 @@
 
 module attributes {"pto.device-spec" = "Ascend950"} {
   // A5: acc->mat TINSERT must use PIPE_FIX (regular A2M path).
-  func.func @tinsert_acc_mat_pipeline(%a: memref<32x32xf32, #pto.address_space<gm>>,
-                                      %b: memref<32x32xf32, #pto.address_space<gm>>,
-                                      %i: memref<32x32xf16, #pto.address_space<gm>>,
-                                      %out: memref<32x32xf32, #pto.address_space<gm>>) {
+  func.func @tinsert_acc_mat_pipeline(%a: !pto.ptr<f32>,
+                                      %b: !pto.ptr<f32>,
+                                      %i: !pto.ptr<f16>,
+                                      %out: !pto.ptr<f32>) {
+    %c0_a = arith.constant 0 : index
+    %c32_a_0 = arith.constant 32 : index
+    %c32_a_1 = arith.constant 32 : index
+    %c32_a_s0 = arith.constant 32 : index
+    %c1_a_s1 = arith.constant 1 : index
+    %a_tv = pto.make_tensor_view %a, shape = [%c32_a_0, %c32_a_1], strides = [%c32_a_s0, %c1_a_s1] : !pto.tensor_view<32x32xf32>
+    %a_pt = pto.partition_view %a_tv, offsets = [%c0_a, %c0_a], sizes = [%c32_a_0, %c32_a_1] : !pto.tensor_view<32x32xf32> -> !pto.partition_tensor_view<32x32xf32>
+    %c0_b = arith.constant 0 : index
+    %c32_b_0 = arith.constant 32 : index
+    %c32_b_1 = arith.constant 32 : index
+    %c32_b_s0 = arith.constant 32 : index
+    %c1_b_s1 = arith.constant 1 : index
+    %b_tv = pto.make_tensor_view %b, shape = [%c32_b_0, %c32_b_1], strides = [%c32_b_s0, %c1_b_s1] : !pto.tensor_view<32x32xf32>
+    %b_pt = pto.partition_view %b_tv, offsets = [%c0_b, %c0_b], sizes = [%c32_b_0, %c32_b_1] : !pto.tensor_view<32x32xf32> -> !pto.partition_tensor_view<32x32xf32>
+    %c0_i = arith.constant 0 : index
+    %c32_i_0 = arith.constant 32 : index
+    %c32_i_1 = arith.constant 32 : index
+    %c32_i_s0 = arith.constant 32 : index
+    %c1_i_s1 = arith.constant 1 : index
+    %i_tv = pto.make_tensor_view %i, shape = [%c32_i_0, %c32_i_1], strides = [%c32_i_s0, %c1_i_s1] : !pto.tensor_view<32x32xf16>
+    %i_pt = pto.partition_view %i_tv, offsets = [%c0_i, %c0_i], sizes = [%c32_i_0, %c32_i_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
+    %c0_out = arith.constant 0 : index
+    %c32_out_0 = arith.constant 32 : index
+    %c32_out_1 = arith.constant 32 : index
+    %c32_out_s0 = arith.constant 32 : index
+    %c1_out_s1 = arith.constant 1 : index
+    %out_tv = pto.make_tensor_view %out, shape = [%c32_out_0, %c32_out_1], strides = [%c32_out_s0, %c1_out_s1] : !pto.tensor_view<32x32xf32>
+    %out_pt = pto.partition_view %out_tv, offsets = [%c0_out, %c0_out], sizes = [%c32_out_0, %c32_out_1] : !pto.tensor_view<32x32xf32> -> !pto.partition_tensor_view<32x32xf32>
     %c0 = arith.constant 0 : index
 
-    %a_mat = memref.alloc() : memref<32x32xf32, #pto.address_space<mat>>
-    %b_mat = memref.alloc() : memref<32x32xf32, #pto.address_space<mat>>
-    %a_left = memref.alloc() : memref<32x32xf32, #pto.address_space<left>>
-    %b_right = memref.alloc() : memref<32x32xf32, #pto.address_space<right>>
-    %src_acc = memref.alloc() : memref<32x32xf32, #pto.address_space<acc>>
+    %a_mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %b_mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %a_left = pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %b_right = pto.alloc_tile : !pto.tile_buf<loc=right, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+    %src_acc = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
 
-    %dst_mat = memref.alloc() : memref<32x32xf16, #pto.address_space<mat>>
-    %i_mat = memref.alloc() : memref<32x32xf16, #pto.address_space<mat>>
-    %out_left = memref.alloc() : memref<32x32xf16, #pto.address_space<left>>
-    %i_right = memref.alloc() : memref<32x32xf16, #pto.address_space<right>>
-    %out_acc = memref.alloc() : memref<32x32xf32, #pto.address_space<acc>>
+    %dst_mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %i_mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %out_left = pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %i_right = pto.alloc_tile : !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+    %out_acc = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
 
-    pto.tload ins(%a : memref<32x32xf32, #pto.address_space<gm>>)
-              outs(%a_mat : memref<32x32xf32, #pto.address_space<mat>>)
-    pto.tload ins(%b : memref<32x32xf32, #pto.address_space<gm>>)
-              outs(%b_mat : memref<32x32xf32, #pto.address_space<mat>>)
-    pto.tmov ins(%a_mat : memref<32x32xf32, #pto.address_space<mat>>)
-             outs(%a_left : memref<32x32xf32, #pto.address_space<left>>)
-    pto.tmov ins(%b_mat : memref<32x32xf32, #pto.address_space<mat>>)
-             outs(%b_right : memref<32x32xf32, #pto.address_space<right>>)
-    pto.tmatmul ins(%a_left, %b_right : memref<32x32xf32, #pto.address_space<left>>,
-                                      memref<32x32xf32, #pto.address_space<right>>)
-                outs(%src_acc : memref<32x32xf32, #pto.address_space<acc>>)
+    pto.tload ins(%a_pt : !pto.partition_tensor_view<32x32xf32>)
+              outs(%a_mat : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tload ins(%b_pt : !pto.partition_tensor_view<32x32xf32>)
+              outs(%b_mat : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tmov ins(%a_mat : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+             outs(%a_left : !pto.tile_buf<loc=left, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tmov ins(%b_mat : !pto.tile_buf<loc=mat, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+             outs(%b_right : !pto.tile_buf<loc=right, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
+    pto.tmatmul ins(%a_left, %b_right : !pto.tile_buf<loc=left, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>,
+                                      !pto.tile_buf<loc=right, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
+                outs(%src_acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
 
-    pto.tinsert ins(%src_acc, %c0, %c0 : memref<32x32xf32, #pto.address_space<acc>>, index, index)
-               outs(%dst_mat : memref<32x32xf16, #pto.address_space<mat>>)
+    pto.tinsert ins(%src_acc, %c0, %c0 : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, index, index)
+               outs(%dst_mat : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
 
-    pto.tload ins(%i : memref<32x32xf16, #pto.address_space<gm>>)
-              outs(%i_mat : memref<32x32xf16, #pto.address_space<mat>>)
-    pto.tmov ins(%dst_mat : memref<32x32xf16, #pto.address_space<mat>>)
-             outs(%out_left : memref<32x32xf16, #pto.address_space<left>>)
-    pto.tmov ins(%i_mat : memref<32x32xf16, #pto.address_space<mat>>)
-             outs(%i_right : memref<32x32xf16, #pto.address_space<right>>)
-    pto.tmatmul ins(%out_left, %i_right : memref<32x32xf16, #pto.address_space<left>>,
-                                        memref<32x32xf16, #pto.address_space<right>>)
-                outs(%out_acc : memref<32x32xf32, #pto.address_space<acc>>)
-    pto.tstore ins(%out_acc : memref<32x32xf32, #pto.address_space<acc>>)
-               outs(%out : memref<32x32xf32, #pto.address_space<gm>>)
+    pto.tload ins(%i_pt : !pto.partition_tensor_view<32x32xf16>)
+              outs(%i_mat : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tmov ins(%dst_mat : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+             outs(%out_left : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tmov ins(%i_mat : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
+             outs(%i_right : !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
+    pto.tmatmul ins(%out_left, %i_right : !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=row_major, fractal=512, pad=0>,
+                                        !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
+                outs(%out_acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+    pto.tstore ins(%out_acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+               outs(%out_pt : !pto.partition_tensor_view<32x32xf32>)
     return
   }
 }

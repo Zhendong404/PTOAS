@@ -1,13 +1,27 @@
-// RUN: ptoas %s 2>&1 --mlir-print-ir-after=pto-view-to-memref | FileCheck %s
+// RUN: ptoas %s 2>&1 --mlir-print-ir-after=pto-plan-memory | FileCheck %s
 
 module {
   func.func @subview_row_plus_one_stride_offset(
-      %src: memref<16x16xf32, #pto.address_space<gm>>,
-      %dst: memref<8x8xf32, #pto.address_space<gm>>) {
+      %src: !pto.ptr<f32>,
+      %dst: !pto.ptr<f32>) {
+    %c0_src = arith.constant 0 : index
+    %c16_src_0 = arith.constant 16 : index
+    %c16_src_1 = arith.constant 16 : index
+    %c16_src_s0 = arith.constant 16 : index
+    %c1_src_s1 = arith.constant 1 : index
+    %src_tv = pto.make_tensor_view %src, shape = [%c16_src_0, %c16_src_1], strides = [%c16_src_s0, %c1_src_s1] : !pto.tensor_view<16x16xf32>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0_src, %c0_src], sizes = [%c16_src_0, %c16_src_1] : !pto.tensor_view<16x16xf32> -> !pto.partition_tensor_view<16x16xf32>
+    %c0_dst = arith.constant 0 : index
+    %c8_dst_0 = arith.constant 8 : index
+    %c8_dst_1 = arith.constant 8 : index
+    %c8_dst_s0 = arith.constant 8 : index
+    %c1_dst_s1 = arith.constant 1 : index
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c8_dst_0, %c8_dst_1], strides = [%c8_dst_s0, %c1_dst_s1] : !pto.tensor_view<8x8xf32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0_dst, %c0_dst], sizes = [%c8_dst_0, %c8_dst_1] : !pto.tensor_view<8x8xf32> -> !pto.partition_tensor_view<8x8xf32>
     %c8 = arith.constant 8 : index
 
     %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>
-    pto.tload ins(%src : memref<16x16xf32, #pto.address_space<gm>>)
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<16x16xf32>)
              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>)
 
     %s = pto.subview %tile[%c8, %c8] sizes [8, 8] :
@@ -15,12 +29,18 @@ module {
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=8, v_row=8, v_col=8, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>
 
     pto.tstore ins(%s : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=8, v_row=8, v_col=8, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>)
-              outs(%dst : memref<8x8xf32, #pto.address_space<gm>>)
+              outs(%dst_pt : !pto.partition_tensor_view<8x8xf32>)
     return
   }
 }
 
-// RowPlusOne: major stride should be 17 (not 16).
-// CHECK-DAG: memref.alloc() : memref<16x16xf32, strided<[17, 1]>, #pto.address_space<vec>>
-// CHECK-DAG: memref.subview {{.*}} to memref<8x8xf32, strided<[17, 1], offset: ?>, #pto.address_space<vec>>
-// CHECK-DAG: Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, 8, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::RowPlusOne>
+// RowPlusOne: tile-native lowering should preserve compact=row_plus_one and
+// compute the subview address with an extra row stride.
+// CHECK-DAG: pto.pointer_cast(%c0_i64) %c16, %c16 {{.*}}compact=#pto.compact_mode<row_plus_one>{{.*}} : !pto.tile_buf<vec, 16x16xf32, compact=2>
+// CHECK-DAG: %[[SUB:.*]] = pto.subview %{{.*}}[%c8, %c8] sizes [8, 8] : !pto.tile_buf<vec, 16x16xf32, compact=2> -> !pto.tile_buf<vec, 8x8xf32, compact=2>
+// CHECK-DAG: Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::RowPlusOne>
+// CHECK-DAG: Tile<TileType::Vec, float, 8, 8, BLayout::RowMajor, 8, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::RowPlusOne>
+// CHECK-DAG: const int32_t [[BASE:v[0-9]+]] = 128;
+// CHECK-DAG: const int32_t [[ELEM_BYTES:v[0-9]+]] = 4;
+// CHECK-DAG: const int32_t [[OFF:v[0-9]+]] = 8;
+// CHECK-DAG: int64_t {{.*}} = (int64_t) ((int32_t) (uint32_t) ((int32_t) (uint32_t) [[BASE]] + (uint32_t) [[OFF]]) * (uint32_t) [[ELEM_BYTES]]);
