@@ -15,6 +15,7 @@ HOST_RUNNER="${HOST_RUNNER:-ssh root@localhost}"
 RESULTS_TSV="${RESULTS_TSV:-}"
 SEED="${SEED:-19}"
 GOLDEN_MODE="${GOLDEN_MODE:-py}"  # py|skip
+KERNEL_MODE="${KERNEL_MODE:-llvm}"  # llvm|emitc
 RUN_ONLY_CASES="${RUN_ONLY_CASES:-Cmp}"
 SKIP_CASES="${SKIP_CASES:-}"
 
@@ -82,6 +83,60 @@ configure_case() {
       SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Abs/npu_validation/golden.py"
       GOLDEN_EXTRA_ARGS=()
       ;;
+    VectorAddition)
+      SAMPLE_NAME="VectorAddition"
+      TESTCASE_NAME="vadd_pto_ir"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/VectorAddition/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Max)
+      SAMPLE_NAME="Max"
+      TESTCASE_NAME="max"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Max/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Sub)
+      SAMPLE_NAME="Sub"
+      TESTCASE_NAME="sub"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Sub/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Exp)
+      SAMPLE_NAME="Exp"
+      TESTCASE_NAME="exp"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Exp/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Mul)
+      SAMPLE_NAME="Mul"
+      TESTCASE_NAME="mul"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Mul/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Expands)
+      SAMPLE_NAME="Expands"
+      TESTCASE_NAME="expand"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Expands/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Reshape)
+      SAMPLE_NAME="Reshape"
+      TESTCASE_NAME="reshape"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Reshape/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Rowexpanddiv)
+      SAMPLE_NAME="Rowexpanddiv"
+      TESTCASE_NAME="rowexpanddiv"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Rowexpanddiv/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
+    Rowexpandmul)
+      SAMPLE_NAME="Rowexpandmul"
+      TESTCASE_NAME="rowexpandmul"
+      SAMPLE_GOLDEN_PY="${ROOT_DIR}/test/samples/Rowexpandmul/npu_validation/golden.py"
+      GOLDEN_EXTRA_ARGS=()
+      ;;
     *)
       return 1
       ;;
@@ -130,12 +185,12 @@ command -v bisheng >/dev/null 2>&1 || die "bisheng not found in PATH"
 RUN_ONLY_CASES_NORM="$(normalize_list "${RUN_ONLY_CASES}")"
 SKIP_CASES_NORM="$(normalize_list "${SKIP_CASES}")"
 
-SUPPORTED_CASES=(Cmp Abs)
+SUPPORTED_CASES=(Cmp Abs VectorAddition Max Sub Exp Mul Expands Reshape Rowexpanddiv Rowexpandmul)
 if [[ -n "${RUN_ONLY_CASES_NORM}" ]]; then
   for item in ${RUN_ONLY_CASES_NORM//,/ }; do
     case "${item}" in
-      Cmp|Abs) ;;
-      *) die "Unsupported testcase: ${item}. Supported: Cmp, Abs." ;;
+      Cmp|Abs|VectorAddition|Max|Sub|Exp|Mul|Expands|Reshape|Rowexpanddiv|Rowexpandmul) ;;
+      *) die "Unsupported testcase: ${item}." ;;
     esac
   done
 fi
@@ -154,6 +209,7 @@ log "PTO_ISA_ROOT=${PTO_ISA_ROOT}"
 log "PTOAS_BIN=${PTOAS_BIN}"
 log "HOST_RUNNER=${HOST_RUNNER}"
 log "GOLDEN_MODE=${GOLDEN_MODE}"
+log "KERNEL_MODE=${KERNEL_MODE}"
 log "RESULTS_TSV=${RESULTS_TSV}"
 
 for case_name in "${SUPPORTED_CASES[@]}"; do
@@ -223,26 +279,36 @@ for case_name in "${SUPPORTED_CASES[@]}"; do
   fi
 
   stage="build_so"
-  set +e
-  WORK_SPACE="${WORK_SPACE}" \
-  ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
-  PTO_ISA_ROOT="${PTO_ISA_ROOT}" \
-  PTOAS_BIN="${PTOAS_BIN}" \
-  SAMPLE_NAME="${SAMPLE_NAME}" \
-  TESTCASE_NAME="${TESTCASE_NAME}" \
-  SOC_VERSION="${SOC_VERSION}" \
-  AICORE_ARCH="${AICORE_ARCH}" \
-    "${ROOT_DIR}/test/npu_validation/scripts/build_llvm_ir_kernel_so.sh"
-  rc=$?
-  set -e
-  if [[ ${rc} -ne 0 ]]; then
-    record_result "${case_name}" "FAIL" "${stage}" "build_llvm_ir_kernel_so_exit=${rc}"
-    die "llvm ir kernel so build failed at stage=${stage} case=${case_name}"
+  if [[ "${KERNEL_MODE}" == "llvm" ]]; then
+    set +e
+    WORK_SPACE="${WORK_SPACE}" \
+    ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
+    PTO_ISA_ROOT="${PTO_ISA_ROOT}" \
+    PTOAS_BIN="${PTOAS_BIN}" \
+    SAMPLE_NAME="${SAMPLE_NAME}" \
+    TESTCASE_NAME="${TESTCASE_NAME}" \
+    SOC_VERSION="${SOC_VERSION}" \
+    AICORE_ARCH="${AICORE_ARCH}" \
+      "${ROOT_DIR}/test/npu_validation/scripts/build_llvm_ir_kernel_so.sh"
+    rc=$?
+    set -e
+    if [[ ${rc} -ne 0 ]]; then
+      record_result "${case_name}" "FAIL" "${stage}" "build_llvm_ir_kernel_so_exit=${rc}"
+      die "llvm ir kernel so build failed at stage=${stage} case=${case_name}"
+    fi
+    [[ -f "${REPACK_SO}" ]] || {
+      record_result "${case_name}" "FAIL" "${stage}" "missing_repack_so"
+      die "missing llvm ir kernel so: ${REPACK_SO}"
+    }
+  elif [[ "${KERNEL_MODE}" == "emitc" ]]; then
+    REPACK_SO="${BUILD_DIR}/lib${TESTCASE_NAME}_kernel.so"
+    [[ -f "${REPACK_SO}" ]] || {
+      record_result "${case_name}" "FAIL" "${stage}" "missing_emitc_kernel_so"
+      die "missing emitc kernel so: ${REPACK_SO}"
+    }
+  else
+    die "Unsupported KERNEL_MODE=${KERNEL_MODE}. Expected llvm|emitc."
   fi
-  [[ -f "${REPACK_SO}" ]] || {
-    record_result "${case_name}" "FAIL" "${stage}" "missing_repack_so"
-    die "missing llvm ir kernel so: ${REPACK_SO}"
-  }
 
   stage="generate"
   case "${GOLDEN_MODE}" in

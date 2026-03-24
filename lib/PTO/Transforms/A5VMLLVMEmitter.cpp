@@ -450,6 +450,45 @@ static Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value) {
       .getResult();
 }
 
+static Value buildAllTrueMask(OpBuilder &builder, Location loc) {
+  auto maskType = VectorType::get({256}, builder.getI1Type());
+  auto attr = DenseElementsAttr::get(maskType, true);
+  return builder.create<arith::ConstantOp>(loc, maskType, attr).getResult();
+}
+
+static FailureOr<Value> buildPsetB32Mask(IRRewriter &builder, Location loc,
+                                         a5vm::PsetB32Op pset,
+                                         llvm::raw_ostream &diagOS) {
+  StringRef pattern = pset.getPattern();
+  if (pattern == "PAT_ALL")
+    return buildAllTrueMask(builder, loc);
+
+  diagOS << "A5VM LLVM emission failed: unsupported pset_b32 pattern "
+         << pattern << "\n";
+  return failure();
+}
+
+static FailureOr<Value> inferBinaryOpMask(Operation *op, IRRewriter &builder,
+                                          Location loc) {
+  Value inferredMask;
+  for (Operation *user : op->getResult(0).getUsers()) {
+    auto vsts = dyn_cast<a5vm::VstsOp>(user);
+    if (!vsts)
+      continue;
+    Value mask = vsts.getMask();
+    if (!inferredMask) {
+      inferredMask = mask;
+      continue;
+    }
+    if (mask != inferredMask)
+      return failure();
+  }
+
+  if (inferredMask)
+    return inferredMask;
+  return buildAllTrueMask(builder, loc);
+}
+
 static FailureOr<Value> packLoopPair(Operation *anchor, Value low, Value high) {
   OpBuilder builder(anchor);
   builder.setInsertionPoint(anchor);
@@ -626,6 +665,56 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
   }
   if (isa<a5vm::VabsOp>(op))
     return std::string("llvm.hivm.vabs.v64f32.x");
+  if (auto vexp = dyn_cast<a5vm::VexpOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(vexp.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(vexp.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vexp.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto vdup = dyn_cast<a5vm::VdupOp>(op)) {
+    if (isa<VectorType, a5vm::VecType>(vdup.getInput().getType()))
+      return failure();
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(vdup.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(vdup.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vdups.v" + std::to_string(*lanes) + vec + ".z";
+  }
+  if (auto binary = dyn_cast<a5vm::VaddOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vadd.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VsubOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vsub.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VmulOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vmul.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<a5vm::VmaxOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vmax.v" + std::to_string(*lanes) + vec + ".x";
+  }
   if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
     std::string vec = getElementTypeFragment(getElementTypeFromVectorLike(vsts.getValue().getType()));
     auto lanes = getElementCountFromVectorLike(vsts.getValue().getType());
@@ -655,16 +744,24 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
 
 static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
                                    llvm::raw_ostream &diagOS) {
+  IRRewriter builder(op->getContext());
+  builder.setInsertionPoint(op);
+  Location loc = op->getLoc();
+
+  if (auto pset = dyn_cast<a5vm::PsetB32Op>(op)) {
+    auto mask = buildPsetB32Mask(builder, loc, pset, diagOS);
+    if (failed(mask))
+      return failure();
+    builder.replaceOp(op, *mask);
+    return success();
+  }
+
   auto calleeName = getConfirmedCallee(op);
   if (failed(calleeName)) {
     diagOS << "A5VM LLVM emission failed: unsupported op "
            << op->getName().getStringRef() << "\n";
     return failure();
   }
-
-  IRRewriter builder(op->getContext());
-  builder.setInsertionPoint(op);
-  Location loc = op->getLoc();
 
   SmallVector<Type> resultTypes;
   for (Type type : op->getResultTypes())
@@ -751,6 +848,40 @@ static LogicalResult rewriteA5VMOp(Operation *op, ModuleOp module,
     }
     callArgs.push_back(input);
     callArgs.push_back(mask);
+  } else if (auto vexp = dyn_cast<a5vm::VexpOp>(op)) {
+    Value input = vexp.getInput();
+    Value mask = vexp.getMask();
+    Type vecType = resultTypes.front();
+    Type maskType = convertA5VMType(mask.getType(), builder);
+    if (input.getType() != vecType || mask.getType() != maskType) {
+      diagOS << "A5VM LLVM emission failed: unexpected vexp operand types\n";
+      return failure();
+    }
+    callArgs.push_back(input);
+    callArgs.push_back(mask);
+  } else if (auto vdup = dyn_cast<a5vm::VdupOp>(op)) {
+    if (isa<VectorType, a5vm::VecType>(vdup.getInput().getType())) {
+      diagOS << "A5VM LLVM emission failed: vector-input vdup lowering is not implemented for "
+             << op->getName().getStringRef() << "\n";
+      return failure();
+    }
+    Type scalarType = getElementTypeFromVectorLike(vdup.getResult().getType());
+    if (!scalarType || vdup.getInput().getType() != scalarType) {
+      diagOS << "A5VM LLVM emission failed: unexpected vdup operand types\n";
+      return failure();
+    }
+    callArgs.push_back(vdup.getInput());
+    callArgs.push_back(buildAllTrueMask(builder, loc));
+    callArgs.push_back(getI32Constant(builder, loc, 1));
+  } else if (isa<a5vm::VaddOp, a5vm::VsubOp, a5vm::VmulOp, a5vm::VmaxOp>(op)) {
+    callArgs.append(op->operand_begin(), op->operand_end());
+    auto mask = inferBinaryOpMask(op, builder, loc);
+    if (failed(mask)) {
+      diagOS << "A5VM LLVM emission failed: could not infer a unique mask for "
+             << op->getName().getStringRef() << "\n";
+      return failure();
+    }
+    callArgs.push_back(*mask);
   } else if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
     Type elementType = getElementTypeFromVectorLike(vsts.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(
