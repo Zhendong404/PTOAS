@@ -150,11 +150,12 @@ PYBIND11_MODULE(_pto, m) {
 
     py::enum_<mlir::pto::MaskPattern>(m, "MaskPattern")
       .value("P0101", mlir::pto::MaskPattern::P0101)
-      .value("P0011", mlir::pto::MaskPattern::P0011)
-      .value("P0110", mlir::pto::MaskPattern::P0110)
-      .value("P0001", mlir::pto::MaskPattern::P0001)
-      .value("P1111", mlir::pto::MaskPattern::P1111)
       .value("P1010", mlir::pto::MaskPattern::P1010)
+      .value("P0001", mlir::pto::MaskPattern::P0001)
+      .value("P0010", mlir::pto::MaskPattern::P0010)
+      .value("P0100", mlir::pto::MaskPattern::P0100)
+      .value("P1000", mlir::pto::MaskPattern::P1000)
+      .value("P1111", mlir::pto::MaskPattern::P1111)
       .export_values();
 
     mlir_attribute_subclass(m, "BLayoutAttr",
