@@ -25,10 +25,10 @@ These ops configure the MTE2 DMA engine's hardware loops for GM→UB transfers. 
 set_loop_size_outtoub(loop2 << 21 | loop1);
 ```
 
-| Bits | Field | Description |
-|------|-------|-------------|
-| [20:0] | `loop1` | Inner HW loop iteration count |
-| [41:21] | `loop2` | Outer HW loop iteration count |
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [20:0] | `loop1` | 21 bits | Inner HW loop iteration count |
+| [42:21] | `loop2` | 22 bits | Outer HW loop iteration count |
 
 When not using multi-level looping, set both to 1: `set_loop_size_outtoub(1ULL << 21 | 1ULL)`.
 
@@ -43,15 +43,15 @@ When not using multi-level looping, set both to 1: `set_loop_size_outtoub(1ULL <
 **Register encoding:**
 
 ```c
-set_loop2_stride_outtoub(dst_stride_bytes << 40 | src_stride_bytes);
+set_loop2_stride_outtoub(ub_dst_stride << 40 | gm_src_stride);
 ```
 
-| Bits | Field | Description |
-|------|-------|-------------|
-| [39:0] | `src_stride` | GM pointer advance per loop2 iteration (bytes) |
-| [79:40] | `dst_stride` | UB pointer advance per loop2 iteration (bytes) |
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [39:0] | `gm_src_stride` | 40 bits | GM source pointer advance per loop2 iteration (bytes) |
+| [60:40] | `ub_dst_stride` | 21 bits | UB destination pointer advance per loop2 iteration (bytes) |
 
-After each loop2 iteration, the DMA engine advances the GM read pointer by `src_stride` and UB write pointer by `dst_stride`.
+After each loop2 iteration, the DMA engine advances the GM read pointer by `gm_src_stride` and UB write pointer by `ub_dst_stride`.
 
 ---
 
@@ -64,19 +64,21 @@ After each loop2 iteration, the DMA engine advances the GM read pointer by `src_
 **Register encoding:**
 
 ```c
-set_loop1_stride_outtoub(dst_stride_bytes << 40 | src_stride_bytes);
+set_loop1_stride_outtoub(ub_dst_stride << 40 | gm_src_stride);
 ```
 
-| Bits | Field | Description |
-|------|-------|-------------|
-| [39:0] | `src_stride` | GM pointer advance per loop1 iteration (bytes) |
-| [79:40] | `dst_stride` | UB pointer advance per loop1 iteration (bytes) |
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [39:0] | `gm_src_stride` | 40 bits | GM source pointer advance per loop1 iteration (bytes) |
+| [60:40] | `ub_dst_stride` | 21 bits | UB destination pointer advance per loop1 iteration (bytes) |
 
 ---
 
 ## Loop Stride Configuration (UB→GM)
 
-These ops configure the MTE3 DMA engine for UB→GM transfers. Same encoding as GM→UB but for the reverse direction.
+These ops configure the MTE3 DMA engine's hardware loops for UB→GM transfers. They must be set **before** calling `pto.copy_ubuf_to_gm`.
+
+Note: UB stride fields are 21 bits (sufficient for 256KB UB address space), GM stride fields are 40 bits (full GM address range).
 
 ### `pto.set_loop_size_ubtoout`
 
@@ -84,7 +86,16 @@ These ops configure the MTE3 DMA engine for UB→GM transfers. Same encoding as 
 - **CCE:** `__builtin_cce_set_loop_size_ubtoout`
 - **semantics:** Configure HW loop iteration counts for UB→GM DMA.
 
-**Register encoding:** `loop2 << 21 | loop1` (same as outtoub)
+**Register encoding:**
+
+```c
+set_loop_size_ubtoout(loop2 << 21 | loop1);
+```
+
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [20:0] | `loop1` | 21 bits | Inner HW loop iteration count |
+| [42:21] | `loop2` | 22 bits | Outer HW loop iteration count |
 
 ---
 
@@ -92,11 +103,18 @@ These ops configure the MTE3 DMA engine for UB→GM transfers. Same encoding as 
 
 - **syntax:** `pto.set_loop2_stride_ubtoout %src_stride, %dst_stride : i64, i64`
 - **CCE:** `__builtin_cce_set_loop2_stride_ubtoout`
-- **semantics:** Configure outer loop stride for UB→GM DMA.
+- **semantics:** Configure outer loop (loop2) pointer advance for UB→GM DMA.
 
-**Register encoding:** `dst_stride_bytes << 40 | src_stride_bytes`
+**Register encoding:**
 
-For UB→GM, `src_stride` is the UB pointer advance and `dst_stride` is the GM pointer advance.
+```c
+set_loop2_stride_ubtoout(gm_dst_stride << 21 | ub_src_stride);
+```
+
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [20:0] | `ub_src_stride` | 21 bits | UB source pointer advance per loop2 iteration (bytes) |
+| [60:21] | `gm_dst_stride` | 40 bits | GM destination pointer advance per loop2 iteration (bytes) |
 
 ---
 
@@ -104,9 +122,18 @@ For UB→GM, `src_stride` is the UB pointer advance and `dst_stride` is the GM p
 
 - **syntax:** `pto.set_loop1_stride_ubtoout %src_stride, %dst_stride : i64, i64`
 - **CCE:** `__builtin_cce_set_loop1_stride_ubtoout`
-- **semantics:** Configure inner loop stride for UB→GM DMA.
+- **semantics:** Configure inner loop (loop1) pointer advance for UB→GM DMA.
 
-**Register encoding:** `dst_stride_bytes << 40 | src_stride_bytes`
+**Register encoding:**
+
+```c
+set_loop1_stride_ubtoout(gm_dst_stride << 21 | ub_src_stride);
+```
+
+| Bits | Field | Width | Description |
+|------|-------|-------|-------------|
+| [20:0] | `ub_src_stride` | 21 bits | UB source pointer advance per loop1 iteration (bytes) |
+| [60:21] | `gm_dst_stride` | 40 bits | GM destination pointer advance per loop1 iteration (bytes) |
 
 ---
 
@@ -290,6 +317,8 @@ The full DMA transfer is a nested loop. The HW loop registers (set before the co
 
 ```c
 // Register setup (once before copy):
+//   loop_size:  [20:0]=loop1(21b), [42:21]=loop2(22b)
+//   stride:     [39:0]=gm_src(40b), [60:40]=ub_dst(21b)
 set_loop_size_outtoub(loop2 << 21 | loop1);
 set_loop2_stride_outtoub(loop2_ub_stride << 40 | loop2_gm_stride);
 set_loop1_stride_outtoub(loop1_ub_stride << 40 | loop1_gm_stride);
@@ -319,9 +348,11 @@ for (int j = 0; j < loop2; j++) {                      // HW outer loop
 
 ```c
 // Register setup:
+//   loop_size:  [20:0]=loop1(21b), [42:21]=loop2(22b)
+//   stride:     [20:0]=ub_src(21b), [60:21]=gm_dst(40b)
 set_loop_size_ubtoout(loop2 << 21 | loop1);
-set_loop2_stride_ubtoout(loop2_gm_stride << 40 | loop2_ub_stride);
-set_loop1_stride_ubtoout(loop1_gm_stride << 40 | loop1_ub_stride);
+set_loop2_stride_ubtoout(loop2_gm_stride << 21 | loop2_ub_stride);
+set_loop1_stride_ubtoout(loop1_gm_stride << 21 | loop1_ub_stride);
 
 // C equivalent:
 for (int j = 0; j < loop2; j++) {
@@ -551,12 +582,12 @@ loop1 iter 3: gm_ptr + 3×2048 → ub_ptr + 3×2048, DMA 8 rows × 256B
 
 ## Register Summary
 
-| Register | Direction | Encoding | Purpose |
-|----------|-----------|----------|---------|
-| `set_loop_size_outtoub` | GM→UB | `loop2 << 21 \| loop1` | HW loop iteration counts |
-| `set_loop2_stride_outtoub` | GM→UB | `ub_stride << 40 \| gm_stride` | Outer loop pointer advance (bytes) |
-| `set_loop1_stride_outtoub` | GM→UB | `ub_stride << 40 \| gm_stride` | Inner loop pointer advance (bytes) |
-| `set_loop_size_ubtoout` | UB→GM | `loop2 << 21 \| loop1` | HW loop iteration counts |
-| `set_loop2_stride_ubtoout` | UB→GM | `gm_stride << 40 \| ub_stride` | Outer loop pointer advance (bytes) |
-| `set_loop1_stride_ubtoout` | UB→GM | `gm_stride << 40 \| ub_stride` | Inner loop pointer advance (bytes) |
-| `set_mov_pad_val` | GM→UB | pad value | Padding fill value (with `data_select_bit = true`) |
+| Register | Direction | Encoding | Field Widths | Purpose |
+|----------|-----------|----------|--------------|---------|
+| `set_loop_size_outtoub` | GM→UB | `loop2 << 21 \| loop1` | loop1: 21b, loop2: 22b | HW loop iteration counts |
+| `set_loop2_stride_outtoub` | GM→UB | `ub_dst << 40 \| gm_src` | gm_src: 40b, ub_dst: 21b | Outer loop pointer advance (bytes) |
+| `set_loop1_stride_outtoub` | GM→UB | `ub_dst << 40 \| gm_src` | gm_src: 40b, ub_dst: 21b | Inner loop pointer advance (bytes) |
+| `set_loop_size_ubtoout` | UB→GM | `loop2 << 21 \| loop1` | loop1: 21b, loop2: 22b | HW loop iteration counts |
+| `set_loop2_stride_ubtoout` | UB→GM | `gm_dst << 21 \| ub_src` | ub_src: 21b, gm_dst: 40b | Outer loop pointer advance (bytes) |
+| `set_loop1_stride_ubtoout` | UB→GM | `gm_dst << 21 \| ub_src` | ub_src: 21b, gm_dst: 40b | Inner loop pointer advance (bytes) |
+| `set_mov_pad_val` | GM→UB | pad value | — | Padding fill value (with `data_select_bit = true`) |
