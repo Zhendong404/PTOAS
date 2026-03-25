@@ -11,68 +11,30 @@
 
 ### Overview
 
-This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a
-compiler-internal and externally facing specification designed to represent
-vector compute kernels within the PTO architecture. Much like NVVM provides a
-robust IR for GPU architectures, VPTO serves as the direct bridge between
-high-level programming models and the underlying hardware ISA, providing a
-precise, low-level representation of vector workloads explicitly designed for
-the Ascend 950 architecture.
+This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, VPTO serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, low-level representation of vector workloads explicitly designed for the Ascend 950 architecture.
 
 #### Position in the Stack and Layer Modeled
 
-VPTO operates as a very low-level intermediate representation within the PTO
-compiler stack. It is uniquely designed to accurately and comprehensively
-express all architectural information of the Ascend 950 hardware. It
-specifically models the bare-metal vector execution layer, making
-hardware-specific capabilities and constraints, such as exact vector lane
-configurations, memory space hierarchies, and hardware-specific fusion
-semantics, fully transparent and controllable.
+VPTO operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
 
 #### Why External Developers Read or Author VPTO
 
-While the majority of users will interact with the PTO architecture via
-higher-level frameworks, external developers may need to read or author VPTO IR
-directly for several key reasons:
+While the majority of users will interact with the PTO architecture via higher-level frameworks, external developers may need to read or author VPTO IR directly for several key reasons:
 
-- Custom Toolchain Development:
-  build custom compiler frontends or domain-specific languages (DSLs) that
-  target the Ascend 950 architecture with maximum hardware utilization.
-- Performance Engineering:
-  inspect the output of high-level compiler passes, verify fine-grained
-  optimization behaviors, and pinpoint performance bottlenecks at the
-  architectural level.
-- Micro-Optimization:
-  hand-author highly optimized, critical mathematical kernels using a stable,
-  precise IR when higher-level abstractions cannot achieve the theoretical peak
-  performance of the hardware.
+- Custom Toolchain Development: build custom compiler frontends or domain-specific languages (DSLs) that target the Ascend 950 architecture with maximum hardware utilization.
+- Performance Engineering: inspect the output of high-level compiler passes, verify fine-grained optimization behaviors, and pinpoint performance bottlenecks at the architectural level.
+- Micro-Optimization: hand-author highly optimized, critical mathematical kernels using a stable, precise IR when higher-level abstractions cannot achieve the theoretical peak performance of the hardware.
 
 #### Relationship to CCE
 
-VPTO is designed to express the full semantic capabilities of the Compute Cube
-Engine (CCE), but with significant structural and pipeline advantages for
-compiler development.
+VPTO is designed to express the full semantic capabilities of the Compute Cube Engine (CCE), but with significant structural and pipeline advantages for compiler development.
 
-- Bypassing the C/Clang Pipeline:
-  while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates
-  entirely independently of the C language frontend. By bypassing Clang AST
-  generation and frontend processing, utilizing VPTO significantly reduces
-  overall compilation time and memory overhead.
-- Enhanced IR Verification:
-  because VPTO is a strongly typed, SSA-based (Static Single Assignment)
-  compiler IR rather than a C-wrapper API, it provides a much more rigorous and
-  detailed IR verification process. Structural inconsistencies, invalid memory
-  access patterns, and operand type mismatches are caught immediately with
-  precise, explicit diagnostic feedback, providing developers with much higher
-  visibility into kernel correctness than traditional CCE error reporting.
+- Bypassing the C/Clang Pipeline: while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates entirely independently of the C language frontend. By bypassing Clang AST generation and frontend processing, utilizing VPTO significantly reduces overall compilation time and memory overhead.
+- Enhanced IR Verification: because VPTO is a strongly typed, SSA-based (Static Single Assignment) compiler IR rather than a C-wrapper API, it provides a much more rigorous and detailed IR verification process. Structural inconsistencies, invalid memory access patterns, and operand type mismatches are caught immediately with precise, explicit diagnostic feedback, providing developers with much higher visibility into kernel correctness than traditional CCE error reporting.
 
 #### Intended Audience
 
-This document is written for compiler engineers, library writers, and advanced
-performance architects. We expect the reader to have a working understanding of
-modern compiler infrastructure, specifically MLIR, the principles of Static
-Single Assignment (SSA) form, and a deep understanding of the vector-processing
-capabilities of the Ascend 950 architecture.
+This document is written for compiler engineers, library writers, and advanced performance architects. We expect the reader to have a working understanding of modern compiler infrastructure, specifically MLIR, the principles of Static Single Assignment (SSA) form, and a deep understanding of the vector-processing capabilities of the Ascend 950 architecture.
 
 ### Getting Started
 
@@ -193,38 +155,22 @@ In ZEROING mode, inactive lanes produce zero. This is the native hardware predic
 
 #### Execution Scopes (__VEC_SCOPE__)
 
-`__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF)
-launch. In the PTO architecture, it defines the hardware interface between the
-Scalar Unit and the Vector Thread.
+`__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF) launch. In the PTO architecture, it defines the hardware interface between the Scalar Unit and the Vector Thread.
 
-It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a
-specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This
-gives the compiler a natural structural boundary for identifying the code block
-that must be lowered into a discrete VF hardware instruction sequence.
+It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
 
 **Scalar-Vector Interface:**
 
 The execution model follows non-blocking fork semantics:
 
-- Scalar invocation:
-  the scalar processor invokes a vector thread by calling a VF. Once the launch
-  command is issued, the scalar unit does not stall and continues executing
-  subsequent instructions in the pipeline.
-- Vector execution:
-  after invocation, the vector thread independently fetches and executes the
-  instructions defined within the VF scope.
-- Parallelism:
-  this decoupled execution allows the scalar and vector units to run in
-  parallel, so the scalar unit can prepare addresses or manage control flow
-  while the vector unit performs heavy SIMD computation.
+- Scalar invocation: the scalar processor invokes a vector thread by calling a VF. Once the launch command is issued, the scalar unit does not stall and continues executing subsequent instructions in the pipeline.
+- Vector execution: after invocation, the vector thread independently fetches and executes the instructions defined within the VF scope.
+- Parallelism: this decoupled execution allows the scalar and vector units to run in parallel, so the scalar unit can prepare addresses or manage control flow while the vector unit performs heavy SIMD computation.
 
 **Launch Mechanism And Constraints:**
 
-- Parameter buffering:
-  all arguments required by the VF must be staged in hardware-specific buffers.
-- Launch overhead:
-  launching a VF incurs a latency of a few cycles. Very small VFs should
-  account for this overhead because launch cost can rival useful computation time.
+- Parameter buffering: all arguments required by the VF must be staged in hardware-specific buffers.
+- Launch overhead: launching a VF incurs a latency of a few cycles. Very small VFs should account for this overhead because launch cost can rival useful computation time.
 
 **MLIR Representation:**
 
@@ -284,15 +230,10 @@ It does not describe lowering strategy.
 
 ### Core Types
 
-- `vreg<T>`: `!pto.vreg<NxT>`
-  Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits).
-  `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
-- `mask`: `!pto.mask`
-  Models an A5 predicate register (256-bit). Per-lane enable/disable state.
-- `align`: `!pto.align`
-  Models the A5 vector-align carrier state for unaligned load/store sequences.
-- `buf`: `!llvm.ptr<AS>`
-  Buffer-like LLVM pointer type. AS=1 for GM, AS=6 for UB.
+- `vreg<T>`: `!pto.vreg<NxT>` Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
+- `mask`: `!pto.mask` Models an A5 predicate register (256-bit). Per-lane enable/disable state.
+- `align`: `!pto.align` Models the A5 vector-align carrier state for unaligned load/store sequences.
+- `buf`: `!llvm.ptr<AS>` Buffer-like LLVM pointer type. AS=1 for GM, AS=6 for UB.
 - `idx`: `index`
 - `i32`: `i32`
 - `i64`: `i64`
@@ -315,10 +256,14 @@ It does not describe lowering strategy.
 
 | Type | Bits | Description |
 |------|------|-------------|
-| `i8` / `u8` | 8 | Signed/unsigned 8-bit integer |
-| `i16` / `u16` | 16 | Signed/unsigned 16-bit integer |
-| `i32` / `u32` | 32 | Signed/unsigned 32-bit integer |
-| `i64` / `u64` | 64 | Signed/unsigned 64-bit integer |
+| `s8` / `u8` | 8 | Signed/unsigned 8-bit integer |
+| `i8` | 8 | Signless 8-bit integer |
+| `s16` / `u16` | 16 | Signed/unsigned 16-bit integer |
+| `i16` | 16 | Signless 16-bit integer |
+| `s32` / `u32` | 32 | Signed/unsigned 32-bit integer |
+| `i32` | 32 | Signless 32-bit integer |
+| `s64` / `u64` | 64 | Signed/unsigned 64-bit integer |
+| `i64` | 64 | Signless 64-bit integer |
 | `f16` | 16 | IEEE 754 half precision |
 | `bf16` | 16 | Brain floating point |
 | `f32` | 32 | IEEE 754 single precision |
@@ -336,21 +281,6 @@ Valid `!pto.vreg<NxT>` configurations: `N * bitwidth(T) = 2048`
 
 `!pto.mask` models an A5 predicate register, not an integer vector.
 
-- producers:
-  `pto.vpset_b8`, `pto.vpset_b16`, `pto.vpset_b32`,
-  `pto.vpge_b8`, `pto.vpge_b16`, `pto.vpge_b32`,
-  `pto.vplds`, `pto.vpld`, `pto.vpldi`,
-  `pto.vcmp`, `pto.vcmps`
-- consumers:
-  `pto.vsel`,
-  `pto.vaddc`, `pto.vsubc`, `pto.vaddcs`, `pto.vsubcs`,
-  `pto.vpnot`, `pto.vpsel`,
-  `pto.vgather2_bc`,
-  `pto.vstx2`, `pto.vsstb`,
-  `pto.vpsts`, `pto.vpst`, `pto.vpsti`,
-  `pto.vpstu`,
-  `pto.vmula`
-
 ```mlir
 %mask = pto.vcmp %lhs, %rhs, %seed, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
 %out = pto.vsel %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
@@ -360,65 +290,10 @@ Valid `!pto.vreg<NxT>` configurations: `N * bitwidth(T) = 2048`
 
 `!pto.align` models the A5 vector-align carrier state. It is not payload data.
 
-- producers: `pto.vldas`, `pto.vpstu`, `pto.vstu`, `pto.vstus`, `pto.vstur`
-- consumers: `pto.vldus`, `pto.vsta`, `pto.vstas`, `pto.vstar`, `pto.vpstu`, `pto.vstu`, `pto.vstus`, `pto.vstur`
-
 ```mlir
 %align = pto.vldas %ub[%c0] : !llvm.ptr<6> -> !pto.align
 %vec = pto.vldus %align, %ub[%c64] : !pto.align, !llvm.ptr<6> -> !pto.vreg<64xf32>
 ```
-
-### Implemented String Constraints
-
-#### Predicate Patterns
-
-Used by `pto.vpset_b*`, `pto.vpge_b*`:
-`PAT_ALL | PAT_VL1 | PAT_VL2 | PAT_VL3 | PAT_VL4 | PAT_VL8 | PAT_VL16 | PAT_VL32 | PAT_VL64 | PAT_VL128 | PAT_M3 | PAT_M4 | PAT_H | PAT_Q | PAT_ALLF`
-
-#### Distribution Tokens
-
-| Op | Allowed Values |
-|----|---------------|
-| `pto.vlds` | `NORM \| BLK \| DINTLV_B32 \| UNPK_B16 \| BRC_B8 \| BRC_B16 \| BRC_B32 \| US_B8 \| US_B16 \| DS_B8 \| DS_B16 \| SPLT4CHN_B8 \| SPLT2CHN_B8 \| SPLT2CHN_B16 \| UNPK_B8 \| UNPK_B32` |
-| `pto.vpld`, `pto.vpldi` | `NORM \| US \| DS` |
-| `pto.vpst`, `pto.vpsti` | `NORM \| PK` |
-| `pto.vldx2` | `DINTLV_B8 \| DINTLV_B16 \| DINTLV_B32 \| BDINTLV` |
-| `pto.vstx2` | `INTLV_B8 \| INTLV_B16 \| INTLV_B32` |
-| `pto.vsts` | `NORM_B8 \| NORM_B16 \| NORM_B32 \| PK_B16 \| PK_B32 \| MRG4CHN_B8 \| MRG2CHN_B8 \| MRG2CHN_B16` |
-
-#### Stride Tokens
-
-Used by `pto.vsld`, `pto.vsst`:
-`STRIDE_S3_B16 | STRIDE_S4_B64 | STRIDE_S8_B32 | STRIDE_S2_B64 | STRIDE_VSST_S8_B16`
-
-#### Compare Modes
-
-Used by `pto.vcmp`, `pto.vcmps`:
-`eq | ne | lt | le | gt | ge`
-
-#### Part Tokens
-
-Used by `pto.vppack`, `pto.vpunpack`:
-`LOWER | HIGHER`
-
-#### Mode Tokens
-
-Used by `pto.vmula`:
-`MODE_ZEROING | MODE_UNKNOWN | MODE_MERGING`
-
-Used by `pto.vstu`, `pto.vstus`, `pto.vstur`:
-`POST_UPDATE | NO_POST_UPDATE`
-
-#### Conversion Control Tokens
-
-- Round mode (`pto.vcvt`): `ROUND_R | ROUND_A | ROUND_F | ROUND_C | ROUND_Z | ROUND_O`
-- Saturation (`pto.vcvt`): `RS_ENABLE | RS_DISABLE`
-- Part (`pto.vcvt`): `PART_EVEN | PART_ODD`
-
-#### Memory Barrier Types
-
-Used by `pto.mem_bar`:
-`VV_ALL | VST_VLD | VLD_VST`
 
 ### Correspondence Categories
 
