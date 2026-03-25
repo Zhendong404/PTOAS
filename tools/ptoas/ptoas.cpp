@@ -669,7 +669,6 @@ static void addSharedPreBackendPasses(OpPassManager &pm,
 }
 
 static void addA5FusionRegionMainlinePreBackendPasses(OpPassManager &pm) {
-  pm.addPass(pto::createPTOValidateSimdIRPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
@@ -679,13 +678,16 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
                                          bool enableFusionMainline) {
   // Keep the A5 backend lowering boundary explicit:
   //   FusionRegionGen -> PTOToA5VM -> PTOLowLevelLoopFusion
-  //   -> PTOFlattenFusionRegion -> backend emission.
+  //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
+  //   -> backend emission.
   pm.addPass(pto::createLowerPTOToA5VMPass());
 
   if (enableFusionMainline) {
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionLoadStoreElisionPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFlattenFusionRegionPass());
   }

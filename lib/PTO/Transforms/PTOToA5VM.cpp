@@ -477,14 +477,15 @@ struct PTOToA5VMPass : public impl::PTOToA5VMBase<PTOToA5VMPass> {
     module.walk([&](Operation *op) {
       if (isa<TLoadOp, TAbsOp, TAddOp, TSubOp, TMulOp, TDivOp, TMaxOp, TMinOp,
               TAndOp, TAndSOp, TOrOp, TOrSOp, TXorOp, TXorSOp, TExpOp, TLogOp,
-              TSqrtOp, TRsqrtOp, TRecipOp, TNegOp, TLReluOp, TCIOp, TCvtOp, TCmpOp, TCmpSOp, TSelOp,
-              TAddCOp, TAddSOp, TAddSCOp, TMinSOp, TSubCOp, TSubSOp, TSubSCOp, TMaxSOp,
-              TDivSOp, TMulSOp, TSelSOp, TReluOp, TNotOp, TTransOp, TFillPadOp, TFillPadExpandOp,
+              TSqrtOp, TRsqrtOp, TRecipOp, TNegOp, TLReluOp, TCIOp, TCvtOp,
+              TCmpOp, TCmpSOp, TSelOp, TAddCOp, TAddSOp, TAddSCOp, TMinSOp,
+              TSubCOp, TSubSOp, TSubSCOp, TMaxSOp, TDivSOp, TMulSOp, TSelSOp,
+              TReluOp, TNotOp, TTransOp, TFillPadOp, TFillPadExpandOp,
               TRowMaxOp, TRowMinOp, TRowSumOp, TColMaxOp, TColMinOp, TColSumOp,
               TRowExpandOp, TColExpandOp, TRowExpandMulOp, TRowExpandDivOp,
-              TRowExpandSubOp, TPartAddOp,
-              TPartMaxOp, TPartMinOp, TExpandsOp, TGatherOp, TGatherBOp,
-              TScatterOp, TSort32Op, TMrgSortOp, TStoreOp>(op))
+              TRowExpandSubOp, TPartAddOp, TPartMaxOp, TPartMinOp, TExpandsOp,
+              TGatherOp, TGatherBOp, TScatterOp, TSort32Op, TMrgSortOp,
+              TStoreOp>(op))
         tensorPipelineOps.push_back(op);
       else if (isa<PointerCastOp, BindTileOp, SetFlagOp, WaitFlagOp, BarrierOp,
                    GetBufOp, RlsBufOp>(op))

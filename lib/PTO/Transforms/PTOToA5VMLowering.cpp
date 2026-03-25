@@ -829,6 +829,24 @@ static std::pair<Value, Value> getIfResultYieldedValues(Value value) {
   return {thenYield.getOperand(resultNumber), elseYield.getOperand(resultNumber)};
 }
 
+static Value getFusionRegionResultYieldedValue(Value value) {
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return {};
+  auto fusionRegion = dyn_cast<pto::FusionRegionOp>(result.getOwner());
+  if (!fusionRegion)
+    return {};
+  if (fusionRegion.getBody().empty())
+    return {};
+  auto yield = dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
+  if (!yield)
+    return {};
+  unsigned resultNumber = result.getResultNumber();
+  if (resultNumber >= yield.getNumOperands())
+    return {};
+  return yield.getOperand(resultNumber);
+}
+
 static bool equalOrBothNull(Value lhs, Value rhs) {
   if (!lhs && !rhs)
     return true;
@@ -854,6 +872,8 @@ TileBufConfigAttr lookupTileConfig(Value value) {
     return lookupTileConfig(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return lookupTileConfig(cast.getSource());
+  if (Value yielded = getFusionRegionResultYieldedValue(value))
+    return lookupTileConfig(yielded);
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
       thenValue && elseValue) {
     TileBufConfigAttr thenConfig = lookupTileConfig(thenValue);
@@ -877,6 +897,8 @@ bool hasStructuredTileDriver(Value value) {
     return hasStructuredTileDriver(reinterpret.getSource());
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return hasStructuredTileDriver(cast.getSource());
+  if (Value yielded = getFusionRegionResultYieldedValue(value))
+    return hasStructuredTileDriver(yielded);
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);
       thenValue && elseValue) {
     return hasStructuredTileDriver(thenValue) && hasStructuredTileDriver(elseValue);
@@ -910,6 +932,10 @@ void lookupValidDims(Value value, Value &validRow, Value &validCol) {
   }
   if (auto cast = value.getDefiningOp<memref::CastOp>()) {
     lookupValidDims(cast.getSource(), validRow, validCol);
+    return;
+  }
+  if (Value yielded = getFusionRegionResultYieldedValue(value)) {
+    lookupValidDims(yielded, validRow, validCol);
     return;
   }
   if (auto [thenValue, elseValue] = getIfResultYieldedValues(value);

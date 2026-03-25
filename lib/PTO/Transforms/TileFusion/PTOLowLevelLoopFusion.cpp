@@ -24,17 +24,25 @@ using namespace mlir;
 
 namespace {
 
-struct StageInfo {
-  pto::SimdVecScopeOp scope;
-  SmallVector<Operation *, 4> setupOps;
-  SmallVector<Operation *, 4> scopePreludeOps;
-  scf::ForOp outerLoop;
-  SmallVector<Operation *, 4> outerLoopPreludeOps;
-  scf::ForOp innerLoop;
-  SmallVector<Operation *, 8> leafOps;
-  vector::MaskedStoreOp store;
+// Contract note:
+//   PTOLowLevelLoopFusion now runs on A5VM post-lowering `scf.for + a5vm.*`
+//   loop nests that remain inside pto.fusion_region until explicit flatten.
+//   The matcher below intentionally stays conservative: it only fuses adjacent
+//   loop stages with the same loop-header structure and side-effect-free setup
+//   scaffolding between them.
 
-  bool hasInnerLoop() const { return static_cast<bool>(innerLoop); }
+struct LoopLevelInfo {
+  scf::ForOp loop;
+  SmallVector<Operation *, 4> preludeOps;
+};
+
+struct StageInfo {
+  SmallVector<Operation *, 4> setupOps;
+  SmallVector<LoopLevelInfo, 4> levels;
+  SmallVector<Operation *, 8> leafOps;
+
+  scf::ForOp getOuterLoop() const { return levels.front().loop; }
+  unsigned getDepth() const { return levels.size(); }
 };
 
 static bool areEquivalentValues(Value lhs, Value rhs);
@@ -47,7 +55,6 @@ static bool sameForHeader(scf::ForOp lhs, scf::ForOp rhs) {
   return areEquivalentValues(lhs.getLowerBound(), rhs.getLowerBound()) &&
          areEquivalentValues(lhs.getUpperBound(), rhs.getUpperBound()) &&
          areEquivalentValues(lhs.getStep(), rhs.getStep()) &&
-         lhs.getInitArgs().empty() && rhs.getInitArgs().empty() &&
          lhs->getAttrs() == rhs->getAttrs();
 }
 
@@ -55,15 +62,9 @@ static bool isPureNoRegionOp(Operation *op) {
   return op->getNumRegions() == 0 && isMemoryEffectFree(op);
 }
 
-static bool isSupportedLeafOp(Operation *op) {
-  if (isa<vector::MaskedLoadOp, vector::MaskedStoreOp>(op))
-    return true;
-  return isPureNoRegionOp(op);
-}
+static bool isSupportedLeafOp(Operation *op) { return op->getNumRegions() == 0; }
 
 static bool isInterstageSetupOp(Operation *op) {
-  if (isa<pto::SimdTileToMemrefOp>(op))
-    return true;
   return isPureNoRegionOp(op);
 }
 
@@ -115,112 +116,84 @@ static bool areEquivalentValues(Value lhs, Value rhs) {
   return areEquivalentOperations(lhs.getDefiningOp(), rhs.getDefiningOp());
 }
 
-static bool areEquivalentMaskValues(Value lhs, Value rhs) {
-  if (areEquivalentValues(lhs, rhs))
-    return true;
-  auto lhsMask = lhs.getDefiningOp<vector::ConstantMaskOp>();
-  auto rhsMask = rhs.getDefiningOp<vector::ConstantMaskOp>();
-  if (!lhsMask || !rhsMask)
-    return false;
-  return lhs.getType() == rhs.getType() &&
-         lhsMask.getMaskDimSizesAttr() == rhsMask.getMaskDimSizesAttr();
+static LogicalResult analyzeStage(scf::ForOp outerLoop, StageInfo &stage) {
+  scf::ForOp currentLoop = outerLoop;
+  while (currentLoop) {
+    stage.levels.push_back(LoopLevelInfo{currentLoop, {}});
+    LoopLevelInfo &currentLevel = stage.levels.back();
+
+    SmallVector<Operation *, 8> bodyOps;
+    scf::ForOp childLoop;
+    for (Operation &op : currentLoop.getBody()->without_terminator()) {
+      bodyOps.push_back(&op);
+      if (auto nestedLoop = dyn_cast<scf::ForOp>(op)) {
+        if (childLoop)
+          return failure();
+        childLoop = nestedLoop;
+      }
+    }
+
+    if (!childLoop) {
+      for (Operation *op : bodyOps) {
+        if (!isSupportedLeafOp(op))
+          return failure();
+        stage.leafOps.push_back(op);
+      }
+      return failure(stage.leafOps.empty());
+    }
+
+    bool seenChildLoop = false;
+    for (Operation *op : bodyOps) {
+      if (op == childLoop.getOperation()) {
+        seenChildLoop = true;
+        continue;
+      }
+      if (seenChildLoop || !isPureNoRegionOp(op))
+        return failure();
+      currentLevel.preludeOps.push_back(op);
+    }
+
+    currentLoop = childLoop;
+  }
+
+  return failure();
 }
 
-static LogicalResult analyzeLeafLoopBody(Block &body,
-                                         SmallVectorImpl<Operation *> &leafOps,
-                                         vector::MaskedStoreOp &store) {
-  int storesSeen = 0;
-  for (Operation &op : body.without_terminator()) {
-    if (!isSupportedLeafOp(&op))
-      return failure();
-    if (auto maskedStore = dyn_cast<vector::MaskedStoreOp>(op)) {
-      if (++storesSeen > 1)
-        return failure();
-      store = maskedStore;
-    }
-    leafOps.push_back(&op);
-  }
-
-  if (storesSeen != 1)
-    return failure();
-
-  for (Operation *op : leafOps)
-    if (auto load = dyn_cast<vector::MaskedLoadOp>(op))
-      if (!areEquivalentMaskValues(load.getMask(), store.getMask()))
-        return failure();
-
-  return success();
-}
-
-static LogicalResult analyzeStage(pto::SimdVecScopeOp scope, StageInfo &stage) {
-  stage.scope = scope;
-
-  Block &scopeBody = scope.getBody().front();
-  bool seenOuterLoop = false;
-  for (Operation &op : scopeBody) {
-    if (auto loop = dyn_cast<scf::ForOp>(op)) {
-      if (seenOuterLoop)
-        return failure();
-      seenOuterLoop = true;
-      stage.outerLoop = loop;
-      continue;
-    }
-    if (seenOuterLoop || !isPureNoRegionOp(&op))
-      return failure();
-    stage.scopePreludeOps.push_back(&op);
-  }
-
-  if (!stage.outerLoop || !stage.outerLoop.getInitArgs().empty())
-    return failure();
-
-  bool seenInnerLoop = false;
-  for (Operation &op : stage.outerLoop.getBody()->without_terminator()) {
-    if (auto loop = dyn_cast<scf::ForOp>(op)) {
-      if (seenInnerLoop)
-        return failure();
-      seenInnerLoop = true;
-      stage.innerLoop = loop;
-      continue;
-    }
-    if (seenInnerLoop || !isPureNoRegionOp(&op))
-      return failure();
-    stage.outerLoopPreludeOps.push_back(&op);
-  }
-
-  if (stage.innerLoop) {
-    if (!stage.innerLoop || !stage.innerLoop.getInitArgs().empty())
-      return failure();
-    return analyzeLeafLoopBody(*stage.innerLoop.getBody(), stage.leafOps,
-                               stage.store);
-  }
-
-  return analyzeLeafLoopBody(*stage.outerLoop.getBody(), stage.leafOps,
-                             stage.store);
-}
-
-static SmallVector<StageInfo, 8>
-collectStageRunFrom(pto::SimdVecScopeOp firstScope) {
+static SmallVector<StageInfo, 8> collectStageRunFrom(scf::ForOp firstLoop,
+                                                     llvm::raw_ostream *debugOS) {
   SmallVector<StageInfo, 8> stages;
 
   StageInfo firstStage;
-  if (failed(analyzeStage(firstScope, firstStage)))
+  if (failed(analyzeStage(firstLoop, firstStage))) {
+    if (debugOS)
+      *debugOS << "[op-fusion] reject loop stage at " << firstLoop.getLoc()
+               << ": stage analysis failed\n";
     return stages;
+  }
   stages.push_back(std::move(firstStage));
 
   SmallVector<Operation *, 4> pendingSetup;
-  for (Operation *op = firstScope->getNextNode(); op; op = op->getNextNode()) {
-    if (auto nextScope = dyn_cast<pto::SimdVecScopeOp>(op)) {
+  for (Operation *op = firstLoop->getNextNode(); op; op = op->getNextNode()) {
+    if (auto nextLoop = dyn_cast<scf::ForOp>(op)) {
       StageInfo nextStage;
       nextStage.setupOps = pendingSetup;
       pendingSetup.clear();
-      if (failed(analyzeStage(nextScope, nextStage)))
+      if (failed(analyzeStage(nextLoop, nextStage))) {
+        if (debugOS)
+          *debugOS << "[op-fusion] stop stage run before " << nextLoop.getLoc()
+                   << ": next stage analysis failed\n";
         break;
+      }
       stages.push_back(std::move(nextStage));
       continue;
     }
 
-    if (!isInterstageSetupOp(op))
+    if (!isInterstageSetupOp(op)) {
+      if (debugOS)
+        *debugOS << "[op-fusion] stop stage run at op " << op->getName()
+                 << "\n";
       break;
+    }
     pendingSetup.push_back(op);
   }
 
@@ -228,13 +201,11 @@ collectStageRunFrom(pto::SimdVecScopeOp firstScope) {
 }
 
 static bool sameLoopNestShape(const StageInfo &lhs, const StageInfo &rhs) {
-  if (lhs.hasInnerLoop() != rhs.hasInnerLoop())
+  if (lhs.getDepth() != rhs.getDepth())
     return false;
-  if (!sameForHeader(lhs.outerLoop, rhs.outerLoop))
-    return false;
-  if (lhs.hasInnerLoop() && !sameForHeader(lhs.innerLoop, rhs.innerLoop))
-    return false;
-  return true;
+  return llvm::all_of(llvm::zip(lhs.levels, rhs.levels), [](auto pair) {
+    return sameForHeader(std::get<0>(pair).loop, std::get<1>(pair).loop);
+  });
 }
 
 static void cloneOpAndMapResults(OpBuilder &builder, Operation *op,
@@ -245,126 +216,137 @@ static void cloneOpAndMapResults(OpBuilder &builder, Operation *op,
     mapping.map(oldRes, newRes);
 }
 
-static void cloneStageLeafOps(OpBuilder &builder, const StageInfo &stage,
-                              IRMapping &mapping) {
-  for (Operation *op : stage.leafOps) {
-    cloneOpAndMapResults(builder, op, mapping);
-  }
+static void appendMappedValues(ValueRange values, IRMapping &mapping,
+                               SmallVectorImpl<Value> &mappedValues) {
+  for (Value value : values)
+    mappedValues.push_back(mapValueOrSelf(value, mapping));
 }
 
-static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages) {
-  if (stages.size() < 2)
+static scf::ForOp buildFusedLoopNestAtLevel(OpBuilder &builder,
+                                            MutableArrayRef<StageInfo> stages,
+                                            MutableArrayRef<IRMapping> mappings,
+                                            unsigned levelIndex) {
+  scf::ForOp firstLoop = stages.front().levels[levelIndex].loop;
+
+  SmallVector<Value, 8> fusedInitArgs;
+  for (auto [stageIndex, stage] : llvm::enumerate(stages))
+    appendMappedValues(ValueRange(stage.levels[levelIndex].loop.getInitArgs()),
+                       mappings[stageIndex], fusedInitArgs);
+
+  auto fusedLoop = builder.create<scf::ForOp>(
+      firstLoop.getLoc(),
+      mapValueOrSelf(firstLoop.getLowerBound(), mappings.front()),
+      mapValueOrSelf(firstLoop.getUpperBound(), mappings.front()),
+      mapValueOrSelf(firstLoop.getStep(), mappings.front()), fusedInitArgs);
+  fusedLoop->setAttrs(firstLoop->getAttrs());
+
+  unsigned iterArgOffset = 0;
+  for (auto [stageIndex, stage] : llvm::enumerate(stages)) {
+    scf::ForOp originalLoop = stage.levels[levelIndex].loop;
+    mappings[stageIndex].map(originalLoop.getInductionVar(),
+                             fusedLoop.getInductionVar());
+    for (auto [argIndex, originalArg] :
+         llvm::enumerate(originalLoop.getRegionIterArgs()))
+      mappings[stageIndex].map(
+          originalArg, fusedLoop.getRegionIterArgs()[iterArgOffset + argIndex]);
+    iterArgOffset += originalLoop.getRegionIterArgs().size();
+  }
+
+  OpBuilder bodyBuilder = OpBuilder::atBlockBegin(fusedLoop.getBody());
+  for (auto [stageIndex, stage] : llvm::enumerate(stages))
+    for (Operation *op : stage.levels[levelIndex].preludeOps)
+      cloneOpAndMapResults(bodyBuilder, op, mappings[stageIndex]);
+
+  if (levelIndex + 1 < stages.front().getDepth()) {
+    (void)buildFusedLoopNestAtLevel(bodyBuilder, stages, mappings,
+                                    levelIndex + 1);
+  } else {
+    for (auto [stageIndex, stage] : llvm::enumerate(stages))
+      for (Operation *op : stage.leafOps)
+        cloneOpAndMapResults(bodyBuilder, op, mappings[stageIndex]);
+  }
+
+  SmallVector<Value, 8> fusedYieldOperands;
+  for (auto [stageIndex, stage] : llvm::enumerate(stages)) {
+    auto originalYield = cast<scf::YieldOp>(
+        stage.levels[levelIndex].loop.getBody()->getTerminator());
+    appendMappedValues(ValueRange(originalYield.getOperands()),
+                       mappings[stageIndex],
+                       fusedYieldOperands);
+  }
+
+  if (auto fusedYield =
+          dyn_cast<scf::YieldOp>(fusedLoop.getBody()->getTerminator())) {
+    fusedYield->setOperands(fusedYieldOperands);
+  } else {
+    OpBuilder yieldBuilder = OpBuilder::atBlockEnd(fusedLoop.getBody());
+    yieldBuilder.create<scf::YieldOp>(firstLoop.getLoc(), fusedYieldOperands);
+  }
+
+  unsigned resultOffset = 0;
+  for (auto [stageIndex, stage] : llvm::enumerate(stages)) {
+    scf::ForOp originalLoop = stage.levels[levelIndex].loop;
+    for (Value originalResult : originalLoop.getResults())
+      mappings[stageIndex].map(originalResult,
+                               fusedLoop.getResults()[resultOffset++]);
+  }
+
+  return fusedLoop;
+}
+
+static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages,
+                         llvm::raw_ostream *debugOS) {
+  if (stages.size() < 2) {
+    if (debugOS)
+      *debugOS << "[op-fusion] reject loop run: need at least 2 stages, got "
+               << stages.size() << "\n";
     return false;
+  }
 
   StageInfo &first = stages.front();
   for (StageInfo &stage : llvm::drop_begin(stages)) {
-    if (stage.scope->getAttrs() != first.scope->getAttrs())
+    if (!sameLoopNestShape(first, stage)) {
+      if (debugOS)
+        *debugOS << "[op-fusion] reject loop run: loop nest shape mismatch\n";
       return false;
-    if (!sameLoopNestShape(first, stage))
-      return false;
+    }
   }
 
-  OpBuilder blockBuilder(first.scope);
-  auto fusedScope =
-      blockBuilder.create<pto::SimdVecScopeOp>(first.scope.getLoc());
-  fusedScope->setAttrs(first.scope->getAttrs());
+  OpBuilder blockBuilder(first.getOuterLoop());
+  SmallVector<IRMapping, 8> stageMappings(stages.size());
+  auto fusedOuterLoop =
+      buildFusedLoopNestAtLevel(blockBuilder, stages, stageMappings, 0);
 
   for (StageInfo &stage : llvm::drop_begin(stages))
     for (Operation *setupOp : stage.setupOps)
-      setupOp->moveBefore(fusedScope);
-
-  Block *scopeBody = new Block();
-  fusedScope.getBody().push_back(scopeBody);
-  OpBuilder scopeBuilder = OpBuilder::atBlockBegin(scopeBody);
-
-  SmallVector<IRMapping, 8> stageMappings(stages.size());
-  for (auto [index, stage] : llvm::enumerate(stages))
-    for (Operation *op : stage.scopePreludeOps)
-      cloneOpAndMapResults(scopeBuilder, op, stageMappings[index]);
-
-  auto fusedOuterLoop = scopeBuilder.create<scf::ForOp>(
-      first.outerLoop.getLoc(),
-      mapValueOrSelf(first.outerLoop.getLowerBound(), stageMappings.front()),
-      mapValueOrSelf(first.outerLoop.getUpperBound(), stageMappings.front()),
-      mapValueOrSelf(first.outerLoop.getStep(), stageMappings.front()));
-  fusedOuterLoop->setAttrs(first.outerLoop->getAttrs());
-
-  for (auto [index, stage] : llvm::enumerate(stages))
-    stageMappings[index].map(stage.outerLoop.getInductionVar(),
-                             fusedOuterLoop.getInductionVar());
-
-  OpBuilder outerBodyBuilder =
-      OpBuilder::atBlockBegin(fusedOuterLoop.getBody());
-  for (auto [index, stage] : llvm::enumerate(stages))
-    for (Operation *op : stage.outerLoopPreludeOps)
-      cloneOpAndMapResults(outerBodyBuilder, op, stageMappings[index]);
-
-  if (first.hasInnerLoop()) {
-    auto fusedInnerLoop = outerBodyBuilder.create<scf::ForOp>(
-        first.innerLoop.getLoc(),
-        mapValueOrSelf(first.innerLoop.getLowerBound(), stageMappings.front()),
-        mapValueOrSelf(first.innerLoop.getUpperBound(), stageMappings.front()),
-        mapValueOrSelf(first.innerLoop.getStep(), stageMappings.front()));
-    fusedInnerLoop->setAttrs(first.innerLoop->getAttrs());
-
-    for (auto [index, stage] : llvm::enumerate(stages))
-      stageMappings[index].map(stage.innerLoop.getInductionVar(),
-                               fusedInnerLoop.getInductionVar());
-
-    OpBuilder innerBodyBuilder =
-        OpBuilder::atBlockBegin(fusedInnerLoop.getBody());
-    for (auto [index, stage] : llvm::enumerate(stages))
-      cloneStageLeafOps(innerBodyBuilder, stage, stageMappings[index]);
-  } else {
-    for (auto [index, stage] : llvm::enumerate(stages))
-      cloneStageLeafOps(outerBodyBuilder, stage, stageMappings[index]);
-  }
+      setupOp->moveBefore(fusedOuterLoop);
 
   for (StageInfo &stage : llvm::reverse(stages))
-    stage.scope.erase();
+    stage.getOuterLoop().erase();
 
   return true;
 }
 
-static bool fuseStageRunsInBlock(Block &block) {
+static bool fuseStageRunsInBlock(Block &block, llvm::raw_ostream *debugOS) {
   bool changed = false;
   bool localChange = true;
 
   while (localChange) {
     localChange = false;
     for (Operation &op : block) {
-      auto firstScope = dyn_cast<pto::SimdVecScopeOp>(op);
-      if (!firstScope)
+      auto firstLoop = dyn_cast<scf::ForOp>(op);
+      if (!firstLoop)
         continue;
 
-      SmallVector<StageInfo, 8> stages = collectStageRunFrom(firstScope);
-      if (!fuseStageRun(stages))
+      SmallVector<StageInfo, 8> stages =
+          collectStageRunFrom(firstLoop, debugOS);
+      if (!fuseStageRun(stages, debugOS))
         continue;
 
       changed = true;
       localChange = true;
       break;
     }
-  }
-
-  return changed;
-}
-
-static bool fuseStageRunsInRegion(Region &region) {
-  bool changed = false;
-
-  for (Block &block : region.getBlocks()) {
-    SmallVector<Region *, 4> nestedRegions;
-    for (Operation &op : block)
-      for (Region &nested : op.getRegions())
-        nestedRegions.push_back(&nested);
-
-    for (Region *nested : nestedRegions)
-      if (fuseStageRunsInRegion(*nested))
-        changed = true;
-
-    if (fuseStageRunsInBlock(block))
-      changed = true;
   }
 
   return changed;
@@ -387,7 +369,12 @@ struct PTOLowLevelLoopFusionPass
       if (func.empty())
         continue;
 
-      if (fuseStageRunsInRegion(func.getBody()))
+      bool changed = false;
+      func.walk([&](pto::FusionRegionOp fusionRegion) {
+        changed |= fuseStageRunsInBlock(fusionRegion.getBody().front(),
+                                        debug ? &llvm::errs() : nullptr);
+      });
+      if (changed)
         ++fusedFuncs;
     }
 

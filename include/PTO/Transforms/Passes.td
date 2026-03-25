@@ -246,10 +246,14 @@ def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
 
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
-      "Fuse adjacent low-level loop nests in synthesized fused functions";
+      "Fuse adjacent A5VM post-lowering loop nests inside pto.fusion_region";
   let description = [{
-    Conservatively fuses adjacent canonical pto.simd.vec_scope stages in
-    synthesized fused helpers and keeps unsupported shapes unchanged.
+    Conservatively fuses adjacent post-lowering loop stages for already-planned
+    fusion groups after PTOToA5VM. The formal input contract for this pass is
+    low-level `scf.for + a5vm.*` structure that remains inside
+    `pto.fusion_region` until explicit flatten.
+    Legacy `pto.simd.vec_scope` / `vector.masked_*` bridge IR is no longer the
+    documented mainline contract for the A5 backend pipeline.
   }];
   let constructor = "mlir::pto::createPTOLowLevelLoopFusionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
@@ -291,6 +295,13 @@ def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
 
 def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
   let summary = "Lower PTO tile ops to A5VM backend ops";
+  let description = [{
+    Lowers PTO tile ops to A5VM backend ops. For already-planned fusion groups,
+    the pass rewrites the `pto.fusion_region` body in place and preserves the
+    wrapper until explicit flatten. Residual non-fused PTO ops may continue to
+    be lowered directly in their parent block and are not wrapped into
+    synthetic `pto.fusion_region` containers solely for backend lowering.
+  }];
   let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
   let dependentDialects = [
     "pto::PTODialect",

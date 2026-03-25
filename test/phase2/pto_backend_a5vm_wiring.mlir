@@ -1,4 +1,5 @@
 // RUN: ./build/tools/ptoas/ptoas --pto-backend=a5vm --a5vm-print-ir %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ./build/tools/ptoas/ptoas --pto-arch=a5 --pto-backend=emitc %s -o - 2>/dev/null | FileCheck %s --check-prefix=EMITC
 
 // CHECK: A5VM IR op: a5vm.copy_gm_to_ubuf
 // CHECK: A5VM IR op: a5vm.copy_ubuf_to_gm
@@ -9,6 +10,13 @@
 // CHECK: a5vm.vsts
 // CHECK: a5vm.copy_ubuf_to_gm
 // CHECK-NOT: emitc.call_opaque
+
+// EMITC: #include "pto/pto-inst.hpp"
+// EMITC-LABEL: __global__ AICORE void pto_backend_a5vm_wiring(
+// EMITC: TLOAD(
+// EMITC: TABS(
+// EMITC: TSTORE(
+
 module {
   func.func @pto_backend_a5vm_wiring(%src: !pto.ptr<f32>, %dst: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
