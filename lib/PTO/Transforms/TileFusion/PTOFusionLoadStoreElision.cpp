@@ -1,17 +1,17 @@
+#include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir {
 namespace pto {
@@ -25,7 +25,7 @@ using namespace mlir;
 namespace {
 
 struct TrackedStore {
-  vector::MaskedStoreOp op;
+  Operation *op = nullptr;
   Value base;
   SmallVector<Value, 2> indices;
   Value mask;
@@ -40,6 +40,8 @@ struct FusionRegionStoreContext {
 };
 
 static bool areEquivalentValues(Value lhs, Value rhs);
+static constexpr llvm::StringLiteral kAIVLoopScopeAttrName =
+    "llvm.loop.aivector_scope";
 
 static bool areEquivalentValueRanges(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
   return lhs.size() == rhs.size() &&
@@ -97,14 +99,7 @@ static bool areEquivalentValues(Value lhs, Value rhs) {
 }
 
 static bool areEquivalentMaskValues(Value lhs, Value rhs) {
-  if (areEquivalentValues(lhs, rhs))
-    return true;
-  auto lhsMask = lhs.getDefiningOp<vector::ConstantMaskOp>();
-  auto rhsMask = rhs.getDefiningOp<vector::ConstantMaskOp>();
-  if (!lhsMask || !rhsMask)
-    return false;
-  return lhs.getType() == rhs.getType() &&
-         lhsMask.getMaskDimSizesAttr() == rhsMask.getMaskDimSizesAttr();
+  return areEquivalentValues(lhs, rhs);
 }
 
 static bool isPureNoRegionOp(Operation *op) {
@@ -112,7 +107,7 @@ static bool isPureNoRegionOp(Operation *op) {
 }
 
 static bool isSupportedLeafOp(Operation *op) {
-  if (isa<vector::MaskedLoadOp, vector::MaskedStoreOp>(op))
+  if (isa<a5vm::VldsOp, a5vm::VstsOp>(op))
     return true;
   return isPureNoRegionOp(op);
 }
@@ -123,10 +118,6 @@ static Value getCanonicalTrackedValue(Value value) {
     if (!def)
       break;
 
-    if (auto bridge = dyn_cast<pto::SimdTileToMemrefOp>(def)) {
-      value = bridge.getSrc();
-      continue;
-    }
     if (auto cast = dyn_cast<memref::CastOp>(def)) {
       value = cast.getSource();
       continue;
@@ -188,28 +179,17 @@ buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
   return context;
 }
 
-static Block *getLeafLoopBody(pto::SimdVecScopeOp scope) {
-  Block &scopeBody = scope.getBody().front();
-  bool seenOuterLoop = false;
-  scf::ForOp outerLoop;
-  for (Operation &op : scopeBody) {
-    if (auto loop = dyn_cast<scf::ForOp>(op)) {
-      if (seenOuterLoop)
-        return nullptr;
-      seenOuterLoop = true;
-      outerLoop = loop;
-      continue;
-    }
-    if (seenOuterLoop || !isPureNoRegionOp(&op))
-      return nullptr;
-  }
+static bool isAIVectorScopeCarrierLoop(scf::ForOp loop) {
+  return loop && loop->hasAttr(kAIVLoopScopeAttrName);
+}
 
-  if (!outerLoop || !outerLoop.getInitArgs().empty())
+static Block *getLeafLoopBody(scf::ForOp carrierLoop) {
+  if (!isAIVectorScopeCarrierLoop(carrierLoop))
     return nullptr;
 
   bool seenInnerLoop = false;
   scf::ForOp innerLoop;
-  for (Operation &op : outerLoop.getBody()->without_terminator()) {
+  for (Operation &op : carrierLoop.getBody()->without_terminator()) {
     if (auto loop = dyn_cast<scf::ForOp>(op)) {
       if (seenInnerLoop)
         return nullptr;
@@ -221,8 +201,8 @@ static Block *getLeafLoopBody(pto::SimdVecScopeOp scope) {
       return nullptr;
   }
 
-  Block *leafBody = innerLoop ? innerLoop.getBody() : outerLoop.getBody();
-  if ((innerLoop && !innerLoop.getInitArgs().empty()) || !leafBody)
+  Block *leafBody = innerLoop ? innerLoop.getBody() : carrierLoop.getBody();
+  if (!leafBody)
     return nullptr;
 
   for (Operation &op : leafBody->without_terminator())
@@ -230,6 +210,34 @@ static Block *getLeafLoopBody(pto::SimdVecScopeOp scope) {
       return nullptr;
 
   return leafBody;
+}
+
+static Value inferA5VMLoadUserMask(a5vm::VldsOp load) {
+  Value inferredMask;
+  for (OpOperand &use : load.getResult().getUses()) {
+    Operation *owner = use.getOwner();
+    if (!owner || owner->getNumRegions() != 0)
+      return Value();
+
+    Value ownerMask;
+    for (Value operand : owner->getOperands()) {
+      if (!isa<a5vm::MaskType>(operand.getType()))
+        continue;
+      if (!ownerMask)
+        ownerMask = operand;
+      else if (!areEquivalentMaskValues(ownerMask, operand))
+        return Value();
+    }
+
+    if (!ownerMask)
+      return Value();
+
+    if (!inferredMask)
+      inferredMask = ownerMask;
+    else if (!areEquivalentMaskValues(inferredMask, ownerMask))
+      return Value();
+  }
+  return inferredMask;
 }
 
 static int findTrackedStoreIndex(ArrayRef<TrackedStore> stores, Value base,
@@ -243,6 +251,17 @@ static int findTrackedStoreIndex(ArrayRef<TrackedStore> stores, Value base,
     }
   }
   return -1;
+}
+
+static void pruneTrackedStoresForLoadBase(SmallVectorImpl<TrackedStore> &stores,
+                                          Value base) {
+  if (!base) {
+    stores.clear();
+    return;
+  }
+  llvm::erase_if(stores, [&](const TrackedStore &store) {
+    return areEquivalentValues(store.base, base);
+  });
 }
 
 static bool shouldElideTailStore(const TrackedStore &store,
@@ -259,12 +278,12 @@ static bool shouldElideTailStore(const TrackedStore &store,
   for (OpOperand &use : canonicalBase.getUses()) {
     Operation *owner = use.getOwner();
     if (context.regionOp->isProperAncestor(owner)) {
-      // Uses nested under the current vec_scope are fine: erasing the tail store
-      // only affects memory materialization, while SSA users still observe the
-      // forwarded vector value. A later top-level op in the same fusion region
-      // may still require the buffer to stay materialized, so keep the store.
-      Operation *topLevelUser =
-          getTopLevelAncestorInBlock(owner, context.body);
+      // Uses nested under the current carrier loop are fine: erasing the tail
+      // store only affects memory materialization, while SSA users still
+      // observe the forwarded vector value. A later top-level op in the same
+      // fusion region may still require the buffer to stay materialized, so
+      // keep the store.
+      Operation *topLevelUser = getTopLevelAncestorInBlock(owner, context.body);
       if (!topLevelUser)
         return false;
       if (topLevelUser == scopeOp)
@@ -288,10 +307,8 @@ static bool shouldElideTailStore(const TrackedStore &store,
   return true;
 }
 
-static bool
-elideLoadStoreRoundTripsInLeafBody(Block &body,
-                                   const FusionRegionStoreContext *context,
-                                   Operation *scopeOp) {
+static bool elideLoadStoreRoundTripsInLeafBody(
+    Block &body, const FusionRegionStoreContext *context, Operation *scopeOp) {
   SmallVector<Operation *, 8> eraseOrder;
   llvm::SmallPtrSet<Operation *, 8> scheduledForErase;
   SmallVector<TrackedStore, 8> trackedStores;
@@ -303,24 +320,38 @@ elideLoadStoreRoundTripsInLeafBody(Block &body,
   };
 
   for (Operation &op : body.without_terminator()) {
-    if (auto load = dyn_cast<vector::MaskedLoadOp>(op)) {
-      SmallVector<Value, 4> loadIndices(load.getIndices().begin(),
-                                        load.getIndices().end());
-      int matchIndex = findTrackedStoreIndex(trackedStores, load.getBase(),
-                                             loadIndices, load.getMask());
+    if (auto load = dyn_cast<a5vm::VldsOp>(op)) {
+      Value inferredMask = inferA5VMLoadUserMask(load);
+      if (!inferredMask) {
+        // A5VM vlds does not carry an explicit predicate operand. If use-side
+        // mask information is not uniquely recoverable, keep behavior
+        // conservative by dropping only potentially aliasing tracked stores.
+        pruneTrackedStoresForLoadBase(trackedStores, load.getSource());
+        continue;
+      }
+
+      Value base = load.getSource();
+      Value offset = load.getOffset();
+      SmallVector<Value, 4> loadIndices{offset};
+      int matchIndex =
+          findTrackedStoreIndex(trackedStores, base, loadIndices, inferredMask);
       if (matchIndex >= 0) {
         load.getResult().replaceAllUsesWith(trackedStores[matchIndex].value);
         scheduleErase(load);
         changed = true;
+      } else {
+        pruneTrackedStoresForLoadBase(trackedStores, base);
       }
       continue;
     }
 
-    if (auto store = dyn_cast<vector::MaskedStoreOp>(op)) {
-      SmallVector<Value, 4> storeIndices(store.getIndices().begin(),
-                                         store.getIndices().end());
-      int matchIndex = findTrackedStoreIndex(trackedStores, store.getBase(),
-                                             storeIndices, store.getMask());
+    if (auto store = dyn_cast<a5vm::VstsOp>(op)) {
+      Value base = store.getDestination();
+      Value offset = store.getOffset();
+      Value mask = store.getMask();
+      SmallVector<Value, 4> storeIndices{offset};
+      int matchIndex =
+          findTrackedStoreIndex(trackedStores, base, storeIndices, mask);
       if (matchIndex >= 0) {
         scheduleErase(trackedStores[matchIndex].op);
         trackedStores.erase(trackedStores.begin() + matchIndex);
@@ -328,12 +359,11 @@ elideLoadStoreRoundTripsInLeafBody(Block &body,
       }
 
       trackedStores.push_back(TrackedStore{
-          store,
-          store.getBase(),
-          SmallVector<Value, 2>(store.getIndices().begin(),
-                                store.getIndices().end()),
-          store.getMask(),
-          store.getValueToStore(),
+          store.getOperation(),
+          base,
+          SmallVector<Value, 2>{offset},
+          mask,
+          store.getValue(),
       });
       continue;
     }
@@ -373,26 +403,30 @@ struct PTOFusionLoadStoreElisionPass
           buildFusionRegionStoreContext(fusionRegion);
       if (!context)
         return;
-      regionContexts.try_emplace(fusionRegion.getOperation(), std::move(*context));
+      regionContexts.try_emplace(fusionRegion.getOperation(),
+                                 std::move(*context));
     });
 
-    func.walk([&](pto::SimdVecScopeOp scope) {
-      Block *leafBody = getLeafLoopBody(scope);
-      if (!leafBody)
+    auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
+                                     pto::FusionRegionOp fusionRegion) {
+      if (!leafBody || !fusionRegion)
         return;
 
-      const FusionRegionStoreContext *context = nullptr;
-      Operation *scopeOp = nullptr;
-      if (auto fusionRegion = scope->getParentOfType<pto::FusionRegionOp>()) {
-        auto it = regionContexts.find(fusionRegion.getOperation());
-        if (it != regionContexts.end() &&
-            scope->getBlock() == &fusionRegion.getBody().front()) {
-          context = &it->second;
-          scopeOp = scope.getOperation();
-        }
-      }
+      auto it = regionContexts.find(fusionRegion.getOperation());
+      if (it == regionContexts.end())
+        return;
 
-      (void)elideLoadStoreRoundTripsInLeafBody(*leafBody, context, scopeOp);
+      if (scopeOp->getBlock() != &fusionRegion.getBody().front())
+        return;
+
+      (void)elideLoadStoreRoundTripsInLeafBody(*leafBody, &it->second, scopeOp);
+    };
+
+    func.walk([&](scf::ForOp loop) {
+      if (!isAIVectorScopeCarrierLoop(loop))
+        return;
+      runElisionForLeafBody(getLeafLoopBody(loop), loop.getOperation(),
+                            loop->getParentOfType<pto::FusionRegionOp>());
     });
   }
 };

@@ -686,6 +686,7 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addPass(createCSEPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFusionLoadStoreElisionPass());
     pm.addNestedPass<mlir::func::FuncOp>(

@@ -268,17 +268,18 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
 def PTOFusionLoadStoreElision
     : Pass<"pto-fusion-load-store-elision", "func::FuncOp"> {
   let summary =
-      "Elide fusion-local vector load/store round trips before flattening";
+      "Elide fusion-local A5VM load/store round trips before flattening";
   let description = [{
-    Removes local vector.maskedstore -> vector.maskedload round trips inside
-    canonical fused pto.simd.vec_scope loop nests and centralizes load/store
-    cleanup outside PTOLowLevelLoopFusion so later frontier-aware store
-    elimination can extend the same pass boundary.
+    Removes local store materialization inside canonical fused loop bodies before
+    explicit flatten. The formal input contract is A5VM post-lowering
+    `scf.for + a5vm.*` (carrier loop marked with `llvm.loop.aivector_scope`).
+    It also performs conservative frontier-aware tail-store cleanup for
+    non-escaping fusion-region internal buffers.
   }];
   let constructor = "mlir::pto::createPTOFusionLoadStoreElisionPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
                            "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
-                           "mlir::vector::VectorDialect"];
+                           "mlir::a5vm::A5VMDialect"];
 }
 
 def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
