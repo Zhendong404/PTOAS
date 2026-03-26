@@ -181,10 +181,6 @@ pto.mem_bar "VLD_VST"     // All prior vector loads complete before subsequent s
 
 Without proper barriers, loads may see stale data or stores may be reordered incorrectly.
 
-#### Predication Model
-
-Vector compute and load/store instructions support **predicated execution** via `!pto.mask`. See the [`!pto.mask` special type](#ptomark) for detailed semantics and the default zero-merge behavior.
-
 #### Execution Scopes (__VEC_SCOPE__)
 
 `__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF)
