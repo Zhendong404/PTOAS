@@ -115,6 +115,7 @@ for inc in "${BISHENG_SYSTEM_INCLUDES[@]}"; do
 done
 
 mkdir -p "${WORK_SPACE}"
+WORK_SPACE="$(cd "${WORK_SPACE}" && pwd)"
 
 discover_cases() {
   if [[ -n "${CASE_NAME}" ]]; then
