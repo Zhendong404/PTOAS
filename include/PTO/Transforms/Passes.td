@@ -265,6 +265,21 @@ def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
       "Enable verbose debug logging for low-level loop fusion">];
 }
 
+def PTOFusionPredicateElision
+    : Pass<"pto-fusion-predicate-elision", "func::FuncOp"> {
+  let summary =
+      "Elide redundant fusion-local A5VM plt predicate materialization";
+  let description = [{
+    Scans `pto.fusion_region` bodies after the A5VM post-lowering CSE step and
+    prepares fusion-local redundant `a5vm.plt_*` predicate elimination before
+    load/store cleanup and explicit flatten.
+  }];
+  let constructor = "mlir::pto::createPTOFusionPredicateElisionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
+                           "mlir::a5vm::A5VMDialect"];
+}
+
 def PTOFusionLoadStoreElision
     : Pass<"pto-fusion-load-store-elision", "func::FuncOp"> {
   let summary =
