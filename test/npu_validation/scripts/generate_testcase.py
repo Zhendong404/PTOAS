@@ -306,6 +306,15 @@ def _parse_kernel_name(text: str) -> str:
     return match.group(1) if match else "kernel"
 
 
+def _ensure_extern_c_kernel_definition(text: str, kernel_name: str) -> str:
+    pattern = re.compile(
+        rf'(^|\n)([ \t]*)(?!extern\s+"C"\s+)'
+        rf'(__global__\s+(?:\w+\s+)*void\s+{re.escape(kernel_name)}\s*\()',
+        re.S,
+    )
+    return pattern.sub(r'\1\2extern "C" \3', text, count=1)
+
+
 def _np_dtype_for_cpp(cpp_type: str) -> str:
     mapping = {
         "float": "np.float32",
@@ -331,6 +340,25 @@ def _cpp_host_type(cpp_type: str) -> str:
     if cpp_type in {"__bf16", "bfloat16_t"}:
         return "uint16_t"
     return cpp_type
+
+
+def _cpp_type_num_bytes(cpp_type: str) -> Optional[int]:
+    mapping = {
+        "float": 4,
+        "half": 2,
+        "aclFloat16": 2,
+        "__bf16": 2,
+        "bfloat16_t": 2,
+        "int8_t": 1,
+        "uint8_t": 1,
+        "int16_t": 2,
+        "uint16_t": 2,
+        "int32_t": 4,
+        "uint32_t": 4,
+        "int64_t": 8,
+        "uint64_t": 8,
+    }
+    return mapping.get(cpp_type)
 
 
 def _rewrite_host_unsupported_types(text: str) -> str:
@@ -1527,10 +1555,13 @@ def generate_testcase(
             "    # __INPUT_GENERATE_PLACEHOLDER__", "\n".join(input_generate)
         ).replace("@INPUT_GENERATE@", "\n".join(input_generate))
         (output_dir / "golden.py").write_text(golden_py, encoding="utf-8")
+    shutil.copyfile(templates_root.parent / "common" / "test_common.h", output_dir / "test_common.h")
 
     # Emit the kernel source, optionally injecting a packed-predicate preload to
     # make TCMP/TCMPS outputs deterministic for byte-wise compares.
-    kernel_text_out = raw_kernel_for_analysis
+    kernel_text_out = _ensure_extern_c_kernel_definition(
+        raw_kernel_for_analysis, kernel_name
+    )
     if has_packed_pred_mask and output_ptrs:
         # Only handle the common packed-mask case (u8 output).
         mask_out = next((p for p in output_ptrs if p["cpp_type"] == "uint8_t"), None)
@@ -1569,9 +1600,9 @@ def generate_testcase(
     launch_cpp = (
         INCLUDE_REPLACEMENT + "\n"
         "#if defined(__CCE_AICORE__)\n"
-        f"__global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
+        f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params)});\n"
         "#else\n"
-        f"__global__ AICORE void {kernel_name}({', '.join(raw_params_host)});\n"
+        f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params_host)});\n"
         "#endif\n\n"
         f"void {launch_name}({launch_fn_params}) {{\n"
         "#if defined(__CCE_AICORE__)\n"
@@ -1635,7 +1666,7 @@ if(NOT PTO_ISA_ROOT)
         "${{CMAKE_CURRENT_LIST_DIR}}/../../../../../../pto-isa"
     )
     foreach(_cand IN LISTS _PTO_ISA_CANDIDATES)
-        if(EXISTS "${{_cand}}/include" AND EXISTS "${{_cand}}/tests/common")
+        if(EXISTS "${{_cand}}/include")
             set(PTO_ISA_ROOT "${{_cand}}" CACHE PATH "Path to pto-isa repo" FORCE)
             break()
         endif()
@@ -1683,7 +1714,6 @@ set(CMAKE_CPP_COMPILE_OPTIONS
 
 include_directories(
     ${{PTO_ISA_ROOT}}/include
-    ${{PTO_ISA_ROOT}}/tests/common
     ${{ASCEND_HOME_PATH}}/include
     ${{ASCEND_DRIVER_PATH}}/kernel/inc
 )
@@ -1700,6 +1730,7 @@ target_link_options({testcase}_kernel PRIVATE --cce-fatobj-link)
 add_executable({testcase} main.cpp)
 target_compile_options({testcase} PRIVATE ${{CMAKE_CPP_COMPILE_OPTIONS}})
 target_include_directories({testcase} PRIVATE
+    ${{CMAKE_CURRENT_SOURCE_DIR}}
     ${{PTO_ISA_ROOT}}/include
     ${{PTO_ISA_ROOT}}/tests/common
 {runtime_host_include_dirs})
@@ -1719,6 +1750,7 @@ if(ENABLE_SIM_GOLDEN)
     add_executable({testcase}_sim main.cpp)
     target_compile_options({testcase}_sim PRIVATE ${{CMAKE_CPP_COMPILE_OPTIONS}})
     target_include_directories({testcase}_sim PRIVATE
+        ${{CMAKE_CURRENT_SOURCE_DIR}}
         ${{PTO_ISA_ROOT}}/include
         ${{PTO_ISA_ROOT}}/tests/common
 {runtime_host_include_dirs})
@@ -1748,6 +1780,15 @@ endif()
         )
         compare_lines = ["    ok = True"]
         compare_prefix_counts = {}
+        packed_pred_src_elem_bytes = None
+        if has_packed_pred_mask:
+            for p in init_ptrs:
+                if p.get("role") == "output":
+                    continue
+                src_bytes = _cpp_type_num_bytes(p["cpp_type"])
+                if src_bytes in (1, 2, 4):
+                    packed_pred_src_elem_bytes = src_bytes
+                    break
         for p in output_ptrs:
             name = p["name"]
             req = inferred_counts.get(name)
@@ -1767,8 +1808,14 @@ endif()
             name = p["name"]
             eps = _default_eps_for_cpp_type(p["cpp_type"])
             if has_packed_pred_mask and p["cpp_type"] in {"uint8_t", "int8_t"}:
+                if packed_pred_src_elem_bytes is None:
+                    raise RuntimeError(
+                        "failed to infer TCMP/TCMPS source element width for packed mask compare"
+                    )
                 compare_lines.append(
-                    f'    ok = compare_packed_pred_mask("golden_{name}.bin", "{name}.bin", {rows}, {cols}) and ok'
+                    f"    ok = compare_packed_pred_mask("
+                    f"\"golden_{name}.bin\", \"{name}.bin\", {logical_elem_count}, "
+                    f"{packed_pred_src_elem_bytes}) and ok"
                 )
             else:
                 prefix_cnt = compare_prefix_counts.get(name)

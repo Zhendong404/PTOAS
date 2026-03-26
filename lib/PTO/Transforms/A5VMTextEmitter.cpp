@@ -860,6 +860,25 @@ private:
       appendArg(offsetBytes);
       appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
       appendArg(llvm::ConstantInt::get(getIntegerType(32), 0));
+    } else if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
+      if (rawOperands.size() != 2) {
+        diagOS << "A5VM emission failed: expected two operands for vlds_post\n";
+        return failure();
+      }
+      llvm::Value *offsetBytes =
+          convertElementOffsetToBytes(rawOperands[1],
+                                      cast<a5vm::VecType>(vldsPost.getResult().getType())
+                                          .getElementType());
+      auto distImm =
+          parseLoadDistImmediate(vldsPost.getDistAttr() ? *vldsPost.getDist() : "NORM");
+      if (!offsetBytes || !distImm) {
+        diagOS << "A5VM emission failed: could not encode vlds_post offset/dist\n";
+        return failure();
+      }
+      appendArg(rawOperands[0]);
+      appendArg(offsetBytes);
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), 1));
     } else if (auto vsts = dyn_cast<a5vm::VstsOp>(op)) {
       if (rawOperands.size() != 4) {
         diagOS << "A5VM emission failed: expected four operands for vsts\n";
@@ -887,6 +906,28 @@ private:
       appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
       appendArg(llvm::ConstantInt::get(getIntegerType(32), 0));
       appendArg(rawOperands[3]);
+    } else if (auto vstsPost = dyn_cast<a5vm::VstsPostOp>(op)) {
+      if (rawOperands.size() != 4) {
+        diagOS << "A5VM emission failed: expected four operands for vsts_post\n";
+        return failure();
+      }
+      llvm::Value *offsetBytes =
+          convertElementOffsetToBytes(rawOperands[2],
+                                      cast<a5vm::VecType>(vstsPost.getValue().getType())
+                                          .getElementType());
+      auto distImm = parseStoreDistImmediate(
+          vstsPost.getValue().getType(),
+          vstsPost.getDistAttr() ? *vstsPost.getDist() : "");
+      if (!offsetBytes || !distImm) {
+        diagOS << "A5VM emission failed: could not encode vsts_post offset/dist\n";
+        return failure();
+      }
+      appendArg(rawOperands[0]);
+      appendArg(rawOperands[1]);
+      appendArg(offsetBytes);
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), *distImm));
+      appendArg(llvm::ConstantInt::get(getIntegerType(32), 1));
+      appendArg(rawOperands[3]);
     } else {
       for (llvm::Value *operand : rawOperands)
         appendArg(operand);
@@ -903,7 +944,7 @@ private:
     bool skipGenericAttrs =
         isa<a5vm::CopyGmToUbufOp, a5vm::CopyUbufToGmOp, a5vm::SetFlagOp,
             a5vm::WaitFlagOp, a5vm::PipeBarrierOp, a5vm::PltB32Op,
-            a5vm::VldsOp, a5vm::VstsOp>(op);
+            a5vm::VldsOp, a5vm::VldsPostOp, a5vm::VstsOp, a5vm::VstsPostOp>(op);
     for (NamedAttribute attr : op->getAttrs()) {
       if (skipGenericAttrs)
         continue;
@@ -922,6 +963,15 @@ private:
         return failure();
       }
       resultType = llvm::StructType::get(llvmContext, {maskType, scalarOutType});
+    } else if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
+      llvm::Type *vecType = convertType(vldsPost.getResult().getType());
+      llvm::Type *ptrType = convertType(vldsPost.getUpdatedSource().getType());
+      if (!vecType || !ptrType) {
+        diagOS << "A5VM emission failed: unsupported result type for "
+               << op->getName().getStringRef() << "\n";
+        return failure();
+      }
+      resultType = llvm::StructType::get(llvmContext, {vecType, ptrType});
     } else if (op->getNumResults() == 1) {
       resultType = convertType(op->getResult(0).getType());
       if (!resultType) {
@@ -944,6 +994,9 @@ private:
     if (auto plt = dyn_cast<a5vm::PltB32Op>(op)) {
       bind(plt.getMask(), builder.CreateExtractValue(call, {0}));
       bind(plt.getScalarOut(), builder.CreateExtractValue(call, {1}));
+    } else if (auto vldsPost = dyn_cast<a5vm::VldsPostOp>(op)) {
+      bind(vldsPost.getResult(), builder.CreateExtractValue(call, {0}));
+      bind(vldsPost.getUpdatedSource(), builder.CreateExtractValue(call, {1}));
     } else if (op->getNumResults() == 1) {
       bind(op->getResult(0), call);
     }

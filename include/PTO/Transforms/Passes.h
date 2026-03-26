@@ -85,6 +85,7 @@ std::unique_ptr<Pass> createPTOFusionPredicateElisionPass();
 std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createLowerPTOToA5VMPass();
+std::unique_ptr<Pass> createLowerPTOToA5VMPass(StringRef loweringStrategy);
 // Declare register function
 void registerPTOPasses();
 

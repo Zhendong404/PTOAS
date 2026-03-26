@@ -69,6 +69,15 @@ ninja -C build
 ninja -C build install
 ```
 
+## A5 Semantic Source Of Truth
+- 修改 A5 lowering、LLVM emission、sample 语义或 validation oracle 时，先查看 `ASCEND_HOME_PATH` 下已安装的 PTO 实现，把它当作语义基线。
+- 不要仅根据仓库内 lowering / emitter 代码反推 A5 语义；只有在已安装 PTO 头文件和真实工具链产物都确认一致时，才允许替换 intrinsic / wrapper 关系。
+- 如果头文件信息不够，优先通过当前 Bisheng 工具链结合 testcase 构建参数、`-v`、`-save-temps` 等方式追踪真实产物，再改行为。
+
+## Commit & Pull Request Guidelines
+- commit subject 使用简短祈使句，例如 `Fix explicit StringAttr bool conversion`。
+- 单个 commit 保持一个清晰主题。PR 描述要写清受影响 lowering 路径、实际跑过的验证命令、新增通过或有意延期的 sample，以及必要的 IR / 输出片段。
+
 - 常用二进制位置：
   - `build/tools/ptoas/ptoas`
   - `build/tools/ptobc/ptobc`

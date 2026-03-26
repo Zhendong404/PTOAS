@@ -12,18 +12,18 @@ cd "${ROOT_DIR}"
 
 # Best-effort resolve PTO_ISA_ROOT for generated CMakeLists.txt.
 if [[ -z "${PTO_ISA_ROOT:-}" ]]; then
-	search_dir="${ROOT_DIR}"
-	for _ in {1..8}; do
-		if [[ -d "${search_dir}/pto-isa/include" && -d "${search_dir}/pto-isa/tests/common" ]]; then
-			PTO_ISA_ROOT="${search_dir}/pto-isa"
-			break
-		fi
-		if [[ "${search_dir}" == "/" ]]; then
-			break
-		fi
-		search_dir="$(dirname "${search_dir}")"
-	done
-	export PTO_ISA_ROOT="${PTO_ISA_ROOT:-}"
+  search_dir="${ROOT_DIR}"
+  for _ in {1..8}; do
+    if [[ -d "${search_dir}/pto-isa/include" ]]; then
+      PTO_ISA_ROOT="${search_dir}/pto-isa"
+      break
+    fi
+    if [[ "${search_dir}" == "/" ]]; then
+      break
+    fi
+    search_dir="$(dirname "${search_dir}")"
+  done
+  export PTO_ISA_ROOT="${PTO_ISA_ROOT:-}"
 fi
 
 # Best-effort load Ascend/CANN environment (toolchains + runtime). Be careful with set -euo pipefail.

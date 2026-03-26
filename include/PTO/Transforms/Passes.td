@@ -319,6 +319,11 @@ def PTOToA5VM : Pass<"pto-to-a5vm", "ModuleOp"> {
     synthetic `pto.fusion_region` containers solely for backend lowering.
   }];
   let constructor = "mlir::pto::createLowerPTOToA5VMPass()";
+  let options = [
+    Option<"a5vmLoweringStrategy", "a5vm-lowering-strategy", "std::string",
+           "\"post-update\"",
+           "vector lowering strategy: post-update or no-post-update">
+  ];
   let dependentDialects = [
     "pto::PTODialect",
     "a5vm::A5VMDialect",

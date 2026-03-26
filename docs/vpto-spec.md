@@ -1,107 +1,49 @@
-# VPTO Spec
+# VPTO Spec — Merged Draft (A5)
 
 Updated: 2026-03-26
 
-## Table Of Contents
+> **Status:** DRAFT for review
+> **Base:** [vpto-spec.md](https://github.com/mouliangyu/PTOAS/blob/feature-vpto-backend/docs/vpto-spec.md) (2026-03-20)
+> **Additions from:** [a5_intrinsic_ir.md](../a5_intrinsic/a5_intrinsic_ir.md) v3.2 (2026-03-21)
+> **Updated:** 2026-03-24
 
-- [Overview](#overview)
-- [Getting Started](#getting-started)
-- [Example: Abs](#example-abs)
-- [Scope](#scope)
-- [Core Types](#core-types)
-- [Address Space Conventions](#address-space-conventions)
-- [Element Type Constraints](#element-type-constraints)
-- [Special Types](#special-types)
-- [Implemented String Constraints](#implemented-string-constraints)
-- [__VEC_SCOPE__](#vec_scope)
-- [Correspondence Categories](#correspondence-categories)
-- [1. Sync And Buffer Control](#1-sync-and-buffer-control)
-- [2. Copy Programming](#2-copy-programming)
-- [3. Copy Transfers](#3-copy-transfers)
-- [4. Vector, Predicate And Align Loads](#4-vector-predicate-and-align-loads)
-- [5. Materialization And Predicate Construction](#5-materialization-and-predicate-construction)
-- [6. Unary Vector Ops](#6-unary-vector-ops)
-- [7. Binary Vector Ops](#7-binary-vector-ops)
-- [8. Vec-Scalar Ops](#8-vec-scalar-ops)
-- [9. Carry, Compare And Select](#9-carry-compare-and-select)
-- [10. Pairing And Interleave](#10-pairing-and-interleave)
-- [11. Conversion, Index And Sort](#11-conversion-index-and-sort)
-- [12. Extended Arithmetic](#12-extended-arithmetic)
-- [13. Stateless Stores](#13-stateless-stores)
-- [14. Stateful Store Ops](#14-stateful-store-ops)
+---
 
-## Overview
+## Part I: Architecture Overview
 
-This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a
-compiler-internal and externally facing specification designed to represent
-vector compute kernels within the PTO architecture. Much like NVVM provides a
-robust IR for GPU architectures, VPTO serves as the direct bridge between
-high-level programming models and the underlying hardware ISA, providing a
-precise, low-level representation of vector workloads explicitly designed for
-the Ascend 950 architecture.
+### Overview
 
-### PTO Vector ISA Background
+This document defines the Vector PTO (VPTO) Intermediate Representation (IR), a compiler-internal and externally facing specification designed to represent vector compute kernels within the PTO architecture. Much like NVVM provides a robust IR for GPU architectures, VPTO serves as the direct bridge between high-level programming models and the underlying hardware ISA, providing a precise, low-level representation of vector workloads explicitly designed for the Ascend 950 architecture.
 
 #### Position in the Stack and Layer Modeled
 
-VPTO operates as a very low-level intermediate representation within the PTO
-compiler stack. It is uniquely designed to accurately and comprehensively
-express all architectural information of the Ascend 950 hardware. It
-specifically models the bare-metal vector execution layer, making
-hardware-specific capabilities and constraints, such as exact vector lane
-configurations, memory space hierarchies, and hardware-specific fusion
-semantics, fully transparent and controllable.
+VPTO operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
 
 #### Why External Developers Read or Author VPTO
 
-While the majority of users will interact with the PTO architecture via
-higher-level frameworks, external developers may need to read or author VPTO IR
-directly for several key reasons:
+While the majority of users will interact with the PTO architecture via higher-level frameworks, external developers may need to read or author VPTO IR directly for several key reasons:
 
-- Custom Toolchain Development:
-  build custom compiler frontends or domain-specific languages (DSLs) that
-  target the Ascend 950 architecture with maximum hardware utilization.
-- Performance Engineering:
-  inspect the output of high-level compiler passes, verify fine-grained
-  optimization behaviors, and pinpoint performance bottlenecks at the
-  architectural level.
-- Micro-Optimization:
-  hand-author highly optimized, critical mathematical kernels using a stable,
-  precise IR when higher-level abstractions cannot achieve the theoretical peak
-  performance of the hardware.
+- Custom Toolchain Development: build custom compiler frontends or domain-specific languages (DSLs) that target the Ascend 950 architecture with maximum hardware utilization.
+- Performance Engineering: inspect the output of high-level compiler passes, verify fine-grained optimization behaviors, and pinpoint performance bottlenecks at the architectural level.
+- Micro-Optimization: hand-author highly optimized, critical mathematical kernels using a stable, precise IR when higher-level abstractions cannot achieve the theoretical peak performance of the hardware.
 
-### Relationship to CCE
+#### Relationship to CCE
 
-VPTO is designed to express the full semantic capabilities of the Compute Cube
-Engine (CCE), but with significant structural and pipeline advantages for
-compiler development.
+VPTO is designed to express the full semantic capabilities of the Compute Cube Engine (CCE), but with significant structural and pipeline advantages for compiler development.
 
-- Bypassing the C/Clang Pipeline:
-  while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates
-  entirely independently of the C language frontend. By bypassing Clang AST
-  generation and frontend processing, utilizing VPTO significantly reduces
-  overall compilation time and memory overhead.
-- Enhanced IR Verification:
-  because VPTO is a strongly typed, SSA-based (Static Single Assignment)
-  compiler IR rather than a C-wrapper API, it provides a much more rigorous and
-  detailed IR verification process. Structural inconsistencies, invalid memory
-  access patterns, and operand type mismatches are caught immediately with
-  precise, explicit diagnostic feedback, providing developers with much higher
-  visibility into kernel correctness than traditional CCE error reporting.
+- Bypassing the C/Clang Pipeline: while CCE heavily relies on C/C++ extensions parsed by Clang, VPTO operates entirely independently of the C language frontend. By bypassing Clang AST generation and frontend processing, utilizing VPTO significantly reduces overall compilation time and memory overhead.
+- Enhanced IR Verification: because VPTO is a strongly typed, SSA-based (Static Single Assignment) compiler IR rather than a C-wrapper API, it provides a much more rigorous and detailed IR verification process. Structural inconsistencies, invalid memory access patterns, and operand type mismatches are caught immediately with precise, explicit diagnostic feedback, providing developers with much higher visibility into kernel correctness than traditional CCE error reporting.
 
-### Intended Audience
+#### Intended Audience
 
-This document is written for compiler engineers, library writers, and advanced
-performance architects. We expect the reader to have a working understanding of
-modern compiler infrastructure, specifically MLIR, the principles of Static
-Single Assignment (SSA) form, and a deep understanding of the vector-processing
-capabilities of the Ascend 950 architecture.
+This document is written for compiler engineers, library writers, and advanced performance architects. We expect the reader to have a working understanding of modern compiler infrastructure, specifically MLIR, the principles of Static Single Assignment (SSA) form, and a deep understanding of the vector-processing capabilities of the Ascend 950 architecture.
 
-## Getting Started
+### Getting Started
 
 The Vector PTO (VPTO) IR is architected as a performance-critical layer within the compiler stack, specifically designed to exploit the **Decoupled Access-Execute** (DAE) nature of the Ascend 950 hardware.
 
-### Hardware Pipeline Modeling
+#### Hardware Pipeline Modeling
+
 The IR is structured to mirror the three primary hardware pipelines of the Ascend 950 architecture. Correct VPTO authoring requires managing the interaction between these asynchronous units:
 
 **MTE2** (Memory Transfer Engine - Inbound): Responsible for moving data from Global Memory (GM) to the Unified Buffer (UB).
@@ -110,22 +52,129 @@ The IR is structured to mirror the three primary hardware pipelines of the Ascen
 
 **MTE3** (Memory Transfer Engine - Outbound): Responsible for moving processed data from UB back to GM.
 
-### Memory and Synchronization Model
+#### Architecture Detail: Vector Lane (VLane)
+
+The vector register is organized as **8 VLanes** of 32 bytes each. A VLane is the atomic unit for group reduction operations.
+
+```
+vreg (256 bytes total):
+┌─────────┬─────────┬─────────┬─────┬─────────┬─────────┐
+│ VLane 0 │ VLane 1 │ VLane 2 │ ... │ VLane 6 │ VLane 7 │
+│   32B   │   32B   │   32B   │     │   32B   │   32B   │
+└─────────┴─────────┴─────────┴─────┴─────────┴─────────┘
+```
+
+Elements per VLane by data type:
+
+| Data Type | Elements/VLane | Total Elements/vreg |
+|-----------|---------------|-------------------|
+| i8/u8 | 32 | 256 |
+| i16/u16/f16/bf16 | 16 | 128 |
+| i32/u32/f32 | 8 | 64 |
+| i64/u64 | 4 | 32 |
+
+#### Memory and Synchronization Model
+
 VPTO enforces a strict memory hierarchy. The Unified Buffer (UB) is the only valid operand source for vector compute instructions. Consequently, the architecture of a VPTO program is defined by the explicit management of data movement:
 
-**Address Space Isolation**: The IR uses LLVM pointer address spaces to distinguish between GM (!llvm.ptr<1>) and UB (!llvm.ptr<6>). The verifier ensures that no compute operation attempts to access GM directly.
+**Address Space Isolation**: The IR uses `!pto.ptr<element-type, space>` to distinguish between GM (`!pto.ptr<T, gm>`) and UB (`!pto.ptr<T, ub>`). The verifier ensures that vector compute operations do not access GM directly; data must first be moved into UB.
 
-**Event-Based Synchronization**: Because the MTE and Vector pipelines operate asynchronously, VPTO utilizes a Flag/Event mechanism. Developers must explicitly insert set_flag and wait_flag operations to resolve Read-After-Write (RAW) and Write-After-Read (WAR) hazards between memory staging and computation.
+**UB Capacity**: The Unified Buffer provides 256KB of on-chip SRAM (also referred to as "vecTile").
 
-### Execution Scopes
-The IR introduces the concept of the **Vector Function** ({llvm.loop.aivector_scope}). This architectural boundary identifies regions of code where the Vector Core's SIMD capabilities are fully engaged. Inside this scope, the IR provides high-granularity control over vector registers (vreg), predicates (mask), and alignment states (align).
+**Data Flow**:
 
-## Example: Abs
+```
+┌─────────────────────────────────────────────┐
+│                 Global Memory (GM)           │
+│              (Off-chip HBM/DDR)              │
+└─────────────────────┬───────────────────────┘
+                      │ DMA (MTE2 inbound / MTE3 outbound)
+┌─────────────────────▼───────────────────────┐
+│              Unified Buffer (UB)             │
+│            (On-chip SRAM, 256KB)             │
+└─────────────────────┬───────────────────────┘
+                      │ Vector Load/Store (PIPE_V)
+┌─────────────────────▼───────────────────────┐
+│           Vector Register File (VRF)         │
+│     vreg (256B each) + mask (256-bit each)   │
+└─────────────────────────────────────────────┘
+```
 
-Example file:
-[build/vpto-doc-abs/Abs/abs-pto.cpp](/data/mouliangyu/projects/github.com/zhangstevenunity/PTOAS/build/vpto-doc-abs/Abs/abs-pto.cpp)
+1. **GM → UB**: DMA transfer via MTE2 (`pto.copy_gm_to_ubuf`)
+2. **UB → vreg**: Vector Load instructions (`pto.vlds`, `pto.vldx2`, etc.)
+3. **vreg → vreg**: Compute instructions (`pto.vadd`, `pto.vmul`, etc.)
+4. **vreg → UB**: Vector Store instructions (`pto.vsts`, `pto.vstx2`, etc.)
+5. **UB → GM**: DMA transfer via MTE3 (`pto.copy_ubuf_to_gm`)
 
-Representative excerpt:
+**Load/Store Access Patterns**:
+
+For UB↔vreg data movement, besides contiguous load/store, the architecture provides rich access pattern support including strided access, pack/unpack, interleave/deinterleave, broadcast, upsample/downsample, channel split/merge, gather/scatter, and squeeze/expand operations. For detailed instruction syntax and distribution modes, refer to the [Vector Load/Store](isa/03-vector-load-store.md) group in the ISA specification.
+
+#### Synchronization Model
+
+The Ascend 950 architecture employs a cluster-based design with a 1:2 ratio of Cube cores to Vector cores. VPTO provides multiple levels of synchronization to manage concurrent execution across pipelines and cores:
+
+**Inter-Core Synchronization (within a cluster):**
+
+Synchronization between cores within the same cluster is achieved via the core sync mechanism using `pto.set_intra_core` and `pto.wait_intra_core` operations. This enables coordination between Cube and Vector cores sharing the same cluster resources.
+
+**Vector Core Pipeline Synchronization:**
+
+Within a single core, multiple pipelines operate asynchronously:
+
+- **MTE2 (PIPE_MTE2)**: DMA copy-in from GM to UB
+- **MTE3 (PIPE_MTE3)**: DMA copy-out from UB to GM
+- **Vector Compute (PIPE_V)**: Vector ALU operations
+- **Scalar (PIPE_S)**: Scalar unit running the kernel program
+
+Pipeline synchronization can be achieved through two mechanisms:
+
+1. **Flag/Event mechanism**: `pto.set_flag` and `pto.wait_flag` operations resolve Read-After-Write (RAW) and Write-After-Read (WAR) hazards between pipelines.
+
+2. **Buffer-ID mechanism**: `pto.get_buf` and `pto.rls_buf` provide finer-grained synchronization through buffer acquisition and release semantics for producer-consumer coordination.
+
+**Intra-Pipeline Memory Barriers (within `__VEC_SCOPE__`):**
+
+Within the vector execution scope, the hardware does not track UB address aliasing between reg↔UB accesses. When UB addresses overlap or alias between vector load/store operations, explicit memory barriers are required:
+
+```c
+pto.mem_bar "VV_ALL"      // All prior vector ops complete before subsequent
+pto.mem_bar "VST_VLD"     // All prior vector stores visible before subsequent loads
+pto.mem_bar "VLD_VST"     // All prior vector loads complete before subsequent stores
+```
+
+Without proper barriers, loads may see stale data or stores may be reordered incorrectly.
+
+#### Execution Scopes (__VEC_SCOPE__)
+
+`__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF) launch. In the PTO architecture, it defines the hardware interface between the Scalar Unit and the Vector Thread.
+
+It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
+
+**Scalar-Vector Interface:**
+
+The execution model follows non-blocking fork semantics:
+
+- Scalar invocation: the scalar processor invokes a vector thread by calling a VF. Once the launch command is issued, the scalar unit does not stall and continues executing subsequent instructions in the pipeline.
+- Vector execution: after invocation, the vector thread independently fetches and executes the instructions defined within the VF scope.
+- Parallelism: this decoupled execution allows the scalar and vector units to run in parallel, so the scalar unit can prepare addresses or manage control flow while the vector unit performs heavy SIMD computation.
+
+**Launch Mechanism And Constraints:**
+
+- Parameter buffering: all arguments required by the VF must be staged in hardware-specific buffers.
+- Launch overhead: launching a VF incurs a latency of a few cycles. Very small VFs should account for this overhead because launch cost can rival useful computation time.
+
+**MLIR Representation:**
+
+```mlir
+scf.for %dummy = %c0 to %c1 step %c1 {
+  %v = pto.vlds %ub[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+  %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+  pto.vsts %abs, %ub_out[%lane] : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
+} {llvm.loop.aivector_scope}
+```
+
+### Example: Abs
 
 ```mlir
 pto.set_loop2_stride_outtoub %c4096_i64, %c4096_i64 : i64, i64
@@ -133,16 +182,16 @@ pto.set_loop1_stride_outtoub %c4096_i64, %c4096_i64 : i64, i64
 pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
 pto.copy_gm_to_ubuf %7, %2, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c0_i64, %c0_i64, %c128_i64, %c128_i64
     {data_select_bit = false, layout = "nd", ub_pad = false}
-    : !llvm.ptr<1>, !llvm.ptr<6>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64
+    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64
 
 pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
 scf.for %dummy = %c0 to %c1 step %c1 {
   scf.for %lane = %c0 to %9 step %c64 {
-    %v = pto.vlds %2[%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
+    %v = pto.vlds %2[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
     %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-    pto.vsts %abs, %8[%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
+    pto.vsts %abs, %8[%lane] : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
   }
 } {llvm.loop.aivector_scope}
 
@@ -153,12 +202,12 @@ pto.set_loop1_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
 pto.set_loop2_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
 pto.copy_ubuf_to_gm %8, %14, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c128_i64, %c128_i64
     {layout = "nd"}
-    : !llvm.ptr<6>, !llvm.ptr<1>, i64, i64, i64, i64, i64, i64, i64, i64
+    : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64
 ```
 
-## Scope
+### Scope
 
-This document is the interface specification for the `mlir::pto` dialect.
+This document is the interface specification centered on the `mlir::pto` dialect and the shared MLIR surface used alongside it in VPTO programs.
 
 It only describes:
 
@@ -166,11 +215,11 @@ It only describes:
 - operand and result lists
 - operand and result types
 - important attributes
-- corresponding CCE builtin or CCE wrapper family
+- C-style semantics for each operation
 
 It does not describe lowering strategy.
 
-## Core Types
+VPTO source programs are not restricted to `pto` operations alone. In practice they also use shared MLIR dialect ops, most notably the full scalar operation surface of `arith` together with structured control-flow ops from `scf`, to express scalar constants, scalar arithmetic, type conversion, comparisons, and structured control flow around PTO vector or tile regions. These shared-dialect ops are part of the supported VPTO source surface and should be regarded as part of PTO-ISA alongside `pto` dialect operations.
 
 - `vreg<T>`: `!pto.vreg<NxT>`
   Fixed-width VPTO vector type with total width exactly 256 bytes.
@@ -184,344 +233,247 @@ It does not describe lowering strategy.
 - `i32`: `i32`
 - `i64`: `i64`
 
-Type parameter conventions used below:
+### Shared MLIR Dialects
 
-- `!pto.vreg<NxT>`:
-  `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`
-- `!llvm.ptr<AS>`:
-  `AS` is the LLVM address space number
+- `arith`: the full scalar `arith` surface is supported in VPTO programs, covering scalar integer, floating-point, boolean, and `index` operations. In current samples the most common uses are still constants, offset/bounds arithmetic, casts, compares, and selects.
+- `scf`: structured control flow used to model counted loops, conditional regions, loop-carried state, and break-like control around PTO compute and data-movement ops.
+- Shared dialect ops remain in standard MLIR form so that PTO analyses and backend passes can reason about control flow and scalar state without re-encoding them as PTO-specific instructions.
 
-## Address Space Conventions
+### Core Types
 
-The table below captures the current working interpretation of `!llvm.ptr<AS>`
-in this document. These meanings are based on PTO address-space enums plus the
-current verifier behavior, and should be treated as `TO BE CONFIRMED` before
-external publication.
+### Element Types
+`vreg<T>`: `!pto.vreg<NxT>` Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
 
-| `AS` | PTO mnemonic | Working interpretation in this spec | Status |
-|------|--------------|-------------------------------------|--------|
-| `0` | `Zero` | Default / unspecified pointer space; currently treated as GM-like by the verifier | To be confirmed |
-| `1` | `GM` | Global Memory (GM) | To be confirmed |
-| `2` | `MAT` | Matrix / L1-related storage | To be confirmed |
-| `3` | `LEFT` | Left matrix buffer / L0A-related storage | To be confirmed |
-| `4` | `RIGHT` | Right matrix buffer / L0B-related storage | To be confirmed |
-| `5` | `ACC` | Accumulator / L0C-related storage | To be confirmed |
-| `6` | `VEC` | Unified Buffer (UB) / vector buffer | To be confirmed |
-| `7` | `BIAS` | Bias buffer | To be confirmed |
-| `8` | `SCALING` | Scaling buffer | To be confirmed |
+| Type | Bits | Description |
+|------|------|-------------|
+| `i8` / `s8` / `u8` | 8 | Signless/signed/unsigned 8-bit integer |
+| `i16` / `s16` / `u16` | 16 | Signless/signed/unsigned 16-bit integer |
+| `i32` / `s32` / `u32` | 32 | Signless/signed/unsigned 32-bit integer |
+| `i64` / `s64` / `u64` | 64 | Signless/signed/unsigned 64-bit integer |
+| `f16` | 16 | IEEE 754 half precision |
+| `bf16` | 16 | Brain floating point |
+| `f32` | 32 | IEEE 754 single precision |
+| `f8e4m3` | 8 | FP8 (4-bit exponent, 3-bit mantissa) |
+| `f8e5m2` | 8 | FP8 (5-bit exponent, 2-bit mantissa) |
 
-- Current verifier rule of thumb: `!llvm.ptr<0>` and `!llvm.ptr<1>` are usually
-  treated as GM-like, while `!llvm.ptr<6>` is treated as UB-like.
-- `TODO(user): confirm whether external users should rely on raw numeric address
-  spaces, symbolic names, or both.`
+### Address Space Conventions
 
-## Element Type Constraints
+VPTO memory operands use `!pto.ptr<element-type, space>`. This specification models the following memory-space attributes:
 
-This section defines how placeholders such as `T`, `T0`, `T1`, and `I` should
-be read throughout the spec.
+| Space | Interpretation |
+|-------|----------------|
+| `gm` | Global Memory (GM), off-chip HBM/DDR storage |
+| `ub` | Unified Buffer (UB), on-chip vector buffer |
 
-- General vector rule:
-  `!pto.vreg<NxT>` requires `T` to be an integer or floating-point element
-  type, and `N * bitwidth(T) = 2048`.
-- `T`:
-  `TODO(user): summarize the intended element-type set for general arithmetic,
-  logical, and load/store ops.`
-- `T0`, `T1`:
-  `TODO(user): list the intended legal source/result type pairs for conversion
-  ops such as pto.vcvt.`
-- `I`:
-  `TODO(user): summarize which integer element widths are intended for offsets,
-  indices, lane selectors, and permutation inputs.`
-- Family-specific exceptions:
-  `TODO(user): capture any op-family-specific restrictions or implementation
-  subsets here.`
-
-## Special Types
-
-### `!pto.mask`
-
-`!pto.mask` models an A5 predicate register, not an integer vector.
-
-Mask data-type expression:
-
-- `TODO(user): define how !pto.mask should carry or reference its data type; implementation pending.`
-
-Use it when an operation needs per-lane enable/disable state.
-
-- producers:
-  `pto.vpset_b8`, `pto.vpset_b16`, `pto.vpset_b32`,
-  `pto.vpge_b8`, `pto.vpge_b16`, `pto.vpge_b32`,
-  `pto.vplds`, `pto.vpld`, `pto.vpldi`,
-  `pto.vcmp`, `pto.vcmps`
-- consumers:
-  `pto.vsel`,
-  `pto.vaddc`, `pto.vsubc`, `pto.vaddcs`, `pto.vsubcs`,
-  `pto.vpnot`, `pto.vpsel`,
-  `pto.vgather2_bc`,
-  `pto.vstx2`, `pto.vsstb`,
-  `pto.vpsts`, `pto.vpst`, `pto.vpsti`,
-  `pto.vpstu`,
-  `pto.vmula`
-
-Example:
+Typical pointer construction and pointer arithmetic follow the same `!pto.ptr<..., space>` form:
 
 ```mlir
+%0 = pto.castptr %c0 : i64 to !pto.ptr<f32, ub>
+%1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
+```
+
+### `!pto.ptr<T, space>`
+
+`!pto.ptr<T, space>` is the typed pointer form used for explicit memory operands in VPTO.
+
+- `T` is the element type associated with the pointed-to storage.
+- `space` is the memory domain, typically `gm` or `ub` in this specification.
+- A `pto.ptr` value carries an address plus its element-type / memory-space interpretation, but it does not carry tensor shape or stride metadata by itself.
+- Tensor semantics are introduced separately through view-building operations such as `pto.make_tensor_view`.
+- Pointer arithmetic is element-based rather than byte-based.
+
+Typical examples:
+
+- `!pto.ptr<f32, gm>`
+- `!pto.ptr<f32, ub>`
+- `!pto.ptr<bf16, gm>`
+
+### Pointer Operations
+
+#### `pto.castptr`
+
+- **syntax:** `%result = pto.castptr %addr : i64 to !pto.ptr<T, space>`
+- **semantics:** Reinterpret a scalar address value as a typed PTO pointer in the target memory space.
+
+```c
+result = (ptr<T, space>)addr;
+```
+
+`pto.castptr` is a pointer-construction operation. It does not perform data movement and does not by itself imply any load/store side effect.
+
+#### `pto.addptr`
+
+- **syntax:** `%result = pto.addptr %ptr, %offset : !pto.ptr<T, space> -> !pto.ptr<T, space>`
+- **semantics:** Compute a new pointer by advancing the base pointer by an element offset.
+
+```c
+result = ptr + offset;  // offset counted in elements, not bytes
+```
+
+`pto.addptr` preserves both the element type `T` and the memory-space tag `space`.
+
+#### Pointer-Based Vector Access Example
+
+The following lowered-style fragment shows how typed PTO pointers flow through pointer construction, pointer arithmetic, structured control flow, and PTO memory ops:
+
+```mlir
+%0 = pto.castptr %c0 : i64 to !pto.ptr<f32, ub>
+%1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
+scf.for %arg2 = %c0 to %c1 step %c1 {
+  %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
+    %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask, i32
+    %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+    %18 = pto.vabs %17, %mask {mode = "MODE_ZEROING"} : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+    pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+    scf.yield %scalar_out : i32
+  }
+} {llvm.loop.aivector_scope}
+```
+
+In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `pto.vlds` / `pto.vsts` applies an additional element offset relative to that base.
+
+### Special Types
+
+#### `!pto.mask`
+
+`!pto.mask` models an A5 predicate register (256-bit), not an integer vector.
+
+**Mask Granularity:**
+
+The mask is 256 bits in length, where each bit controls 1 byte of data. This means mask granularity varies by element type:
+
+| Element Type | Bits/Element | Mask Bits per Element |
+|--------------|--------------|----------------------|
+| `f32`/`i32` | 32 | 4 bits |
+| `f16`/`bf16`/`i16` | 16 | 2 bits |
+| `f8`/`i8` | 8 | 1 bit |
+
+**Predication Behavior (Zero-Merge):**
+
+The native hardware predication mode is **ZEROING** — inactive lanes produce zero:
+
+```c
+dst[i] = mask[i] ? op(src0[i], src1[i]) : 0    // ZEROING mode
+```
+
+```mlir
+// Predicated add: inactive lanes produce zero
+%mask = pto.vpset_b32 "PAT_VL32" : !pto.mask   // first 32 lanes active
+%result = pto.vadd %a, %b, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+// result[0..31] = a[0..31] + b[0..31], result[32..63] = 0
+```
+
+```mlir
+// Compare and select: generate mask from comparison, use for conditional select
 %mask = pto.vcmp %lhs, %rhs, %seed, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
 %out = pto.vsel %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 ```
 
-### `!pto.align`
+#### `!pto.align`
 
 `!pto.align` models the A5 vector-align carrier state. It is not payload data.
 
-Use it when an operation needs explicit align-state threading in SSA form.
-
-- producers:
-  `pto.vldas`,
-  `pto.vpstu`,
-  `pto.vstu`,
-  `pto.vstus`,
-  `pto.vstur`
-- consumers:
-  `pto.vldus`,
-  `pto.vsta`,
-  `pto.vstas`,
-  `pto.vstar`,
-  `pto.vpstu`,
-  `pto.vstu`,
-  `pto.vstus`,
-  `pto.vstur`
-
-Example:
-
 ```mlir
-%align = pto.vldas %ub[%c0] : !llvm.ptr<6> -> !pto.align
-%vec = pto.vldus %align, %ub[%c64] : !pto.align, !llvm.ptr<6> -> !pto.vreg<64xf32>
+%align = pto.vldas %ub[%c0] : !pto.ptr<f32, ub> -> !pto.align
+%vec = pto.vldus %align, %ub[%c64] : !pto.align, !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 ```
 
-Template placeholder conventions used below:
+---
 
-- `"SRC_PIPE"`, `"DST_PIPE"`:
-  string literals such as `"PIPE_MTE2"`, `"PIPE_V"`, `"PIPE_MTE3"`
-- `"EVENT_ID"`:
-  string literal such as `"EVENT_ID0"`
-- `"LAYOUT"`:
-  string literal layout selector, for example `"nd"`
-- `"DIST"`:
-  string literal distribution selector carried by the op
-- `"POSITION"`:
-  string literal lane-position selector used by `vdup`
-- `"MODE"`:
-  string literal mode selector used by stateful store / multiply-accumulate ops
-- `"ROUND_MODE"`:
-  string literal rounding-mode selector
-- `"SAT_MODE"`:
-  string literal saturation selector
-- `"PART_MODE"`:
-  string literal half/part selector
-- `"ORDER"`:
-  string literal order selector used by `vci`
-- `"CMP_MODE"`:
-  string literal compare predicate selector
-- `"PAT_*"`:
-  predicate pattern literal accepted by the corresponding predicate op
-- `T|!pto.vreg<NxT>`:
-  either a scalar `T` or a vector operand `!pto.vreg<NxT>`, matching the op verifier
+## Part II: Notation Convention
 
-## Implemented String Constraints
+This section defines the MLIR syntax patterns and C-style semantic notation used throughout the ISA reference (Part III).
 
-This section records string-valued operands and attributes that are already
-checked by the current verifier implementation.
+### MLIR Op Syntax Patterns
 
-If a token is not listed here, the current dialect usually only requires a
-non-empty string or leaves the token unconstrained for now.
+All VPTO operations follow standard MLIR syntax. The common patterns are:
 
-### Predicate Patterns
-
-Used by:
-`pto.vpset_b8`, `pto.vpset_b16`, `pto.vpset_b32`,
-`pto.vpge_b8`, `pto.vpge_b16`, `pto.vpge_b32`
-
-- allowed values:
-  `PAT_ALL | PAT_VL1 | PAT_VL2 | PAT_VL3 | PAT_VL4 | PAT_VL8 | PAT_VL16 | PAT_VL32 | PAT_VL64 | PAT_VL128 | PAT_M3 | PAT_M4 | PAT_H | PAT_Q | PAT_ALLF`
-
-### Distribution Tokens
-
-Used by `pto.vlds`:
-
-- allowed values:
-  `NORM | BLK | DINTLV_B32 | UNPK_B16`
-
-Used by `pto.vpld`, `pto.vpldi`:
-
-- allowed values:
-  `NORM | US | DS`
-
-Used by `pto.vpst`, `pto.vpsti`:
-
-- allowed values:
-  `NORM | PK`
-
-Used by `pto.vldx2`:
-
-- allowed values:
-  `DINTLV_B8 | DINTLV_B16 | DINTLV_B32 | BDINTLV`
-
-Used by `pto.vstx2`:
-
-- allowed values:
-  `INTLV_B8 | INTLV_B16 | INTLV_B32`
-
-### Stride Tokens
-
-Used by `pto.vsld`, `pto.vsst`:
-
-- allowed values:
-  `STRIDE_S3_B16 | STRIDE_S4_B64 | STRIDE_S8_B32 | STRIDE_S2_B64 | STRIDE_VSST_S8_B16`
-
-### Compare Modes
-
-Used by `pto.vcmp`, `pto.vcmps`:
-
-- allowed values:
-  `eq | ne | lt | le | gt | ge`
-
-### Part Tokens
-
-Used by `pto.vintlvv2`, `pto.vdintlvv2`:
-
-- allowed values:
-  `LOWER | HIGHER`
-
-Current restricted subset:
-
-- `pto.vppack`: only `LOWER`
-- `pto.vpunpack`: only `LOWER`
-
-### Mode Tokens
-
-Used by `pto.vmula`:
-
-- allowed values:
-  `MODE_ZEROING | MODE_UNKNOWN | MODE_MERGING`
-
-Used by `pto.vstu`, `pto.vstus`, `pto.vstur`:
-
-- allowed values:
-  `POST_UPDATE | NO_POST_UPDATE`
-
-### Conversion Control Tokens
-
-Used by `pto.vcvt.round_mode`:
-
-- allowed values:
-  `ROUND_R | ROUND_A | ROUND_F | ROUND_C | ROUND_Z | ROUND_O`
-
-Used by `pto.vcvt.sat`:
-
-- allowed values:
-  `RS_ENABLE | RS_DISABLE`
-
-Used by `pto.vcvt.part`:
-
-- allowed values:
-  `PART_EVEN | PART_ODD`
-
-### Not Yet Enumerated In Verifier
-
-The following placeholders appear in syntax templates but are not yet fully
-enumerated by the verifier:
-
-- `"LAYOUT"`
-- `"POSITION"`
-- `"ORDER"`
-- `"SRC_PIPE"`, `"DST_PIPE"`, `"EVENT_ID"`
-
-### `LAYOUT`
-
-- `TODO(user): enumerate the legal layout literals accepted by copy ops and any
-  layout-sensitive constraints.`
-
-### `POSITION`
-
-- `TODO(user): enumerate the legal lane-position tokens used by vdup.`
-
-### `ORDER`
-
-- `TODO(user): enumerate the legal order tokens used by vci.`
-
-### `SRC_PIPE` / `DST_PIPE`
-
-- `TODO(user): enumerate the legal pipeline names and any directionality rules
-  for set_flag / wait_flag.`
-
-### `EVENT_ID`
-
-- `TODO(user): enumerate the legal event identifiers and any architectural
-  limits or pairing rules.`
-
-## __VEC_SCOPE__
-
-`__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF)
-launch. In the PTO architecture, it defines the hardware interface between the
-Scalar Unit and the Vector Thread.
-
-It is not a dedicated `pto` op. In VPTO IR, this scope is modeled as a
-specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This
-gives the compiler a natural structural boundary for identifying the code block
-that must be lowered into a discrete VF hardware instruction sequence.
-
-### Scalar-Vector Interface
-
-The execution model follows non-blocking fork semantics:
-
-- Scalar invocation:
-  the scalar processor invokes a vector thread by calling a VF. Once the launch
-  command is issued, the scalar unit does not stall and continues executing
-  subsequent instructions in the pipeline.
-- Vector execution:
-  after invocation, the vector thread independently fetches and executes the
-  instructions defined within the VF scope.
-- Parallelism:
-  this decoupled execution allows the scalar and vector units to run in
-  parallel, so the scalar unit can prepare addresses or manage control flow
-  while the vector unit performs heavy SIMD computation.
-
-### Launch Mechanism And Constraints
-
-To successfully launch a VF, the hardware requires explicit setup for parameter
-passing and instruction fetching:
-
-- Parameter buffering:
-  all arguments required by the VF, such as base addresses and pointer offsets,
-  must be staged in hardware-specific buffers. These buffers act as the
-  mailbox between the scalar and vector domains.
-- Launch overhead:
-  launching a VF is not instantaneous. It typically incurs a latency of a few
-  cycles while parameters are prepared and moved into the hardware buffers, the
-  hardware synchronizes state, and the vector thread begins its fetch cycle.
-  Very small VFs should account for this overhead because launch cost can rival
-  useful computation time.
-
-### MLIR Representation
-
-Representative form:
+**Unary (one vector in, one vector out):**
 
 ```mlir
-// Scalar unit executes code before this point...
+%result = pto.<op> %input : !pto.vreg<NxT> -> !pto.vreg<NxT>
+```
+
+**Binary (two vectors in, one vector out):**
+
+```mlir
+%result = pto.<op> %lhs, %rhs : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>
+```
+
+**Vec-Scalar (one vector + one scalar in, one vector out):**
+
+```mlir
+%result = pto.<op> %input, %scalar : !pto.vreg<NxT>, T -> !pto.vreg<NxT>
+```
+
+**Load (memory to register):**
+
+```mlir
+%result = pto.vlds %source[%offset] {dist = "DIST"} : !pto.ptr<T, ub> -> !pto.vreg<NxT>
+```
+
+**Store (register to memory):**
+
+```mlir
+pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>
+```
+
+**Dual Load (one load, two results — deinterleave):**
+
+```mlir
+%low, %high = pto.vldx2 %source[%offset], "DIST" : !pto.ptr<T, ub>, index -> !pto.vreg<NxT>, !pto.vreg<NxT>
+```
+
+**Dual Store (two inputs, one interleaved store):**
+
+```mlir
+pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask
+```
+
+**Compare (two vectors + seed mask in, mask out):**
+
+```mlir
+%mask = pto.vcmp %src0, %src1, %seed, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.mask
+```
+
+**Conversion (one vector in, different-typed vector out):**
+
+```mlir
+%result = pto.vcvt %input {round_mode = "ROUND_R", sat = "RS_ENABLE", part = "PART_EVEN"} : !pto.vreg<NxT0> -> !pto.vreg<MxT1>
+```
+
+**Predicate construction:**
+
+```mlir
+%mask = pto.vpset_b32 "PAT_ALL" : !pto.mask
+%mask = pto.vpge_b32 "PAT_VL16" : !pto.mask
+```
+
+**Sync operations:**
+
+```mlir
+pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+pto.mem_bar "VV_ALL"
+```
+
+**Pointer construction and arithmetic:**
+
+```mlir
+%ptr = pto.castptr %addr : i64 to !pto.ptr<T, SPACE>
+%ptr2 = pto.addptr %ptr, %offset : !pto.ptr<T, SPACE> -> !pto.ptr<T, SPACE>
+```
+
+### Shared Dialect Syntax Patterns
+
+VPTO programs may interleave PTO ops with standard MLIR `arith` and `scf` ops.
+The examples below emphasize common index-heavy patterns, but `arith` support is not limited to index arithmetic.
+
+**Scalar / index constant:**
+
+```mlir
 %c0 = arith.constant 0 : index
-%c1 = arith.constant 1 : index
-
-// The VF launch boundary
-scf.for %dummy = %c0 to %c1 step %c1 {
-  // Vector thread fetches and executes these instructions in parallel
-  // with the scalar unit.
-  %v = pto.vlds %ub[%lane] : !llvm.ptr<6> -> !pto.vreg<64xf32>
-  %abs = pto.vabs %v : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
-  pto.vsts %abs, %ub_out[%lane] : !pto.vreg<64xf32>, !llvm.ptr<6>
-} {llvm.loop.aivector_scope}
-
-// Scalar unit continues executing immediately after the launch...
+%zero = arith.constant 0.0 : f32
 ```
 
 ## Correspondence Categories
@@ -1671,12 +1623,373 @@ example.
   and with surrounding vector-scope structure.`
 
 ```mlir
-// TODO(user): replace this skeleton with a complete chained stateful-store example.
-%align0 = ...
-%value0 = ...
-%base0 = ...
-
-// %align1, %offset1 = pto.vstu ...
-// %align2, %base1 = pto.vstus ...
-// %align3 = pto.vstur ...
+%sum_i = arith.addi %lhs_i, %rhs_i : i32
+%sum_f = arith.addf %lhs_f, %rhs_f : f32
+%bits = arith.andi %flags0, %flags1 : i32
 ```
+
+**Scalar compare and select:**
+
+```mlir
+%cond = arith.cmpi eq, %lhs, %rhs : index
+%bound = arith.select %cond, %a, %b : index
+```
+
+**Counted loop with loop-carried values:**
+
+```mlir
+%result = scf.for %iv = %lb to %ub step %step
+    iter_args(%acc = %init) -> (index) {
+  %next = arith.addi %acc, %iv : index
+  scf.yield %next : index
+}
+```
+
+**Structured conditional region:**
+
+```mlir
+%selected = scf.if %cond -> (index) {
+  scf.yield %then_value : index
+} else {
+  scf.yield %else_value : index
+}
+```
+
+**Structured while loop:**
+
+```mlir
+%state:2 = scf.while (%iv = %c0, %alive = %true) : (index, i1) -> (index, i1) {
+  %keep_going = arith.cmpi slt, %iv, %limit : index
+  scf.condition(%keep_going) %iv, %alive : index, i1
+} do {
+^bb0(%iv_in: index, %alive_in: i1):
+  %iv_next = arith.addi %iv_in, %c1 : index
+  scf.yield %iv_next, %alive_in : index, i1
+}
+```
+
+### C-Style Semantics Convention
+
+For each ISA operation in Part III, semantics are expressed as C code. The convention:
+
+```c
+// Vector register contents as arrays:
+T dst[N];       // destination
+T src0[N];      // first source
+T src1[N];      // second source (binary ops)
+T scalar;       // scalar operand (vec-scalar ops)
+int mask[N];    // per-lane predicate (0 or 1)
+
+// N = lane count determined by type:
+//   N = 256 for i8/u8
+//   N = 128 for i16/u16/f16/bf16
+//   N = 64  for i32/u32/f32
+//   N = 32  for i64/u64
+```
+
+**Example — pto.vadd semantics:**
+
+```c
+for (int i = 0; i < N; i++)
+    dst[i] = src0[i] + src1[i];
+```
+
+**Example — pto.vcgadd (group reduction per VLane) semantics:**
+
+```c
+int K = N / 8;  // elements per VLane
+for (int g = 0; g < 8; g++) {
+    T sum = 0;
+    for (int i = 0; i < K; i++)
+        sum += src[g*K + i];
+    dst[g*K] = sum;
+    for (int i = 1; i < K; i++)
+        dst[g*K + i] = 0;
+}
+```
+
+### Template Placeholder Conventions
+
+| Placeholder | Meaning |
+|-------------|---------|
+| `"SRC_PIPE"`, `"DST_PIPE"` | Pipeline identifiers: `"PIPE_MTE2"`, `"PIPE_V"`, `"PIPE_MTE3"` |
+| `"EVENT_ID"` | Event identifier: `"EVENT_ID0"` etc. |
+| `"DIST"` | Distribution mode string (see the relevant load/store ISA group in Part III) |
+| `"CMP_MODE"` | Compare predicate: `eq \| ne \| lt \| le \| gt \| ge` |
+| `"ROUND_MODE"` | Rounding mode: `ROUND_R \| ROUND_A \| ROUND_F \| ROUND_C \| ROUND_Z` |
+| `"SAT_MODE"` | Saturation: `RS_ENABLE \| RS_DISABLE` |
+| `"PART_MODE"` | Half selector: `PART_EVEN \| PART_ODD` |
+| `"PAT_*"` | Predicate pattern literal |
+| `"MODE"` | Mode selector: `MODE_ZEROING \| MODE_MERGING` |
+| `T` | Element type (f32, f16, bf16, i32, i16, i8, etc.) |
+| `N` | Lane count (`N * bitwidth(T) = 2048`) |
+
+---
+
+## Part III: ISA Instruction Reference
+# Part III: ISA Instruction Reference — Summary
+
+This section provides a categorized overview of all VPTO instructions plus the shared MLIR `arith` and `scf` ops that may appear in VPTO programs. Detailed documentation for each group is available in the linked files.
+
+---
+
+## Instruction Groups
+
+| # | Group | Description | Count | Details |
+|---|-------|-------------|-------|---------|
+| 1 | [Pipeline Sync](isa/01-pipeline-sync.md) | Intra-core pipeline synchronization (MTE↔Vector) and inter-core coordination | 10 | `pto.set_flag`, `pto.wait_flag`, `pto.pipe_barrier`, `pto.get_buf`, `pto.rls_buf`, `pto.mem_bar`, `pto.set_cross_core`, `pto.wait_flag_dev`, `pto.set_intra_block`, `pto.wait_intra_block` |
+| 2 | [DMA Copy Programming](isa/02-dma-copy.md) | DMA configuration and transfer between GM↔UB | 9 | `pto.set_loop*_stride_*`, `pto.set_loop_size_*`, `pto.copy_gm_to_ubuf`, `pto.copy_ubuf_to_ubuf`, `pto.copy_ubuf_to_gm` |
+| 3 | [Vector Load/Store](isa/03-vector-load-store.md) | UB↔vreg data movement with various access patterns | ~20 | `pto.vlds`, `pto.vldx2`, `pto.vgather2`, `pto.vsts`, `pto.vstx2`, `pto.vscatter`, etc. |
+| 4 | [Predicate Load/Store](isa/04-predicate-load-store.md) | UB↔mask register movement | 7 | `pto.vplds`, `pto.vpld`, `pto.vpldi`, `pto.vpsts`, `pto.vpst`, `pto.vpsti`, `pto.vpstu` |
+| 5 | [Materialization & Predicate Ops](isa/05-materialization-predicate.md) | Scalar broadcast, predicate generation and manipulation | ~20 | `pto.vbr`, `pto.vdup`, `pto.vpset_b*`, `pto.vpge_b*`, `pto.vpand`, `pto.vpor`, `pto.vpnot`, `pto.vpsel`, etc. |
+| 6 | [Unary Vector Ops](isa/06-unary-vector-ops.md) | Single-input element-wise operations | 12 | `pto.vabs`, `pto.vneg`, `pto.vexp`, `pto.vln`, `pto.vsqrt`, `pto.vrsqrt`, `pto.vrec`, `pto.vrelu`, `pto.vnot`, `pto.vbcnt`, `pto.vcls`, `pto.vmov` |
+| 7 | [Binary Vector Ops](isa/07-binary-vector-ops.md) | Two-input element-wise operations | 13 | `pto.vadd`, `pto.vsub`, `pto.vmul`, `pto.vdiv`, `pto.vmax`, `pto.vmin`, `pto.vand`, `pto.vor`, `pto.vxor`, `pto.vshl`, `pto.vshr`, `pto.vaddc`, `pto.vsubc` |
+| 8 | [Vec-Scalar Ops](isa/08-vec-scalar-ops.md) | Vector-scalar operations | 12 | `pto.vadds`, `pto.vsubs`, `pto.vmuls`, `pto.vmaxs`, `pto.vmins`, `pto.vands`, `pto.vors`, `pto.vxors`, `pto.vshls`, `pto.vshrs`, `pto.vaddcs`, `pto.vsubcs` |
+| 9 | [Conversion Ops](isa/09-conversion-ops.md) | Type conversion with rounding/saturation control | 2 | `pto.vcvt`, `pto.vtrc` |
+| 10 | [Reduction Ops](isa/10-reduction-ops.md) | Vector and per-VLane reductions | 7 | `pto.vcadd`, `pto.vcmax`, `pto.vcmin`, `pto.vcgadd`, `pto.vcgmax`, `pto.vcgmin`, `pto.vcpadd` |
+| 11 | [Compare & Select](isa/11-compare-select.md) | Comparison and conditional selection | 4 | `pto.vcmp`, `pto.vcmps`, `pto.vsel`, `pto.vselr` |
+| 12 | [Data Rearrangement](isa/12-data-rearrangement.md) | In-register data movement and permutation | 11 | `pto.vintlv`, `pto.vdintlv`, `pto.vslide`, `pto.vshift`, `pto.vsqz`, `pto.vusqz`, `pto.vperm`, `pto.vpack`, `pto.vsunpack`, `pto.vzunpack`, `pto.vselr` |
+| 13 | [DSA/SFU Ops](isa/13-dsa-sfu-ops.md) | Fused ops, special functions, UB-to-UB, sorting | ~12 | `pto.vlrelu`, `pto.vprelu`, `pto.vexpdiff`, `pto.vci`, `pto.vtranspose`, `pto.vsort32`, `pto.vmrgsort`, etc. |
+| 14 | [Arith (Shared MLIR Dialect)](isa/14-shared-arith.md) | Full scalar `arith` surface used around PTO ops; the companion page lists categories and representative examples | all scalar ops | `arith.constant`, `arith.addi`, `arith.addf`, `arith.cmpi`, `arith.cmpf`, `arith.select`, `arith.index_cast`, `arith.extsi`, `arith.trunci`, `arith.andi`, `arith.shli`, etc. |
+| 15 | [SCF (Shared MLIR Dialect)](isa/15-shared-scf.md) | Structured loops, branches, and loop-carried state around PTO regions | 5 | `scf.for`, `scf.if`, `scf.while`, `scf.condition`, `scf.yield` |
+
+---
+
+## Quick Reference by Category
+
+### Memory Operations
+
+| Operation | Group | Description |
+|-----------|-------|-------------|
+| GM→UB DMA | 2 | `pto.copy_gm_to_ubuf` |
+| UB→GM DMA | 2 | `pto.copy_ubuf_to_gm` |
+| UB→UB Copy | 2 | `pto.copy_ubuf_to_ubuf` |
+| Contiguous Load | 3 | `pto.vlds` with `NORM` dist |
+| Broadcast Load | 3 | `pto.vlds` with `BRC_*` dist |
+| Gather | 3 | `pto.vgather2`, `pto.vgatherb` |
+| Contiguous Store | 3 | `pto.vsts` with `NORM_*` dist |
+| Scatter | 3 | `pto.vscatter` |
+
+### Compute Operations
+
+| Operation | Group | Description |
+|-----------|-------|-------------|
+| Element-wise Arithmetic | 6, 7 | `pto.vadd`, `pto.vmul`, `pto.vabs`, etc. |
+| Scalar Operations | 8 | `pto.vadds`, `pto.vmuls`, etc. |
+| Transcendental | 6 | `pto.vexp`, `pto.vln`, `pto.vsqrt`, etc. |
+| Reduction | 10 | `pto.vcadd`, `pto.vcmax`, `pto.vcgadd`, etc. |
+| Comparison | 11 | `pto.vcmp`, `pto.vcmps` |
+| Selection | 11 | `pto.vsel`, `pto.vselr` |
+
+### Type & Data Manipulation
+
+| Operation | Group | Description |
+|-----------|-------|-------------|
+| Type Conversion | 9 | `pto.vcvt` |
+| Interleave/Deinterleave | 12 | `pto.vintlv`, `pto.vdintlv` |
+| Compress/Expand | 12 | `pto.vsqz`, `pto.vusqz` |
+| Pack/Unpack | 12 | `pto.vpack`, `pto.vsunpack`, `pto.vzunpack` |
+
+### Synchronization
+
+| Operation | Group | Description |
+|-----------|-------|-------------|
+| Intra-core Sync | 1 | `pto.set_flag`, `pto.wait_flag` |
+| Inter-core Sync | 1 | `pto.set_cross_core`, `pto.wait_flag_dev` |
+| Memory Barrier | 1 | `pto.mem_bar` |
+
+### Scalar & Control Operations
+
+Group 14 covers the full scalar `arith` surface. The rows below list common VPTO patterns rather than an exhaustive partition of `arith` ops.
+
+| Operation | Group | Description |
+|-----------|-------|-------------|
+| Scalar Constants | 14 | `arith.constant` |
+| Scalar Integer / Index Arithmetic | 14 | `arith.addi`, `arith.subi`, `arith.muli`, `arith.divsi`, `arith.remui`, `arith.ceildivsi`, etc. |
+| Scalar Floating-Point Arithmetic | 14 | `arith.addf`, `arith.subf`, `arith.mulf`, `arith.divf`, `arith.maximumf`, etc. |
+| Scalar Compare & Select | 14 | `arith.cmpi`, `arith.cmpf`, `arith.select` |
+| Scalar Casts / Width Changes | 14 | `arith.index_cast`, `arith.index_castui`, `arith.extsi`, `arith.extui`, `arith.trunci`, `arith.sitofp`, etc. |
+| Scalar Bitwise / Shift Ops | 14 | `arith.andi`, `arith.ori`, `arith.xori`, `arith.shli`, `arith.shrsi`, `arith.shrui`, etc. |
+| Counted Loops | 15 | `scf.for` |
+| Conditional Regions | 15 | `scf.if`, `scf.yield` |
+| Break-like Structured Loops | 15 | `scf.while`, `scf.condition`, `scf.yield` |
+
+---
+
+## Supported Data Types
+
+| Type | Bits | vreg Lanes | Description |
+|------|------|-----------|-------------|
+| `i8` / `u8` | 8 | 256 | Signed/unsigned 8-bit integer |
+| `i16` / `u16` | 16 | 128 | Signed/unsigned 16-bit integer |
+| `f16` | 16 | 128 | IEEE 754 half precision |
+| `bf16` | 16 | 128 | Brain floating point |
+| `i32` / `u32` | 32 | 64 | Signed/unsigned 32-bit integer |
+| `f32` | 32 | 64 | IEEE 754 single precision |
+| `i64` / `u64` | 64 | 32 | Signed/unsigned 64-bit integer |
+
+---
+
+## Common Patterns
+
+### Softmax (Numerically Stable)
+
+```mlir
+// 1. Find max
+%max_vec = pto.vcmax %logits : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+pto.vsts %max_vec, %ub_tmp[%c0] {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
+%max_bc = pto.vlds %ub_tmp[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+
+// 2. exp(x - max) using fused op
+%exp = pto.vexpdiff %logits, %max_bc : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+
+// 3. Sum
+%sum = pto.vcadd %exp : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+pto.vsts %sum, %ub_tmp[%c0] {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>
+%sum_bc = pto.vlds %ub_tmp[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+
+// 4. Divide
+%softmax = pto.vdiv %exp, %sum_bc : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+```
+
+### ReLU Variants
+
+```mlir
+// Standard ReLU
+%relu = pto.vrelu %input : !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+
+// Leaky ReLU (scalar alpha)
+%lrelu = pto.vlrelu %input, %alpha : !pto.vreg<64xf32>, f32 -> !pto.vreg<64xf32>
+
+// Parametric ReLU (per-element alpha)
+%prelu = pto.vprelu %input, %alpha_vec : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+
+// Fused add + ReLU
+%fused = pto.vaddrelu %a, %b : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
+```
+
+### Data Layout Conversion
+
+```mlir
+// AoS → SoA (deinterleave)
+%x, %y = pto.vldx2 %ub_xy[%offset], "DINTLV_B32" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
+
+// SoA → AoS (interleave)
+pto.vstx2 %x, %y, %ub_xy[%offset], "INTLV_B32", %all_mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.ptr<f32, ub>, index, !pto.mask
+```
+
+---
+
+*For detailed semantics, C-style pseudocode, and CCE mappings, see the individual group documentation files.*
+
+---
+
+## Appendix A: Change Summary
+
+### Part I Changes
+
+| # | Section | What Changed | Source |
+|---|---------|-------------|--------|
+| 1 | Overview, Position, Audience, CCE | Kept verbatim | vpto-spec.md |
+| 2 | VLane concept (32B) | **ADDED** | a5_intrinsic_ir.md |
+| 3 | Register/type system | Follows vpto-spec.md | vpto-spec.md |
+| 4 | UB size (256KB) | **ADDED** | a5_intrinsic_ir.md |
+| 5 | Data flow diagram | **ADDED** | a5_intrinsic_ir.md + vpto naming |
+| 6 | Load/store pattern table | **EXPANDED** | a5_intrinsic_ir.md |
+| 7 | Sync: set_flag/wait_flag | Kept | vpto-spec.md |
+| 8 | Sync: get_buf/rls_buf | **CLARIFIED** as inter-pipe sync | vpto-spec.md |
+| 9 | Sync: mem_bar | **ADDED** for intra-VEC_SCOPE | a5_intrinsic_ir.md |
+| 10 | Predication | **ADDED** ZEROING only | a5_intrinsic_ir.md |
+| 11 | __VEC_SCOPE__ | Kept verbatim | vpto-spec.md |
+| 12 | Element types | **EXPANDED** with FP8/FP4 | a5_intrinsic_ir.md |
+| 13 | Load dist tokens | **EXPANDED** (BRC, US, DS, SPLT, UNPK) | a5_intrinsic_ir.md |
+| 14 | Store dist tokens | **EXPANDED** (NORM_B*, PK_B*, MRG*) | a5_intrinsic_ir.md |
+| 15 | mem_bar tokens | **ADDED** | a5_intrinsic_ir.md |
+
+### Part II Changes
+
+| # | What Changed | Source |
+|---|-------------|--------|
+| 1 | MLIR syntax patterns | Organized from vpto-spec.md |
+| 2 | C-style semantics convention | **NEW** — replaces math notation |
+| 3 | VLane-aware reduction example | **NEW** |
+| 4 | Template placeholders | Consolidated from vpto-spec.md |
+
+### Part 3A Changes (Sections 1–6)
+
+| # | Section | What Changed | Source |
+|---|---------|-------------|--------|
+| 1 | Sec 1: Sync | **ADDED** `pto.mem_bar` with C semantics | a5_intrinsic_ir.md |
+| 2 | Sec 2-3: Copy | Kept from vpto-spec.md | vpto-spec.md |
+| 3 | Sec 4: Loads — vgatherb, vgather2_bc | Kept from vpto-spec.md | vpto-spec.md |
+| 4 | Sec 4: Loads — BRC/US/DS/SPLT dist modes | **ADDED** with C semantics | a5_intrinsic_ir.md |
+| 5 | Sec 5: vbr | Kept from vpto-spec.md | vpto-spec.md |
+| 6 | Sec 5: vdupi | **ADDED** | a5_intrinsic_ir.md |
+| 7 | Sec 5: vpand, vpor, vpxor, vpmov | **ADDED** | a5_intrinsic_ir.md |
+| 8 | Sec 5: vpintlv, vpdintlv, vpslide | **ADDED** | a5_intrinsic_ir.md |
+| 9 | Sec 6: vneg, vrsqrt | **ADDED** | a5_intrinsic_ir.md |
+| 10 | Sec 6: vcgadd, vcgmax, vcgmin | **ADDED** per-VLane reductions | a5_intrinsic_ir.md |
+| 11 | Sec 6: vcpadd | **ADDED** prefix sum | a5_intrinsic_ir.md |
+| 12 | Sec 6: vmov | **ADDED** | a5_intrinsic_ir.md |
+
+### Part 3B Changes (Sections 7–10)
+
+| # | Section | What Changed | Source |
+|---|---------|-------------|--------|
+| 1 | Sec 7: Binary ops | No changes — full 1:1 match | Both |
+| 2 | Sec 8: vsubs, vands, vors, vxors | **ADDED** | a5_intrinsic_ir.md |
+| 3 | Sec 9: vselrv2 | **REMOVED** (not A5) | — |
+| 4 | Sec 9: vprelu | **ADDED** parametric ReLU | a5_intrinsic_ir.md |
+| 5 | Sec 10: vintlvv2, vdintlvv2, vpdintlv_b8, vpintlv_b16 | **REMOVED** (not A5) | — |
+| 6 | Sec 10: vslide, vshift, vsqz, vusqz | **ADDED** data movement | a5_intrinsic_ir.md |
+| 7 | Sec 10: vperm (was vgather reg) | **ADDED** in-register permute | a5_intrinsic_ir.md |
+| 8 | Sec 10: vtranspose | **ADDED** | a5_intrinsic_ir.md |
+| 9 | Sec 10: vpack, vsunpack, vzunpack | **ADDED** pack/unpack | a5_intrinsic_ir.md |
+
+### Part 3C Changes (Sections 11–14)
+
+| # | Section | What Changed | Source |
+|---|---------|-------------|--------|
+| 1 | Sec 11: vcvt | **EXPANDED** — full A5 conversion pairs + width-changing pattern | a5_intrinsic_ir.md |
+| 2 | Sec 11: vtrc, vci, vbitsort | Kept from vpto-spec.md | vpto-spec.md |
+| 3 | Sec 12: vmull | C semantics + A5 type info added | Both |
+| 4 | Sec 12: vmula | Kept from vpto-spec.md | vpto-spec.md |
+| 5 | Sec 12: vaddrelu, vsubrelu | **ADDED** fused add/sub+ReLU | a5_intrinsic_ir.md |
+| 6 | Sec 12: vaxpy | **ADDED** AXPY | a5_intrinsic_ir.md |
+| 7 | Sec 12: vaddreluconv, vmulconv | **ADDED** fused compute+convert | a5_intrinsic_ir.md |
+| 8 | Sec 13: vsts dist modes | **EXPANDED** — PK_B*, MRG* C semantics | a5_intrinsic_ir.md |
+| 9 | Sec 13-14: All store ops | C semantics added where missing | Both |
+
+## Appendix B: Discussion Points
+
+### Part I
+
+1. **mem_bar as pto op:** Should `pto.mem_bar` be a formal pto dialect op, or is there an existing mechanism?
+2. **UB size parameterization:** Is 256KB always fixed, or should spec allow for architecture variants?
+3. **Dist token expansion:** The added BRC/US/DS/SPLT/MRG tokens need verifier implementation. Are all confirmed for A5?
+4. **MERGING predication:** Intentionally omitted (SW-emulated, perf overhead). Revisit if needed later.
+
+### Part II
+
+1. **Predication in C semantics:** Should every op's C code explicitly show the `if (mask[i])` guard, or assume all-active and note predication separately?
+2. **VLane terminology:** Using "VLane" instead of "DataBlock" — confirm this naming is preferred.
+
+### Part 3A
+
+1. **pto.vmov:** May not need a dedicated op if MLIR copy semantics suffice. Confirm if needed.
+2. **pto.vdupi:** Is this distinct from `pto.vdup` with an immediate operand, or can `pto.vdup` handle both?
+3. **Predicate ops (vpand/vpor/vpxor/vpmov/vpintlv/vpdintlv/vpslide):** These need MLIR op definitions and verifier rules. Confirm priority.
+
+### Part 3B
+
+1. **pto.vperm naming:** a5_intrinsic `vgather` (in-register permute) mapped to `pto.vperm`. Confirm naming preference.
+2. **pto.vshift naming:** a5_intrinsic `vsld` (single-source slide) mapped to `pto.vshift` to avoid `pto.vsld` collision. Confirm.
+3. **Section 10 removals:** 4 interleave ops removed (not on A5). If multi-arch support is needed later, these would need conditional inclusion.
+
+### Part 3C
+
+1. **Fused op naming convention:** `pto.vaddrelu`, `pto.vaddreluconv`, `pto.vmulconv` use long compound names. Should we adopt a shorter convention (e.g., `pto.vfma_relu`)?
+2. **vmrgsort4:** Kept from vpto-spec.md but no a5_intrinsic mapping found. Confirm if A5 supports this.
+3. **Store dist token completeness:** PK_B16, MRG4CHN_B8, MRG2CHN_B8, MRG2CHN_B16 added. Are there other store distribution modes on A5?
+4. **vcvt width-changing pattern:** The even/odd + vor pattern for f32→f16 is the standard compiler lowering. Confirm this is the intended representation in the spec.
+5. **Stateful store ops (Section 14):** These are complex with SSA state threading. Are they all needed for A5, or can some be simplified?
