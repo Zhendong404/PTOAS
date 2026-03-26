@@ -22,8 +22,8 @@ TBD - created by archiving change close-tile-fusion-store-elision-gaps. Update P
 
 - **WHEN** 某个 lowered tile 写实例在 `pto.fusion_region` 内完成最后一次写入
 - **AND** 该写实例不属于 yielded frontier，且没有其他硬外部可观察 use
-- **THEN** store-elision MUST 删除与该写实例对应的最终 `vector.maskedstore` / 等价 store
-- **AND** MUST NOT 以“后面还要有同 base `vector.maskedload`”作为唯一删 store 前提
+- **THEN** store-elision MUST 删除与该写实例对应的最终 `a5vm.vsts` / 等价 store
+- **AND** MUST NOT 以“后面还要有同 base `a5vm.vlds`”作为唯一删 store 前提
 
 ### Requirement: Fusion-region store elision MUST preserve required frontier materialization
 
