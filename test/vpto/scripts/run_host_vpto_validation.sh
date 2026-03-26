@@ -15,6 +15,8 @@ AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 HOST_RUNNER="${HOST_RUNNER:-ssh root@localhost}"
 CASE_NAME="${CASE_NAME:-}"
 MODULE_ID="${MODULE_ID:-a5d60abf67864aa0}"
+DEVICE="${DEVICE:-SIM}"
+SIM_LIB_DIR="${SIM_LIB_DIR:-}"
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -27,7 +29,9 @@ die() {
 
 run_remote() {
   local cmd="$1"
-  if [[ "${HOST_RUNNER}" == "ssh root@localhost" ]]; then
+  if [[ "${DEVICE}" == "SIM" ]]; then
+    bash -lc "${cmd}"
+  elif [[ "${HOST_RUNNER}" == "ssh root@localhost" ]]; then
     ssh -o StrictHostKeyChecking=no root@localhost "${cmd}"
   else
     eval "${HOST_RUNNER} ${cmd@Q}"
@@ -231,6 +235,14 @@ build_host_executable() {
   local case_name="$1"
   local case_dir="$2"
   local out_dir="$3"
+  local extra_ldflags=()
+  local extra_lib_dirs=()
+  if [[ "${DEVICE}" == "SIM" ]]; then
+    [[ -n "${SIM_LIB_DIR}" && -d "${SIM_LIB_DIR}" ]] ||
+      die "SIM_LIB_DIR is not set or invalid for DEVICE=SIM: ${SIM_LIB_DIR}"
+    extra_lib_dirs+=(-L "${SIM_LIB_DIR}" -Wl,-rpath,"${SIM_LIB_DIR}")
+    extra_ldflags+=(-lruntime_camodel)
+  fi
 
   "${BISHENG_BIN}" \
     -xc++ -include stdint.h -include stddef.h -std=c++17 \
@@ -240,10 +252,12 @@ build_host_executable() {
     -I "${ASCEND_HOME_PATH}/include" \
     -L "${out_dir}" \
     -L "${ASCEND_HOME_PATH}/lib64" \
+    "${extra_lib_dirs[@]}" \
     -Wl,-rpath,"${out_dir}" \
     -Wl,-rpath,"${ASCEND_HOME_PATH}/lib64" \
     -o "${out_dir}/${case_name}" \
     -lruntime -lstdc++ -lascendcl -lm -ltiling_api -lplatform -lc_sec -ldl -lnnopbase \
+    "${extra_ldflags[@]}" \
     -l"${case_name}_kernel"
 }
 
@@ -301,7 +315,7 @@ build_one() {
 cd "${out_dir}" && \
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" && \
 if [ -f "\$ASCEND_HOME_PATH/set_env.sh" ]; then source "\$ASCEND_HOME_PATH/set_env.sh" >/dev/null 2>&1; fi && \
-LD_LIBRARY_PATH="${out_dir}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" "./${case_name}"
+LD_LIBRARY_PATH="${out_dir}:${SIM_LIB_DIR}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" "./${case_name}"
 EOF
 )
   run_remote "${remote_run_cmd}"
@@ -311,7 +325,7 @@ EOF
 cd "${out_dir}" && \
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" && \
 if [ -f "\$ASCEND_HOME_PATH/set_env.sh" ]; then source "\$ASCEND_HOME_PATH/set_env.sh" >/dev/null 2>&1; fi && \
-LD_LIBRARY_PATH="${out_dir}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" ldd "./${case_name}" | grep "lib${case_name}_kernel.so"
+LD_LIBRARY_PATH="${out_dir}:${SIM_LIB_DIR}:\$ASCEND_HOME_PATH/lib64:\${LD_LIBRARY_PATH:-}" ldd "./${case_name}" | grep "lib${case_name}_kernel.so"
 EOF
 )
   local ldd_output
