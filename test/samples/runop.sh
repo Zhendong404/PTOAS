@@ -203,6 +203,10 @@ process_one_dir() {
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
+    if [[ "$base" == "test_intercore_sync_a5_functional" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
     if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
@@ -431,6 +435,28 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5" ]]; then
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_V, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_functional" ]]; then
+      if ! grep -Fq "get_block_idx()" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing block-role dispatch (get_block_idx)"
+        overall=1
+        continue
+      fi
       if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
         overall=1
