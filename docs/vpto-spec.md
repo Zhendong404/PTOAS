@@ -230,13 +230,20 @@ It does not describe lowering strategy.
 
 ### Core Types
 
-- `vreg<T>`: `!pto.vreg<NxT>` Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
-- `mask`: `!pto.mask` Models an A5 predicate register (256-bit). Per-lane enable/disable state.
-- `align`: `!pto.align` Models the A5 vector-align carrier state for unaligned load/store sequences.
-- `buf`: `!llvm.ptr<AS>` Buffer-like LLVM pointer type. AS=1 for GM, AS=6 for UB.
-- `idx`: `index`
-- `i32`: `i32`
-- `i64`: `i64`
+### Element Types
+`vreg<T>`: `!pto.vreg<NxT>` Fixed-width VPTO vector type with total width exactly 256 bytes (2048 bits). `N` is the lane count, `T` is the element type, and `N * bitwidth(T) = 2048`.
+
+| Type | Bits | Description |
+|------|------|-------------|
+| `i8` / `s8` / `u8` | 8 | Signless/signed/unsigned 8-bit integer |
+| `i16` / `s16` / `u16` | 16 | Signless/signed/unsigned 16-bit integer |
+| `i32` / `s32` / `u32` | 32 | Signless/signed/unsigned 32-bit integer |
+| `i64` / `s64` / `u64` | 64 | Signless/signed/unsigned 64-bit integer |
+| `f16` | 16 | IEEE 754 half precision |
+| `bf16` | 16 | Brain floating point |
+| `f32` | 32 | IEEE 754 single precision |
+| `f8e4m3` | 8 | FP8 (4-bit exponent, 3-bit mantissa) |
+| `f8e5m2` | 8 | FP8 (5-bit exponent, 2-bit mantissa) |
 
 ### Address Space Conventions
 
@@ -252,28 +259,6 @@ It does not describe lowering strategy.
 | `7` | `BIAS` | Bias buffer |
 | `8` | `SCALING` | Scaling buffer |
 
-### Element Type Constraints
-
-| Type | Bits | Description |
-|------|------|-------------|
-| `s8` / `u8` | 8 | Signed/unsigned 8-bit integer |
-| `i8` | 8 | Signless 8-bit integer |
-| `s16` / `u16` | 16 | Signed/unsigned 16-bit integer |
-| `i16` | 16 | Signless 16-bit integer |
-| `s32` / `u32` | 32 | Signed/unsigned 32-bit integer |
-| `i32` | 32 | Signless 32-bit integer |
-| `s64` / `u64` | 64 | Signed/unsigned 64-bit integer |
-| `i64` | 64 | Signless 64-bit integer |
-| `f16` | 16 | IEEE 754 half precision |
-| `bf16` | 16 | Brain floating point |
-| `f32` | 32 | IEEE 754 single precision |
-| `f8e4m3` | 8 | FP8 (4-bit exponent, 3-bit mantissa) |
-| `f8e5m2` | 8 | FP8 (5-bit exponent, 2-bit mantissa) |
-| `f8e8m0` | 8 | FP8 scale factor (8-bit exponent only) |
-| `f4e2m1` | 4 | FP4 (2-bit exponent, 1-bit mantissa) |
-| `f4e1m2` | 4 | FP4 (1-bit exponent, 2-bit mantissa) |
-
-Valid `!pto.vreg<NxT>` configurations: `N * bitwidth(T) = 2048`
 
 ### Special Types
 
