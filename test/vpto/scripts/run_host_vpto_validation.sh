@@ -64,6 +64,31 @@ LD_LLD_BIN="${LD_LLD_BIN:-${ASCEND_HOME_PATH}/bin/ld.lld}"
 CLANG_RESOURCE_DIR="${CLANG_RESOURCE_DIR:-${ASCEND_HOME_PATH}/tools/bisheng_compiler/lib/clang/15.0.5}"
 CCE_STUB_DIR="${CCE_STUB_DIR:-${CLANG_RESOURCE_DIR}/include/cce_stub}"
 
+HOST_ARCH="$(uname -m)"
+HOST_TRIPLE=""
+HOST_TARGET_CPU=""
+HOST_TARGET_ABI=""
+HOST_FEATURE_FLAGS=()
+HOST_OS_DIR=""
+
+case "${HOST_ARCH}" in
+  aarch64)
+    HOST_TRIPLE="aarch64-unknown-linux-gnu"
+    HOST_TARGET_CPU="generic"
+    HOST_TARGET_ABI="aapcs"
+    HOST_FEATURE_FLAGS=(-target-feature +neon -target-feature +v8a)
+    HOST_OS_DIR="aarch64-linux"
+    ;;
+  x86_64)
+    HOST_TRIPLE="x86_64-unknown-linux-gnu"
+    HOST_TARGET_CPU="x86-64"
+    HOST_OS_DIR="x86_64-linux"
+    ;;
+  *)
+    die "unsupported host arch from uname -m: ${HOST_ARCH}"
+    ;;
+esac
+
 command -v "${BISHENG_BIN}" >/dev/null 2>&1 || die "bisheng not found: ${BISHENG_BIN}"
 command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
@@ -134,9 +159,19 @@ build_host_stub() {
   local case_dir="$1"
   local device_obj="$2"
   local stub_obj="$3"
+  local host_target_args=(
+    -triple "${HOST_TRIPLE}"
+    -target-cpu "${HOST_TARGET_CPU}"
+  )
+  if [[ -n "${HOST_TARGET_ABI}" ]]; then
+    host_target_args+=(-target-abi "${HOST_TARGET_ABI}")
+  fi
+  if [[ ${#HOST_FEATURE_FLAGS[@]} -gt 0 ]]; then
+    host_target_args+=("${HOST_FEATURE_FLAGS[@]}")
+  fi
 
   "${BISHENG_CC1_BIN}" -cc1 \
-    -triple aarch64-unknown-linux-gnu \
+    "${host_target_args[@]}" \
     -fcce-aicpu-legacy-launch \
     -fcce-is-host \
     -cce-launch-with-flagv2-impl \
@@ -160,10 +195,6 @@ build_host_stub() {
     -fno-rounding-math \
     -mconstructor-aliases \
     -funwind-tables=2 \
-    -target-cpu generic \
-    -target-feature +neon \
-    -target-feature +v8a \
-    -target-abi aapcs \
     -fallow-half-arguments-and-returns \
     -mllvm -treat-scalable-fixed-error-as-warning \
     -fcoverage-compilation-dir="${ROOT_DIR}" \
