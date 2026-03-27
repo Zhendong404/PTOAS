@@ -239,7 +239,7 @@ These ops make reference-updated state explicit as SSA results.
 - **syntax:** `%align_out, %offset_out = pto.vstu %align_in, %offset_in, %value, %base, "MODE" : !pto.align, index, !pto.vreg<NxT>, !pto.ptr<T, ub> -> !pto.align, index`
 - **semantics:** Unaligned store with align + offset state update.
 
-**Mode tokens:** `π_UPDATE`, `NO_POST_UPDATE`
+**Mode tokens:** `POST_UPDATE`, `NO_POST_UPDATE`
 
 ---
 
