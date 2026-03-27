@@ -5,6 +5,14 @@
 
 These ops create vectors from scalar values and manipulate predicate registers.
 
+## Common Operand Model
+
+- `%value` is the scalar source value in SSA form.
+- `%input` is either a source scalar or a source vector depending on the op.
+- `%result` is the destination vector register value.
+- For 32-bit scalar inputs, the scalar source MUST satisfy the backend's legal
+  scalar-source constraints for this family.
+
 ---
 
 ## Scalar Materialization
@@ -13,6 +21,13 @@ These ops create vectors from scalar values and manipulate predicate registers.
 
 - **syntax:** `%result = pto.vbr %value : T -> !pto.vreg<NxT>`
 - **semantics:** Broadcast scalar to all vector lanes.
+- **inputs:**
+  `%value` is the scalar source.
+- **outputs:**
+  `%result` is a vector whose active lanes all carry `%value`.
+- **constraints and limitations:**
+  Supported forms are `b8`, `b16`, and `b32`. For `b8`, only the low 8 bits of
+  the scalar source are consumed.
 
 ```c
 for (int i = 0; i < N; i++)
@@ -30,6 +45,14 @@ for (int i = 0; i < N; i++)
 
 - **syntax:** `%result = pto.vdup %input {position = "POSITION"} : T|!pto.vreg<NxT> -> !pto.vreg<NxT>`
 - **semantics:** Duplicate scalar or vector element to all lanes.
+- **inputs:**
+  `%input` supplies the scalar or source-lane value selected by `position`.
+- **outputs:**
+  `%result` is the duplicated vector.
+- **constraints and limitations:**
+  `position` selects which source element or scalar position is duplicated. The
+  current VPTO surface represents that selector as an attribute rather than a
+  separate operand.
 
 ```c
 for (int i = 0; i < N; i++)

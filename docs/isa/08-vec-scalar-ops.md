@@ -5,6 +5,15 @@
 
 Operations that combine a vector with a scalar value, applying the scalar to every lane.
 
+## Common Operand Model
+
+- `%input` is the source vector register value.
+- `%scalar` is the scalar operand in SSA form.
+- `%mask` is the predicate operand.
+- `%result` is the destination vector register value.
+- For 32-bit scalar forms, the scalar source MUST satisfy the backend's legal
+  scalar-source constraints for this family.
+
 ---
 
 ## Arithmetic
@@ -18,6 +27,13 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] + scalar;
 ```
 
+- **inputs:** `%input` is the source vector, `%scalar` is broadcast logically to
+  each active lane, and `%mask` selects active lanes.
+- **outputs:** `%result` is the lane-wise sum.
+- **constraints and limitations:** Inactive lanes follow the predication
+  behavior defined for this family. On the current surface, inactive lanes are
+  treated as zeroing lanes.
+
 ---
 
 ### `pto.vsubs`
@@ -28,6 +44,11 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src[i] - scalar;
 ```
+
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise difference.
+- **constraints and limitations:** Integer or floating-point legality depends on
+  the selected type family in lowering.
 
 ---
 
@@ -40,6 +61,11 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] * scalar;
 ```
 
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise product.
+- **constraints and limitations:** Supported element types are hardware-family
+  specific; the current VPTO surface documents the common numeric cases.
+
 ---
 
 ### `pto.vmaxs`
@@ -51,6 +77,10 @@ for (int i = 0; i < N; i++)
     dst[i] = (src[i] > scalar) ? src[i] : scalar;
 ```
 
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise maximum.
+- **constraints and limitations:** Input and result types MUST match.
+
 ---
 
 ### `pto.vmins`
@@ -61,6 +91,10 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = (src[i] < scalar) ? src[i] : scalar;
 ```
+
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise minimum.
+- **constraints and limitations:** Input and result types MUST match.
 
 ---
 
@@ -75,6 +109,10 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] & scalar;
 ```
 
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise AND.
+- **constraints and limitations:** Integer element types only.
+
 ---
 
 ### `pto.vors`
@@ -86,6 +124,10 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] | scalar;
 ```
 
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise OR.
+- **constraints and limitations:** Integer element types only.
+
 ---
 
 ### `pto.vxors`
@@ -96,6 +138,10 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src[i] ^ scalar;
 ```
+
+- **inputs:** `%input`, `%scalar`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise XOR.
+- **constraints and limitations:** Integer element types only.
 
 ---
 
@@ -110,6 +156,12 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] << scalar;
 ```
 
+- **inputs:** `%input` is the value vector, `%scalar` is the uniform shift
+  amount, and `%mask` selects active lanes.
+- **outputs:** `%result` is the shifted vector.
+- **constraints and limitations:** Integer element types only. The shift amount
+  SHOULD stay within the source element width.
+
 ---
 
 ### `pto.vshrs`
@@ -121,6 +173,11 @@ for (int i = 0; i < N; i++)
     dst[i] = src[i] >> scalar;
 ```
 
+- **inputs:** `%input` is the value vector, `%scalar` is the uniform shift
+  amount, and `%mask` selects active lanes.
+- **outputs:** `%result` is the shifted vector.
+- **constraints and limitations:** Integer element types only.
+
 ---
 
 ### `pto.vlrelu`
@@ -131,6 +188,12 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = (src[i] >= 0) ? src[i] : scalar * src[i];
 ```
+
+- **inputs:** `%input` is the activation vector, `%scalar` is the leaky slope,
+  and `%mask` selects active lanes.
+- **outputs:** `%result` is the lane-wise leaky-ReLU result.
+- **constraints and limitations:** Only `f16` and `f32` forms are currently
+  documented for `pto.vlrelu`.
 
 ---
 
@@ -149,6 +212,14 @@ for (int i = 0; i < N; i++) {
 }
 ```
 
+- **inputs:** `%lhs` and `%rhs` are the value vectors, `%carry_in` is the
+  incoming carry predicate, and `%mask` selects active lanes.
+- **outputs:** `%result` is the arithmetic result and `%carry` is the carry-out
+  predicate.
+- **constraints and limitations:** This is the scalar-extended carry-chain
+  family. Treat it as an unsigned integer operation unless the verifier states a
+  wider legal domain.
+
 ---
 
 ### `pto.vsubcs`
@@ -162,6 +233,13 @@ for (int i = 0; i < N; i++) {
     borrow_out[i] = (src0[i] < src1[i] + borrow_in[i]);
 }
 ```
+
+- **inputs:** `%lhs` and `%rhs` are the value vectors, `%borrow_in` is the
+  incoming borrow predicate, and `%mask` selects active lanes.
+- **outputs:** `%result` is the arithmetic result and `%borrow` is the
+  borrow-out predicate.
+- **constraints and limitations:** This is the scalar-extended borrow-chain
+  family and SHOULD be treated as an unsigned integer operation.
 
 ---
 

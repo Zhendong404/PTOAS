@@ -5,6 +5,15 @@
 
 Element-wise operations that take two vector inputs and produce one vector output.
 
+## Common Operand Model
+
+- `%lhs` and `%rhs` are the two source vector register values.
+- `%mask` is the predicate operand `Pg` that gates which lanes participate.
+- `%result` is the destination vector register value. Unless explicitly noted,
+  it has the same lane count and element type as the inputs.
+- Unless explicitly documented otherwise, `%lhs`, `%rhs`, and `%result` MUST
+  have matching vector shapes and element types.
+
 ---
 
 ## Arithmetic
@@ -19,6 +28,11 @@ for (int i = 0; i < N; i++)
     dst[i] = src0[i] + src1[i];
 ```
 
+- **inputs:** `%lhs` and `%rhs` are added lane-wise; `%mask` selects active
+  lanes.
+- **outputs:** `%result` is the lane-wise sum.
+- **constraints and limitations:** Input and result types MUST match.
+
 ---
 
 ### `pto.vsub`
@@ -30,6 +44,11 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src0[i] - src1[i];
 ```
+
+- **inputs:** `%lhs` is the minuend, `%rhs` is the subtrahend, and `%mask`
+  selects active lanes.
+- **outputs:** `%result` is the lane-wise difference.
+- **constraints and limitations:** Input and result types MUST match.
 
 ---
 
@@ -43,6 +62,12 @@ for (int i = 0; i < N; i++)
     dst[i] = src0[i] * src1[i];
 ```
 
+- **inputs:** `%lhs` and `%rhs` are multiplied lane-wise; `%mask` selects
+  active lanes.
+- **outputs:** `%result` is the lane-wise product.
+- **constraints and limitations:** The current A5 profile excludes `i8/u8`
+  forms from this surface.
+
 ---
 
 ### `pto.vdiv`
@@ -54,6 +79,13 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src0[i] / src1[i];
 ```
+
+- **inputs:** `%lhs` is the numerator, `%rhs` is the denominator, and `%mask`
+  selects active lanes.
+- **outputs:** `%result` is the lane-wise quotient.
+- **constraints and limitations:** Floating-point element types only. Active
+  denominators containing `+0` or `-0` follow the target's exceptional
+  behavior.
 
 ---
 
@@ -67,6 +99,10 @@ for (int i = 0; i < N; i++)
     dst[i] = (src0[i] > src1[i]) ? src0[i] : src1[i];
 ```
 
+- **inputs:** `%lhs`, `%rhs`, and `%mask` as above.
+- **outputs:** `%result` holds the lane-wise maximum.
+- **constraints and limitations:** Input and result types MUST match.
+
 ---
 
 ### `pto.vmin`
@@ -78,6 +114,10 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = (src0[i] < src1[i]) ? src0[i] : src1[i];
 ```
+
+- **inputs:** `%lhs`, `%rhs`, and `%mask` as above.
+- **outputs:** `%result` holds the lane-wise minimum.
+- **constraints and limitations:** Input and result types MUST match.
 
 ---
 
@@ -93,6 +133,10 @@ for (int i = 0; i < N; i++)
     dst[i] = src0[i] & src1[i];
 ```
 
+- **inputs:** `%lhs`, `%rhs`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise AND.
+- **constraints and limitations:** Integer element types only.
+
 ---
 
 ### `pto.vor`
@@ -105,6 +149,10 @@ for (int i = 0; i < N; i++)
     dst[i] = src0[i] | src1[i];
 ```
 
+- **inputs:** `%lhs`, `%rhs`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise OR.
+- **constraints and limitations:** Integer element types only.
+
 ---
 
 ### `pto.vxor`
@@ -116,6 +164,10 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src0[i] ^ src1[i];
 ```
+
+- **inputs:** `%lhs`, `%rhs`, and `%mask` as above.
+- **outputs:** `%result` is the lane-wise bitwise XOR.
+- **constraints and limitations:** Integer element types only.
 
 ---
 
@@ -131,6 +183,13 @@ for (int i = 0; i < N; i++)
     dst[i] = src0[i] << src1[i];
 ```
 
+- **inputs:** `%lhs` supplies the shifted value, `%rhs` supplies the per-lane
+  shift amount, and `%mask` selects active lanes.
+- **outputs:** `%result` is the shifted vector.
+- **constraints and limitations:** Integer element types only. Shift counts
+  SHOULD stay within `[0, bitwidth(T) - 1]`; out-of-range behavior is target-
+  defined unless the verifier narrows it further.
+
 ---
 
 ### `pto.vshr`
@@ -142,6 +201,12 @@ for (int i = 0; i < N; i++)
 for (int i = 0; i < N; i++)
     dst[i] = src0[i] >> src1[i];  // arithmetic for signed, logical for unsigned
 ```
+
+- **inputs:** `%lhs` supplies the shifted value, `%rhs` supplies the per-lane
+  shift amount, and `%mask` selects active lanes.
+- **outputs:** `%result` is the shifted vector.
+- **constraints and limitations:** Integer element types only. Signedness of the
+  element type determines arithmetic vs logical behavior.
 
 ---
 
@@ -160,6 +225,14 @@ for (int i = 0; i < N; i++) {
 }
 ```
 
+- **inputs:** `%lhs` and `%rhs` are added lane-wise and `%mask` selects active
+  lanes.
+- **outputs:** `%result` is the truncated arithmetic result and `%carry` is the
+  carry/overflow predicate per lane.
+- **constraints and limitations:** This is a carry-chain integer add family. On
+  the current A5 surface, it SHOULD be treated as an unsigned integer
+  operation.
+
 ---
 
 ### `pto.vsubc`
@@ -173,6 +246,14 @@ for (int i = 0; i < N; i++) {
     borrow[i] = (src0[i] < src1[i]);
 }
 ```
+
+- **inputs:** `%lhs` and `%rhs` are subtracted lane-wise and `%mask` selects
+  active lanes.
+- **outputs:** `%result` is the arithmetic difference and `%borrow` marks lanes
+  that borrowed.
+- **constraints and limitations:** This operation SHOULD be treated as an
+  unsigned 32-bit carry-chain family unless and until the verifier states
+  otherwise.
 
 ---
 
