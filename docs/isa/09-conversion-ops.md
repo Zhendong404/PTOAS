@@ -5,12 +5,28 @@
 
 Operations that convert between data types (float/int, narrowing/widening).
 
+## Common Operand Model
+
+- `%input` is the source vector register value.
+- `%result` is the destination vector register value.
+- `round_mode`, `sat`, and `part` control rounding, saturation, and lane-part
+  selection in attribute form.
+- The single `pto.vcvt` surface covers float-int, float-float, int-float, and
+  int-int conversion families.
+
 ---
 
 ## `pto.vci`
 
 - **syntax:** `%result = pto.vci %index {order = "ORDER"} : integer -> !pto.vreg<NxT>`
 - **semantics:** Generate a lane-index vector from a scalar seed/index value.
+- **inputs:**
+  `%index` is the scalar seed or base index.
+- **outputs:**
+  `%result` is the generated index vector.
+- **constraints and limitations:**
+  This is an index-generation family, not a numeric conversion. `ORDER` and the
+  result element type together determine how indices are generated.
 
 ---
 
@@ -23,6 +39,16 @@ Operations that convert between data types (float/int, narrowing/widening).
 for (int i = 0; i < min(N, M); i++)
     dst[i] = convert(src[i], T0, T1, round_mode);
 ```
+
+- **inputs:**
+  `%input` is the source vector; attributes select rounding, saturation, and
+  even/odd placement when the conversion changes width.
+- **outputs:**
+  `%result` is the converted vector.
+- **constraints and limitations:**
+  Only documented source/destination type pairs are legal. `PART_EVEN` /
+  `PART_ODD` is only meaningful for width-changing forms that pack two source
+  streams into one destination register.
 
 ---
 
@@ -99,6 +125,16 @@ For conversions that change width (e.g., f32→f16), use even/odd parts and comb
 for (int i = 0; i < N; i++)
     dst[i] = round_to_int_valued_float(src[i], round_mode);
 ```
+
+- **inputs:**
+  `%input` is the floating-point source vector and `ROUND_MODE` selects the
+  truncation/rounding rule.
+- **outputs:**
+  `%result` is still a floating-point vector, but each active lane now carries
+  an integer-valued floating-point result.
+- **constraints and limitations:**
+  This op does not change the element type. `ROUND_O` is supported for avoiding
+  double-rounding errors during staged conversions.
 
 **Example:**
 ```mlir

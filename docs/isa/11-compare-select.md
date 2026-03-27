@@ -5,6 +5,15 @@
 
 Operations that compare vectors and conditionally select elements.
 
+## Common Operand Model
+
+- `%src0` and `%src1` are source vector operands.
+- `%scalar` is the scalar operand for scalar-comparison families.
+- `%seed` is the incoming predicate that limits which lanes participate in the
+  compare.
+- `%result` is either a predicate mask (`vcmp`, `vcmps`) or a vector register
+  (`vsel`, `vselr`, `vselrv2`).
+
 ---
 
 ## Comparison Operations
@@ -38,6 +47,13 @@ for (int i = 0; i < N; i++)
 // lt_mask[i] = 1 if a[i] < b[i]
 ```
 
+- **inputs:** `%src0`, `%src1`, and `%seed`; `CMP_MODE` selects the comparison
+  predicate.
+- **outputs:** `%result` is the generated predicate mask.
+- **constraints and limitations:** Only lanes enabled by `%seed` participate.
+  Integer and floating-point comparisons follow their own element-type-specific
+  comparison rules.
+
 ---
 
 ### `pto.vcmps`
@@ -57,6 +73,12 @@ for (int i = 0; i < N; i++)
     : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.mask
 // positive_mask[i] = 1 if values[i] > 0
 ```
+
+- **inputs:** `%src` is the vector source, `%scalar` is the scalar comparison
+  value, and `%seed` is the incoming predicate.
+- **outputs:** `%result` is the generated predicate mask.
+- **constraints and limitations:** For 32-bit scalar forms, the scalar source
+  MUST satisfy the backend's legal scalar-source constraints for this family.
 
 ---
 
@@ -79,6 +101,12 @@ for (int i = 0; i < N; i++)
     : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
 ```
 
+- **inputs:** `%src0` is the true-path vector, `%src1` is the false-path vector,
+  and `%mask` selects between them.
+- **outputs:** `%result` is the selected vector.
+- **constraints and limitations:** Source vectors and result MUST have matching
+  vector shapes and element types.
+
 ---
 
 ### `pto.vselr`
@@ -91,12 +119,22 @@ for (int i = 0; i < N; i++)
     dst[i] = mask[i] ? src1[i] : src0[i];  // reversed from vsel
 ```
 
+- **inputs:** `%src0` and `%src1` are the source vectors.
+- **outputs:** `%result` is the selected vector.
+- **constraints and limitations:** This family preserves reversed-select
+  semantics. If the concrete lowering uses an implicit predicate source, that
+  predicate source MUST be documented by the surrounding IR pattern.
+
 ---
 
 ### `pto.vselrv2`
 
 - **syntax:** `%result = pto.vselrv2 %src0, %src1 : !pto.vreg<NxT>, !pto.vreg<NxT> -> !pto.vreg<NxT>`
 - **semantics:** Variant select form with the same current two-vector operand shape.
+- **inputs:** `%src0` and `%src1` are the source vectors.
+- **outputs:** `%result` is the selected vector.
+- **constraints and limitations:** This page records the surface shape only.
+  Lowering MUST preserve the exact A5 variant semantics selected for this form.
 
 ---
 
