@@ -271,6 +271,24 @@ def PTOA5VMIfCanonicalize
                            "mlir::scf::SCFDialect"];
 }
 
+def PTOA5VMExpandBridgeOps
+    : Pass<"pto-a5vm-expand-bridge-ops", "func::FuncOp"> {
+  let summary =
+      "Expand temporary A5VM bridge ops back to emission-ready A5VM IR";
+  let description = [{
+    Low-level fusion may keep temporary bridge ops in A5VM IR so legality and
+    alias analysis can still see memref-form operands. This pass expands those
+    bridge ops back to the existing emission-ready pointer-level A5VM forms
+    before backend emission.
+  }];
+  let constructor = "mlir::pto::createPTOA5VMExpandBridgeOpsPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::LLVM::LLVMDialect",
+                           "mlir::a5vm::A5VMDialect"];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
       "Fuse adjacent A5VM post-lowering loop nests inside pto.fusion_region";

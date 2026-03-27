@@ -14,8 +14,9 @@
 // CHECK-LABEL: IR Dump After PTOToA5VM
 // CHECK-LABEL: IR Dump After PTOA5VMIfCanonicalize
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
-// CHECK-LABEL: IR Dump After CSE
 // CHECK-LABEL: IR Dump After PTOFusionPredicateElision
 // CHECK-LABEL: IR Dump After PTOFusionLoadStoreElision
 // CHECK-LABEL: IR Dump After PTOFlattenFusionRegion
+// CHECK-LABEL: IR Dump After CSE
+// CHECK-LABEL: IR Dump After PTOA5VMExpandBridgeOps
 // CHECK-LABEL: IR Dump After CSE

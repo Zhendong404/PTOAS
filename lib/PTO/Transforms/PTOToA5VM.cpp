@@ -292,16 +292,19 @@ LogicalResult lowerTColExpandOp(TColExpandOp op, PatternRewriter &rewriter) {
   return lowerTColExpand(op, rewriter);
 }
 
-LogicalResult lowerTRowExpandMulOp(TRowExpandMulOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandMul(op, rewriter);
+LogicalResult lowerTRowExpandMulOp(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandMul(op, rewriter, strategy);
 }
 
-LogicalResult lowerTRowExpandDivOp(TRowExpandDivOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandDiv(op, rewriter);
+LogicalResult lowerTRowExpandDivOp(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandDiv(op, rewriter, strategy);
 }
 
-LogicalResult lowerTRowExpandSubOp(TRowExpandSubOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandSub(op, rewriter);
+LogicalResult lowerTRowExpandSubOp(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                   A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandSub(op, rewriter, strategy);
 }
 
 LogicalResult lowerTPartAddOp(TPartAddOp op, PatternRewriter &rewriter) {
@@ -470,11 +473,11 @@ LogicalResult lowerTensorPipelineOp(Operation *op, PatternRewriter &rewriter,
   else if (auto tcolexpand = dyn_cast<TColExpandOp>(op))
     lowered = lowerTColExpandOp(tcolexpand, rewriter);
   else if (auto trowexpandmul = dyn_cast<TRowExpandMulOp>(op))
-    lowered = lowerTRowExpandMulOp(trowexpandmul, rewriter);
+    lowered = lowerTRowExpandMulOp(trowexpandmul, rewriter, strategy);
   else if (auto trowexpanddiv = dyn_cast<TRowExpandDivOp>(op))
-    lowered = lowerTRowExpandDivOp(trowexpanddiv, rewriter);
+    lowered = lowerTRowExpandDivOp(trowexpanddiv, rewriter, strategy);
   else if (auto trowexpandsub = dyn_cast<TRowExpandSubOp>(op))
-    lowered = lowerTRowExpandSubOp(trowexpandsub, rewriter);
+    lowered = lowerTRowExpandSubOp(trowexpandsub, rewriter, strategy);
   else if (auto tpartadd = dyn_cast<TPartAddOp>(op))
     lowered = lowerTPartAddOp(tpartadd, rewriter);
   else if (auto tpartmax = dyn_cast<TPartMaxOp>(op))

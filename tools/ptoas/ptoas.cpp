@@ -686,7 +686,8 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
   //   FusionRegionGen -> shared pre-backend normalization
   //   -> PTOA5VMVersionSelection -> PTOToA5VM
   //   -> PTOA5VMIfCanonicalize
-  //   -> PTOLowLevelLoopFusion -> CSE -> PTOFusionPredicateElision
+  //   -> PTOLowLevelLoopFusion -> Canonicalize
+  //   -> CSE -> PTOFusionPredicateElision
   //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
   //   -> backend emission.
   if (enableFusionMainline) {
@@ -702,6 +703,7 @@ static void addA5VMBackendMainlinePasses(OpPassManager &pm,
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));
+    pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFusionPredicateElisionPass());
@@ -1427,6 +1429,11 @@ int main(int argc, char **argv) {
       PassManager backendPM(&context);
       maybeEnablePrintIRAfterAll(backendPM, inputFuncNames);
       addA5VMBackendMainlinePasses(backendPM, enableA5FusionMainline);
+      if (enableA5FusionMainline) {
+        backendPM.addNestedPass<mlir::func::FuncOp>(
+            pto::createPTOA5VMExpandBridgeOpsPass());
+        backendPM.addPass(createCSEPass());
+      }
       if (failed(backendPM.run(*module))) {
         llvm::errs() << "Error: A5VM backend lowering pass execution failed.\n";
         return 1;

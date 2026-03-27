@@ -667,6 +667,32 @@ LogicalResult VldusOp::verify() {
   return success();
 }
 
+void UvldOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
+}
+
+LogicalResult UvldOp::verify() {
+  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+    return failure();
+  if (!isBufferLike(getSource().getType()))
+    return emitOpError("requires a buffer-like source");
+  if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
+    return emitOpError("requires a UB-backed source");
+
+  auto sourceMemRef = dyn_cast<BaseMemRefType>(getSource().getType());
+  if (!sourceMemRef)
+    return success();
+
+  Type sourceElementType = sourceMemRef.getElementType();
+  Type vectorElementType = cast<VecType>(getResult().getType()).getElementType();
+  if (sourceElementType != vectorElementType)
+    return emitOpError(
+        "requires source element type to match vector element type");
+  return success();
+}
+
 LogicalResult VdupOp::verify() {
   auto resultType = dyn_cast<VecType>(getResult().getType());
   if (!resultType)

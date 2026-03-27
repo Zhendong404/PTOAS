@@ -245,9 +245,12 @@ LogicalResult lowerTColSum(TColSumOp op, PatternRewriter &rewriter);
 LogicalResult lowerTRowExpand(TRowExpandOp op, PatternRewriter &rewriter,
                               A5VMLoweringStrategy strategy);
 LogicalResult lowerTColExpand(TColExpandOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter);
-LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter);
+LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
+LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
+LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy);
 LogicalResult lowerTPartAdd(TPartAddOp op, PatternRewriter &rewriter);
 LogicalResult lowerTPartMax(TPartMaxOp op, PatternRewriter &rewriter);
 LogicalResult lowerTPartMin(TPartMinOp op, PatternRewriter &rewriter);

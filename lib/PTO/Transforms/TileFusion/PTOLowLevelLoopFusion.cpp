@@ -1,5 +1,7 @@
+#include "PTO/IR/A5VM.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "../Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -62,6 +64,14 @@ static bool isPureNoRegionOp(Operation *op) {
   return op->getNumRegions() == 0 && isMemoryEffectFree(op);
 }
 
+static bool isMovableMemoryPreludeOp(Operation *op) {
+  return op->getNumRegions() == 0 && isa<MemoryEffectOpInterface>(op);
+}
+
+static bool isSupportedPreludeOp(Operation *op) {
+  return isPureNoRegionOp(op) || isMovableMemoryPreludeOp(op);
+}
+
 static bool isSupportedLeafOp(Operation *op) { return op->getNumRegions() == 0; }
 
 static bool isInterstageSetupOp(Operation *op) {
@@ -116,6 +126,96 @@ static bool areEquivalentValues(Value lhs, Value rhs) {
   return areEquivalentOperations(lhs.getDefiningOp(), rhs.getDefiningOp());
 }
 
+static FailureOr<Value> getRootMemRef(Value value) {
+  if (!value || !isa<BaseMemRefType>(value.getType()))
+    return failure();
+  Value root = pto::tracebackMemRef(value);
+  if (!root || !isa<BaseMemRefType>(root.getType()))
+    return failure();
+  return root;
+}
+
+static LogicalResult collectAliasRelevantRoots(
+    Operation *op, SmallVectorImpl<Value> &roots) {
+  if (isMemoryEffectFree(op))
+    return success();
+
+  auto effectsOp = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effectsOp)
+    return failure();
+
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+  effectsOp.getEffects(effects);
+  for (const auto &effect : effects) {
+    Value effectValue = effect.getValue();
+    if (!effectValue)
+      return failure();
+
+    if (!isa<BaseMemRefType>(effectValue.getType())) {
+      if (isa<MemoryEffects::Write>(effect.getEffect()))
+        return failure();
+      continue;
+    }
+
+    FailureOr<Value> root = getRootMemRef(effectValue);
+    if (failed(root))
+      return failure();
+    roots.push_back(*root);
+  }
+  return success();
+}
+
+static bool canMovePreludeAcrossPriorStages(Operation *preludeOp,
+                                            ArrayRef<StageInfo> priorStages,
+                                            llvm::raw_ostream *debugOS) {
+  SmallVector<Value, 4> preludeRoots;
+  if (failed(collectAliasRelevantRoots(preludeOp, preludeRoots))) {
+    if (debugOS)
+      *debugOS << "[op-fusion] reject prelude op " << preludeOp->getName()
+               << " at " << preludeOp->getLoc()
+               << ": touched roots are not alias-analyzable\n";
+    return false;
+  }
+  for (const StageInfo &priorStage : priorStages) {
+    for (Operation *leafOp : priorStage.leafOps) {
+      SmallVector<Value, 4> leafRoots;
+      if (failed(collectAliasRelevantRoots(leafOp, leafRoots))) {
+        if (debugOS)
+          *debugOS << "[op-fusion] reject prelude op " << preludeOp->getName()
+                   << " at " << preludeOp->getLoc()
+                   << ": crossed effects of " << leafOp->getName()
+                   << " are not alias-analyzable\n";
+        return false;
+      }
+      for (Value preludeRoot : preludeRoots) {
+        if (llvm::is_contained(leafRoots, preludeRoot)) {
+          if (debugOS)
+            *debugOS << "[op-fusion] reject prelude op "
+                     << preludeOp->getName() << " at " << preludeOp->getLoc()
+                     << ": touched root may alias a prior stage memory op\n";
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+static bool arePreludeReordersLegal(ArrayRef<StageInfo> stages,
+                                    llvm::raw_ostream *debugOS) {
+  for (size_t stageIndex = 1; stageIndex < stages.size(); ++stageIndex) {
+    ArrayRef<StageInfo> priorStages(stages.data(), stageIndex);
+    for (const LoopLevelInfo &level : stages[stageIndex].levels) {
+      for (Operation *op : level.preludeOps) {
+        if (!canMovePreludeAcrossPriorStages(op, priorStages, debugOS))
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
 static LogicalResult analyzeStage(scf::ForOp outerLoop, StageInfo &stage) {
   scf::ForOp currentLoop = outerLoop;
   while (currentLoop) {
@@ -148,7 +248,7 @@ static LogicalResult analyzeStage(scf::ForOp outerLoop, StageInfo &stage) {
         seenChildLoop = true;
         continue;
       }
-      if (seenChildLoop || !isPureNoRegionOp(op))
+      if (seenChildLoop || !isSupportedPreludeOp(op))
         return failure();
       currentLevel.preludeOps.push_back(op);
     }
@@ -311,6 +411,8 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages,
       return false;
     }
   }
+  if (!arePreludeReordersLegal(stages, debugOS))
+    return false;
 
   OpBuilder blockBuilder(first.getOuterLoop());
   SmallVector<IRMapping, 8> stageMappings(stages.size());

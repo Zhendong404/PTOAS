@@ -240,6 +240,23 @@ def A5VM_VldusOp : A5VM_Op<"vldus", [
   }];
 }
 
+def A5VM_UvldOp : A5VM_Op<"uvld", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let arguments = (ins
+    A5VM_BufferLikeType:$source,
+    Index:$offset
+  );
+
+  let results = (outs A5VM_VectorType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source `[` $offset `]` attr-dict `:` type($source) `->` type($result)
+  }];
+}
+
 def A5VM_VbrOp : A5VM_Op<"vbr", [Pure]> {
   let arguments = (ins AnyType:$value);
   let results = (outs A5VM_VectorType:$result);

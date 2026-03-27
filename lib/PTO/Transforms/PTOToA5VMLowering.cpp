@@ -6929,7 +6929,8 @@ LogicalResult lowerTColExpand(TColExpandOp op, PatternRewriter &rewriter) {
 
 template <typename OpTy>
 LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
-                                        StringRef family) {
+                                        StringRef family,
+                                        A5VMLoweringStrategy strategy) {
   Type elementType = getElementType(op.getDst());
   if (!elementType || (!elementType.isF16() && !elementType.isF32()))
     return op.emitOpError() << family
@@ -6984,20 +6985,16 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
     return op.emitOpError() << family
                             << " lowering requires a legal A5VM vector type";
 
-  Value baseBuffer = materializeBufferLikeAddress(baseSrc, elementType,
-                                                  getMemorySpace(baseSrc), rewriter,
-                                                  op.getLoc());
+  Value baseBuffer = materializeBufferBaseForStrategy(
+      baseSrc, elementType, getMemorySpace(baseSrc), strategy, rewriter,
+      op.getLoc());
   Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
                                                     getMemorySpace(expandSrc), rewriter,
                                                     op.getLoc());
-  Value expandPointerBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                       getMemorySpace(expandSrc),
-                                                       rewriter, op.getLoc());
-  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
-                                                 getMemorySpace(op.getDst()), rewriter,
-                                                 op.getLoc());
-  if (!baseBuffer || !expandBuffer || !dstBuffer ||
-      (expandIsColMajor && !expandPointerBuffer))
+  Value dstBuffer = materializeBufferBaseForStrategy(
+      op.getDst(), elementType, getMemorySpace(op.getDst()), strategy, rewriter,
+      op.getLoc());
+  if (!baseBuffer || !expandBuffer || !dstBuffer)
     return op.emitOpError() << family
                             << " lowering requires buffer-like tile buffers";
 
@@ -7014,6 +7011,10 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   Value colsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidCols);
   Value vectorStep =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vecType.getElementCount());
+  Value repeatUpper =
+      rewriter.create<arith::CeilDivUIOp>(op.getLoc(), colsUpper, vectorStep);
+  Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(
+      op.getLoc(), rewriter.getI32Type(), colsUpper);
   Value baseStrideValue =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), baseRowStride);
   Value expandStrideValue =
@@ -7027,6 +7028,33 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
   loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
   loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
+
+  auto buildRowExpandValue = [&](Value baseVec, Value expandedVec,
+                                 Value predicate) -> FailureOr<Value> {
+    if (family == "trowexpandmul")
+      return rewriter.create<a5vm::VmulOp>(op.getLoc(), vecType, baseVec,
+                                           expandedVec, predicate)
+          .getResult();
+    if (family == "trowexpanddiv") {
+      if (src0EqDst)
+        return rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, baseVec,
+                                             expandedVec, predicate)
+            .getResult();
+      return rewriter.create<a5vm::VdivOp>(op.getLoc(), vecType, expandedVec,
+                                           baseVec, predicate)
+          .getResult();
+    }
+    if (family == "trowexpandsub") {
+      if (src0EqDst)
+        return rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, baseVec,
+                                             expandedVec, predicate)
+            .getResult();
+      return rewriter.create<a5vm::VsubOp>(op.getLoc(), vecType, expandedVec,
+                                           baseVec, predicate)
+          .getResult();
+    }
+    return failure();
+  };
 
   auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
   if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
@@ -7045,16 +7073,9 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
 
   Value expandVec;
   if (expandIsColMajor) {
-    Value expandBase = offsetBufferPointer(expandPointerBuffer, elementType, expandRowOffset,
-                                          rewriter, op.getLoc());
-    auto alignType = a5vm::AlignType::get(rewriter.getContext());
-    Value expandAlign =
-        rewriter.create<a5vm::VldasOp>(op.getLoc(), alignType, expandBase);
-    auto expandLoad = rewriter.create<a5vm::VldusOp>(
-        op.getLoc(),
-        TypeRange{vecType, alignType, expandBase.getType()},
-        ValueRange{expandBase, expandAlign});
-    Value expandScalar = expandLoad.getResult();
+    Value expandScalar =
+        rewriter.create<a5vm::UvldOp>(op.getLoc(), vecType, expandBuffer,
+                                      expandRowOffset);
     expandVec = rewriter
                     .create<a5vm::VdupOp>(op.getLoc(), vecType, expandScalar,
                                           rewriter.getStringAttr("POS_LOWEST"),
@@ -7067,210 +7088,44 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
                     .getResult();
   }
 
-  auto colLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, colsUpper, vectorStep);
-  rewriter.setInsertionPointToStart(colLoop.getBody());
-  Value col = colLoop.getInductionVar();
-  Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), colsUpper, col);
-  Value needsTailMask = rewriter.create<arith::CmpIOp>(
-      op.getLoc(), arith::CmpIPredicate::slt, remainingCols, vectorStep);
-  Value activeLanes = rewriter.create<arith::SelectOp>(op.getLoc(), needsTailMask,
-                                                       remainingCols, vectorStep);
-  Value baseOffset = rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, col);
-  Value dstOffset = rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, col);
-  Value storeMask =
-      buildPredicateMaskForLaneCount(rewriter, op.getLoc(), elementType, activeLanes);
+  auto repeatLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, repeatUpper, c1,
+                                                ValueRange{rowScalarInit});
+  rewriter.setInsertionPointToStart(repeatLoop.getBody());
+  Value remainingCols = repeatLoop.getRegionIterArgs()[0];
+  PredicateMaterialization predicateState = buildPredicateForLaneCount(
+      rewriter, op.getLoc(), elementType, remainingCols);
+  Value chunkBase =
+      rewriter.create<arith::MulIOp>(op.getLoc(), repeatLoop.getInductionVar(), vectorStep);
+  Value baseOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, chunkBase);
+  Value dstOffset =
+      rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, chunkBase);
   Value baseVec =
       rewriter.create<a5vm::VldsOp>(op.getLoc(), vecType, baseBuffer, baseOffset, StringAttr());
-
-  Value computed;
-  if (family == "trowexpandmul") {
-    computed =
-        rewriter.create<a5vm::VmulOp>(
-            op.getLoc(), vecType, baseVec, expandVec,
-            buildAllPredicateMask(rewriter, op.getLoc(), elementType));
-  } else if (family == "trowexpanddiv") {
-    if (src0EqDst)
-      computed =
-          rewriter.create<a5vm::VdivOp>(
-              op.getLoc(), vecType, baseVec, expandVec,
-              buildAllPredicateMask(rewriter, op.getLoc(), elementType));
-    else
-      computed =
-          rewriter.create<a5vm::VdivOp>(
-              op.getLoc(), vecType, expandVec, baseVec,
-              buildAllPredicateMask(rewriter, op.getLoc(), elementType));
-  } else {
+  FailureOr<Value> computed =
+      buildRowExpandValue(baseVec, expandVec, predicateState.mask);
+  if (failed(computed))
     return op.emitOpError() << "unsupported rowexpand binary family";
-  }
-  rewriter.create<a5vm::VstsOp>(
-      op.getLoc(), computed, dstBuffer, dstOffset, StringAttr(), storeMask);
+  rewriter.create<a5vm::VstsOp>(op.getLoc(), *computed, dstBuffer, dstOffset,
+                                StringAttr(), predicateState.mask);
+  rewriter.create<scf::YieldOp>(op.getLoc(),
+                                ValueRange{predicateState.nextScalar});
   return success();
 }
 
-LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandmul");
+LogicalResult lowerTRowExpandMul(TRowExpandMulOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandmul", strategy);
 }
 
-LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter) {
-  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpanddiv");
+LogicalResult lowerTRowExpandDiv(TRowExpandDivOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpanddiv", strategy);
 }
 
-LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter) {
-  Type elementType = getElementType(op.getDst());
-  if (!elementType || (!elementType.isF16() && !elementType.isF32()))
-    return op.emitOpError("trowexpandsub lowering currently supports only f16 and f32 element types");
-
-  if (deriveTileDomain(getMemorySpace(op.getDst())) != A5VMTileDomain::Vec ||
-      deriveTileDomain(getMemorySpace(op.getSrc0())) != A5VMTileDomain::Vec ||
-      deriveTileDomain(getMemorySpace(op.getSrc1())) != A5VMTileDomain::Vec)
-    return op.emitOpError("trowexpandsub lowering requires vec tile domain");
-  if (deriveTileLayout(op.getDst()) != "row_major")
-    return op.emitOpError("trowexpandsub lowering requires row-major dst layout");
-
-  int64_t dstValidRows = ShapedType::kDynamic;
-  int64_t dstValidCols = ShapedType::kDynamic;
-  int64_t src0ValidRows = ShapedType::kDynamic;
-  int64_t src0ValidCols = ShapedType::kDynamic;
-  int64_t src1ValidRows = ShapedType::kDynamic;
-  int64_t src1ValidCols = ShapedType::kDynamic;
-  deriveValidShape(op.getDst(), dstValidRows, dstValidCols);
-  deriveValidShape(op.getSrc0(), src0ValidRows, src0ValidCols);
-  deriveValidShape(op.getSrc1(), src1ValidRows, src1ValidCols);
-  if (dstValidRows == ShapedType::kDynamic || dstValidCols == ShapedType::kDynamic ||
-      src0ValidRows == ShapedType::kDynamic || src0ValidCols == ShapedType::kDynamic ||
-      src1ValidRows == ShapedType::kDynamic || src1ValidCols == ShapedType::kDynamic)
-    return op.emitOpError("trowexpandsub lowering currently requires static valid shapes");
-
-  bool src0EqDst = op.getSrc0().getType() == op.getDst().getType();
-  bool src1EqDst = op.getSrc1().getType() == op.getDst().getType();
-  if (!src0EqDst && !src1EqDst)
-    return op.emitOpError("trowexpandsub lowering requires src0 or src1 to match dst tile type");
-
-  Value baseSrc = src0EqDst ? op.getSrc0() : op.getSrc1();
-  Value expandSrc = src0EqDst ? op.getSrc1() : op.getSrc0();
-  StringRef expandLayout = deriveTileLayout(expandSrc);
-  int64_t expandValidRows = src0EqDst ? src1ValidRows : src0ValidRows;
-  int64_t expandValidCols = src0EqDst ? src1ValidCols : src0ValidCols;
-  if (expandValidRows != dstValidRows)
-    return op.emitOpError("trowexpandsub lowering requires expand operand valid rows to match dst");
-
-  int64_t elemBytes = getElementByteSize(elementType);
-  bool expandIsRowMajor = expandLayout == "row_major" && expandValidCols == 32 / elemBytes;
-  bool expandIsColMajor = expandLayout == "col_major" && expandValidCols == 1;
-  if (!expandIsRowMajor && !expandIsColMajor)
-    return op.emitOpError("trowexpandsub lowering requires PTO A5-compatible expand operand shape");
-
-  auto vecType = getA5VMVecType(rewriter.getContext(), elementType);
-  if (!vecType)
-    return op.emitOpError("trowexpandsub lowering requires a legal A5VM vector type");
-
-  Value baseBuffer = materializeBufferLikeAddress(baseSrc, elementType,
-                                                  getMemorySpace(baseSrc), rewriter,
-                                                  op.getLoc());
-  Value expandBuffer = materializeBufferLikeAddress(expandSrc, elementType,
-                                                    getMemorySpace(expandSrc), rewriter,
-                                                    op.getLoc());
-  Value expandPointerBuffer = materializeBufferPointer(expandSrc, elementType,
-                                                       getMemorySpace(expandSrc),
-                                                       rewriter, op.getLoc());
-  Value dstBuffer = materializeBufferLikeAddress(op.getDst(), elementType,
-                                                 getMemorySpace(op.getDst()), rewriter,
-                                                 op.getLoc());
-  if (!baseBuffer || !expandBuffer || !dstBuffer ||
-      (expandIsColMajor && !expandPointerBuffer))
-    return op.emitOpError("trowexpandsub lowering requires buffer-like tile buffers");
-
-  int64_t dstRowStride = deriveStaticRowStride(op.getDst());
-  int64_t baseRowStride = deriveStaticRowStride(baseSrc);
-  int64_t expandRowStride = deriveStaticRowStride(expandSrc);
-  if (dstRowStride == ShapedType::kDynamic || baseRowStride == ShapedType::kDynamic ||
-      expandRowStride == ShapedType::kDynamic)
-    return op.emitOpError("trowexpandsub lowering requires static row strides");
-
-  Value c0 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
-  Value c1 = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 1);
-  Value rowsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidRows);
-  Value colsUpper = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstValidCols);
-  Value vectorStep = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vecType.getElementCount());
-  Value baseStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), baseRowStride);
-  Value expandStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), expandRowStride);
-  Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstRowStride);
-  Value blockSizeValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 32 / elemBytes);
-
-  A5VMLoopScopeContract loopScope;
-  loopScope.kind = A5VMLoopScopeKind::AIVVectorScope;
-  loopScope.loweredAttr = kLoweredLoopScopeAttrName;
-  loopScope.loopDepth = 0;
-
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
-
-  OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
-  auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, rowsUpper, c1);
-  rewriter.setInsertionPointToStart(rowLoop.getBody());
-  Value row = rowLoop.getInductionVar();
-  Value baseRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, baseStrideValue);
-  Value dstRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, dstStrideValue);
-  Value expandRowOffset = rewriter.create<arith::MulIOp>(op.getLoc(), row, expandStrideValue);
-
-  Value expandedVec;
-  if (expandIsRowMajor) {
-    Value expandOffset =
-        rewriter.create<arith::MulIOp>(op.getLoc(), row, blockSizeValue);
-    expandedVec = rewriter
-                      .create<a5vm::VldsOp>(op.getLoc(), vecType, expandBuffer, expandOffset,
-                                            rewriter.getStringAttr("BLK"))
-                      .getResult();
-  } else {
-    Value expandBase = offsetBufferPointer(expandPointerBuffer, elementType, expandRowOffset,
-                                          rewriter, op.getLoc());
-    auto alignType = a5vm::AlignType::get(rewriter.getContext());
-    Value expandAlign =
-        rewriter.create<a5vm::VldasOp>(op.getLoc(), alignType, expandBase);
-    auto expandLoad = rewriter.create<a5vm::VldusOp>(
-        op.getLoc(),
-        TypeRange{vecType, alignType, expandBase.getType()},
-        ValueRange{expandBase, expandAlign});
-    Value loaded = expandLoad.getResult();
-    expandedVec = rewriter
-                      .create<a5vm::VdupOp>(op.getLoc(), vecType, loaded,
-                                            rewriter.getStringAttr("POS_LOWEST"),
-                                            rewriter.getStringAttr("MODE_ZEROING"))
-                      .getResult();
-  }
-
-  auto chunkLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, colsUpper, vectorStep);
-  rewriter.setInsertionPointToStart(chunkLoop.getBody());
-  Value chunk = chunkLoop.getInductionVar();
-  Value remainingCols = rewriter.create<arith::SubIOp>(op.getLoc(), colsUpper, chunk);
-  Value needsTailMask = rewriter.create<arith::CmpIOp>(
-      op.getLoc(), arith::CmpIPredicate::slt, remainingCols, vectorStep);
-  Value activeLanes = rewriter.create<arith::SelectOp>(op.getLoc(), needsTailMask,
-                                                       remainingCols, vectorStep);
-  Value srcOffset = rewriter.create<arith::AddIOp>(op.getLoc(), baseRowOffset, chunk);
-  Value outOffset = rewriter.create<arith::AddIOp>(op.getLoc(), dstRowOffset, chunk);
-  Value storeMask =
-      buildPredicateMaskForLaneCount(rewriter, op.getLoc(), elementType, activeLanes);
-  Value lhs = rewriter
-                  .create<a5vm::VldsOp>(op.getLoc(), vecType, baseBuffer, srcOffset,
-                                        StringAttr())
-                  .getResult();
-  Value sub = src0EqDst
-                  ? rewriter
-                        .create<a5vm::VsubOp>(
-                            op.getLoc(), vecType, lhs, expandedVec,
-                            buildAllPredicateMask(rewriter, op.getLoc(), elementType))
-                        .getResult()
-                  : rewriter
-                        .create<a5vm::VsubOp>(
-                            op.getLoc(), vecType, expandedVec, lhs,
-                            buildAllPredicateMask(rewriter, op.getLoc(), elementType))
-                        .getResult();
-  rewriter.create<a5vm::VstsOp>(
-      op.getLoc(), sub, dstBuffer, outOffset, StringAttr(), storeMask);
-  return success();
+LogicalResult lowerTRowExpandSub(TRowExpandSubOp op, PatternRewriter &rewriter,
+                                 A5VMLoweringStrategy strategy) {
+  return lowerTRowExpandBinaryLike(op, rewriter, "trowexpandsub", strategy);
 }
 
 LogicalResult lowerTPartAdd(TPartAddOp op, PatternRewriter &rewriter) {

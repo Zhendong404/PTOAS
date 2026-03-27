@@ -106,6 +106,12 @@ static bool isPureNoRegionOp(Operation *op) {
   return op->getNumRegions() == 0 && isMemoryEffectFree(op);
 }
 
+static bool isSupportedLoopPreludeOp(Operation *op) {
+  if (isa<a5vm::UvldOp>(op))
+    return true;
+  return isPureNoRegionOp(op);
+}
+
 static bool isSupportedLeafOp(Operation *op) {
   if (isa<a5vm::VldsOp, a5vm::VstsOp>(op))
     return true;
@@ -199,6 +205,35 @@ static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
   return nullptr;
 }
 
+static Region *getDirectRegionUnderAncestor(Operation *op, Operation *ancestor) {
+  for (Operation *cur = op; cur; cur = cur->getParentOp()) {
+    Operation *parent = cur->getParentOp();
+    if (parent == ancestor)
+      return cur->getBlock() ? cur->getBlock()->getParent() : nullptr;
+  }
+  return nullptr;
+}
+
+static bool areMutuallyExclusiveByIfRegion(Operation *lhs, Operation *rhs) {
+  if (!lhs || !rhs)
+    return false;
+
+  for (Operation *ancestor = lhs; ancestor; ancestor = ancestor->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+    if (!ifOp)
+      continue;
+
+    Region *lhsRegion = getDirectRegionUnderAncestor(lhs, ifOp);
+    Region *rhsRegion = getDirectRegionUnderAncestor(rhs, ifOp);
+    if (!lhsRegion || !rhsRegion)
+      continue;
+    if (lhsRegion != rhsRegion)
+      return true;
+  }
+
+  return false;
+}
+
 static std::optional<FusionRegionStoreContext>
 buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
   Block &body = fusionRegion.getBody().front();
@@ -228,29 +263,44 @@ static Block *getLeafLoopBody(scf::ForOp carrierLoop) {
   if (!isAIVectorScopeCarrierLoop(carrierLoop))
     return nullptr;
 
-  bool seenInnerLoop = false;
-  scf::ForOp innerLoop;
-  for (Operation &op : carrierLoop.getBody()->without_terminator()) {
-    if (auto loop = dyn_cast<scf::ForOp>(op)) {
-      if (seenInnerLoop)
-        return nullptr;
-      seenInnerLoop = true;
-      innerLoop = loop;
-      continue;
+  scf::ForOp currentLoop = carrierLoop;
+  while (currentLoop) {
+    SmallVector<Operation *, 8> bodyOps;
+    scf::ForOp innerLoop;
+    for (Operation &op : currentLoop.getBody()->without_terminator()) {
+      bodyOps.push_back(&op);
+      if (auto loop = dyn_cast<scf::ForOp>(op)) {
+        if (innerLoop)
+          return nullptr;
+        innerLoop = loop;
+      }
     }
-    if (seenInnerLoop || !isPureNoRegionOp(&op))
-      return nullptr;
+
+    if (!innerLoop) {
+      Block *leafBody = currentLoop.getBody();
+      if (!leafBody)
+        return nullptr;
+      for (Operation &op : leafBody->without_terminator())
+        if (!isSupportedLeafOp(&op)) {
+          return nullptr;
+        }
+      return leafBody;
+    }
+
+    bool seenInnerLoop = false;
+    for (Operation *op : bodyOps) {
+      if (op == innerLoop.getOperation()) {
+        seenInnerLoop = true;
+        continue;
+      }
+      if (seenInnerLoop || !isSupportedLoopPreludeOp(op))
+        return nullptr;
+    }
+
+    currentLoop = innerLoop;
   }
 
-  Block *leafBody = innerLoop ? innerLoop.getBody() : carrierLoop.getBody();
-  if (!leafBody)
-    return nullptr;
-
-  for (Operation &op : leafBody->without_terminator())
-    if (!isSupportedLeafOp(&op))
-      return nullptr;
-
-  return leafBody;
+  return nullptr;
 }
 
 static bool isSupportedStraightLineBlock(Block &body) {
@@ -354,8 +404,11 @@ static bool shouldElideTailStore(const TrackedStore &store,
     // region boundary, so the final store must remain.
     Operation *topLevelUser =
         getTopLevelAncestorInBlock(owner, context.parentBlock);
-    if (!topLevelUser)
+    if (!topLevelUser) {
+      if (areMutuallyExclusiveByIfRegion(localScopeOp, owner))
+        continue;
       return false;
+    }
     if (scheduledForErase.contains(topLevelUser))
       continue;
     if (topLevelUser == context.regionOp)
