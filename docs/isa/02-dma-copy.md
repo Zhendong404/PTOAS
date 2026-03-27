@@ -113,10 +113,10 @@ Note: UB stride fields are 21 bits (sufficient for 256KB UB address space), GM s
 
 - **syntax:**
 ```mlir
-pto.copy_gm_to_ubuf %gm_src, %ub_dst, %valid_rows, %valid_cols,
+pto.copy_gm_to_ubuf %gm_src, %ub_dst,
     %sid, %n_burst, %len_burst, %left_padding, %right_padding,
     %data_select_bit, %l2_cache_ctl, %src_stride, %dst_stride
-    : !pto.ptr<T, gm>, !pto.ptr<T, ub>, i64, i64, i64, i64, i64,
+    : !pto.ptr<T, gm>, !pto.ptr<T, ub>, i64, i64, i64,
       i64, i64, i1, i64, i64, i64
 ```
 - **semantics:** DMA transfer from Global Memory (`!pto.ptr<T, gm>`) to Unified Buffer (`!pto.ptr<T, ub>`).
@@ -127,8 +127,6 @@ pto.copy_gm_to_ubuf %gm_src, %ub_dst, %valid_rows, %valid_cols,
 |-----------|-------------|
 | `%gm_src` | GM source pointer (`!pto.ptr<T, gm>`) |
 | `%ub_dst` | UB destination pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
-| `%valid_rows` | Valid row count |
-| `%valid_cols` | Valid column count |
 | `%sid` | Stream ID (usually 0) |
 | `%n_burst` | Number of burst rows (innermost loop count) |
 | `%len_burst` | Contiguous bytes transferred per burst row |
@@ -145,9 +143,9 @@ pto.copy_gm_to_ubuf %gm_src, %ub_dst, %valid_rows, %valid_cols,
 
 - **syntax:**
 ```mlir
-pto.copy_ubuf_to_gm %ub_src, %gm_dst, %valid_rows, %valid_cols,
+pto.copy_ubuf_to_gm %ub_src, %gm_dst,
     %sid, %n_burst, %len_burst, %reserved, %dst_stride, %src_stride
-    : !pto.ptr<T, ub>, !pto.ptr<T, gm>, i64, i64, i64, i64, i64, i64, i64, i64
+    : !pto.ptr<T, ub>, !pto.ptr<T, gm>, i64, i64, i64, i64, i64, i64
 ```
 - **semantics:** DMA transfer from Unified Buffer (`!pto.ptr<T, ub>`) to Global Memory (`!pto.ptr<T, gm>`). MTE3 reads only `len_burst` bytes from each UB row (de-padding).
 
@@ -157,8 +155,6 @@ pto.copy_ubuf_to_gm %ub_src, %gm_dst, %valid_rows, %valid_cols,
 |-----------|-------------|
 | `%ub_src` | UB source pointer (`!pto.ptr<T, ub>`, 32B-aligned) |
 | `%gm_dst` | GM destination pointer (`!pto.ptr<T, gm>`) |
-| `%valid_rows` | Valid row count |
-| `%valid_cols` | Valid column count |
 | `%sid` | Stream ID (usually 0) |
 | `%n_burst` | Number of burst rows |
 | `%len_burst` | Contiguous bytes transferred per burst row |
@@ -352,8 +348,6 @@ UB layout (32 × 32 f32, 32B-aligned, contiguous):
 pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
 
 pto.copy_gm_to_ubuf %arg0, %ub_in,
-    %c32_i64,      // valid_rows = 32
-    %c32_i64,      // valid_cols = 32
     %c0_i64,       // sid = 0
     %c32_i64,      // n_burst = 32 (32 rows)
     %c128_i64,     // len_burst = 128 bytes per row
@@ -363,7 +357,7 @@ pto.copy_gm_to_ubuf %arg0, %ub_in,
     %c0_i64,       // l2_cache_ctl = 0
     %c128_i64,     // src_stride = 128 bytes
     %c128_i64      // dst_stride = 128 bytes
-    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64,
+    : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64,
       i64, i64, i1, i64, i64, i64
 ```
 
@@ -406,8 +400,6 @@ pto.set_loop1_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 pto.set_loop2_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 
 pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
-    %c64_i64,      // valid_rows = 64
-    %c128_i64,     // valid_cols = 128
     %c0_i64,       // sid = 0
     %c64_i64,      // n_burst = 64 (64 rows)
     %c256_i64,     // len_burst = 256 bytes per row
@@ -417,7 +409,7 @@ pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
     %c0_i64,       // l2_cache_ctl = 0
     %c1024_i64,    // src_stride = 1024 bytes (full matrix row)
     %c256_i64      // dst_stride = 256 bytes (tile row)
-    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
+    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64,
       i64, i64, i1, i64, i64, i64
 ```
 
@@ -458,8 +450,6 @@ pto.set_loop1_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 pto.set_loop2_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 
 pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
-    %c64_i64,      // valid_rows = 64
-    %c100_i64,     // valid_cols = 100
     %c0_i64,       // sid = 0
     %c64_i64,      // n_burst = 64
     %c200_i64,     // len_burst = 200 bytes
@@ -469,7 +459,7 @@ pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
     %c0_i64,       // l2_cache_ctl = 0
     %c200_i64,     // src_stride = 200 bytes
     %c256_i64      // dst_stride = 256 bytes (32B-aligned)
-    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
+    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64,
       i64, i64, i1, i64, i64, i64
 ```
 
@@ -506,15 +496,13 @@ GM (dest, 32 × 32 f32):
 pto.set_loop_size_ubtoout %c1_i64, %c1_i64 : i64, i64
 
 pto.copy_ubuf_to_gm %ub_out, %arg1,
-    %c32_i64,      // valid_rows = 32
-    %c32_i64,      // valid_cols = 32
     %c0_i64,       // sid = 0
     %c32_i64,      // n_burst = 32
     %c128_i64,     // len_burst = 128 bytes
     %c0_i64,       // reserved = 0
     %c128_i64,     // dst_stride = 128 bytes
     %c128_i64      // src_stride = 128 bytes
-    : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64
+    : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 ```
 
 ---
@@ -556,15 +544,13 @@ pto.set_loop1_stride_ubtoout %c0_i64, %c0_i64 : i64, i64
 pto.set_loop2_stride_ubtoout %c0_i64, %c0_i64 : i64, i64
 
 pto.copy_ubuf_to_gm %ub_ptr, %gm_ptr,
-    %c64_i64,      // valid_rows = 64
-    %c128_i64,     // valid_cols = 128
     %c0_i64,       // sid = 0
     %c64_i64,      // n_burst = 64
     %c256_i64,     // len_burst = 256 bytes
     %c0_i64,       // reserved = 0
     %c1024_i64,    // dst_stride = 1024 bytes (GM row)
     %c256_i64      // src_stride = 256 bytes (UB row)
-    : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64, i64, i64
+    : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64, i64, i64
 ```
 
 ---
@@ -593,8 +579,6 @@ pto.set_loop1_stride_outtoub %c2048_i64, %c2048_i64 : i64, i64
 pto.set_loop2_stride_outtoub %c0_i64, %c0_i64 : i64, i64
 
 pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
-    %c8_i64,       // valid_rows = 8
-    %c128_i64,     // valid_cols = 128
     %c0_i64,       // sid = 0
     %c8_i64,       // n_burst = 8 rows per batch
     %c256_i64,     // len_burst = 256 bytes per row
@@ -604,7 +588,7 @@ pto.copy_gm_to_ubuf %gm_ptr, %ub_ptr,
     %c0_i64,       // l2_cache_ctl = 0
     %c256_i64,     // src_stride = 256 (contiguous rows)
     %c256_i64      // dst_stride = 256 (contiguous rows)
-    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64,
+    : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64,
       i64, i64, i1, i64, i64, i64
 ```
 
