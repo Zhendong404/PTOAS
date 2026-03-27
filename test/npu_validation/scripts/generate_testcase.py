@@ -62,6 +62,17 @@ INCLUDE_REPLACEMENT = (
     "#endif\n"
 )
 
+UNSTABLE_A3_CUSTOM_GOLDEN_CASES = frozenset({
+    "partmin",
+    "prelu",
+    "rowexpanddiv",
+    "rowexpandmul",
+    "rowexpandsub",
+    "sel",
+    "sels",
+    "xor",
+})
+
 
 def _parse_shape(text: str):
     match = re.search(r"Shape<(\d+)\s*,\s*(\d+)>", text)
@@ -372,6 +383,14 @@ def _find_custom_case_asset(sample_root: Path, testcase: str, filename: str) -> 
         if candidate.is_file():
             return candidate
     return None
+
+
+def _use_custom_golden_for_case(testcase: str, soc_version: str) -> bool:
+    testcase_lc = testcase.lower()
+    soc_lc = (soc_version or "").lower()
+    if "910b" in soc_lc and testcase_lc in UNSTABLE_A3_CUSTOM_GOLDEN_CASES:
+        return False
+    return True
 
 
 def _copy_asset_if_needed(src: Path, dst: Path):
@@ -943,8 +962,9 @@ def generate_testcase(
         output_dir = sample_root / "npu_validation" / testcase
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    custom_golden = _find_custom_case_asset(sample_root, testcase, "golden.py")
-    custom_compare = _find_custom_case_asset(sample_root, testcase, "compare.py")
+    use_custom_golden = _use_custom_golden_for_case(testcase, soc_version)
+    custom_golden = _find_custom_case_asset(sample_root, testcase, "golden.py") if use_custom_golden else None
+    custom_compare = _find_custom_case_asset(sample_root, testcase, "compare.py") if use_custom_golden else None
     shared_validation_runtime = sample_root.parent / "validation_runtime.py"
 
     raw_kernel = input_cpp.read_text(encoding="utf-8")
