@@ -31,13 +31,15 @@ module attributes {pto.target_arch = "a5"} {
     %10 = arith.andi %9, %9 : i1
     scf.for %arg2 = %c0 to %c1 step %c1 {
       scf.if %10 {
-        %14 = arith.index_castui %8 : index to i32
-        %15:3 = scf.for %arg3 = %c0 to %8 step %c64 iter_args(%arg4 = %0, %arg5 = %7, %arg6 = %14) -> (!pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i32) {
-          %mask, %scalar_out = a5vm.plt_b32 %arg6 : i32 -> !a5vm.mask, i32
-          %result, %updated_source = a5vm.vlds_post %arg4[%c64] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>, !pto.ptr<f32, ub>
-          %16 = a5vm.vmuls %result, %cst : !a5vm.vec<64xf32>, f32 -> !a5vm.vec<64xf32>
-          %17 = a5vm.vsts_post %16, %arg5[%c64], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask -> !pto.ptr<f32, ub>
-          scf.yield %updated_source, %17, %scalar_out : !pto.ptr<f32, ub>, !pto.ptr<f32, ub>, i32
+        scf.for %arg3 = %c0 to %8 step %c64 {
+          %14 = arith.subi %8, %arg3 : index
+          %15 = arith.cmpi slt, %14, %c64 : index
+          %16 = arith.select %15, %14, %c64 : index
+          %17 = arith.index_castui %16 : index to i32
+          %mask, %scalar_out = a5vm.plt_b32 %17 : i32 -> !a5vm.mask, i32
+          %18 = a5vm.vlds %0[%arg3] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
+          %19 = a5vm.vmuls %18, %cst : !a5vm.vec<64xf32>, f32 -> !a5vm.vec<64xf32>
+          a5vm.vsts %19, %7[%arg3], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
         }
       } else {
         %14 = arith.ceildivui %c32, %c64 : index
@@ -46,14 +48,11 @@ module attributes {pto.target_arch = "a5"} {
           scf.for %arg4 = %c0 to %14 step %c1 {
             %16 = arith.muli %arg4, %c64 : index
             %17 = arith.addi %15, %16 : index
-            %18 = arith.subi %c32, %16 : index
-            %19 = arith.cmpi slt, %18, %c64 : index
-            %20 = arith.select %19, %18, %c64 : index
-            %21 = arith.index_castui %20 : index to i32
-            %mask, %scalar_out = a5vm.plt_b32 %21 : i32 -> !a5vm.mask, i32
-            %22 = a5vm.vlds %0[%17] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
-            %23 = a5vm.vmuls %22, %cst : !a5vm.vec<64xf32>, f32 -> !a5vm.vec<64xf32>
-            a5vm.vsts %23, %7[%17], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
+            %18 = arith.index_castui %c32 : index to i32
+            %mask, %scalar_out = a5vm.plt_b32 %18 : i32 -> !a5vm.mask, i32
+            %19 = a5vm.vlds %0[%17] : !pto.ptr<f32, ub> -> !a5vm.vec<64xf32>
+            %20 = a5vm.vmuls %19, %cst : !a5vm.vec<64xf32>, f32 -> !a5vm.vec<64xf32>
+            a5vm.vsts %20, %7[%17], %mask : !a5vm.vec<64xf32>, !pto.ptr<f32, ub>, !a5vm.mask
           }
         }
       }

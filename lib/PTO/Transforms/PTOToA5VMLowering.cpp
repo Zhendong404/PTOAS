@@ -2147,24 +2147,6 @@ Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
   return buildPredicateForLaneCount(rewriter, loc, elementType, laneCount).mask;
 }
 
-static constexpr StringLiteral kA5VMPostModeAttrName = "mode";
-
-StringRef getA5VMPostModeToken(A5VMLoweringStrategy strategy) {
-  switch (strategy) {
-  case A5VMLoweringStrategy::PostUpdate:
-    return "POST_UPDATE";
-  case A5VMLoweringStrategy::NoPostUpdate:
-    return "NO_POST_UPDATE";
-  }
-  llvm_unreachable("unsupported A5VM lowering strategy");
-}
-
-void setA5VMPostModeAttr(Operation *op, A5VMLoweringStrategy strategy,
-                         PatternRewriter &rewriter) {
-  op->setAttr(kA5VMPostModeAttrName,
-              rewriter.getStringAttr(getA5VMPostModeToken(strategy)));
-}
-
 Value buildAllPredicateMask(PatternRewriter &rewriter, Location loc,
                             Type elementType) {
   auto maskType = a5vm::MaskType::get(rewriter.getContext());
@@ -3002,7 +2984,6 @@ LogicalResult buildUnaryVecScope(StringRef family,
     } else {
       auto vlds =
           rewriter.create<a5vm::VldsOp>(loc, vecType, loadBase, loadOffset, StringAttr());
-      setA5VMPostModeAttr(vlds, strategy, rewriter);
       loaded = vlds.getResult();
     }
     FailureOr<Value> computed = buildUnaryValue(loaded, predicateState.mask);
@@ -3016,9 +2997,8 @@ LogicalResult buildUnaryVecScope(StringRef family,
       rewriter.create<scf::YieldOp>(
           loc, ValueRange{nextSrc, nextDst, predicateState.nextScalar});
     } else {
-      auto vsts = rewriter.create<a5vm::VstsOp>(loc, *computed, storeBase, storeOffset,
-                                                StringAttr(), predicateState.mask);
-      setA5VMPostModeAttr(vsts, strategy, rewriter);
+      rewriter.create<a5vm::VstsOp>(loc, *computed, storeBase, storeOffset,
+                                    StringAttr(), predicateState.mask);
       rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
     }
   }
@@ -3189,8 +3169,6 @@ LogicalResult buildBinaryVecScope(StringRef family,
           rewriter.create<a5vm::VldsOp>(loc, vecType, lhsBase, loadOffset, StringAttr());
       auto rhs =
           rewriter.create<a5vm::VldsOp>(loc, vecType, rhsBase, loadOffset, StringAttr());
-      setA5VMPostModeAttr(lhs, strategy, rewriter);
-      setA5VMPostModeAttr(rhs, strategy, rewriter);
       lhsValue = lhs.getResult();
       rhsValue = rhs.getResult();
     }
@@ -3206,9 +3184,8 @@ LogicalResult buildBinaryVecScope(StringRef family,
           loc,
           ValueRange{nextSrc0, nextSrc1, nextDst, predicateState.nextScalar});
     } else {
-      auto vsts = rewriter.create<a5vm::VstsOp>(loc, *computed, dstBase, storeOffset,
-                                                StringAttr(), predicateState.mask);
-      setA5VMPostModeAttr(vsts, strategy, rewriter);
+      rewriter.create<a5vm::VstsOp>(loc, *computed, dstBase, storeOffset,
+                                    StringAttr(), predicateState.mask);
       rewriter.create<scf::YieldOp>(loc, ValueRange{predicateState.nextScalar});
     }
     return success();
