@@ -4284,10 +4284,9 @@ LogicalResult lowerTLOAD(TLoadOp op, PatternRewriter &rewriter) {
         rewriter.create<arith::ConstantOp>(op.getLoc(), rewriter.getI1Type(),
                                            rewriter.getBoolAttr(ubPad));
     rewriter.create<a5vm::CopyGmToUbufOp>(
-        op.getLoc(), typedSrcPtr, typedDstPtr, validRowsValue, validColsValue, sidValue,
-        plan.nBurst, plan.lenBurst, leftPaddingValue, rightPaddingValue,
-        dataSelectBitValue, cacheCtlValue, plan.firstStrideBytes,
-        plan.secondStrideBytes);
+        op.getLoc(), typedSrcPtr, typedDstPtr, sidValue, plan.nBurst,
+        plan.lenBurst, leftPaddingValue, rightPaddingValue, dataSelectBitValue,
+        cacheCtlValue, plan.firstStrideBytes, plan.secondStrideBytes);
     return success();
   };
 
@@ -7064,8 +7063,8 @@ LogicalResult lowerTSTORE(TStoreOp op, PatternRewriter &rewriter) {
     if (!typedSrcPtr || !typedDstPtr)
       return failure();
     rewriter.create<a5vm::CopyUbufToGmOp>(
-        op.getLoc(), typedSrcPtr, typedDstPtr, validRowsValue, validColsValue, sidValue,
-        plan.nBurst, plan.lenBurst, reservedValue, plan.firstStrideBytes,
+        op.getLoc(), typedSrcPtr, typedDstPtr, sidValue, plan.nBurst,
+        plan.lenBurst, reservedValue, plan.firstStrideBytes,
         plan.secondStrideBytes);
     return success();
   };

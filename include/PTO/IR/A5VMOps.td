@@ -115,8 +115,6 @@ def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
   let arguments = (ins
     A5VM_BufferType:$source,
     A5VM_BufferType:$destination,
-    I64:$valid_rows,
-    I64:$valid_cols,
     I64:$sid,
     I64:$n_burst,
     I64:$len_burst,
@@ -133,10 +131,10 @@ def A5VM_CopyGmToUbufOp : A5VM_Op<"copy_gm_to_ubuf", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $valid_rows `,` $valid_cols `,` $sid `,` $n_burst `,` $len_burst `,`
+    $source `,` $destination `,` $sid `,` $n_burst `,` $len_burst `,`
     $left_padding_count `,` $right_padding_count `,` $data_select_bit `,` $l2_cache_ctl `,` $gm_stride `,` $ub_stride
-    attr-dict `:` type($source) `,` type($destination) `,` type($valid_rows) `,` type($valid_cols) `,`
-    type($sid) `,` type($n_burst) `,` type($len_burst) `,` type($left_padding_count) `,`
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,` type($n_burst) `,`
+    type($len_burst) `,` type($left_padding_count) `,`
     type($right_padding_count) `,` type($data_select_bit) `,` type($l2_cache_ctl) `,` type($gm_stride) `,` type($ub_stride)
   }];
 }
@@ -974,8 +972,6 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
   let arguments = (ins
     A5VM_BufferType:$source,
     A5VM_BufferType:$destination,
-    I64:$valid_rows,
-    I64:$valid_cols,
     I64:$sid,
     I64:$n_burst,
     I64:$len_burst,
@@ -989,10 +985,10 @@ def A5VM_CopyUbufToGmOp : A5VM_Op<"copy_ubuf_to_gm", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $source `,` $destination `,` $valid_rows `,` $valid_cols `,` $sid `,` $n_burst `,` $len_burst `,`
+    $source `,` $destination `,` $sid `,` $n_burst `,` $len_burst `,`
     $reserved `,` $burst_dst_stride `,` $burst_src_stride
-    attr-dict `:` type($source) `,` type($destination) `,` type($valid_rows) `,` type($valid_cols) `,`
-    type($sid) `,` type($n_burst) `,` type($len_burst) `,` type($reserved) `,`
+    attr-dict `:` type($source) `,` type($destination) `,` type($sid) `,` type($n_burst) `,`
+    type($len_burst) `,` type($reserved) `,`
     type($burst_dst_stride) `,` type($burst_src_stride)
   }];
 }

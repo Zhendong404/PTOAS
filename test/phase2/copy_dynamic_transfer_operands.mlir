@@ -19,16 +19,16 @@
 // CHECK: a5vm.set_loop_size_outtoub %[[C1_I64]], %[[C1_I64]]
 // CHECK: %[[GM_TYPED_PTR:.*]] = pto.castptr %[[GM_OFFSET_PTR]] : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
 // CHECK: %[[FALSE:.*]] = arith.constant false
-// CHECK: a5vm.copy_gm_to_ubuf %[[GM_TYPED_PTR]], %{{.*}}, %[[ROW_I64]], %[[COL_I64]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[ZERO_I64]], %[[FALSE]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
-// CHECK-SAME: : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i1, i64, i64, i64
+// CHECK: a5vm.copy_gm_to_ubuf %[[GM_TYPED_PTR]], %{{.*}}, %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[ZERO_I64]], %[[FALSE]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
+// CHECK-SAME: : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
 // CHECK: %[[GM_OUT_BASE_BYTES:.*]] = pto.castptr %arg1 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
 // CHECK: %[[GM_OUT_OFFSET_PTR:.*]] = pto.addptr %[[GM_OUT_BASE_BYTES]], %[[ZERO_INDEX]] : <i8, gm> -> <i8, gm>
 // CHECK: a5vm.set_loop_size_ubtoout %[[C1_I64]], %[[C1_I64]]
 // CHECK: a5vm.set_loop1_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: a5vm.set_loop2_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: %[[GM_OUT_TYPED_PTR:.*]] = pto.castptr %[[GM_OUT_OFFSET_PTR]] : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
-// CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %[[GM_OUT_TYPED_PTR]], %[[ROW_I64]], %[[COL_I64]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
-// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64
+// CHECK: a5vm.copy_ubuf_to_gm %{{.*}}, %[[GM_OUT_TYPED_PTR]], %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
+// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 // CHECK-NOT: valid_rows =
 // CHECK-NOT: valid_cols =
 // CHECK-HIVM-LABEL: define void @copy_dynamic_transfer_operands(

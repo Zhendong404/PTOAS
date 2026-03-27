@@ -1092,7 +1092,7 @@ static FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1
 static FailureOr<Value>
 packCopyGmToUbConfig0(Operation *anchor, a5vm::CopyGmToUbufOp op,
                       ValueRange operands) {
-  if (operands.size() != 13)
+  if (operands.size() != 11)
     return failure();
 
   OpBuilder builder(anchor);
@@ -1103,13 +1103,13 @@ packCopyGmToUbConfig0(Operation *anchor, a5vm::CopyGmToUbufOp op,
     return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
   };
 
-  Value sid = getI64Operand(4);
-  Value nBurst = getI64Operand(5);
-  Value lenBurst = getI64Operand(6);
-  Value leftPadding = getI64Operand(7);
-  Value rightPadding = getI64Operand(8);
-  Value dataSelect = castIntegerLikeTo(anchor, operands[9], builder.getI64Type());
-  Value cacheCtl = getI64Operand(10);
+  Value sid = getI64Operand(2);
+  Value nBurst = getI64Operand(3);
+  Value lenBurst = getI64Operand(4);
+  Value leftPadding = getI64Operand(5);
+  Value rightPadding = getI64Operand(6);
+  Value dataSelect = castIntegerLikeTo(anchor, operands[7], builder.getI64Type());
+  Value cacheCtl = getI64Operand(8);
   if (!sid || !nBurst || !lenBurst || !leftPadding || !rightPadding ||
       !dataSelect || !cacheCtl)
     return failure();
@@ -1134,14 +1134,14 @@ packCopyGmToUbConfig0(Operation *anchor, a5vm::CopyGmToUbufOp op,
 
 static FailureOr<Value>
 packCopyGmToUbConfig1(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 13)
+  if (operands.size() != 11)
     return failure();
-  return packLoopPair(anchor, operands[11], operands[12]);
+  return packLoopPair(anchor, operands[9], operands[10]);
 }
 
 static FailureOr<Value>
 packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 10)
+  if (operands.size() != 8)
     return failure();
 
   OpBuilder builder(anchor);
@@ -1152,10 +1152,10 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
     return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
   };
 
-  Value sid = getI64Operand(4);
-  Value nBurst = getI64Operand(5);
-  Value lenBurst = getI64Operand(6);
-  Value reserved = getI64Operand(7);
+  Value sid = getI64Operand(2);
+  Value nBurst = getI64Operand(3);
+  Value lenBurst = getI64Operand(4);
+  Value reserved = getI64Operand(5);
   if (!sid || !nBurst || !lenBurst || !reserved)
     return failure();
 
@@ -1176,9 +1176,9 @@ packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
 
 static FailureOr<Value>
 packCopyUbToGmConfig1(Operation *anchor, ValueRange operands) {
-  if (operands.size() != 10)
+  if (operands.size() != 8)
     return failure();
-  return packLoopPair(anchor, operands[8], operands[9]);
+  return packLoopPair(anchor, operands[6], operands[7]);
 }
 
 static func::FuncOp getOrCreateExternalFunc(ModuleOp module, StringRef name,

@@ -19,7 +19,7 @@ module attributes {pto.target_arch = "a5"} {
     a5vm.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
     %6 = pto.castptr %5 : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
     %false = arith.constant false
-    a5vm.copy_gm_to_ubuf %6, %0, %1, %1, %c0_i64, %c32_i64, %2, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i1, i64, i64, i64
+    a5vm.copy_gm_to_ubuf %6, %0, %c0_i64, %c32_i64, %2, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
     %7 = pto.castptr %c4096_i64 : i64 -> !pto.ptr<f32, ub>
     %8 = pto.castptr %arg1 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
     %9 = pto.addptr %8, %4 : <i8, gm> -> <i8, gm>
@@ -27,7 +27,7 @@ module attributes {pto.target_arch = "a5"} {
     a5vm.set_loop1_stride_outtoub %c4096_i64, %c4096_i64 : i64, i64
     a5vm.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64
     %10 = pto.castptr %9 : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
-    a5vm.copy_gm_to_ubuf %10, %7, %1, %1, %c0_i64, %c32_i64, %2, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64, i64, i1, i64, i64, i64
+    a5vm.copy_gm_to_ubuf %10, %7, %c0_i64, %c32_i64, %2, %c0_i64, %c0_i64, %false, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
     a5vm.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
     a5vm.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
     %11 = pto.castptr %c8192_i64 : i64 -> !pto.ptr<f32, ub>
@@ -75,7 +75,7 @@ module attributes {pto.target_arch = "a5"} {
     a5vm.set_loop1_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
     a5vm.set_loop2_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
     %20 = pto.castptr %19 : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
-    a5vm.copy_ubuf_to_gm %11, %20, %1, %1, %c0_i64, %c32_i64, %2, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64
+    a5vm.copy_ubuf_to_gm %11, %20, %c0_i64, %c32_i64, %2, %c0_i64, %c128_i64, %c128_i64 : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
     a5vm.pipe_barrier "PIPE_ALL"
     return
   }

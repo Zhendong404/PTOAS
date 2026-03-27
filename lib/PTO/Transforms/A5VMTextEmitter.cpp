@@ -643,15 +643,15 @@ private:
 
     auto packCopyGmToUbConfig0 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 13)
+      if (ops.size() != 11)
         return nullptr;
-      llvm::Value *sid = castIntegerLikeToI64(ops[4]);
-      llvm::Value *nBurst = castIntegerLikeToI64(ops[5]);
-      llvm::Value *lenBurst = castIntegerLikeToI64(ops[6]);
-      llvm::Value *leftPadding = castIntegerLikeToI64(ops[7]);
-      llvm::Value *rightPadding = castIntegerLikeToI64(ops[8]);
-      llvm::Value *dataSelect = castIntegerLikeToI64(ops[9]);
-      llvm::Value *cacheCtl = castIntegerLikeToI64(ops[10]);
+      llvm::Value *sid = castIntegerLikeToI64(ops[2]);
+      llvm::Value *nBurst = castIntegerLikeToI64(ops[3]);
+      llvm::Value *lenBurst = castIntegerLikeToI64(ops[4]);
+      llvm::Value *leftPadding = castIntegerLikeToI64(ops[5]);
+      llvm::Value *rightPadding = castIntegerLikeToI64(ops[6]);
+      llvm::Value *dataSelect = castIntegerLikeToI64(ops[7]);
+      llvm::Value *cacheCtl = castIntegerLikeToI64(ops[8]);
       if (!sid || !nBurst || !lenBurst || !leftPadding || !rightPadding ||
           !dataSelect || !cacheCtl)
         return nullptr;
@@ -692,10 +692,10 @@ private:
 
     auto packCopyGmToUbConfig1 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 13)
+      if (ops.size() != 11)
         return nullptr;
-      llvm::Value *gmStride = castIntegerLikeToI64(ops[11]);
-      llvm::Value *ubStride = castIntegerLikeToI64(ops[12]);
+      llvm::Value *gmStride = castIntegerLikeToI64(ops[9]);
+      llvm::Value *ubStride = castIntegerLikeToI64(ops[10]);
       if (!gmStride || !ubStride)
         return nullptr;
       return packLoopPair(gmStride, ubStride);
@@ -703,12 +703,12 @@ private:
 
     auto packCopyUbToGmConfig0 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 10)
+      if (ops.size() != 8)
         return nullptr;
-      llvm::Value *sid = castIntegerLikeToI64(ops[4]);
-      llvm::Value *nBurst = castIntegerLikeToI64(ops[5]);
-      llvm::Value *lenBurst = castIntegerLikeToI64(ops[6]);
-      llvm::Value *reserved = castIntegerLikeToI64(ops[7]);
+      llvm::Value *sid = castIntegerLikeToI64(ops[2]);
+      llvm::Value *nBurst = castIntegerLikeToI64(ops[3]);
+      llvm::Value *lenBurst = castIntegerLikeToI64(ops[4]);
+      llvm::Value *reserved = castIntegerLikeToI64(ops[5]);
       if (!sid || !nBurst || !lenBurst || !reserved)
         return nullptr;
 
@@ -733,10 +733,10 @@ private:
 
     auto packCopyUbToGmConfig1 = [&](llvm::ArrayRef<llvm::Value *> ops)
         -> llvm::Value * {
-      if (ops.size() != 10)
+      if (ops.size() != 8)
         return nullptr;
-      llvm::Value *dstStride = castIntegerLikeToI64(ops[8]);
-      llvm::Value *srcStride = castIntegerLikeToI64(ops[9]);
+      llvm::Value *dstStride = castIntegerLikeToI64(ops[6]);
+      llvm::Value *srcStride = castIntegerLikeToI64(ops[7]);
       if (!dstStride || !srcStride)
         return nullptr;
       return packLoopPair(dstStride, srcStride);
@@ -789,8 +789,8 @@ private:
       }
       appendArg(packed);
     } else if (isa<a5vm::CopyGmToUbufOp>(op)) {
-      if (rawOperands.size() != 13) {
-        diagOS << "A5VM emission failed: expected thirteen operands for copy_gm_to_ubuf\n";
+      if (rawOperands.size() != 11) {
+        diagOS << "A5VM emission failed: expected eleven operands for copy_gm_to_ubuf\n";
         return failure();
       }
       llvm::Value *config0 = packCopyGmToUbConfig0(rawOperands);
@@ -804,8 +804,8 @@ private:
       appendArg(config0);
       appendArg(config1);
     } else if (isa<a5vm::CopyUbufToGmOp>(op)) {
-      if (rawOperands.size() != 10) {
-        diagOS << "A5VM emission failed: expected ten operands for copy_ubuf_to_gm\n";
+      if (rawOperands.size() != 8) {
+        diagOS << "A5VM emission failed: expected eight operands for copy_ubuf_to_gm\n";
         return failure();
       }
       llvm::Value *config0 = packCopyUbToGmConfig0(rawOperands);
