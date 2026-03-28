@@ -1,9 +1,12 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 //===- PTOToEmitC.cpp - PTO to EmitC conversion pass ----------------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
@@ -169,11 +172,8 @@ public:
     });
 
     addConversion([Ctx](IntegerType type) -> Type {
-      // [关键修改] i1 保持为 i1，不要转为 emitc.opaque<"bool">
-      // 这样 emitc.if (接受 i1) 就不会报错。
-      // 在打印 C++ 代码时，i1 会自动打印为 bool。
-      //if (type.getWidth() == 1) return IntegerType::get(Ctx, 1); 
-      if (type.getWidth() == 1) return type; // <--- 保持 i1 不变
+      if (type.getWidth() == 1)
+        return type;
 
       // Prefer fixed-width C types. Preserve signedness if the MLIR integer is
       // explicitly signed/unsigned; treat signless as signed by default.
@@ -4362,7 +4362,7 @@ struct PTOGetSubBlockIdxToEmitC
   }
 };
 
-// GetSubBlockNumOp Lowering (pto.get_block_num -> get_subblockdim())
+// GetSubBlockNumOp Lowering.
 struct PTOGetSubBlockNumToEmitC
     : public OpConversionPattern<mlir::pto::GetSubBlockNumOp> {
   using OpConversionPattern<mlir::pto::GetSubBlockNumOp>::OpConversionPattern;
@@ -4379,10 +4379,6 @@ struct PTOGetSubBlockNumToEmitC
   }
 };
 
-//===----------------------------------------------------------------------===//
-// pto.mscatter lowering -> MSCATTER(mem, src, idx)
-// pto.mscatter %src, %mem, %idx : memref<...>, memref<...>, memref<...>
-//===----------------------------------------------------------------------===//
 
 struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
   using OpConversionPattern<pto::MScatterOp>::OpConversionPattern;
@@ -4414,9 +4410,8 @@ struct PTOSetValToSETVAL : public OpConversionPattern<pto::TSetValOp> {
     // ---- offset: SSA index operand ----
     Value offset = peelUnrealized(adaptor.getOffset());
 
-    // NOTE: EmitC has no direct member-call op today. We emit a marker call
-    // and post-process ptoas output to rewrite it into:
-    //   dst.SetValue(offset, val);
+    // Emit a marker call and let the ptoas post-processing step lower it to
+    // the corresponding tile setter.
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "PTOAS__TILE_SET_VALUE",
         ArrayAttr{}, ArrayAttr{}, ValueRange{dst, offset, val});
@@ -4435,9 +4430,8 @@ struct PTOGetValToGETVAL : public OpConversionPattern<pto::TGetValOp> {
     // ---- offset: SSA index operand ----
     Value offset = peelUnrealized(adaptor.getOffset());
 
-    // NOTE: EmitC has no direct member-call op today. We emit a marker call
-    // and post-process ptoas output to rewrite it into:
-    //   auto x = src.GetValue(offset);
+    // Emit a marker call and let the ptoas post-processing step lower it to
+    // the corresponding tile getter.
     Type dstTy = getTypeConverter()->convertType(op.getDst().getType());
     if (!dstTy)
       return failure();

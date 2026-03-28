@@ -1,9 +1,12 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 //===- ptoas.cpp -------------------------------------------------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
@@ -627,14 +630,10 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   // declarations to the top of the function and emits assignments later. This
   // requires the C++ type to be default-constructible.
   //
-  // `GlobalTensor<...>` from pto-isa does NOT have a default constructor, so a
-  // hoisted declaration like:
-  //   GlobalTensor<...> v42;
+  // `GlobalTensor<...>` from pto-isa does not have a default constructor, so a
+  // hoisted declaration without an initializer would fail to compile.
   // fails to compile. Initialize those hoisted temporaries with a null pointer
-  // so they are constructible:
-  //   GlobalTensor<...> v42(nullptr);
-  //
-  // We keep the assignment later; the null-initialized value is never used.
+  // so they stay constructible until the later assignment overwrites them.
   std::string out;
   out.reserve(cpp.size() + 64);
 
@@ -697,10 +696,8 @@ int main(int argc, char **argv) {
   registry.insert<mlir::scf::SCFDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
-  //mlir::registerAllDialects(registry);
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  //func::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
 
   registry.insert<emitc::EmitCDialect>();
@@ -852,7 +849,6 @@ int main(int argc, char **argv) {
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
-  //pm.addPass(createInferPTOMemScopePass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;
