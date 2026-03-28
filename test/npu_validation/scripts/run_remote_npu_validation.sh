@@ -134,31 +134,30 @@ export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
 # Some CANN installs do not provide a simulator directory named exactly
 # "Ascend910". Map it to a real directory so we can link/run camodel.
-# Also detect the real SoC variant (A1/A3/A5) for golden-script gating.
 SIM_SOC_VERSION="${SOC_VERSION}"
 if [[ "${SOC_VERSION}" == "Ascend910" ]]; then
-  # Probe simulator directories in priority order: 910B (A3) first since
-  # the gating logic in generate_testcase.py needs to know the real SoC.
-  for _sim_dir in "${ASCEND_HOME_PATH}/aarch64-linux/simulator" \
-                  "${ASCEND_HOME_PATH}/simulator" \
-                  "${ASCEND_HOME_PATH}/tools/simulator"; do
-    [[ -d "${_sim_dir}" ]] || continue
-    for _d in "${_sim_dir}"/Ascend910B*/lib; do
-      if [[ -d "$_d" ]]; then
-        SIM_SOC_VERSION="$(basename "$(dirname "$_d")")"
-        # Propagate back so _use_custom_golden_for_case sees "910b"
-        SOC_VERSION="${SIM_SOC_VERSION}"
-        break 2
-      fi
-    done
-    for _d in "${_sim_dir}"/Ascend910ProA/lib "${_sim_dir}"/Ascend910A/lib; do
-      if [[ -d "$_d" ]]; then
-        SIM_SOC_VERSION="$(basename "$(dirname "$_d")")"
-        break 2
-      fi
-    done
-  done
+  if [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910A/lib" ]]; then
+    SIM_SOC_VERSION="Ascend910A"
+  elif [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910ProA/lib" ]]; then
+    SIM_SOC_VERSION="Ascend910ProA"
+  fi
 fi
+
+# Detect A3 (Ascend910B) board for golden-script gating.
+# This is separate from SOC_VERSION/SIM_SOC_VERSION used for compilation
+# to avoid changing the compiler arch (dav-c220 vs dav-c310).
+export PTOAS_BOARD_IS_A3=0
+for _sim_dir in "${ASCEND_HOME_PATH}/aarch64-linux/simulator" \
+                "${ASCEND_HOME_PATH}/simulator" \
+                "${ASCEND_HOME_PATH}/tools/simulator"; do
+  for _d in "${_sim_dir}"/Ascend910B*/lib; do
+    if [[ -d "$_d" ]]; then
+      export PTOAS_BOARD_IS_A3=1
+      log "Detected A3 board (Ascend910B) from simulator dir: $_d"
+      break 2
+    fi
+  done
+done
 log "SIM_SOC_VERSION=${SIM_SOC_VERSION}"
 
 LD_LIBRARY_PATH_NPU="${LD_LIBRARY_PATH}"

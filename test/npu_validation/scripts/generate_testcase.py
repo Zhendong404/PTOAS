@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import os
 import re
 import shutil
 from pathlib import Path
@@ -390,7 +391,8 @@ def _find_custom_case_asset(sample_root: Path, testcase: str, filename: str) -> 
 def _use_custom_golden_for_case(testcase: str, soc_version: str) -> bool:
     testcase_lc = testcase.lower()
     soc_lc = (soc_version or "").lower()
-    if "910b" in soc_lc and testcase_lc in UNSTABLE_A3_CUSTOM_GOLDEN_CASES:
+    is_a3 = "910b" in soc_lc or os.environ.get("PTOAS_BOARD_IS_A3") == "1"
+    if is_a3 and testcase_lc in UNSTABLE_A3_CUSTOM_GOLDEN_CASES:
         return False
     return True
 
