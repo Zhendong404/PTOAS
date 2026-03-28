@@ -165,357 +165,465 @@
 
 ### 4.2 OP 融合在流程中的位置
 
-- **切入点**：位于 `PTOConvertToDPS` 之后，`PTOViewToMemref` 之前。
-- **设计理由**：在此阶段 Tile 信息完整，便于分析依赖关系且尚未丢失高层语义。
+- **当前生效条件**：仅在 `tools/ptoas/ptoas.cpp` 的 A5/A5VM backend mainline 中启用，要求同时满足：
+  - `--pto-arch=a5`
+  - backend 选择 A5VM
+  - 显式传入 `--enable-op-fusion`
+- **当前主线位置**：
+  1. 先在 `tile_buf` 语义下执行 `FusionPlan -> OpScheduling -> PTOFusionRegionGen`。
+  2. 再进入 shared pre-backend normalization：`LoweringSyncToPipe -> InferPTOLayout -> PTOViewToMemref -> PlanMemory -> (可选) PTOInsertSync -> CSE`。
+  3. 然后进入 A5VM backend 主线：`PTOA5VMVersionSelection -> PTOToA5VM -> PTOA5VMIfCanonicalize -> PTOLowLevelLoopFusion -> Canonicalizer -> CSE -> PTOFusionPredicateElision -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion -> CSE`。
+- **非目标路径**：
+  - EmitC backend 会忽略 `--enable-op-fusion`。
+  - 当前 A5 backend 主线不再串接旧的 OP-Lib instantiate / inline 路径；tile fusion 的 backend lowering 基线是 `PTOToA5VM`，不是历史上的 LibCall/CCE 主线。
 
 ## 5. 详细技术设计
 
 ### 5.0 融合转换流水线 (Fusion Pipeline Overview)
 
 ```text
-    [Level-2 PTO IR (DPS 形式)]
+    [Level-2 PTO IR / tile_buf world]
                │
                ▼
-    5.1 全局依赖分析 (构建 DFG / 生命周期视图)
+    5.1 预融合分析 (PreFusionAnalysis, analysis-only)
                │
                ▼
-    5.2 形状推导分析 (动态符号对齐 / 静态推理)
+    5.2 迭代域证明 (当前内嵌于预分析, 无独立 ShapeInferencePass)
                │
                ▼
-    5.3 融合策略决策 (算子分组 / 组内排序 / 成本评分)
+    5.3 融合分组规划 (FusionPlan)
                │
                ▼
-    5.4 OP 调度优化 (指令物理聚拢 / 维护组外依赖)
+    5.4 组内物理聚拢 (OpScheduling)
                │
                ▼
-    5.5 融合区域封装 (生成 pto.fusion_region 容器)
+    5.5 区域封装 (PTOFusionRegionGen)
                │
                ▼
-    5.6 内存分配同步 (中间 Tile 虚拟化标记 / 消除分配)
+    5.6 Shared pre-backend normalization
+        (Sync lowering / layout infer / view->memref /
+         plan memory / optional insert-sync / CSE)
                │
                ▼
-    5.7 指令库实例化 (版本匹配 / 计算版本选择)
+    5.7 A5VM 版本选择与 lowering
+        (PTOA5VMVersionSelection -> PTOToA5VM)
                │
                ▼
-    5.8 内存映射转换 (Tile Handle 投射为 MemRef)
+    5.8 A5VM 前置结构清理 (PTOA5VMIfCanonicalize)
                │
                ▼
-    5.9 指令内联 (LibCall 函数体原位展开)
+    5.9 低层循环融合 (PTOLowLevelLoopFusion)
                │
                ▼
-    5.10 循环合并优化 (微循环聚合 / 依赖一致性校验)
+    5.10 后融合规范化与谓词消除
+         (Canonicalizer -> CSE -> PTOFusionPredicateElision)
                │
                ▼
-    5.11 访存重定向与消除 (寄存器级 Value 前传)
+    5.11 融合区域内 Load/Store 消除
+         (PTOFusionLoadStoreElision)
                │
                ▼
-    5.12 循环展开优化 (提升 ILP / 指令重排)
+    5.12 展平区域包装 (PTOFlattenFusionRegion)
                │
                ▼
-    5.13 CCE IR 发射转换 (生成底层 CCE LLVM IR)
-               │
-               ▼
-    [最终优化后的向量化代码]
+    5.13 A5VM backend 发射
+         (A5VM text / LLVM emission)
 ```
 
-### 5.1 全局依赖分析 (PreFusionAnalysisPass)
+### 5.1 全局依赖分析 (PreFusionAnalysis，analysis-only)
 
 **设计动机 (Motivation)**
-构建OP间的全局拓扑依赖图（DFG）与 Tile 生命周期视图，将定性的融合准则转化为定量的静态证明，为后续融合策略提供准确的决策依据和安全保障。
+为 `FusionPlan` 提供 block-local 的可复用分析结果，而不是直接改写 IR。当前实现把“哪些 op 能参与 tile fusion”“哪些值跨越 local/hard boundary 逃逸”“哪些 op 处于同一迭代域”都前置到统一分析里，供规划、封装和后续 region-local 清理复用。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：IR 处于 Level-2 SSA/DPS 形式，Tile 对象以显式的 `pto.tile_buf` 参数存在。
-- **Post-conditions**：IR 具备完整的依赖元数据（DFG 节点与边），每个 OP 完成属性分类，并建立逻辑生命周期区间。
+- **Pre-conditions**：IR 仍在 `tile_buf` 语义世界，尚未经过 `PTOViewToMemref`。
+- **Post-conditions**：生成 `PreFusionAnalysis` 结果对象；默认主线不单独插入这个 pass，而是由 `FusionPlanPass` 通过 `getAnalysis<pto::PreFusionAnalysis>()` 直接消费。
 
 **输入/输出规格 (I/O Specification)**
 
-- **Input**: Level-2 PTO IR (SSA/DPS 形式)。
-- **Output**: 分析结果对象（Analysis Info），包含全局 DFG、Tile 生命周期表及迭代域等价类元数据。
+- **Input**: `func::FuncOp` 内的 PTO tile-level IR。
+- **Output**: 每个 basic block 的 `FusionBlockAnalysis`，主要包含：
+  - `computeNodes`：可参与预融合建模的 compute node。
+  - `edges`：producer/consumer 依赖边。
+  - `valueLiveness` / `writeInstances`：value 和写实例的生命周期与逃逸类别。
+  - `iterationDomainClasses`：按 `(v_row, v_col)` 证明结果划分的迭代域类。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **DFG 构建**：通过 SSA 定义-使用链结合 Buffer 别名分析，识别 Tile 数据在不同 OP 间的流向。
-  2. **生命周期分析**：扫描活跃区间（Liveness Range），标记 Tile 从初次加载到最后一次计算的指令跨度，为寄存器复用和冗余 store 消除提供输入。
-  3. **迭代域推导**：提取 `v_row` / `v_col` 符号，判定 OP 是否属于同一计算域等价类。
-- **融合准则硬约束**：
-  - 禁止跨越包含副作用的同步原语（Barrier）。
-  - 参与融合的 OP 必须属于同一迭代域等价类。
+- **Op 语义分类**：`FusionOpSemantics` 先把 op 分成 `Compute`、`LocalBoundary`、`HardBoundary`。
+  - `treshape` 当前被视为 `LocalBoundary`，会阻断穿越它的局部规划与调度。
+  - 非 `OpLibOpInterface`、带 region/call/未知副作用的 op，一律按 `HardBoundary` 处理。
+- **当前可识别的 compute family**：
+  - `Elementwise`：`tadd/tsub/tmul/tdiv/tmax/tmin` 及对应 scalar 版本，`texp`
+  - `ScalarExpand`：`texpands`
+  - `RowBroadcastBinary`：`trowexpandmul`、`trowexpanddiv`
+  - `ReduceRow/ReduceCol`：`trowsum/trowmax/trowmin`、`tcolsum/tcolmax/tcolmin`
+- **依赖与生命周期建模**：
+  - 通过 SSA use-def 和 DPS 输出归一化收集 tile 输入/输出。
+  - 记录 block 内 consumer、local boundary user、hard boundary user、块外逃逸信息。
+  - 写实例会进一步区分 `Internal`、`LocalBoundaryExternal`、`HardExternal`，供 region output/frontier 计算使用。
+- **分析范围**：当前严格限制在 basic block 内，不做跨块、跨 CFG 边的全局规划。
 
 **不变性与副作用 (Invariants & Side Effects)**
 
-- 纯分析（Read-only）过程，不改变 CFG，不修改 IR 指令序列。
-- 产生的结果可被后续所有融合变换 Pass（如策略决策、代码内联）共享。
+- 纯分析，不修改 IR。
+- 可通过 `pto-pre-fusion-analysis` / `pto-print-pre-fusion-analysis` 做调试或 lit 检查，但它们不是默认 backend 主线的一部分。
 
-### 5.2 形状推导分析 (ShapeInferencePass)
+### 5.2 迭代域证明 (当前无独立 ShapeInferencePass 主线)
 
 **设计动机 (Motivation)**
-PTO IR 中 Tile 的有效形状（Valid Shape）常包含动态符号（`?`）。该 Pass 通过在依赖图中传播形状约束，确定 Tile 间的符号等价性或推导出静态数值，从而为融合准则中的“迭代空间一致性”提供判定依据。
+当前代码里“形状推导”还没有落成独立 pass。真正被主线依赖的是 `FusionAnalysis.cpp` 中对迭代域的一次保守证明：只有当参与计算的 anchor tile 能在编译期证明为一致的 rank-2 有效形状时，规划阶段才会继续融合。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `PTOFusionAnalysisPass`，建立了全局OP依赖图（DFG）。
-- **Post-conditions**：IR 中的 `pto.tile_buf` 属性得到细化，尽可能将动态符号替换为已知常量或统一的符号占位符。
+- **Pre-conditions**：依赖 5.1 中的 op 语义和 tile 类型/`pto.bind_tile` 元数据。
+- **Post-conditions**：不会改写 IR；只会给分析结果里的 `IterationDomainInfo` 标注 `Proven/Unproven` 及失败原因。
 
 **输入/输出规格 (I/O Specification)**
 
-- **Input**: 带有 DFG 元数据的 Level-2 PTO IR。
-- **Output**: 形状属性细化后的 Level-2 PTO IR。
+- **Input**: compute op 的 tile 输入/输出以及其 valid shape 信息。
+- **Output**: `IterationDomainInfo { vRow, vCol, proof, unprovenReason }`。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **局部推导**：基于OP语义推导输出形状（如 `Element-wise` 保持形状不变，`RowSum` 压缩列维度）。
-  2. **全局传播**：利用 DFG 的边关系进行约束传播（Constraint Propagation）。若 `OP1 -> OP2` 且为点对点映射，则强制对齐其 `v_row` / `v_col`。
-  3. **符号统一化**：对于无法确定数值的动态维度，通过符号表确保来自同一源头（如 `get_tensor_view_dim`）的维度具有相同的符号 ID。
-- **约束条件**：
-  - 必须处理广播（Broadcast）导致的维度突变逻辑。
-  - 规约（Reduce）操作后的降维逻辑需符合 A5 硬件对 Vector 形状的物理限制。
+- **当前证明来源**：
+  - 优先读取 `TileBufType` 的 `validShape`。
+  - 若值来自 `pto.bind_tile`，会用其 `validRow/validCol` 常量覆盖类型上的静态形状。
+  - `Elementwise` 会聚合输入和输出；`ScalarExpand/RowBroadcastBinary` 用输出域；`ReduceRow/ReduceCol` 用输入域。
+- **当前失败情形**：
+  - 任一关键维度是动态值。
+  - 同一组 anchor 的 `(v_row, v_col)` 不一致。
+  - 缺失可恢复的 tile domain 信息。
+- **现实边界**：代码注释已经明确，当前实现“不尝试证明动态符号等价”。因此带动态 `v_row/v_col` 的链路会保持 `Unproven`，并在 5.3 的规划阶段被保守拒绝。
 
 **不变性与副作用 (Invariants & Side Effects)**
 
-- 仅修改 `pto.tile_buf` 的属性元数据（Attributes），不改变指令结构或控制流。
+- 不生成新 attribute，不重写类型，不引入新的 shape solver。
 
 ### 5.3 融合策略与成本模型 (FusionPlanPass)
 
 **设计动机 (Motivation)**
-根据分析阶段提供的结构化信息，划定最佳融合区域（Fusion Groups），平衡访存收益与寄存器压力。同时，该 Pass 需作为**高度解耦的策略调度器**，支持各种自定义融合算法与成本模型的快速插拔与实验。
+根据 5.1/5.2 的分析结果，给 block 内 op 打上稳定的组元数据，形成后续调度和区域封装的唯一输入契约。当前实现强调“保守可用”，而不是开放式策略插件框架。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成依赖分析与形状推导，Tile 的生命周期与迭代空间已明确。
-- **Post-conditions**：OP 被划分为多个不相交的融合组，每个组被打上唯一的 `fusion_id` 标签。
-
-**设计目标 (Extensibility Goals)**
-
-- **算法解耦**：提供通用的策略接口（Strategy Interface），允许开发者在不修改 Pass 核心逻辑的前提下，轻松对接贪心算法、动态规划或更复杂的图划分模型。
-- **Cost Model 插件化**：支持多套评估因子（如访存开销、指令周期、并行度损耗）的加权组合，方便针对不同硬件型号进行 Fine-tune。
-- **AI/ML 友好接口**：预留特征提取与动作执行接口，支持通过外部机器学习模型（如强化学习）输入融合决策（Fusion Action），实现数据驱动的优化。
+- **Pre-conditions**：`PreFusionAnalysis` 有效，且 op 仍然处于 tile-level PTO IR。
+- **Post-conditions**：被接受的组成员获得：
+  - `pto.fusion.group_id`
+  - `pto.fusion.order`
 
 **输入/输出规格 (I/O Specification)**
 
-- **Input**: 带有完整分析元数据的 Level-2 PTO IR。
-- **Output**: 分组标记后的 PTO IR。每个 OP 关联两项核心元数据：
-  1. **融合组 ID (Fusion ID)**：标识该 OP 所属的逻辑融合区域。
-  2. **组内顺序索引 (In-group Index)**：定义该 OP 在融合循环体内的逻辑执行位置。
-  - _作用_：后续的调度与变换 Pass 将直接依据 `Fusion ID` 进行 OP 聚拢，并严格参考 `In-group Index` 重排指令序列，确保数据依赖在寄存器传递过程中的拓扑正确性。
+- **Input**: `FusionBlockAnalysis`。
+- **Output**: 带规划 metadata 的原始 PTO IR，且只有组大小 `>= 2` 的 group 才会真正落盘到 IR。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **通用执行逻辑**：
-  1. **特征构建**：将 DFG 转化为策略算法所需的数学表述（节点属性、边权重）。
-  2. **策略调用**：调用当前的 `StrategyEngine`（可以是默认的贪心策略，也可以是加载的外部 ML 模型）。
-  3. **方案验证与合法性约束**：
-     - **拓扑合法性**：生成的融合组严禁引入循环依赖（Cycles）。组内 OP 必须能被拓扑排序，且组间依赖必须保持 DAG 结构。
-     - **资源门槛**：实时估算组内活跃变量所需的寄存器数，接近 32 个时强制截断。
-     - **硬性约束校验**：对策略产出的方案进行硬件限制（如 32 个 VF 参数限制）的最终兜底校验。若方案不合法，必须进行回退（Rollback）或重新划分。
-- **核心算法示例（默认策略）**：
-  1. **区域增长**：从访存边界开始进行最大化可融合链路探索。
-  2. **拓扑合法性**：禁止形成环路依赖，确保子图单向执行。
+- **当前实际策略**：
+  - `ConservativeDAGGreedyStrategyEngine`
+  - `ConservativeDAGGreedyCostModel`
+- **当前可规划 op 子集**：比 5.1 的“可分析 compute family”更窄，只接受：
+  - `tadd/tsub/tmul/tdiv/tmax/tmin`
+  - `tadds/tsubs/tmuls/tdivs/tmaxs/tmins`
+  - `texp`
+  - `texpands`
+  - `trowexpandmul`
+  - `trowexpanddiv`
+- **seed 条件**：
+  - op 必须属于上述可规划集合。
+  - 所在迭代域类必须是 `Proven`。
+- **append 条件**：
+  - candidate 与当前组首成员属于同一 `iterationDomainClass`。
+  - candidate 与当前组至少存在一条直接数据流连接。
+  - 成本模型评分 `dependencyBenefit + loopMergeBenefit - liveTilePenalty - vfParameterPenalty > 0`。
+- **当前成本模型参数**：
+  - `dependencyBenefit = 4 * connectionCount`
+  - `loopMergeBenefit = 4`
+  - 当 `liveTileCount > 10` 时开始罚分
+  - 当 `vfParameterCount > 12` 时开始罚分
+- **结果排序**：
+  - 组内顺序按 `blockOrder/id` 稳定排序。
+  - `group_id` 也按组首成员的 block 顺序稳定分配。
 
 **不变性与副作用 (Invariants & Side Effects)**
 
-- 仅为 OP 添加元数据标签，不改变指令物理顺序（调度由后续 Pass 完成）。
+- 只打 metadata，不移动 op。
+- 当前没有把策略接口暴露成可插拔配置；文档中的“ML/AI 决策接口”仍然属于未来方向，不是现状。
 
 ### 5.4 OP 调度优化 (OpSchedulingPass)
 
 **设计动机 (Motivation)**
-虽然策略阶段已划定融合组，但原始 IR 中的指令可能处于离散位置。本 Pass 通过拓扑重排，将属于同一 `Fusion ID` 的 OP 在 IR 序列中物理聚拢，为后续将 OP 序列实例化并包裹进单一硬件循环体奠定物理基础。
+把 5.3 已规划好的 group 压缩成 block 内连续 span，为 `PTOFusionRegionGen` 提供“一组对应一个连续区间”的结构前提。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `PTOFusionStrategyPass`，所有待融合 OP 已打上 `fusion_id` 和 `In-group Index` 标签。
-- **Post-conditions**：具有相同 `fusion_id` 的指令在 IR 块中连续排列，且内部顺序严格遵循 `In-group Index`。
+- **Pre-conditions**：op 已经带有完整的 `pto.fusion.group_id/order`。
+- **Post-conditions**：每个 group 在 block 中形成一个连续 span，group membership 不变。
 
 **输入/输出规格 (I/O Specification)**
 
-- **Input**: 分组标记后的 Level-2 PTO IR。
-- **Output**: 指令物理位置重排后的 Level-2 PTO IR。
+- **Input**: 带规划 metadata 的 PTO IR。
+- **Output**: 物理顺序重排后的 PTO IR。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **指令聚拢**：以每个融合组的第一个 OP（通常是起始的 `tload` 或 `bcast`）为基准位置，将其余同组 OP 移动（Move）至该位置之后。
-  2. **组内保序**：在聚拢过程中，严格依据 `In-group Index` 确定的偏序关系进行排列。
-  3. **组外依赖维护**：在移动指令时，利用 `DFG` 检查是否跨越了具有数据依赖的组外 OP（如 `Sync Barrier` 或其它组的访存指令），确保重排后的代码逻辑等价性。
-- **约束条件**：
-  - 禁止将指令移动到其定义操作数（SSA Operands）之前。
-  - 禁止跨越包含副作用（Side-effect）的同步原语或外部函数调用。
+- **barrier 分类**：
+  - `Movable`：普通可移动 compute op。
+  - `LocalBoundary`：例如 `treshape`，允许在无 tile 依赖冲突时跨越。
+  - `HardBoundary`：call、region op、未知副作用 op、不可安全移动的边界。
+- **调度策略**：
+  - 先按 `group_id` 收集成员，再按 `pto.fusion.order` 排序。
+  - 对组内后续成员，优先尝试把成员移动到当前 `placement` 之后。
+  - 若成员不能前移，则在不违反 later-crossing 约束时，反向尝试把 `placement` 向后推。
+- **关键合法性检查**：
+  - 不能跨越 operand 的定义点。
+  - 不能把 producer 挪到某个 consumer 之后。
+  - 不能越过 hard boundary。
+  - 穿越 local boundary 时，要确认双方不共享 tile input/output 依赖。
 
 **不变性与副作用 (Invariants & Side Effects)**
 
-- **改变指令顺序**：这是该 Pass 的核心副作用。
-- **CFG 保持不变**：仅在基本块（Basic Block）内部进行线性指令重排。
+- 会改写 block 内 op 顺序。
+- 不改 group metadata，不改 CFG。
 
 ### 5.5 融合区域封装 (PTOFusionRegionGenPass)
 
 **设计动机 (Motivation)**
-将零散的 OP 序列封装为逻辑上统一的 `pto.fusion_region` 容器。通过明确的 Region 边界，简化后续针对融合区域的特殊变换（如寄存器直传重写、库函数实例化）的实现复杂度。
+把连续 span 封装成显式 `pto.fusion_region`，为 A5VM lowering 后的 region-local 循环融合、谓词清理和 load/store 消除提供容器边界。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `PTOOpSchedulingPass`，待融合指令已在物理空间聚拢。
-- **Post-conditions**：原本离散的 Level-2 OP 被包裹进 `pto.fusion_region` 内部，中间依赖关系被局部化。
+- **Pre-conditions**：同一 `group_id` 在 block 中已经是单一连续 span。
+- **Post-conditions**：每个 span 被包成一个 `pto.fusion_region`，并用 `pto.yield` 显式声明对外可见 frontier。
 
 **输入/输出规格 (I/O Specification)**
 
-- **Input**: 具有相同 `fusion_id` 标签且物理聚拢后的 Level-2 PTO IR。
-- **Output**: 包含 `pto.fusion_region` 操作的 Level-2 PTO IR。
-  - _结构特征_：`pto.fusion_region` 是最小单块容器，不显式建模 Region Input；外部依赖保持为对父作用域 SSA 的隐式引用，并通过内部 `pto.yield` 指令返回 `Variadic<AnyType>` 输出结果。`pto.yield` operands 精确刻画封装后仍对 Region 外可见的 tile/value 集合，可作为后续 region 内冗余 load/store 消除的外部可见性边界。
+- **Input**: 已调度好的 block-local group span。
+- **Output**: `pto.fusion_region` 包装后的 PTO IR。
+  - region 不显式建模输入 block argument。
+  - region body 直接隐式捕获父作用域 SSA。
+  - `pto.yield` 只返回真正对 region 外可见的 value。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **区域识别**：扫描 IR 指令流，识别连续且具有相同 `fusion_id` 的指令序列。
-  2. **边界提取**：分析该序列的 `Def-Use` 链，仅识别哪些结果在区域外部仍被使用（作为 Region Output）。
-  3. **容器封装**：创建一个 `pto.fusion_region` 实例，将识别出的指令序列整体移动至 Region 的主基本块（Body Block）内，保留对父作用域 SSA 的隐式引用，并补全 `yield` 逻辑。
-- **输出判定说明**：
-  - Region Output 只包含在区域外仍有 SSA use 的 escaping value。
-  - `pto.yield` 只返回这些 escaping value；未出现在 `pto.yield` 中的中间 tile 视为 region-local，可供后续 region 内局部消除/合并逻辑直接使用。
-  - 若组内最后一个 destination tile 在封装后没有外部 use，`pto.fusion_region` 允许没有 result，body 也允许以空 `pto.yield` 结束。
-- **硬约束条件**：
-  - **原子性**：一个融合组必须对应且仅对应一个 `pto.fusion_region`。
-  - **最小容器**：5.5 阶段不得为了形成闭包而额外生成 region 输入 operands 或 body block arguments。
+- **span 识别约束**：
+  - 同一 `group_id` 在一个 block 里必须只出现一个连续 span，否则直接报错。
+  - group 内 `pto.fusion.order` 必须严格递增。
+- **frontier 计算**：
+  - `PTOFusionRegionGen` 会结合 use-def 和 `PreFusionAnalysis` 的写实例逃逸信息，找出必须在 region 结果列表中保留的 escaping value。
+  - 若某个值只在 region 内使用，或者虽然有外用但不可被 region result 合法替换，则不会盲目外提。
+- **结构约束**：
+  - 一个 group 对应一个 region。
+  - 不额外生成 region 输入 operands。
+  - 允许空 result / 空 `pto.yield`。
 
 **不变性与副作用 (Invariants & Side Effects)**
 
-- **结构化副作用**：显著改变 IR 的层级结构，引入了嵌套的基本块。
-- **CFG 一致性**：对外部控制流无影响，逻辑等价性由边界提取算法保证。
+- 会引入嵌套 region，显著改变 IR 结构。
+- 这是当前主线里真正把“逻辑 fusion group”转成“后续 backend 可识别容器”的分界点。
 
-### 5.6 PlanMemory/InsertSync
-
-### 5.7 指令库实例化与版本选择 (PTOOpLibInstantiationPass)
+### 5.6 Shared pre-backend normalization
 
 **设计动机 (Motivation)**
-将 Tile-Level 的宏观计算语义转化为 Vector-Level 的微观计算序列。依据融合策略选择最优的指令实现版本（如合轴优化版），为向底层 CCE IR 的最终转换奠定基础。
+tile fusion 分组和 region 封装完成后，主线并不会直接进入 A5VM emission，而是先执行一段与 A5 backend 共享的规范化流程，把同步、layout、view 和内存规划统一到 backend lowering 可消费的形态。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已确定融合分组及版本选择元数据。
-- **Post-conditions**：PTO OP 被替换为具体的指令库调用（LibCall）或内联的向量指令序列。
+- **Pre-conditions**：`pto.fusion_region` 已经建立，但 body 仍然是 PTO tile op。
+- **Post-conditions**：IR 已经过同步降级、layout 推断、view-to-memref 和内存规划，仍保留 `pto.fusion_region` 包装以便 backend-side region-local 优化继续工作。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **版本匹配**：基于 Tile 的 `dtype/layout` 及融合上下文（是否属于同一硬件循环），从 `OpLib` 匹配最佳实现。
-  2. **内联重写**：将匹配到的向量计算序列内联进 `pto.fusion_region` 内部，并完成输入/输出寄存器绑定。
-- **硬约束**：版本选择必须保证数值精度的一致性，且必须符合 A5 硬件对 Stride 的物理限制。
+- 固定顺序如下：
+  1. `PTOLoweringSyncToPipe`
+  2. `InferPTOLayout`（除非显式禁用）
+  3. `PTOViewToMemref`
+  4. `PlanMemory`（`level3` 以外）
+  5. `PTOInsertSync`（仅用户显式开启）
+  6. `CSE`
+- 关键现实点：
+  - 低层循环融合不再发生在 “tile-level + LibCall inline” 之后，而是发生在这段 shared normalization 和 `PTOToA5VM` 之后。
+  - 这一步仍然不会 flatten `pto.fusion_region`。
 
-### 5.8 Tile2Memref pass
-
-### 5.9 指令内联 (PTOFusionInlinePass)
+### 5.7 A5VM 版本选择与 lowering (PTOA5VMVersionSelection -> PTOToA5VM)
 
 **设计动机 (Motivation)**
-将 `pto.fusion_region` 内部属于各 OP 的底层向量级实现版本正式展开。通过内联，将宏观的 Tile 计算转化为微观的向量寄存器操作指令序列，为后续在 Region 范围内进行跨 OP 的深度优化奠定 IR 基础。
+把 tile-level PTO op 变成 A5VM backend 可发射的低层 `scf.for + a5vm.*` 结构，同时为 fusion-region 内外选择不同的 lowering 变体。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `Tile2Memref` 转换，区域内指令已匹配到具体的 OpLib 库版本。
-- **Post-conditions**：原本的库调用被替换为内联的向量指令体，各指令的输入/输出仍引用 MemRef。
+- **Pre-conditions**：已完成 shared pre-backend normalization。
+- **Post-conditions**：region 内 PTO op 被原位改写为 A5VM 低层结构；非融合 PTO op 也会在父 block 中被正常 lower。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **Body 替换**：获取匹配版本的 MLIR 实现函数体。
-  2. **原位内联**：将函数体克隆并插入 `pto.fusion_region` 的当前位置，完成形参与实参（MemRef Handle）的绑定。
-- **不变性与副作用**：
-  - **仅做内联**：本 Pass 严格不执行任何循环合并、寄存器消除或指令重排等逻辑。
-  - **IR 展开**：区域内的指令规模会显著增加。
+- **PTOA5VMVersionSelection**：
+  - 会遍历所有 A5VM candidate PTO op。
+  - 若 op 位于 `pto.fusion_region` 内，则打上 `pto.a5vm_lowering_choice = no-post-update`。
+  - 若 op 位于普通父 block，则选择 `post-update`。
+  - 当前 loop shape 固定为 `TwoD`。
+- **PTOToA5VM**：
+  - 会把 PTO tile op lowering 成 A5VM backend op。
+  - 对已经封装好的 `pto.fusion_region`，采用“region 内原位改写，wrapper 暂时保留”的策略。
+  - 不会为了 residual 非融合 op 人工再创建新的 `pto.fusion_region`。
 
-### 5.10 循环合并优化 (PTOFusionLoopFusionPass)
+### 5.8 A5VM 前置结构清理 (PTOA5VMIfCanonicalize)
 
 **设计动机 (Motivation)**
-内联后的 `pto.fusion_region` 包含多个独立的微循环。本 Pass 将这些迭代空间一致的循环合并为单一循环，减少循环索引计算和硬件控制指令的发射频率。
+`PTOToA5VM` 之后可能残留一些 `scf.if` 结构。当前主线在低层循环融合前，只做一轮针对 `scf.if` 的局部 canonicalization，避免全局 canonicalizer 过早改写 loop header，影响低层循环融合的结构匹配。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `PTOFusionInlinePass`，区域内暴露出了基于 MemRef 的独立循环结构。
-- **Post-conditions**：原本嵌套的多个微循环被聚合为一个同步执行的计算核。
+- **Pre-conditions**：输入是 A5VM post-lowering IR。
+- **Post-conditions**：仅清理现有 `scf.if`，不主动跑全局 Canonicalizer。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **迭代空间校验**：验证循环上限、下限及步长是否一致。
-  2. **依赖一致性检查 (Dependency Check)**：在 Body 聚合前，利用分析结果再次校验：融合后的计算序列是否会产生“写后读（RAW）”违例或导致原始数据流向发生逆转。
-  3. **Body 聚合**：若校验通过，将所有微循环的计算逻辑合并到同一个 Loop Body 中，并重写索引引用。
-- **硬约束**：
-  - 禁止合并具有非对齐迭代域或步长的循环。
-  - **合法性报错**：若 Body 聚合导致数据依赖关系发生不可逆改变（即无法通过指令重排解决的依赖冲突），说明该融合 Region 定义非法，Pass 必须报错并终止流程。
+- 只应用 `scf::IfOp` 自带 canonicalization patterns。
+- `GreedyRewriteConfig` 的 scope 限制在函数体内，目标是删除常量条件和冗余 if 包装，不破坏后续 loop-fusion 需要的 `scf.for` 头结构。
 
-### 5.11 访存重定向与消除 (PTOLoadStoreElimPass)
+### 5.9 低层循环合并优化 (PTOLowLevelLoopFusion)
 
 **设计动机 (Motivation)**
-实现 Tile Fusion 的终极访存收益。通过将 Producer-Consumer 间的数据交换从物理 UB 内存重定向至向量寄存器，彻底移除冗余的 `store -> load` 指令对。
+tile fusion 的真正“循环融合”现在发生在 A5VM lowering 之后。该 pass 不再操作历史上的 `pto.simd.vec_scope` / `vector.masked_*` bridge IR，而是直接在 `pto.fusion_region` 内处理低层 `scf.for + a5vm.*` 阶段。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成 `PTOFusionLoopFusionPass`，指令已聚拢在同一循环迭代体内。
-- **Post-conditions**：区域内原本用于中转的中间 `store` 与后续 `load` 被移除，数据流转化为纯寄存器传递。
+- **Pre-conditions**：输入契约是保留在 `pto.fusion_region` 内的 A5VM post-lowering loop nest。
+- **Post-conditions**：可融合的相邻 loop stage 被聚合成共享 loop-header 的单一 carrier loop。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **寄存器绑定**：识别 Producer 指令生成的向量 Value。
-  2. **Value 前传**：将后续 Consumer 对同一 MemRef 地址的 Load 结果直接替换为对该向量 Value 的引用。
-  3. **中间存取消除**：移除仅在区域内有效且生命周期结束的物理存储动作。
-- **硬约束**：必须确保消除动作不违反原始的数据流拓扑依赖顺序。
+- **stage 识别方式**：
+  - 每个 stage 由若干 setup op、若干层同构 `scf.for`、以及叶子 `a5vm.*` op 组成。
+  - 只会尝试融合彼此相邻、loop header 等价、且中间 prelude/setup 可安全重排的 stage。
+- **合法性条件**：
+  - `sameForHeader(lhs, rhs)`：上下界、步长和 loop attrs 完全等价。
+  - prelude/setup 必须是 side-effect-free 或可分析的 memory prelude。
+  - 跨 stage 移动 prelude 时，不能与前一 stage 的内存根产生潜在 alias 冲突。
+- **现实边界**：
+  - 这是一个非常保守的 matcher，不做激进 loop normalization。
+  - 只融合“相邻 stage”，不做跨区域或跨复杂控制流的全局循环拼接。
 
-### 5.12 循环展开优化 (PTOFusionLoopUnrollPass)
+### 5.10 后融合规范化与谓词消除 (Canonicalizer -> CSE -> PTOFusionPredicateElision)
 
 **设计动机 (Motivation)**
-在合并后的循环体上执行展开（Unroll）。通过扩大指令窗口，为后端调度器提供更大的指令级并行（ILP）空间，最大化 Davinci A5 向量流水线的吞吐量。
+低层循环融合结束后，主线会先做一次常规 `Canonicalizer + CSE`，再专门清理 fusion-region 内部冗余的 A5VM 谓词物化，减少后续 load/store 消除阶段看到的噪声。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：已完成存取消除，循环体精简至寄存器流水。
-- **Post-conditions**：循环副本增加，单次迭代内的计算密度显著提升。
+- **Pre-conditions**：`PTOLowLevelLoopFusion` 已完成。
+- **Post-conditions**：重复的 `a5vm.plt_*` 计算被压缩，后续访存消除看到的 A5VM loop body 更干净。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **算法思路**：
-  1. **展开因子决策**：结合 A5 剩余寄存器预算，计算不产生 Spill 的最大展开次数。
-  2. **迭代交错**：对展开后的副本指令进行重排，隐藏长延迟指令开销。
-- **副作用**：会导致代码量膨胀，需监控是否触碰硬件指令 Cache 上限。
+- `PTOFusionPredicateElision` 当前聚焦 `a5vm::PltB8/B16/B32Op`。
+- 它会在 fusion-region 内做保守的 value 等价判断，包括：
+  - 纯 op 结果等价
+  - loop-carried iter_arg 与 `plt.scalar_out` 的直接递归等价
+- 只在能证明等价时复用已有谓词，避免错误跨越 side effect 或复杂循环递归。
 
-### 5.13 CCE IR 发射转换 (PTOEmitCCEPass)
+### 5.11 访存重定向与消除 (PTOFusionLoadStoreElision)
 
 **设计动机 (Motivation)**
-将优化后的向量级 IR 最终投射为底层的 CCE LLVM IR。这是连接 MLIR 优化世界与底层编译器的最终出口。
+在已经形成稳定 A5VM carrier loop 的前提下，消除 fusion-region 内部仅用于中转的本地 store/load 往返，把 region-local 数据通路收缩到更接近寄存器/向量值直传的形态。
 
 **流水线位置 (Pipeline Position)**
 
-- **Pre-conditions**：完成所有融合优化，指令已完全向量化。
-- **Post-conditions**：生成可被底层编译器处理的 CCE 汇编或 LLVM IR 代码。
+- **Pre-conditions**：完成低层循环融合、全局规范化和谓词消除。
+- **Post-conditions**：局部 `a5vm.vsts -> a5vm.vlds` round-trip 被消除；非逃逸尾部 store 也可能被清理。
 
 **核心逻辑与约束 (Logic & Constraints)**
 
-- **转换逻辑**：将 `pto.fusion_region` 展开为具体的硬件循环内建函数，将向量指令映射为 CCE 原语。
+- **输入契约**：处理对象是 `pto.fusion_region` 内的 A5VM post-lowering loop body，载体循环通常带 `llvm.loop.aivector_scope`。
+- **核心行为**：
+  - 归一化 tracked memref 根值，穿透 `bind_tile`、`memref.cast`、`reinterpret_cast`、`transpose` 等包装。
+  - 以 `pto.yield` / region result 作为“外部可见性 frontier”，避免误删需要向 region 外暴露的写回。
+  - 保守消除匹配的 store/load 对，并做 frontier-aware tail-store cleanup。
+- **现实边界**：
+  - 遇到无法做别名分析的内存 effect，会直接保守退出。
+  - 仅处理 fusion-region 局部模式，不替代通用 DSE。
+
+### 5.12 融合区域展平 (PTOFlattenFusionRegion)
+
+**设计动机 (Motivation)**
+一旦 region-local backend 优化全部结束，`pto.fusion_region` 这个结构化容器就不再需要，必须显式展平回父 block，恢复后端发射更容易消费的平面 A5VM IR。
+
+**流水线位置 (Pipeline Position)**
+
+- **Pre-conditions**：5.11 之后 region 内剩余 op 已经是最终 backend-ready 形式。
+- **Post-conditions**：`pto.fusion_region` 和 `pto.yield` 被删除，父 block 只保留普通低层 op。
+
+**核心逻辑与约束 (Logic & Constraints)**
+
+- 把 region body 中除 terminator 外的 op 全部移到 wrapper 之前。
+- 用 `pto.yield` 的 operands 替换 `pto.fusion_region` 的结果。
+- 擦除 `pto.yield` 和 wrapper 本身。
+
+### 5.13 A5VM backend 发射 (A5VM text / LLVM emission)
+
+**设计动机 (Motivation)**
+当前 tile fusion 主线的最终目标不是“生成 CCE IR 规划文档中的抽象出口”，而是进入现有 A5VM backend 发射器：要么打印/导出 A5VM 文本，要么继续走 LLVM emission，再交给后续工具链。
+
+**流水线位置 (Pipeline Position)**
+
+- **Pre-conditions**：IR 已经是展平后的 A5VM backend-ready 形式。
+- **Post-conditions**：生成 A5VM 文本输出或 LLVM 级 backend 产物。
+
+**核心逻辑与约束 (Logic & Constraints)**
+
+- `llvm.loop.aivector_scope` 是 backend emitter 识别向量 section loop 的关键结构化标记。
+- tile fusion 文档在这里需要关注的是“前面 pass 是否把 A5VM 结构准备对”，而不是再描述一个当前代码中不存在的 `PTOEmitCCEPass`。
 
 ## 6. 关键算法实现
 
-- **贪心融合算法**：在约束条件下最大化融合区域。
-- **访问模式推导算法**：自动识别 OP 间的索引映射关系。
+- **预分析驱动的 block-local DFG 建模**：在 `tile_buf` 世界内提取 compute/local-boundary/hard-boundary、value liveness 和 write escape class，作为所有后续决策的统一依据。
+- **保守 DAG 贪心规划**：当前默认策略是 `ConservativeDAGGreedyStrategyEngine + ConservativeDAGGreedyCostModel`，并非开放式插件系统。
+- **span 压缩调度**：通过 barrier 分类与双向移动规则，把离散 group 压成连续 span，同时维持 SSA 和 boundary 合法性。
+- **post-lowering stage matcher**：`PTOLowLevelLoopFusion` 在 `scf.for + a5vm.*` 层匹配同头循环和可重排 prelude，执行保守的相邻阶段融合。
+- **frontier-aware cleanup**：`PTOFusionPredicateElision` 和 `PTOFusionLoadStoreElision` 都依赖 fusion-region frontier，避免把仍需对外可见的值错误消除。
 
 ## 7. 与系统其它模块的交互
 
-- **TPUSH/TPOP 协同**：融合后的数据流如何通过 DMA/跨核通信传递。
-- **同步指令优化**：融合区域内冗余 Sync 指令的自动识别与删除。
+- **shared pre-backend normalization**：tile fusion 前半段和 A5 backend 共用 `LoweringSyncToPipe`、`InferPTOLayout`、`PTOViewToMemref`、`PlanMemory`、`PTOInsertSync` 等 pass，文档必须把它们视作主线的一部分，而不是 region 外独立步骤。
+- **A5VM lowering 契约**：`PTOA5VMVersionSelection` 决定 fusion-region 内外 lowering 变体，`PTOToA5VM` 决定后续低层循环优化所见的 IR 形态。
+- **backend emitter 契约**：`A5VMTextEmitter` / `A5VMLLVMEmitter` 依赖 `llvm.loop.aivector_scope` 等结构化痕迹；前面 pass 若破坏这些结构，后端发射会直接受影响。
+- **测试与 OpenSpec**：`test/tile_fusion/`、`test/samples/runop.sh -t TileFusion` 以及 `openspec/specs/*tile-fusion*` 是行为对齐的主要外部约束，不应再用历史 LibCall/CCE 设计作为 source of truth。
 
 ## 8. 性能验证与测试
 
 ### 8.1 功能验证
 
-- 典型 OP 链路测试。
-- 异常分支测试：不兼容 Shape、数据类型转换冲突。
+- pass 级回归优先使用 `test/tile_fusion/*.mlir`。
+- 需要观察分组和调度结果时，可用：
+  - `--test-only-op-scheduling`
+  - `--test-only-fusion-region-gen`
+- 需要验证 backend 主线形态时，优先检查 `--pto-backend=a5vm --enable-op-fusion --a5vm-print-ir` 输出。
+- 动态 shape、local boundary、hard boundary、不可移动副作用 op 都应覆盖负例。
 
 ### 8.2 性能度量
 
-- **指令计数**：UB 访问指令减少比例。
-- **时延分析**：对比融合前后的端到端执行周期。
+- **结构指标**：
+  - `pto.fusion.group_id/order` 是否符合预期。
+  - `pto.fusion_region` 是否只包住一个连续 span。
+  - `llvm.loop.aivector_scope` 是否仍在最终 carrier loop 上。
+- **低层指标**：
+  - `a5vm.plt_*` 冗余是否下降。
+  - region 内 `vlds/vsts` round-trip 是否减少。
+- **端到端样例**：
+  - `python3 -m lit -sv test/tile_fusion`
+  - `bash test/samples/runop.sh -t TileFusion`
+  - 必要时用 `--print-ir-after-all` 对照关键阶段 IR。
 
-## 9. 实施路径
+## 9. 当前边界与后续方向
 
-- **第一阶段**：实现 Element-wise 线性链路融合，打通寄存器级传参。
-- **第二阶段**：支持带有维度降减或合轴优化的复杂融合。
-- **第三阶段**：引入自适应 Cost Model，支持跨基本块的全局融合决策。
+- **当前已落地边界**：
+  - 主线只覆盖 A5/A5VM backend，不覆盖 EmitC。
+  - 规划阶段仅支持保守的 block-local group，不做跨 basic block 融合。
+  - 动态迭代域当前无法证明，相关链路会被拒绝。
+  - `PreFusionAnalysis` 可识别的 compute family 比 `FusionPlan` 当前允许规划的 op 范围更宽。
+- **后续可扩展方向**：
+  - 把动态 `v_row/v_col` 证明补成独立 shape inference 主线。
+  - 放宽 planner 对 reduce / broadcast 组合的实际落地支持。
+  - 在保持 `pto.fusion_region` 契约稳定的前提下，继续增强 post-lowering loop fusion 和 load/store elimination 的覆盖面。
