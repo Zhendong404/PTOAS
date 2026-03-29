@@ -7,10 +7,9 @@
 // CHECK-DAG: %[[NBURST:.*]] = arith.constant 32 : i64
 // CHECK-DAG: %[[C1_I64:.*]] = arith.constant 1 : i64
 // CHECK-DAG: %[[FALSE:.*]] = arith.constant false
-// CHECK: %[[GM_PTR:.*]] = pto.castptr %arg0 : memref<?xf32, #pto.address_space<gm>> -> !pto.ptr<f32, gm>
-// CHECK: %[[UB_PTR:.*]] = pto.castptr %[[ZERO_I64]] : i64 -> !pto.ptr<f32, ub>
-// CHECK: %[[GM_BASE_BYTES:.*]] = pto.castptr %[[GM_PTR]] : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
-// CHECK: %[[GM_OFFSET_PTR:.*]] = pto.addptr %[[GM_BASE_BYTES]], %c0 : <i8, gm> -> <i8, gm>
+// CHECK-DAG: %[[UB_PTR:.*]] = pto.castptr %[[ZERO_I64]] : i64 -> !pto.ptr<f32, ub>
+// CHECK-DAG: %[[GM_PTR:.*]] = pto.castptr %arg0 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
+// CHECK: %[[GM_OFFSET_PTR:.*]] = pto.addptr %[[GM_PTR]], %c0 : <i8, gm> -> <i8, gm>
 // CHECK: pto.set_loop2_stride_outtoub %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: pto.set_loop1_stride_outtoub %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: pto.set_loop_size_outtoub %[[C1_I64]], %[[C1_I64]]

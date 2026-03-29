@@ -20,13 +20,31 @@ echo "phase1 check: vpto_vec_type.mlir"
 { "${ptoas_bin}" test/phase1/vpto_vec_type.mlir 2>&1 || true; } | FileCheck test/phase1/vpto_vec_type.mlir
 
 echo "phase1 check: vpto_copy_gm_to_ubuf_op.mlir"
-{ "${ptoas_bin}" test/phase1/vpto_copy_gm_to_ubuf_op.mlir -o - 2>&1 || true; } | FileCheck test/phase1/vpto_copy_gm_to_ubuf_op.mlir
+positive_copy_gm_to_ubuf="$(mktemp)"
+awk '1; /^}$/ {exit}' test/phase1/vpto_copy_gm_to_ubuf_op.mlir > "${positive_copy_gm_to_ubuf}"
+{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_copy_gm_to_ubuf}" -o - 2>/dev/null; } | \
+  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_copy_gm_to_ubuf_op.mlir
+rm -f "${positive_copy_gm_to_ubuf}"
+{ "${ptoas_bin}" test/phase1/vpto_copy_gm_to_ubuf_op.mlir -o - 2>&1 || true; } | \
+  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_copy_gm_to_ubuf_op.mlir
 
 echo "phase1 check: vpto_vabs_kernel_shape.mlir"
-{ "${ptoas_bin}" test/phase1/vpto_vabs_kernel_shape.mlir -o - 2>&1 || true; } | FileCheck test/phase1/vpto_vabs_kernel_shape.mlir
+positive_vabs_kernel_shape="$(mktemp)"
+awk '1; /^}$/ {exit}' test/phase1/vpto_vabs_kernel_shape.mlir > "${positive_vabs_kernel_shape}"
+{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_vabs_kernel_shape}" -o - 2>/dev/null; } | \
+  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_vabs_kernel_shape.mlir
+rm -f "${positive_vabs_kernel_shape}"
+{ "${ptoas_bin}" test/phase1/vpto_vabs_kernel_shape.mlir -o - 2>&1 || true; } | \
+  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_vabs_kernel_shape.mlir
 
 echo "phase1 check: vpto_copy_ubuf_to_gm_op.mlir"
-{ "${ptoas_bin}" test/phase1/vpto_copy_ubuf_to_gm_op.mlir -o - 2>&1 || true; } | FileCheck test/phase1/vpto_copy_ubuf_to_gm_op.mlir
+positive_copy_ubuf_to_gm="$(mktemp)"
+awk '1; /^}$/ {exit}' test/phase1/vpto_copy_ubuf_to_gm_op.mlir > "${positive_copy_ubuf_to_gm}"
+{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_copy_ubuf_to_gm}" -o - 2>/dev/null; } | \
+  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_copy_ubuf_to_gm_op.mlir
+rm -f "${positive_copy_ubuf_to_gm}"
+{ "${ptoas_bin}" test/phase1/vpto_copy_ubuf_to_gm_op.mlir -o - 2>&1 || true; } | \
+  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_copy_ubuf_to_gm_op.mlir
 
 echo "phase1 check: vpto_backend_switch.mlir"
 backend_switch_output="$(mktemp)"

@@ -1,6 +1,5 @@
 // RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
 
-// CHECK-LABEL: func.func @tstore_domain_todos
 // CHECK: TSTORE ACC lowering TODO for vpto backend
 // CHECK: TSTORE MAT lowering TODO for vpto backend
 // CHECK-NOT: failed to legalize operation

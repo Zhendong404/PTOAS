@@ -81,7 +81,7 @@ echo "phase2 check: tstore_domain_todos.mlir"
 
 echo "phase2 check: pto_backend_vpto_wiring.mlir"
 "${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/pto_backend_vpto_wiring.mlir -o - 2>/dev/null | \
-  "${filecheck_bin}" test/phase2/pto_backend_vpto_wiring.mlir
+  "${filecheck_bin}" --check-prefix=VPTO test/phase2/pto_backend_vpto_wiring.mlir
 
 echo "phase2 check: pto_backend_vpto_wiring.mlir EmitC smoke"
 "${ptoas_bin}" --pto-arch=a5 --pto-backend=emitc test/phase2/pto_backend_vpto_wiring.mlir -o - 2>/dev/null | \
@@ -92,14 +92,15 @@ echo "phase2 check: vpto_fusion_pipeline_order.mlir"
 "${filecheck_bin}" test/phase2/vpto_fusion_pipeline_order.mlir < /tmp/vpto_fusion_pipeline_order.out
 ! rg 'IR Dump After (PTOValidateSimdIR|PTOInstantiateAndLowerToLibCall|PTOInlineLibCall)' /tmp/vpto_fusion_pipeline_order.out
 
+vpto_fusion_region_lifecycle_out="/tmp/vpto_fusion_region_lifecycle.out"
+"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null > "${vpto_fusion_region_lifecycle_out}" 2>&1
+
 echo "phase2 check: vpto_fusion_region_lifecycle.mlir (low-level)"
-"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
-  awk '/IR Dump After PTOLowLevelLoopFusion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOLowLevelLoopFusion/) exit; print}' | \
+awk '/IR Dump After PTOLowLevelLoopFusion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOLowLevelLoopFusion/) exit; print}' "${vpto_fusion_region_lifecycle_out}" | \
   "${filecheck_bin}" --check-prefix=LOW test/phase2/vpto_fusion_region_lifecycle.mlir
 
 echo "phase2 check: vpto_fusion_region_lifecycle.mlir (flatten)"
-"${ptoas_bin}" test/samples/PyPTOIRParser/paged_attention_example_kernel_online_update.pto --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=kernel_online_update -o /dev/null 2>&1 | \
-  awk '/IR Dump After PTOFlattenFusionRegion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFlattenFusionRegion/) exit; print}' | \
+awk '/IR Dump After PTOFlattenFusionRegion/{found=1} found{if ($0 ~ /^\/\/ -----\/\/ IR Dump After / && $0 !~ /PTOFlattenFusionRegion/) exit; print}' "${vpto_fusion_region_lifecycle_out}" | \
   "${filecheck_bin}" --check-prefix=FLAT test/phase2/vpto_fusion_region_lifecycle.mlir
 
 echo "phase2 check: ctest"

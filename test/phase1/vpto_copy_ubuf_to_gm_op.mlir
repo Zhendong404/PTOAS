@@ -1,8 +1,8 @@
 // RUN: ./build/tools/ptoas/ptoas %s -o - | FileCheck %s
 
-// CHECK-LABEL: @copy_ubuf_to_gm
-// CHECK: pto.copy_ubuf_to_gm %arg0, %arg1, %[[COLS:[^,]+]], %[[ZERO:[^,]+]], %[[NBURST:[^,]+]], %[[LEN:[^,]+]], %[[ZERO]], %[[DSTSTRIDE:[^,]+]], %[[SRCSTRIDE:[^ ]+]]
-// CHECK-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
+// CHECK-POS-LABEL: @copy_ubuf_to_gm
+// CHECK-POS: pto.copy_ubuf_to_gm %arg0, %arg1, %[[OFFSET:[^,]+]], %[[COLS:[^,]+]], %[[BURST_LEN:[^,]+]], %[[SRC_GAP:[^,]+]], %[[DST_STRIDE:[^,]+]], %[[SRC_STRIDE:[^ ]+]]
+// CHECK-POS-SAME: : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 module {
   func.func @copy_ubuf_to_gm(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, gm>) {
     %c0_i64 = arith.constant 0 : i64
@@ -14,7 +14,7 @@ module {
   }
 }
 
-// CHECK: error: 'pto.copy_ubuf_to_gm' op requires UB source and GM destination
+// CHECK-ERR: error: 'pto.copy_ubuf_to_gm' op requires UB source and GM destination
 module {
   func.func @copy_ubuf_to_gm_wrong_direction(%src: !pto.ptr<f32, gm>, %dst: !pto.ptr<f32, ub>) {
     %c0_i64 = arith.constant 0 : i64
@@ -26,7 +26,7 @@ module {
   }
 }
 
-// CHECK: error: 'pto.copy_ubuf_to_gm' op requires source and destination element byte widths to match
+// CHECK-ERR: error: 'pto.copy_ubuf_to_gm' op requires source and destination element byte widths to match
 module {
   func.func @copy_ubuf_to_gm_width_mismatch(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<i8, gm>) {
     %c0_i64 = arith.constant 0 : i64

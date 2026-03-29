@@ -1472,14 +1472,6 @@ int main(int argc, char **argv) {
       llvm::errs() << "\n";
     }
 
-    if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
-                     !vptoEmitHIVMOfficialBitcode)) {
-      module->print(outputFile.os());
-      outputFile.os() << "\n";
-      outputFile.keep();
-      return 0;
-    }
-
     OwningOpRef<ModuleOp> emissionModule(cast<ModuleOp>(module->clone()));
     PassManager emissionPM(&context);
     maybeEnablePrintIRAfterAll(emissionPM, inputFuncNames);
@@ -1488,6 +1480,14 @@ int main(int argc, char **argv) {
       llvm::errs()
           << "Error: VPTO pre-emission ptr-boundary pass execution failed.\n";
       return 1;
+    }
+
+    if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
+                     !vptoEmitHIVMOfficialBitcode)) {
+      emissionModule->print(outputFile.os());
+      outputFile.os() << "\n";
+      outputFile.keep();
+      return 0;
     }
 
     pto::VPTOEmissionOptions options;

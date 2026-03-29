@@ -2,27 +2,25 @@
 // RUN: ./build/tools/ptoas/ptoas --pto-arch a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck --check-prefix=CHECK-HIVM %s
 
 // CHECK-LABEL: func.func @copy_dynamic_transfer_operands
-// CHECK: %[[ZERO_I64:.*]] = arith.constant 0 : i64
-// CHECK: %[[ROW_I64:.*]] = arith.index_castui %arg2 : index to i64
-// CHECK: %[[COL_I64:.*]] = arith.index_castui %arg3 : index to i64
-// CHECK: %[[C1_I64:.*]] = arith.constant 1 : i64
-// CHECK: %[[NBURST:.*]] = arith.constant 32 : i64
-// CHECK: %[[ELEM_BYTES:.*]] = arith.constant 4 : i64
-// CHECK: %[[LOOP_STRIDE:.*]] = arith.constant 4096 : i64
+// CHECK-DAG: %[[STRIDE_BYTES:.*]] = arith.constant 128 : i64
+// CHECK-DAG: %[[LOOP_STRIDE:.*]] = arith.constant 4096 : i64
+// CHECK-DAG: %[[ELEM_BYTES:.*]] = arith.constant 4 : i64
+// CHECK-DAG: %[[NBURST:.*]] = arith.constant 32 : i64
+// CHECK-DAG: %[[C1_I64:.*]] = arith.constant 1 : i64
+// CHECK-DAG: %[[ZERO_I64:.*]] = arith.constant 0 : i64
+// CHECK-DAG: %[[FALSE:.*]] = arith.constant false
+// CHECK-DAG: %[[COL_I64:.*]] = arith.index_castui %arg3 : index to i64
 // CHECK: %[[LEN_BURST:.*]] = arith.muli %[[COL_I64]], %[[ELEM_BYTES]] : i64
-// CHECK: %[[STRIDE_BYTES:.*]] = arith.constant 128 : i64
 // CHECK: %[[GM_BASE_BYTES:.*]] = pto.castptr %arg0 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
-// CHECK: %[[ZERO_INDEX:.*]] = arith.index_castui %[[ZERO_I64]] : i64 to index
-// CHECK: %[[GM_OFFSET_PTR:.*]] = pto.addptr %[[GM_BASE_BYTES]], %[[ZERO_INDEX]] : <i8, gm> -> <i8, gm>
+// CHECK: %[[GM_OFFSET_PTR:.*]] = pto.addptr %[[GM_BASE_BYTES]], %c0 : <i8, gm> -> <i8, gm>
 // CHECK: pto.set_loop2_stride_outtoub %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: pto.set_loop1_stride_outtoub %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: pto.set_loop_size_outtoub %[[C1_I64]], %[[C1_I64]]
 // CHECK: %[[GM_TYPED_PTR:.*]] = pto.castptr %[[GM_OFFSET_PTR]] : !pto.ptr<i8, gm> -> !pto.ptr<f32, gm>
-// CHECK: %[[FALSE:.*]] = arith.constant false
 // CHECK: pto.copy_gm_to_ubuf %[[GM_TYPED_PTR]], %{{.*}}, %[[ZERO_I64]], %[[NBURST]], %[[LEN_BURST]], %[[ZERO_I64]], %[[ZERO_I64]], %[[FALSE]], %[[ZERO_I64]], %[[STRIDE_BYTES]], %[[STRIDE_BYTES]]
 // CHECK-SAME: : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
 // CHECK: %[[GM_OUT_BASE_BYTES:.*]] = pto.castptr %arg1 : !pto.ptr<f32, gm> -> !pto.ptr<i8, gm>
-// CHECK: %[[GM_OUT_OFFSET_PTR:.*]] = pto.addptr %[[GM_OUT_BASE_BYTES]], %[[ZERO_INDEX]] : <i8, gm> -> <i8, gm>
+// CHECK: %[[GM_OUT_OFFSET_PTR:.*]] = pto.addptr %[[GM_OUT_BASE_BYTES]], %c0 : <i8, gm> -> <i8, gm>
 // CHECK: pto.set_loop_size_ubtoout %[[C1_I64]], %[[C1_I64]]
 // CHECK: pto.set_loop1_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
 // CHECK: pto.set_loop2_stride_ubtoout %[[LOOP_STRIDE]], %[[LOOP_STRIDE]]
@@ -35,7 +33,7 @@
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP2.STRIDE.OUTTOUB
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP1.STRIDE.OUTTOUB
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP.SIZE.OUTTOUB
-// CHECK-HIVM: call void @llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.u32.DV
+// CHECK-HIVM: call void @llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.f32.DV
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP.SIZE.UBTOOUT
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP1.STRIDE.UBTOOUT
 // CHECK-HIVM: call void @llvm.hivm.SET.LOOP2.STRIDE.UBTOOUT
