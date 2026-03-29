@@ -12,7 +12,7 @@
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-def PTO_VectorType : Type<CPred<"::llvm::isa<::mlir::pto::VecType>($_self)">,
+def PTO_VectorType : Type<CPred<"::llvm::isa<::mlir::pto::VRegType>($_self)">,
                            "PTO low-level vector type">;
 def PTO_MaskTypeConstraint : Type<CPred<"::llvm::isa<::mlir::pto::MaskType>($_self)">,
                                    "PTO low-level mask type">;

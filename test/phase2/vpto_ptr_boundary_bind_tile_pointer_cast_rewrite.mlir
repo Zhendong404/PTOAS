@@ -5,9 +5,9 @@
 // CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: pto.bind_tile
 // CHECK: %[[BASE0:.+]] = pto.castptr %{{.+}} : i64 -> !pto.ptr<f32, ub>
-// CHECK: %[[LOAD:.+]] = pto.vlds %[[BASE0]][%{{.+}}] : !pto.ptr<f32, ub> -> !pto.vec<64xf32>
+// CHECK: %[[LOAD:.+]] = pto.vlds %[[BASE0]][%{{.+}}] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 // CHECK: %[[BASE1:.+]] = pto.castptr %{{.+}} : i64 -> !pto.ptr<f32, ub>
-// CHECK: pto.vsts %[[LOAD]], %[[BASE1]][%{{.+}}], %arg0 : !pto.vec<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+// CHECK: pto.vsts %[[LOAD]], %[[BASE1]][%{{.+}}], %arg0 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
 // CHECK-LABEL: func.func @bind_tile_castptr_boundary()
 // CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: pto.bind_tile
@@ -22,8 +22,8 @@ module {
     %c64 = arith.constant 64 : index
     %buf = pto.pointer_cast(%c0_i64) : memref<1x64xf32, #pto.address_space<vec>>
     %tile = pto.bind_tile %buf, %c1, %c64 {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>>} : memref<1x64xf32, #pto.address_space<vec>> -> memref<1x64xf32, #pto.address_space<vec>>
-    %v = pto.vlds %tile[%c0] : memref<1x64xf32, #pto.address_space<vec>> -> !pto.vec<64xf32>
-    pto.vsts %v, %tile[%c0], %mask : !pto.vec<64xf32>, memref<1x64xf32, #pto.address_space<vec>>, !pto.mask
+    %v = pto.vlds %tile[%c0] : memref<1x64xf32, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+    pto.vsts %v, %tile[%c0], %mask : !pto.vreg<64xf32>, memref<1x64xf32, #pto.address_space<vec>>, !pto.mask
     return
   }
 

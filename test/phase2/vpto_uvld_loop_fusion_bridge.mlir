@@ -20,10 +20,10 @@
 // EXPAND: %[[BASE0:.+]] = pto.castptr %{{.+}} : memref<1x16xf32{{.*}} -> !pto.ptr<f32, ub>
 // EXPAND: %[[PTR0:.+]] = pto.addptr %[[BASE0]], %{{.+}} : <f32, ub> -> <f32, ub>
 // EXPAND: %[[ALIGN0:.+]] = pto.vldas %[[PTR0]] : !pto.ptr<f32, ub> -> !pto.align
-// EXPAND: %[[LOAD0:.+]], %{{.+}}, %{{.+}} = pto.vldus %[[PTR0]], %[[ALIGN0]] : !pto.ptr<f32, ub>, !pto.align -> !pto.vec<64xf32>, !pto.align, !pto.ptr<f32, ub>
+// EXPAND: %[[LOAD0:.+]], %{{.+}}, %{{.+}} = pto.vldus %[[PTR0]], %[[ALIGN0]] : !pto.ptr<f32, ub>, !pto.align -> !pto.vreg<64xf32>, !pto.align, !pto.ptr<f32, ub>
 // EXPAND: pto.vdup %[[LOAD0]]
 // EXPAND: %[[BASE1:.+]] = pto.castptr %{{.+}} : memref<1x16xf32{{.*}} -> !pto.ptr<f32, ub>
 // EXPAND: %[[PTR1:.+]] = pto.addptr %[[BASE1]], %{{.+}} : <f32, ub> -> <f32, ub>
 // EXPAND: %[[ALIGN1:.+]] = pto.vldas %[[PTR1]] : !pto.ptr<f32, ub> -> !pto.align
-// EXPAND: %[[LOAD1:.+]], %{{.+}}, %{{.+}} = pto.vldus %[[PTR1]], %[[ALIGN1]] : !pto.ptr<f32, ub>, !pto.align -> !pto.vec<64xf32>, !pto.align, !pto.ptr<f32, ub>
+// EXPAND: %[[LOAD1:.+]], %{{.+}}, %{{.+}} = pto.vldus %[[PTR1]], %[[ALIGN1]] : !pto.ptr<f32, ub>, !pto.align -> !pto.vreg<64xf32>, !pto.align, !pto.ptr<f32, ub>
 // EXPAND: pto.vdup %[[LOAD1]]

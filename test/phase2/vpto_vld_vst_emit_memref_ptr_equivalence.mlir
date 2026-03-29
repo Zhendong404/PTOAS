@@ -24,16 +24,16 @@ module {
       %src: memref<256xf32, #pto.address_space<vec>>,
       %dst: memref<256xf32, #pto.address_space<vec>>,
       %offset: index, %mask: !pto.mask) {
-    %v = pto.vlds %src[%offset] : memref<256xf32, #pto.address_space<vec>> -> !pto.vec<64xf32>
-    pto.vsts %v, %dst[%offset], %mask : !pto.vec<64xf32>, memref<256xf32, #pto.address_space<vec>>, !pto.mask
+    %v = pto.vlds %src[%offset] : memref<256xf32, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+    pto.vsts %v, %dst[%offset], %mask : !pto.vreg<64xf32>, memref<256xf32, #pto.address_space<vec>>, !pto.mask
     return
   }
 
   func.func @ptr_form(
       %src: !llvm.ptr<6>, %dst: !llvm.ptr<6>,
       %offset: index, %mask: !pto.mask) {
-    %v = pto.vlds %src[%offset] : !llvm.ptr<6> -> !pto.vec<64xf32>
-    pto.vsts %v, %dst[%offset], %mask : !pto.vec<64xf32>, !llvm.ptr<6>, !pto.mask
+    %v = pto.vlds %src[%offset] : !llvm.ptr<6> -> !pto.vreg<64xf32>
+    pto.vsts %v, %dst[%offset], %mask : !pto.vreg<64xf32>, !llvm.ptr<6>, !pto.mask
     return
   }
 }

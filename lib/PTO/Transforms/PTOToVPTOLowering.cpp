@@ -1272,7 +1272,7 @@ Value resolveTensorViewBase(Value value, Attribute &layoutAttr,
   return {};
 }
 
-pto::VecType getVPTOVecType(MLIRContext *context, Type elementType) {
+pto::VRegType getVPTOVRegType(MLIRContext *context, Type elementType) {
   unsigned bitWidth = 0;
   if (auto floatType = dyn_cast<FloatType>(elementType))
     bitWidth = floatType.getWidth();
@@ -1281,7 +1281,7 @@ pto::VecType getVPTOVecType(MLIRContext *context, Type elementType) {
 
   if (bitWidth == 0 || 2048 % bitWidth != 0)
     return {};
-  return pto::VecType::get(context, 2048 / bitWidth, elementType);
+  return pto::VRegType::get(context, 2048 / bitWidth, elementType);
 }
 
 ArrayAttr asI64ArrayAttr(Builder &builder, ArrayRef<int64_t> values) {
@@ -2210,7 +2210,7 @@ LogicalResult buildMaskedVectorStore(PatternRewriter &rewriter, Location loc,
                                      Value value, Value dstBuffer,
                                      Value dstOffset, Value activeLanes,
                                      int64_t vectorWidth) {
-  auto vecType = cast<pto::VecType>(value.getType());
+  auto vecType = cast<pto::VRegType>(value.getType());
   Value mask = buildPredicateMaskForLaneCount(rewriter, loc,
                                               vecType.getElementType(),
                                               activeLanes);
@@ -2326,7 +2326,7 @@ LogicalResult buildRowReduceVecScope(StringRef family,
                                      VPTOLoweringStrategy strategy, Value src,
                                      Value dst,
                                      PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO row-reduce element type";
 
@@ -2486,7 +2486,7 @@ LogicalResult buildColReduceVecScope(StringRef family,
                                      const VPTOColReduceContract &contract,
                                      Value src, Value dst, Value tmp,
                                      PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO col-reduce element type";
 
@@ -2676,7 +2676,7 @@ LogicalResult buildColReduceVecScope(StringRef family,
 }
 
 LogicalResult buildPartFill(StringRef family, const VPTOPartContract &contract,
-                            Value dstBuffer, pto::VecType vecType,
+                            Value dstBuffer, pto::VRegType vecType,
                             int64_t dstStride, PatternRewriter &rewriter,
                             Location loc) {
   Attribute initValue = buildPartPadValue(contract.elementType, family, rewriter);
@@ -2710,7 +2710,7 @@ LogicalResult buildPartFill(StringRef family, const VPTOPartContract &contract,
   return success();
 }
 
-LogicalResult buildPartCopyRegion(Value srcBuffer, Value dstBuffer, pto::VecType vecType,
+LogicalResult buildPartCopyRegion(Value srcBuffer, Value dstBuffer, pto::VRegType vecType,
                                   int64_t srcStride, int64_t dstStride,
                                   int64_t startRow, int64_t validRows,
                                   int64_t validCols, PatternRewriter &rewriter,
@@ -2747,7 +2747,7 @@ LogicalResult buildPartCopyRegion(Value srcBuffer, Value dstBuffer, pto::VecType
 }
 
 LogicalResult buildPartBinaryRegion(StringRef family, Value src0Buffer, Value src1Buffer,
-                                    Value dstBuffer, pto::VecType vecType,
+                                    Value dstBuffer, pto::VRegType vecType,
                                     int64_t src0Stride, int64_t src1Stride,
                                     int64_t dstStride, int64_t validRows,
                                     int64_t validCols, PatternRewriter &rewriter,
@@ -2799,7 +2799,7 @@ LogicalResult buildPartBinaryRegion(StringRef family, Value src0Buffer, Value sr
 LogicalResult buildPartVecScope(StringRef family, const VPTOPartContract &contract,
                                 Value src0, Value src1, Value dst,
                                 PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO part element type";
   Value src0Buffer = materializeBufferLikeAddress(src0, contract.elementType,
@@ -2969,7 +2969,7 @@ LogicalResult buildUnaryVecScope(StringRef family,
                                  VPTOLoweringStrategy strategy,
                                  PTOLoopShape loopShape, Value src, Value dst,
                                  PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO unary element type";
 
@@ -3137,7 +3137,7 @@ LogicalResult buildBinaryVecScope(StringRef family,
                                   PTOLoopShape loopShape, Value src0, Value src1,
                                   Value dst,
                                   PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO binary element type";
 
@@ -3367,7 +3367,7 @@ LogicalResult buildExpandScalarVecScope(const VPTOUnaryContract &contract,
                                         Value dst,
                                         PatternRewriter &rewriter,
                                         Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO expands element type";
 
@@ -3470,7 +3470,7 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
                                        Value scalar, Value dst,
                                        PatternRewriter &rewriter,
                                        Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO scalar-unary element type";
 
@@ -3635,7 +3635,7 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
                                          Value src, Value scalar, Value dst,
                                          PatternRewriter &rewriter,
                                          Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO scalar-bitwise element type";
 
@@ -3718,7 +3718,7 @@ LogicalResult buildScalarDivVecScope(const VPTOUnaryContract &contract,
                                      Value scalar, Value dst,
                                      bool scalarFirst,
                                      PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO divs element type";
 
@@ -3916,7 +3916,7 @@ LogicalResult checkExpandContract(Operation *op,
 LogicalResult buildRowExpandVecScope(const VPTOExpandContract &contract,
                                      VPTOLoweringStrategy strategy, Value src, Value dst,
                                      PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO rowexpand element type";
 
@@ -4018,7 +4018,7 @@ LogicalResult buildRowExpandVecScope(const VPTOExpandContract &contract,
 LogicalResult buildColExpandVecScope(const VPTOExpandContract &contract,
                                      Value src, Value dst,
                                      PatternRewriter &rewriter, Location loc) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << "unsupported VPTO colexpand element type";
 
@@ -4704,7 +4704,7 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
           [](Type type) { return type.isF16() || type.isF32(); }, "f16 and f32 element types")))
     return failure();
 
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return op.emitOpError("trsqrt lowering requires a supported VPTO vector element type");
 
@@ -4864,8 +4864,8 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
   if (failed(roundMode))
     return op.emitOpError("tcvt lowering does not recognize the requested round mode");
 
-  auto srcVecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
-  auto dstVecType = getVPTOVecType(rewriter.getContext(), dstElementType);
+  auto srcVecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
+  auto dstVecType = getVPTOVRegType(rewriter.getContext(), dstElementType);
   if (!srcVecType || !dstVecType)
     return op.emitOpError("tcvt lowering requires legal VPTO vector types");
 
@@ -4981,7 +4981,7 @@ LogicalResult buildPackedCmp32VecScope(StringRef family,
                                        Value dst, Value dstBuffer,
                                        PatternRewriter &rewriter, Location loc,
                                        CompareEmitter emitCompare) {
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return emitError(loc) << family << " lowering requires a supported vector element type";
 
@@ -5102,7 +5102,7 @@ LogicalResult lowerTCmpS(TCmpSOp op, PatternRewriter &rewriter) {
       [&](PatternRewriter &nestedRewriter, Location nestedLoc, Value offset,
           Value mask) -> Value {
         auto vecType =
-            getVPTOVecType(nestedRewriter.getContext(), contract.elementType);
+            getVPTOVRegType(nestedRewriter.getContext(), contract.elementType);
         auto loaded =
             nestedRewriter.create<pto::VldsOp>(nestedLoc, vecType, srcBuffer, offset, StringAttr());
         return nestedRewriter
@@ -5163,7 +5163,7 @@ LogicalResult lowerTCmp(TCmpOp op, PatternRewriter &rewriter) {
       [&](PatternRewriter &nestedRewriter, Location nestedLoc, Value offset,
           Value mask) -> Value {
         auto vecType =
-            getVPTOVecType(nestedRewriter.getContext(), contract.elementType);
+            getVPTOVRegType(nestedRewriter.getContext(), contract.elementType);
         auto lhs =
             nestedRewriter.create<pto::VldsOp>(nestedLoc, vecType, src0Buffer, offset, StringAttr());
         auto rhs =
@@ -5290,9 +5290,9 @@ LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
   if (srcStride == ShapedType::kDynamic || dstStride == ShapedType::kDynamic)
     return op.emitOpError("ttrans lowering requires static source/destination row stride");
 
-  auto dataVecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto dataVecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   auto indexElemType = rewriter.getIntegerType(32);
-  auto indexVecType = getVPTOVecType(rewriter.getContext(), indexElemType);
+  auto indexVecType = getVPTOVRegType(rewriter.getContext(), indexElemType);
   if (!dataVecType || !indexVecType)
     return op.emitOpError("ttrans lowering requires supported VPTO vector types");
 
@@ -5389,7 +5389,7 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
   if (srcStride == ShapedType::kDynamic || dstStride == ShapedType::kDynamic)
     return op.emitOpError("fillpad lowering requires static source/destination row stride");
 
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return op.emitOpError("fillpad lowering requires supported VPTO vector element type");
 
@@ -5566,7 +5566,7 @@ LogicalResult lowerTGather(TGatherOp op, PatternRewriter &rewriter) {
   if (dataElementType != getElementType(op.getDst()))
     return op.emitOpError("tgather lowering requires matching src/dst element type");
 
-  auto dataVecType = getVPTOVecType(rewriter.getContext(), dataElementType);
+  auto dataVecType = getVPTOVRegType(rewriter.getContext(), dataElementType);
   if (!dataVecType)
     return op.emitOpError("tgather lowering requires supported VPTO data type");
 
@@ -5604,7 +5604,7 @@ LogicalResult lowerTGather(TGatherOp op, PatternRewriter &rewriter) {
 
     Type indexElementType = getElementType(indices);
     auto indexIntegerType = dyn_cast<IntegerType>(indexElementType);
-    auto indexVecType = getVPTOVecType(rewriter.getContext(), indexElementType);
+    auto indexVecType = getVPTOVRegType(rewriter.getContext(), indexElementType);
     if (!indexIntegerType || !indexVecType)
       return op.emitOpError("tgather index lowering requires integer indices with supported VPTO vector type");
     if (indexVecType.getElementCount() != dataVecType.getElementCount())
@@ -5741,9 +5741,9 @@ LogicalResult lowerTGatherB(TGatherBOp op, PatternRewriter &rewriter) {
       !offsetIntegerType.isUnsigned())
     return op.emitOpError("tgatherb lowering currently requires unsigned 32-bit offsets");
 
-  auto dataVecType = getVPTOVecType(rewriter.getContext(), dataElementType);
+  auto dataVecType = getVPTOVRegType(rewriter.getContext(), dataElementType);
   auto offsetVecType =
-      getVPTOVecType(rewriter.getContext(), getElementType(op.getOffsets()));
+      getVPTOVRegType(rewriter.getContext(), getElementType(op.getOffsets()));
   if (!dataVecType || !offsetVecType)
     return op.emitOpError("tgatherb lowering requires supported VPTO vector types");
 
@@ -5896,8 +5896,8 @@ LogicalResult lowerTScatter(TScatterOp op, PatternRewriter &rewriter) {
   if (!indexIntegerType || indexIntegerType.getWidth() != 32)
     return op.emitOpError("tscatter lowering currently requires 32-bit integer indexes");
 
-  auto dataVecType = getVPTOVecType(rewriter.getContext(), dataElementType);
-  auto indexVecType = getVPTOVecType(rewriter.getContext(), indexElementType);
+  auto dataVecType = getVPTOVRegType(rewriter.getContext(), dataElementType);
+  auto indexVecType = getVPTOVRegType(rewriter.getContext(), indexElementType);
   if (!dataVecType || !indexVecType ||
       dataVecType.getElementCount() != indexVecType.getElementCount())
     return op.emitOpError("tscatter lowering currently requires matching data/index vector widths");
@@ -6308,7 +6308,7 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
     return op.emitOpError(
         "tsels lowering requires scalar type to match source element type");
 
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return op.emitOpError("tsels lowering requires a supported VPTO vector element type");
 
@@ -6439,7 +6439,7 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
   if (!maskBuffer || !src0Buffer || !src1Buffer || !dstBuffer)
     return op.emitOpError("tsel lowering requires buffer-like tile buffers");
 
-  auto vecType = getVPTOVecType(rewriter.getContext(), contract.elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), contract.elementType);
   if (!vecType)
     return op.emitOpError("tsel lowering requires a supported VPTO vector element type");
 
@@ -6907,7 +6907,7 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
     return op.emitOpError() << family
                             << " lowering requires PTO A5-compatible expand operand shape";
 
-  auto vecType = getVPTOVecType(rewriter.getContext(), elementType);
+  auto vecType = getVPTOVRegType(rewriter.getContext(), elementType);
   if (!vecType)
     return op.emitOpError() << family
                             << " lowering requires a legal VPTO vector type";

@@ -11,13 +11,13 @@
 // CHECK: call <64 x float> @llvm.hivm.vcvtff.bf162f32.x(<128 x bfloat> %[[SRC16:.+]], <256 x i1> %[[MASK16]], i32 0)
 
 module {
-  func.func @vcvt_f32_to_bf16(%src: !pto.vec<64xf32>) -> !pto.vec<128xbf16> attributes {pto.version_selection_applied} {
-    %0 = pto.vcvt %src {part = "PART_ODD", round_mode = "ROUND_A", sat = "RS_ENABLE"} : !pto.vec<64xf32> -> !pto.vec<128xbf16>
-    return %0 : !pto.vec<128xbf16>
+  func.func @vcvt_f32_to_bf16(%src: !pto.vreg<64xf32>) -> !pto.vreg<128xbf16> attributes {pto.version_selection_applied} {
+    %0 = pto.vcvt %src {part = "PART_ODD", round_mode = "ROUND_A", sat = "RS_ENABLE"} : !pto.vreg<64xf32> -> !pto.vreg<128xbf16>
+    return %0 : !pto.vreg<128xbf16>
   }
 
-  func.func @vcvt_bf16_to_f32(%src: !pto.vec<128xbf16>) -> !pto.vec<64xf32> attributes {pto.version_selection_applied} {
-    %0 = pto.vcvt %src {part = "PART_EVEN"} : !pto.vec<128xbf16> -> !pto.vec<64xf32>
-    return %0 : !pto.vec<64xf32>
+  func.func @vcvt_bf16_to_f32(%src: !pto.vreg<128xbf16>) -> !pto.vreg<64xf32> attributes {pto.version_selection_applied} {
+    %0 = pto.vcvt %src {part = "PART_EVEN"} : !pto.vreg<128xbf16> -> !pto.vreg<64xf32>
+    return %0 : !pto.vreg<64xf32>
   }
 }

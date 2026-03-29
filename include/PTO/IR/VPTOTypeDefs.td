@@ -12,8 +12,8 @@
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinTypeInterfaces.td"
 
-def VecType : TypeDef<PTO_Dialect, "Vec"> {
-  let mnemonic = "vec";
+def VRegType : TypeDef<PTO_Dialect, "VReg"> {
+  let mnemonic = "vreg";
   let summary = "A 256-byte PTO low-level vector";
 
   let parameters = (ins

@@ -244,7 +244,7 @@ private:
 
   std::optional<uint64_t> parseStoreDistImmediate(Type valueType,
                                                   llvm::StringRef dist) {
-    auto vecType = dyn_cast<pto::VecType>(valueType);
+    auto vecType = dyn_cast<pto::VRegType>(valueType);
     if (!vecType)
       return std::nullopt;
 
@@ -316,7 +316,7 @@ private:
   }
 
   llvm::Type *convertType(Type type) {
-    if (auto vecType = dyn_cast<pto::VecType>(type))
+    if (auto vecType = dyn_cast<pto::VRegType>(type))
       return llvm::FixedVectorType::get(
           convertScalarType(vecType.getElementType()), vecType.getElementCount());
 
@@ -855,7 +855,7 @@ private:
       }
       llvm::Value *offsetBytes =
           convertElementOffsetToBytes(rawOperands[1],
-                                      cast<pto::VecType>(vlds.getResult().getType())
+                                      cast<pto::VRegType>(vlds.getResult().getType())
                                           .getElementType());
       auto distImm = parseLoadDistImmediate(vlds.getDistAttr() ? *vlds.getDist() : "");
       if (!offsetBytes || !distImm) {
@@ -873,7 +873,7 @@ private:
       }
       llvm::Value *offsetBytes =
           convertElementOffsetToBytes(rawOperands[1],
-                                      cast<pto::VecType>(vldsPost.getResult().getType())
+                                      cast<pto::VRegType>(vldsPost.getResult().getType())
                                           .getElementType());
       auto distImm =
           parseLoadDistImmediate(vldsPost.getDistAttr() ? *vldsPost.getDist() : "NORM");
@@ -898,7 +898,7 @@ private:
       }
       llvm::Value *offsetBytes =
           convertElementOffsetToBytes(rawOperands[2],
-                                      cast<pto::VecType>(vsts.getValue().getType())
+                                      cast<pto::VRegType>(vsts.getValue().getType())
                                           .getElementType());
       auto distImm = parseStoreDistImmediate(
           vsts.getValue().getType(), vsts.getDistAttr() ? *vsts.getDist() : "");
@@ -919,7 +919,7 @@ private:
       }
       llvm::Value *offsetBytes =
           convertElementOffsetToBytes(rawOperands[2],
-                                      cast<pto::VecType>(vstsPost.getValue().getType())
+                                      cast<pto::VRegType>(vstsPost.getValue().getType())
                                           .getElementType());
       auto distImm = parseStoreDistImmediate(
           vstsPost.getValue().getType(),

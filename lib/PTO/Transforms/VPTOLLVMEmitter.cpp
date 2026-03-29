@@ -445,7 +445,7 @@ static std::optional<uint64_t> parseStoreDistImmediate(Type valueType,
 }
 
 static Type convertVPTOType(Type type, Builder &builder) {
-  if (auto vecType = dyn_cast<pto::VecType>(type))
+  if (auto vecType = dyn_cast<pto::VRegType>(type))
     return VectorType::get({vecType.getElementCount()}, vecType.getElementType());
   if (isa<pto::MaskType>(type))
     return VectorType::get({256}, builder.getI1Type());
@@ -953,7 +953,7 @@ static LogicalResult normalizePtoPtrsToLLVM(ModuleOp module, llvm::raw_ostream &
 }
 
 static Type getElementTypeFromVectorLike(Type type) {
-  if (auto vecType = dyn_cast<pto::VecType>(type))
+  if (auto vecType = dyn_cast<pto::VRegType>(type))
     return vecType.getElementType();
   if (auto vecType = dyn_cast<VectorType>(type))
     return vecType.getElementType();
@@ -961,7 +961,7 @@ static Type getElementTypeFromVectorLike(Type type) {
 }
 
 static std::optional<int64_t> getElementCountFromVectorLike(Type type) {
-  if (auto vecType = dyn_cast<pto::VecType>(type))
+  if (auto vecType = dyn_cast<pto::VRegType>(type))
     return vecType.getElementCount();
   if (auto vecType = dyn_cast<VectorType>(type)) {
     if (vecType.getRank() != 1)
@@ -1327,7 +1327,7 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
     auto lanes = getElementCountFromVectorLike(vdup.getResult().getType());
     if (vec.empty() || !lanes)
       return failure();
-    if (isa<VectorType, pto::VecType>(inputType))
+    if (isa<VectorType, pto::VRegType>(inputType))
       return "llvm.hivm.vdup.v" + std::to_string(*lanes) + vec + ".z";
     return "llvm.hivm.vdups.v" + std::to_string(*lanes) + vec + ".z";
   }
@@ -1744,7 +1744,7 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
     callArgs.push_back(mask);
   } else if (auto vdup = dyn_cast<pto::VdupOp>(op)) {
     Type scalarType = getElementTypeFromVectorLike(vdup.getResult().getType());
-    bool vectorInput = isa<VectorType, pto::VecType>(vdup.getInput().getType());
+    bool vectorInput = isa<VectorType, pto::VRegType>(vdup.getInput().getType());
     if (!vectorInput && (!scalarType || vdup.getInput().getType() != scalarType)) {
       diagOS << "VPTO LLVM emission failed: unexpected vdup operand types\n";
       return failure();

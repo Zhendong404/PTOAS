@@ -14,9 +14,9 @@ module {
       scf.yield %next : index
     }
     %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
-    %0 = pto.vlds %src[%arg1] : !pto.ptr<f32, ub> -> !pto.vec<64xf32>
-    %1 = pto.vabs %0, %mask : !pto.vec<64xf32>, !pto.mask -> !pto.vec<64xf32>
-    pto.vsts %1, %dst[%arg1], %mask : !pto.vec<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+    %0 = pto.vlds %src[%arg1] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+    %1 = pto.vabs %0, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+    pto.vsts %1, %dst[%arg1], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
     return %loop : index
   }
 }

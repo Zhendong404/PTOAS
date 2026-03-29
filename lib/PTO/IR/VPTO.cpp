@@ -24,20 +24,20 @@
 using namespace mlir;
 using namespace mlir::pto;
 
-static std::string formatVecType(int64_t elementCount, Type elementType) {
+static std::string formatVRegType(int64_t elementCount, Type elementType) {
   std::string storage;
   llvm::raw_string_ostream os(storage);
-  os << "!pto.vec<" << elementCount << "x" << elementType << ">";
+  os << "!pto.vreg<" << elementCount << "x" << elementType << ">";
   return storage;
 }
 
-static LogicalResult verifyVecTypeLike(Operation *op, Type type,
+static LogicalResult verifyVRegTypeLike(Operation *op, Type type,
                                        StringRef roleDescription) {
-  auto vecType = dyn_cast<VecType>(type);
+  auto vecType = dyn_cast<VRegType>(type);
   if (!vecType)
-    return op->emitOpError() << roleDescription << " must be !pto.vec<...>";
+    return op->emitOpError() << roleDescription << " must be !pto.vreg<...>";
 
-  return VecType::verify(
+  return VRegType::verify(
       [&]() { return op->emitOpError() << roleDescription << " "; },
       vecType.getElementCount(), vecType.getElementType());
 }
@@ -114,11 +114,11 @@ static unsigned getIntOrFloatBitWidth(Type type) {
   return 0;
 }
 
-static LogicalResult verifyIntegerVecTypeLike(Operation *op, Type type,
+static LogicalResult verifyIntegerVRegTypeLike(Operation *op, Type type,
                                               StringRef roleDescription) {
-  if (failed(verifyVecTypeLike(op, type, roleDescription)))
+  if (failed(verifyVRegTypeLike(op, type, roleDescription)))
     return failure();
-  auto vecType = cast<VecType>(type);
+  auto vecType = cast<VRegType>(type);
   if (!isa<IntegerType>(vecType.getElementType()))
     return op->emitOpError()
            << roleDescription << " must use integer vector element type";
@@ -271,7 +271,7 @@ static LogicalResult verifyCopyUbufToGmOp(CopyOp op, bool expectSourceGM) {
   return success();
 }
 
-Type VecType::parse(AsmParser &parser) {
+Type VRegType::parse(AsmParser &parser) {
   SmallVector<int64_t, 1> shape;
   Type elementType;
   SMLoc loc = parser.getCurrentLocation();
@@ -283,20 +283,20 @@ Type VecType::parse(AsmParser &parser) {
       failed(parser.parseGreater()))
     return {};
 
-  return parser.getChecked<VecType>(loc, parser.getContext(), shape.front(),
+  return parser.getChecked<VRegType>(loc, parser.getContext(), shape.front(),
                                     elementType);
 }
 
-void VecType::print(AsmPrinter &printer) const {
+void VRegType::print(AsmPrinter &printer) const {
   printer << "<" << getElementCount() << "x";
   printer.printType(getElementType());
   printer << ">";
 }
 
-LogicalResult VecType::verify(function_ref<InFlightDiagnostic()> emitError,
+LogicalResult VRegType::verify(function_ref<InFlightDiagnostic()> emitError,
                               int64_t elementCount, Type elementType) {
   if (elementCount <= 0)
-    return emitError() << "'" << formatVecType(elementCount, elementType)
+    return emitError() << "'" << formatVRegType(elementCount, elementType)
                        << "' expected a positive element count";
 
   auto intOrFloat = mlir::dyn_cast<IntegerType>(elementType);
@@ -306,12 +306,12 @@ LogicalResult VecType::verify(function_ref<InFlightDiagnostic()> emitError,
   } else if (auto floatType = mlir::dyn_cast<FloatType>(elementType)) {
     elementBitWidth = floatType.getWidth();
   } else {
-    return emitError() << "'" << formatVecType(elementCount, elementType)
+    return emitError() << "'" << formatVRegType(elementCount, elementType)
                        << "' expected an integer or floating-point element type";
   }
 
   if (elementCount * static_cast<int64_t>(elementBitWidth) != 2048)
-    return emitError() << "'" << formatVecType(elementCount, elementType)
+    return emitError() << "'" << formatVRegType(elementCount, elementType)
                        << "' expected exactly 256 bytes";
 
   return success();
@@ -329,10 +329,10 @@ LogicalResult CopyGmToUbufOp::verify() {
 }
 
 LogicalResult VbrOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
 
-  auto resultVecType = cast<VecType>(getResult().getType());
+  auto resultVecType = cast<VRegType>(getResult().getType());
   Type elementType = getValue().getType();
   if (isa<ShapedType, VectorType>(elementType))
     return emitOpError("value must be a scalar matching the result element type");
@@ -342,8 +342,8 @@ LogicalResult VbrOp::verify() {
 }
 
 LogicalResult VcaddOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getInput().getType(), "input")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("input and result must have the same vector type");
@@ -351,8 +351,8 @@ LogicalResult VcaddOp::verify() {
 }
 
 LogicalResult VcmaxOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getInput().getType(), "input")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("input and result must have the same vector type");
@@ -360,8 +360,8 @@ LogicalResult VcmaxOp::verify() {
 }
 
 LogicalResult VcminOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getInput().getType(), "input")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("input and result must have the same vector type");
@@ -369,9 +369,9 @@ LogicalResult VcminOp::verify() {
 }
 
 LogicalResult VciOp::verify() {
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!resultType)
-    return emitOpError("result must be !pto.vec<...>");
+    return emitOpError("result must be !pto.vreg<...>");
   if (!isa<IntegerType>(resultType.getElementType()))
     return emitOpError("result element type must be integer");
   auto indexType = dyn_cast<IntegerType>(getIndex().getType());
@@ -395,10 +395,10 @@ LogicalResult Vgather2Op::verify() {
   if (sourceRole == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
 
-  auto offsetsType = dyn_cast<VecType>(getOffsets().getType());
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto offsetsType = dyn_cast<VRegType>(getOffsets().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!offsetsType || !resultType)
-    return emitOpError("offsets and result must be !pto.vec<...>");
+    return emitOpError("offsets and result must be !pto.vreg<...>");
   if (!isa<IntegerType>(offsetsType.getElementType()))
     return emitOpError("offset vector must use integer element type");
   if (offsetsType.getElementCount() != resultType.getElementCount())
@@ -430,10 +430,10 @@ LogicalResult VgatherbOp::verify() {
   if (sourceRole == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
 
-  auto offsetsType = dyn_cast<VecType>(getOffsets().getType());
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto offsetsType = dyn_cast<VRegType>(getOffsets().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!offsetsType || !resultType)
-    return emitOpError("offsets and result must be !pto.vec<...>");
+    return emitOpError("offsets and result must be !pto.vreg<...>");
   auto offsetsElemType = dyn_cast<IntegerType>(offsetsType.getElementType());
   if (!offsetsElemType)
     return emitOpError("offset vector must use integer element type");
@@ -460,10 +460,10 @@ LogicalResult Vgather2BcOp::verify() {
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
 
-  auto offsetsType = dyn_cast<VecType>(getOffsets().getType());
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto offsetsType = dyn_cast<VRegType>(getOffsets().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!offsetsType || !resultType)
-    return emitOpError("offsets and result must be !pto.vec<...>");
+    return emitOpError("offsets and result must be !pto.vreg<...>");
   auto offsetsElemType = dyn_cast<IntegerType>(offsetsType.getElementType());
   if (!offsetsElemType)
     return emitOpError("offset vector must use integer element type");
@@ -502,9 +502,9 @@ LogicalResult Vmrgsort4Op::verify() {
 }
 
 LogicalResult VmaxOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getLhs().getType(), "lhs")) ||
-      failed(verifyVecTypeLike(*this, getRhs().getType(), "rhs")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getLhs().getType(), "lhs")) ||
+      failed(verifyVRegTypeLike(*this, getRhs().getType(), "rhs")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
   if (getLhs().getType() != getRhs().getType() ||
       getLhs().getType() != getResult().getType())
@@ -513,9 +513,9 @@ LogicalResult VmaxOp::verify() {
 }
 
 LogicalResult VminOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getLhs().getType(), "lhs")) ||
-      failed(verifyVecTypeLike(*this, getRhs().getType(), "rhs")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result")))
+  if (failed(verifyVRegTypeLike(*this, getLhs().getType(), "lhs")) ||
+      failed(verifyVRegTypeLike(*this, getRhs().getType(), "rhs")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result")))
     return failure();
   if (getLhs().getType() != getRhs().getType() ||
       getLhs().getType() != getResult().getType())
@@ -534,7 +534,7 @@ static LogicalResult verifyVldsCommon(LoadOp op) {
   if (!isBufferLike(op.getSource().getType()))
     return op.emitOpError("requires a buffer-like source (memref or !pto.ptr)");
 
-  if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
 
   MemoryRole sourceRole = classifyMemoryRole(op.getSource().getType());
@@ -600,7 +600,7 @@ void VldusOp::getEffects(
 
 LogicalResult VldusOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getAlign().getType(), "align type")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result type")) ||
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")) ||
       failed(verifyAlignTypeLike(*this, getUpdatedAlign().getType(),
                                  "updated align type")))
     return failure();
@@ -621,7 +621,7 @@ void UvldOp::getEffects(
 }
 
 LogicalResult UvldOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (!isBufferLike(getSource().getType()))
     return emitOpError("requires a buffer-like source");
@@ -633,7 +633,7 @@ LogicalResult UvldOp::verify() {
     return success();
 
   Type sourceElementType = sourceMemRef.getElementType();
-  Type vectorElementType = cast<VecType>(getResult().getType()).getElementType();
+  Type vectorElementType = cast<VRegType>(getResult().getType()).getElementType();
   if (sourceElementType != vectorElementType)
     return emitOpError(
         "requires source element type to match vector element type");
@@ -641,12 +641,12 @@ LogicalResult UvldOp::verify() {
 }
 
 LogicalResult VdupOp::verify() {
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!resultType)
-    return emitOpError("result must be !pto.vec<...>");
+    return emitOpError("result must be !pto.vreg<...>");
 
   Type inputType = getInput().getType();
-  if (auto inputVecType = dyn_cast<VecType>(inputType)) {
+  if (auto inputVecType = dyn_cast<VRegType>(inputType)) {
     if (inputVecType != resultType)
       return emitOpError("vector input must match result vector type");
     return success();
@@ -817,10 +817,10 @@ LogicalResult PldiOp::verify() {
 
 template <typename OpTy>
 static LogicalResult verifyVecScalarOpLike(OpTy op) {
-  auto inputType = dyn_cast<VecType>(op.getInput().getType());
-  auto resultType = dyn_cast<VecType>(op.getResult().getType());
+  auto inputType = dyn_cast<VRegType>(op.getInput().getType());
+  auto resultType = dyn_cast<VRegType>(op.getResult().getType());
   if (!inputType || !resultType)
-    return op.emitOpError("input and result must be !pto.vec<...>");
+    return op.emitOpError("input and result must be !pto.vreg<...>");
   if (inputType != resultType)
     return op.emitOpError("input and result vector types must match");
   if (op.getScalar().getType() != inputType.getElementType())
@@ -830,17 +830,17 @@ static LogicalResult verifyVecScalarOpLike(OpTy op) {
 
 template <typename CarryOp>
 static LogicalResult verifyCarryVecOp(CarryOp op) {
-  if (failed(verifyIntegerVecTypeLike(op, op.getLhs().getType(), "lhs type")) ||
-      failed(verifyIntegerVecTypeLike(op, op.getRhs().getType(), "rhs type")) ||
+  if (failed(verifyIntegerVRegTypeLike(op, op.getLhs().getType(), "lhs type")) ||
+      failed(verifyIntegerVRegTypeLike(op, op.getRhs().getType(), "rhs type")) ||
       failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")) ||
-      failed(verifyIntegerVecTypeLike(op, op.getResult().getType(),
+      failed(verifyIntegerVRegTypeLike(op, op.getResult().getType(),
                                       "result type")) ||
       failed(verifyMaskTypeLike(op, op.getCarry().getType(), "carry type")))
     return failure();
 
-  auto lhsType = cast<VecType>(op.getLhs().getType());
-  auto rhsType = cast<VecType>(op.getRhs().getType());
-  auto resultType = cast<VecType>(op.getResult().getType());
+  auto lhsType = cast<VRegType>(op.getLhs().getType());
+  auto rhsType = cast<VRegType>(op.getRhs().getType());
+  auto resultType = cast<VRegType>(op.getResult().getType());
   auto lhsElemType = cast<IntegerType>(lhsType.getElementType());
   if (lhsType != rhsType || lhsType != resultType)
     return op.emitOpError("requires lhs, rhs, and result to have matching vector types");
@@ -866,7 +866,7 @@ LogicalResult VlreluOp::verify() { return verifyVecScalarOpLike(*this); }
 LogicalResult VshlsOp::verify() {
   if (failed(verifyVecScalarOpLike(*this)))
     return failure();
-  auto inputType = cast<VecType>(getInput().getType());
+  auto inputType = cast<VRegType>(getInput().getType());
   if (!isa<IntegerType>(inputType.getElementType()) ||
       !isa<IntegerType>(getScalar().getType()))
     return emitOpError("requires integer vector and integer scalar");
@@ -875,7 +875,7 @@ LogicalResult VshlsOp::verify() {
 LogicalResult VshrsOp::verify() {
   if (failed(verifyVecScalarOpLike(*this)))
     return failure();
-  auto inputType = cast<VecType>(getInput().getType());
+  auto inputType = cast<VRegType>(getInput().getType());
   if (!isa<IntegerType>(inputType.getElementType()) ||
       !isa<IntegerType>(getScalar().getType()))
     return emitOpError("requires integer vector and integer scalar");
@@ -883,11 +883,11 @@ LogicalResult VshrsOp::verify() {
 }
 
 LogicalResult VabsOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getInput().getType(), "operand type")))
+  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "operand type")))
     return failure();
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("requires matching register vector shape");
@@ -896,11 +896,11 @@ LogicalResult VabsOp::verify() {
 
 template <typename UnaryOp>
 static LogicalResult verifyUnaryVecOp(UnaryOp op) {
-  if (failed(verifyVecTypeLike(op, op.getInput().getType(), "operand type")))
+  if (failed(verifyVRegTypeLike(op, op.getInput().getType(), "operand type")))
     return failure();
   if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
-  if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
   if (op.getInput().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shape");
@@ -916,7 +916,7 @@ LogicalResult VnotOp::verify() { return verifyUnaryVecOp(*this); }
 LogicalResult VbcntOp::verify() {
   if (failed(verifyUnaryVecOp(*this)))
     return failure();
-  auto inputType = cast<VecType>(getInput().getType());
+  auto inputType = cast<VRegType>(getInput().getType());
   if (!isa<IntegerType>(inputType.getElementType()))
     return emitOpError("requires integer vector element type");
   return success();
@@ -924,7 +924,7 @@ LogicalResult VbcntOp::verify() {
 LogicalResult VclsOp::verify() {
   if (failed(verifyUnaryVecOp(*this)))
     return failure();
-  auto inputType = cast<VecType>(getInput().getType());
+  auto inputType = cast<VRegType>(getInput().getType());
   if (!isa<IntegerType>(inputType.getElementType()))
     return emitOpError("requires integer vector element type");
   return success();
@@ -932,13 +932,13 @@ LogicalResult VclsOp::verify() {
 
 template <typename BinaryOp>
 static LogicalResult verifyBinaryVecOp(BinaryOp op) {
-  if (failed(verifyVecTypeLike(op, op.getLhs().getType(), "lhs type")))
+  if (failed(verifyVRegTypeLike(op, op.getLhs().getType(), "lhs type")))
     return failure();
-  if (failed(verifyVecTypeLike(op, op.getRhs().getType(), "rhs type")))
+  if (failed(verifyVRegTypeLike(op, op.getRhs().getType(), "rhs type")))
     return failure();
   if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
-  if (failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
   if (op.getLhs().getType() != op.getRhs().getType() ||
       op.getLhs().getType() != op.getResult().getType())
@@ -956,7 +956,7 @@ LogicalResult VxorOp::verify() { return verifyBinaryVecOp(*this); }
 LogicalResult VshlOp::verify() {
   if (failed(verifyBinaryVecOp(*this)))
     return failure();
-  auto lhsType = cast<VecType>(getLhs().getType());
+  auto lhsType = cast<VRegType>(getLhs().getType());
   if (!isa<IntegerType>(lhsType.getElementType()))
     return emitOpError("requires integer vector element type");
   return success();
@@ -964,7 +964,7 @@ LogicalResult VshlOp::verify() {
 LogicalResult VshrOp::verify() {
   if (failed(verifyBinaryVecOp(*this)))
     return failure();
-  auto lhsType = cast<VecType>(getLhs().getType());
+  auto lhsType = cast<VRegType>(getLhs().getType());
   if (!isa<IntegerType>(lhsType.getElementType()))
     return emitOpError("requires integer vector element type");
   return success();
@@ -976,14 +976,14 @@ LogicalResult VsubcsOp::verify() { return verifyCarryVecOpWithInput(*this); }
 
 template <typename SelectOp>
 static LogicalResult verifyLaneSelectOp(SelectOp op) {
-  if (failed(verifyVecTypeLike(op, op.getSrc0().getType(), "src0 type")) ||
-      failed(verifyVecTypeLike(op, op.getSrc1().getType(), "src1 type")) ||
-      failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(op, op.getSrc0().getType(), "src0 type")) ||
+      failed(verifyVRegTypeLike(op, op.getSrc1().getType(), "src1 type")) ||
+      failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
 
-  auto src0Type = cast<VecType>(op.getSrc0().getType());
-  auto src1Type = cast<VecType>(op.getSrc1().getType());
-  auto resultType = cast<VecType>(op.getResult().getType());
+  auto src0Type = cast<VRegType>(op.getSrc0().getType());
+  auto src1Type = cast<VRegType>(op.getSrc1().getType());
+  auto resultType = cast<VRegType>(op.getResult().getType());
   if (src0Type != resultType)
     return op.emitOpError("requires src0 and result to have identical vector types");
   if (src1Type.getElementCount() != src0Type.getElementCount())
@@ -998,10 +998,10 @@ static LogicalResult verifyLaneSelectOp(SelectOp op) {
 
 template <typename PairOp>
 static LogicalResult verifyPairVecResults(PairOp op) {
-  if (failed(verifyVecTypeLike(op, op.getLhs().getType(), "lhs type")) ||
-      failed(verifyVecTypeLike(op, op.getRhs().getType(), "rhs type")) ||
-      failed(verifyVecTypeLike(op, op.getLow().getType(), "low result type")) ||
-      failed(verifyVecTypeLike(op, op.getHigh().getType(), "high result type")))
+  if (failed(verifyVRegTypeLike(op, op.getLhs().getType(), "lhs type")) ||
+      failed(verifyVRegTypeLike(op, op.getRhs().getType(), "rhs type")) ||
+      failed(verifyVRegTypeLike(op, op.getLow().getType(), "low result type")) ||
+      failed(verifyVRegTypeLike(op, op.getHigh().getType(), "high result type")))
     return failure();
   if (op.getLhs().getType() != op.getRhs().getType() ||
       op.getLhs().getType() != op.getLow().getType() ||
@@ -1012,9 +1012,9 @@ static LogicalResult verifyPairVecResults(PairOp op) {
 
 template <typename PartOp>
 static LogicalResult verifyPartVecOp(PartOp op) {
-  if (failed(verifyVecTypeLike(op, op.getLhs().getType(), "lhs type")) ||
-      failed(verifyVecTypeLike(op, op.getRhs().getType(), "rhs type")) ||
-      failed(verifyVecTypeLike(op, op.getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(op, op.getLhs().getType(), "lhs type")) ||
+      failed(verifyVRegTypeLike(op, op.getRhs().getType(), "rhs type")) ||
+      failed(verifyVRegTypeLike(op, op.getResult().getType(), "result type")))
     return failure();
   if (op.getLhs().getType() != op.getRhs().getType() ||
       op.getLhs().getType() != op.getResult().getType())
@@ -1025,10 +1025,10 @@ static LogicalResult verifyPartVecOp(PartOp op) {
 }
 
 LogicalResult VselOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getSrc0().getType(), "src0 type")) ||
-      failed(verifyVecTypeLike(*this, getSrc1().getType(), "src1 type")) ||
+  if (failed(verifyVRegTypeLike(*this, getSrc0().getType(), "src0 type")) ||
+      failed(verifyVRegTypeLike(*this, getSrc1().getType(), "src1 type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (getSrc0().getType() != getSrc1().getType() ||
       getSrc0().getType() != getResult().getType())
@@ -1045,8 +1045,8 @@ static bool isSupportedCmpMode(StringRef mode) {
 }
 
 LogicalResult VcmpOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getSrc0().getType(), "src0 type")) ||
-      failed(verifyVecTypeLike(*this, getSrc1().getType(), "src1 type")) ||
+  if (failed(verifyVRegTypeLike(*this, getSrc0().getType(), "src0 type")) ||
+      failed(verifyVRegTypeLike(*this, getSrc1().getType(), "src1 type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
       failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
     return failure();
@@ -1058,11 +1058,11 @@ LogicalResult VcmpOp::verify() {
 }
 
 LogicalResult VcmpsOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getSrc().getType(), "src type")) ||
+  if (failed(verifyVRegTypeLike(*this, getSrc().getType(), "src type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
       failed(verifyMaskTypeLike(*this, getResult().getType(), "result type")))
     return failure();
-  auto srcType = cast<VecType>(getSrc().getType());
+  auto srcType = cast<VRegType>(getSrc().getType());
   if (getScalar().getType() != srcType.getElementType())
     return emitOpError("requires scalar type to match source element type");
   if (!isSupportedCmpMode(getCmpMode()))
@@ -1071,10 +1071,10 @@ LogicalResult VcmpsOp::verify() {
 }
 
 LogicalResult VcvtOp::verify() {
-  auto inputType = dyn_cast<VecType>(getInput().getType());
-  auto resultType = dyn_cast<VecType>(getResult().getType());
+  auto inputType = dyn_cast<VRegType>(getInput().getType());
+  auto resultType = dyn_cast<VRegType>(getResult().getType());
   if (!inputType || !resultType)
-    return emitOpError("input and result must be !pto.vec<...>");
+    return emitOpError("input and result must be !pto.vreg<...>");
 
   auto inputElemType = inputType.getElementType();
   auto resultElemType = resultType.getElementType();
@@ -1134,7 +1134,7 @@ LogicalResult VmullOp::verify() {
   if (failed(verifyPairVecResults(*this)) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
-  auto lhsType = cast<VecType>(getLhs().getType());
+  auto lhsType = cast<VRegType>(getLhs().getType());
   auto lhsElemType = dyn_cast<IntegerType>(lhsType.getElementType());
   if (!lhsElemType)
     return emitOpError("requires integer vector element type");
@@ -1144,11 +1144,11 @@ LogicalResult VmullOp::verify() {
 }
 
 LogicalResult VmulaOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getAcc().getType(), "acc type")) ||
-      failed(verifyVecTypeLike(*this, getLhs().getType(), "lhs type")) ||
-      failed(verifyVecTypeLike(*this, getRhs().getType(), "rhs type")) ||
+  if (failed(verifyVRegTypeLike(*this, getAcc().getType(), "acc type")) ||
+      failed(verifyVRegTypeLike(*this, getLhs().getType(), "lhs type")) ||
+      failed(verifyVRegTypeLike(*this, getRhs().getType(), "rhs type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (getAcc().getType() != getLhs().getType() ||
       getAcc().getType() != getRhs().getType() ||
@@ -1166,7 +1166,7 @@ void VsldOp::getEffects(
 LogicalResult VsldOp::verify() {
   if (!isBufferLike(getSource().getType()))
     return emitOpError("requires a buffer-like source (memref or !llvm.ptr)");
-  if (failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+  if (failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
@@ -1188,8 +1188,8 @@ LogicalResult Vldx2Op::verify() {
     return emitOpError("requires a UB-backed source");
   if (!getOffset().getType().isIndex())
     return emitOpError("requires index offset");
-  if (failed(verifyVecTypeLike(*this, getLow().getType(), "low result type")) ||
-      failed(verifyVecTypeLike(*this, getHigh().getType(), "high result type")))
+  if (failed(verifyVRegTypeLike(*this, getLow().getType(), "low result type")) ||
+      failed(verifyVRegTypeLike(*this, getHigh().getType(), "high result type")))
     return failure();
   if (getLow().getType() != getHigh().getType())
     return emitOpError("requires low/high results to share one vector type");
@@ -1207,7 +1207,7 @@ void VstsOp::getEffects(
 
 template <typename StoreOp>
 static LogicalResult verifyVstsCommon(StoreOp op) {
-  if (failed(verifyVecTypeLike(op, op.getValue().getType(), "value type")))
+  if (failed(verifyVRegTypeLike(op, op.getValue().getType(), "value type")))
     return failure();
   if (failed(verifyMaskTypeLike(op, op.getMask().getType(), "mask type")))
     return failure();
@@ -1258,8 +1258,8 @@ void Vstx2Op::getEffects(
 }
 
 LogicalResult Vstx2Op::verify() {
-  if (failed(verifyVecTypeLike(*this, getLow().getType(), "low value type")) ||
-      failed(verifyVecTypeLike(*this, getHigh().getType(), "high value type")) ||
+  if (failed(verifyVRegTypeLike(*this, getLow().getType(), "low value type")) ||
+      failed(verifyVRegTypeLike(*this, getHigh().getType(), "high value type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
   if (getLow().getType() != getHigh().getType())
@@ -1284,14 +1284,14 @@ void VscatterOp::getEffects(
 }
 
 LogicalResult VscatterOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
+  if (failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
     return emitOpError("requires a pointer-like destination");
-  auto offsetsType = dyn_cast<VecType>(getOffsets().getType());
-  auto valueType = dyn_cast<VecType>(getValue().getType());
+  auto offsetsType = dyn_cast<VRegType>(getOffsets().getType());
+  auto valueType = dyn_cast<VRegType>(getValue().getType());
   if (!offsetsType || !valueType)
-    return emitOpError("value and offsets must be !pto.vec<...>");
+    return emitOpError("value and offsets must be !pto.vreg<...>");
   auto offsetsElemType = dyn_cast<IntegerType>(offsetsType.getElementType());
   if (!offsetsElemType)
     return emitOpError("offset vector must use integer element type");
@@ -1319,7 +1319,7 @@ LogicalResult VsldbOp::verify() {
   if (classifyMemoryRole(getSource().getType()) == MemoryRole::GM)
     return emitOpError("requires a UB-backed source");
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")) ||
-      failed(verifyVecTypeLike(*this, getResult().getType(), "result type")))
+      failed(verifyVRegTypeLike(*this, getResult().getType(), "result type")))
     return failure();
   return success();
 }
@@ -1393,7 +1393,7 @@ void VsstOp::getEffects(
 }
 
 LogicalResult VsstOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")))
+  if (failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
     return emitOpError(
@@ -1413,7 +1413,7 @@ void VsstbOp::getEffects(
 }
 
 LogicalResult VsstbOp::verify() {
-  if (failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
+  if (failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
   if (!isBufferLike(getDestination().getType()))
@@ -1514,7 +1514,7 @@ void VstuOp::getEffects(
 
 LogicalResult VstuOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getAlignIn().getType(), "align_in type")) ||
-      failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
+      failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
   if (!isPointerBuffer(getBase().getType()))
@@ -1538,7 +1538,7 @@ void VstusOp::getEffects(
 
 LogicalResult VstusOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getAlignIn().getType(), "align_in type")) ||
-      failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
+      failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
   if (!isPointerBuffer(getBase().getType()) ||
@@ -1563,7 +1563,7 @@ void VsturOp::getEffects(
 
 LogicalResult VsturOp::verify() {
   if (failed(verifyAlignTypeLike(*this, getAlignIn().getType(), "align_in type")) ||
-      failed(verifyVecTypeLike(*this, getValue().getType(), "value type")) ||
+      failed(verifyVRegTypeLike(*this, getValue().getType(), "value type")) ||
       failed(verifyAlignTypeLike(*this, getAlignOut().getType(), "align_out type")))
     return failure();
   if (!isPointerBuffer(getBase().getType()))

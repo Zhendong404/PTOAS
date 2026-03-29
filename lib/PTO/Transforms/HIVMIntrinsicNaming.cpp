@@ -62,7 +62,7 @@ static std::string getElementTypeFragment(Type type) {
 }
 
 static std::string getVectorTypeFragment(Type type) {
-  auto vecType = dyn_cast<pto::VecType>(type);
+  auto vecType = dyn_cast<pto::VRegType>(type);
   if (!vecType)
     return {};
   return ("v" + std::to_string(vecType.getElementCount()) +

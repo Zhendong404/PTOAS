@@ -68,7 +68,7 @@ struct ExpandUvldPattern : public OpRewritePattern<pto::UvldOp> {
 
   LogicalResult matchAndRewrite(pto::UvldOp op,
                                 PatternRewriter &rewriter) const override {
-    auto vecType = dyn_cast<pto::VecType>(op.getResult().getType());
+    auto vecType = dyn_cast<pto::VRegType>(op.getResult().getType());
     if (!vecType)
       return failure();
 
