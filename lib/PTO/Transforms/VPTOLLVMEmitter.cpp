@@ -153,6 +153,22 @@ static std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode) {
   return std::nullopt;
 }
 
+static std::optional<uint64_t> parseSaturationImmediate(StringRef sat) {
+  if (sat == "RS_ENABLE")
+    return 0; // __cce_simd::RoundingSaturation::ENABLE
+  if (sat == "RS_DISABLE")
+    return 1; // __cce_simd::RoundingSaturation::DISABLE
+  return std::nullopt;
+}
+
+static std::optional<uint64_t> parsePartImmediate(StringRef part) {
+  if (part == "PART_EVEN")
+    return 0; // __cce_simd::Part::EVEN
+  if (part == "PART_ODD")
+    return 1; // __cce_simd::Part::ODD
+  return std::nullopt;
+}
+
 static Type getSignlessIntegerTypeWithSameWidth(Type type, Builder &builder) {
   if (auto intType = dyn_cast<IntegerType>(type))
     return builder.getIntegerType(intType.getWidth());
@@ -1054,6 +1070,19 @@ static FailureOr<Value> buildPltB32Mask(IRRewriter &builder, ModuleOp module,
   return call.getResult(0);
 }
 
+static FailureOr<Value> buildPltB16Mask(IRRewriter &builder, ModuleOp module,
+                                        Location loc, uint64_t laneCount,
+                                        llvm::raw_ostream &diagOS) {
+  Value laneCountValue = getI32Constant(builder, loc, laneCount);
+  auto maskType = VectorType::get({256}, builder.getI1Type());
+  auto funcType =
+      builder.getFunctionType({builder.getI32Type()}, {maskType, builder.getI32Type()});
+  auto callee =
+      getOrCreateExternalFunc(module, "llvm.hivm.plt.b16.v300", funcType);
+  auto call = builder.create<func::CallOp>(loc, callee, ValueRange{laneCountValue});
+  return call.getResult(0);
+}
+
 static FailureOr<Value> buildPsetB32Mask(IRRewriter &builder, Location loc,
                                          ModuleOp module, pto::PsetB32Op pset,
                                          llvm::raw_ostream &diagOS) {
@@ -1066,6 +1095,18 @@ static FailureOr<Value> buildPsetB32Mask(IRRewriter &builder, Location loc,
     return buildPltB32Mask(builder, module, loc, /*laneCount=*/64, diagOS);
 
   diagOS << "VPTO LLVM emission failed: unsupported pset_b32 pattern "
+         << pattern << "\n";
+  return failure();
+}
+
+static FailureOr<Value> buildPsetB16Mask(IRRewriter &builder, Location loc,
+                                         ModuleOp module, pto::PsetB16Op pset,
+                                         llvm::raw_ostream &diagOS) {
+  StringRef pattern = pset.getPattern();
+  if (pattern == "PAT_ALL")
+    return buildPltB16Mask(builder, module, loc, /*laneCount=*/128, diagOS);
+
+  diagOS << "VPTO LLVM emission failed: unsupported pset_b16 pattern "
          << pattern << "\n";
   return failure();
 }
@@ -1376,6 +1417,54 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
       return failure();
     return "llvm.hivm.vmax.v" + std::to_string(*lanes) + vec + ".x";
   }
+  if (auto binary = dyn_cast<pto::VminOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vmin.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<pto::VandOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vand.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<pto::VorOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vor.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<pto::VxorOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vxor.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<pto::VshlOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vshl.v" + std::to_string(*lanes) + vec + ".x";
+  }
+  if (auto binary = dyn_cast<pto::VshrOp>(op)) {
+    std::string vec =
+        getElementTypeFragment(getElementTypeFromVectorLike(binary.getResult().getType()));
+    auto lanes = getElementCountFromVectorLike(binary.getResult().getType());
+    if (vec.empty() || !lanes)
+      return failure();
+    return "llvm.hivm.vshr.v" + std::to_string(*lanes) + vec + ".x";
+  }
   if (auto unary = dyn_cast<pto::VcaddOp>(op)) {
     std::string vec =
         getElementTypeFragment(getElementTypeFromVectorLike(unary.getResult().getType()));
@@ -1407,6 +1496,17 @@ static FailureOr<std::string> getConfirmedCallee(Operation *op) {
     if (vec.empty() || !lanes)
       return failure();
     return "llvm.hivm.vtrc." + vec + ".x";
+  }
+  if (auto vcvt = dyn_cast<pto::VcvtOp>(op)) {
+    Type inputElemType = getElementTypeFromVectorLike(vcvt.getInput().getType());
+    Type resultElemType = getElementTypeFromVectorLike(vcvt.getResult().getType());
+    if (!inputElemType || !resultElemType)
+      return failure();
+    if (inputElemType.isF32() && resultElemType.isBF16())
+      return std::string("llvm.hivm.vcvtff.f322bf16.x");
+    if (inputElemType.isBF16() && resultElemType.isF32())
+      return std::string("llvm.hivm.vcvtff.bf162f32.x");
+    return failure();
   }
   if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
     std::string vec = getElementTypeFragment(getElementTypeFromVectorLike(vsts.getValue().getType()));
@@ -1479,6 +1579,14 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
 
   if (auto pset = dyn_cast<pto::PsetB32Op>(op)) {
     auto mask = buildPsetB32Mask(builder, loc, module, pset, diagOS);
+    if (failed(mask))
+      return failure();
+    builder.replaceOp(op, *mask);
+    return success();
+  }
+
+  if (auto pset = dyn_cast<pto::PsetB16Op>(op)) {
+    auto mask = buildPsetB16Mask(builder, loc, module, pset, diagOS);
     if (failed(mask))
       return failure();
     builder.replaceOp(op, *mask);
@@ -1691,6 +1799,55 @@ static LogicalResult rewriteVPTOOp(Operation *op, ModuleOp module,
     callArgs.push_back(vtrc.getInput());
     callArgs.push_back(getI32Constant(builder, loc, *roundMode));
     callArgs.push_back(*mask);
+  } else if (auto vcvt = dyn_cast<pto::VcvtOp>(op)) {
+    Type inputElemType = getElementTypeFromVectorLike(vcvt.getInput().getType());
+    Type resultElemType = getElementTypeFromVectorLike(vcvt.getResult().getType());
+    auto inputLanes = getElementCountFromVectorLike(vcvt.getInput().getType());
+    if (!inputElemType || !resultElemType || !inputLanes) {
+      diagOS << "VPTO LLVM emission failed: could not determine vcvt type shape\n";
+      return failure();
+    }
+
+    callArgs.push_back(vcvt.getInput());
+    if (inputElemType.isF32() && resultElemType.isBF16()) {
+      auto roundMode = vcvt.getRoundModeAttr()
+                           ? parseRoundModeImmediate(*vcvt.getRoundMode())
+                           : std::nullopt;
+      auto sat = vcvt.getSatAttr() ? parseSaturationImmediate(*vcvt.getSat())
+                                   : std::nullopt;
+      auto part =
+          vcvt.getPartAttr() ? parsePartImmediate(*vcvt.getPart()) : std::nullopt;
+      if (!roundMode || !sat || !part) {
+        diagOS << "VPTO LLVM emission failed: f32->bf16 vcvt requires valid "
+                  "round_mode/sat/part attrs\n";
+        return failure();
+      }
+      auto mask = buildPltB32Mask(builder, module, loc, *inputLanes, diagOS);
+      if (failed(mask))
+        return failure();
+      callArgs.push_back(*mask);
+      callArgs.push_back(getI32Constant(builder, loc, *roundMode));
+      callArgs.push_back(getI32Constant(builder, loc, *sat));
+      callArgs.push_back(getI32Constant(builder, loc, *part));
+    } else if (inputElemType.isBF16() && resultElemType.isF32()) {
+      auto part =
+          vcvt.getPartAttr() ? parsePartImmediate(*vcvt.getPart()) : std::nullopt;
+      if (!part) {
+        diagOS << "VPTO LLVM emission failed: bf16->f32 vcvt requires valid "
+                  "part attr\n";
+        return failure();
+      }
+      auto mask = buildPltB16Mask(builder, module, loc, *inputLanes, diagOS);
+      if (failed(mask))
+        return failure();
+      callArgs.push_back(*mask);
+      callArgs.push_back(getI32Constant(builder, loc, *part));
+    } else {
+      diagOS << "VPTO LLVM emission failed: unsupported vcvt type pair "
+             << vcvt.getInput().getType() << " -> " << vcvt.getResult().getType()
+             << "\n";
+      return failure();
+    }
   } else if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
     Type elementType = getElementTypeFromVectorLike(vsts.getValue().getType());
     auto offsetBytes = convertElementOffsetToBytes(

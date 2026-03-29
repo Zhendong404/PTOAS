@@ -79,6 +79,10 @@ echo "phase2 check: vpto_multi_aivector_scope_metadata.mlir"
 "${ptoas_bin}" --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm test/phase2/vpto_multi_aivector_scope_metadata.mlir -o - 2>/dev/null | \
   "${filecheck_bin}" test/phase2/vpto_multi_aivector_scope_metadata.mlir
 
+echo "phase2 check: vpto_vcvt_emit_hivm_llvm.mlir"
+"${ptoas_bin}" --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm test/phase2/vpto_vcvt_emit_hivm_llvm.mlir -o - 2>/dev/null | \
+  "${filecheck_bin}" test/phase2/vpto_vcvt_emit_hivm_llvm.mlir
+
 echo "phase2 check: tstore_domain_todos.mlir"
 { "${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase2/tstore_domain_todos.mlir -o - 2>&1 || true; } | \
   "${filecheck_bin}" test/phase2/tstore_domain_todos.mlir
