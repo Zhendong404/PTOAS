@@ -6,6 +6,7 @@ add_mlir_dialect_library(PTOTransforms
   VPTOTextEmitter.cpp
   VPTOLLVMEmitter.cpp
   PTOVPTOVersionSelection.cpp
+  PTOVPTOTrivialLoopCanonicalize.cpp
   TileFusion/PTOVPTOIfCanonicalize.cpp
   PTOVPTOExpandBridgeOps.cpp
   PTOVPTOPtrBoundary.cpp
