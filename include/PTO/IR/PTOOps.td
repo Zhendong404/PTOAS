@@ -3575,6 +3575,50 @@ def TPReluOp: PTO_TOp<"tprelu", [
   }];
 }
 //===----------------------------------------------------------------------===//
+// TQuantOp
+//===----------------------------------------------------------------------===//
+
+def TQuantOp : PTO_TOp<"tquant", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TQUANT: Quantize a tile using a scaling (fp) tile.";
+
+  let description = [{
+    Converts src tile elements to a lower-precision format using the scaling
+    parameters held in the fp tile, writing results into dst.
+
+    For INT8_ASYM an additional offset tile must be supplied in ins.
+
+    DPS form (INT8_SYM):
+      pto.tquant ins(%src, %fp : <src_type>, <fp_type>)
+                 outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_SYM>}
+    DPS form (INT8_ASYM):
+      pto.tquant ins(%src, %fp, %offset : <src_type>, <fp_type>, <offset_type>)
+                 outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_ASYM>}
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$fp,
+    Optional<PTODpsType>:$offset,
+    PTODpsType:$dst,
+    PTO_QuantTypeAttr:$quant_type
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+//===----------------------------------------------------------------------===//
 // PTOOps.td  (add TRECIP TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 

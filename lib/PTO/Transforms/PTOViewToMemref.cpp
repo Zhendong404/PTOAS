@@ -2601,6 +2601,42 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      SmallVector<mlir::pto::TQuantOp, 8> quantops;
+      func.walk([&](mlir::pto::TQuantOp op) { quantops.push_back(op); });
+
+      for (auto op : quantops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value fp = op.getFp();
+        Value offset = op.getOffset();
+        Value dst = op.getDst();
+
+        auto srcTy = dyn_cast<MemRefType>(src.getType());
+        auto fpTy = dyn_cast<MemRefType>(fp.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!srcTy || !fpTy || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (offset && !dyn_cast<MemRefType>(offset.getType())) {
+          op.emitError("offset is not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TQuantOp>(
+            op,
+            TypeRange{},
+            src,
+            fp,
+            offset,
+            dst,
+            op.getQuantTypeAttr());
+      }
+
       SmallVector<mlir::pto::TMrgSortOp, 8> mrgsortops;
       func.walk([&](mlir::pto::TMrgSortOp op) { mrgsortops.push_back(op); });
 

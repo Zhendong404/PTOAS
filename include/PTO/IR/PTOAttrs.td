@@ -458,4 +458,18 @@ def TileBufConfigAttr : AttrDef<PTO_Dialect, "TileBufConfig"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// QuantType
+//===----------------------------------------------------------------------===//
+
+def PTO_QuantTypeEnum : PTO_I32Enum<
+  "QuantType", "PTO quantization type", [
+    I32EnumAttrCase<"INT8_SYM",  0>,
+    I32EnumAttrCase<"INT8_ASYM", 1>
+  ]>;
+
+def PTO_QuantTypeAttr : EnumAttr<PTO_Dialect, PTO_QuantTypeEnum, "quant_type"> {
+  let summary = "quantization type attribute";
+}
+
 #endif // MLIR_DIALECT_PTO_IR_PTOATTRS
