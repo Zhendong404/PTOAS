@@ -25,6 +25,20 @@ def PTO_BufferType : Type<
 def PTO_BufferLikeType : AnyTypeOf<[AnyMemRef, PTO_BufferType],
                                     "memref or pointer-like buffer type">;
 
+def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator]> {
+  let summary = "Structured region container for one VPTO vector scope";
+  let description = [{
+    `pto.vecscope` marks a structured vector-scope interval without overloading
+    a dummy carrier loop with scope metadata. Lowering and emission passes may
+    use the region boundary to preserve loop shape while treating the enclosed
+    body as one VPTO vector interval.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = "$body attr-dict";
+}
+
 class PTO_BinaryI64ConfigOp<string mnemonic> : PTO_Op<mnemonic> {
   let arguments = (ins
     I64:$first,
