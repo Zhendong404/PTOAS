@@ -56,7 +56,7 @@ def abs_kernel(src: pto.ptr(pto.f32, "gm"),
     with pto.strict_vecscope(ub_in, ub_out, 0, 1024, 64, 1024) as (
         vin, vout, lb, ub, step, rem0
     ):
-        rem = rem0
+        rem: pto.i32 = rem0
         for lane in range(lb, ub, step):
             mask, rem = pto.plt_b32(rem)
             vec = pto.vlds(vin, lane)
@@ -121,19 +121,23 @@ def abs(src: pto.ptr(pto.f32, "gm"),
 
 ## 类型系统
 
-基础类型建议包含：
+DSL 表面类型建议分为两层：
 
-- `pto.i1`
-- `pto.i8`
-- `pto.i16`
-- `pto.i32`
-- `pto.i64`
-- `pto.f16`
-- `pto.bf16`
-- `pto.f32`
-- `pto.index`
-- `pto.mask`
-- `pto.align`
+- Python 标量类型：
+  - `bool`
+  - `int`
+  - `float`
+- PTO 专有类型：
+  - `pto.i1`
+  - `pto.i8`
+  - `pto.i16`
+  - `pto.i32`
+  - `pto.i64`
+  - `pto.f16`
+  - `pto.bf16`
+  - `pto.f32`
+  - `pto.mask`
+  - `pto.align`
 
 复合类型建议包含：
 
@@ -177,20 +181,59 @@ False
 - Python `int` 只是字面量写法
 - Python `float` 只是字面量写法
 - Python `bool` 只是字面量写法
-- 真正进入 DSL IR / VPTO MLIR 时，仍要落到 `i1`、`i32`、`i64`、`f32`、`index` 等 DSL 类型
+- 真正进入 DSL IR / VPTO MLIR 时，仍要落到 `i1`、`i32`、`i64`、`f32` 等后端标量类型
+
+设计收敛：
+
+- DSL 不向用户暴露 `index`
+- `range(...)` 和 loop iv 的索引语义由 lowering 内部处理
+- 用户层只区分“普通整型标量”和“循环索引位置上的内建语义”
+
+### 强类型规则
+
+对于会进入 IR 数据流边界的局部值，初版要求强类型，而不是依赖跨语句延迟决议。
+
+这里的“IR 数据流边界”包括：
+
+- `scf.for` 的 `iter_args`
+- `scf.if` 的 merge 结果
+- `pto.strict_vecscope` 的 region 参数
+- 任何 block argument / region argument
+- 任何需要显式结果类型的结构化结果
+
+推荐允许的两种用户写法：
+
+```python
+remaining: pto.i32 = 1024
+```
+
+```python
+remaining = pto.i32(1024)
+```
+
+其中：
+
+- `remaining: pto.i32 = 1024` 表示用户通过 Python 注解语法显式声明机器整数位宽
+- `pto.i32(1024)` 表示用户显式指定内部整型位宽
+
+相对地，下面这种跨结构流动的裸字面量绑定不再作为推荐或保证语义：
+
+```python
+remaining = 1024
+for lane in range(0, 1024, 64):
+    mask, remaining = pto.plt_b32(remaining)
+```
+
+如果 `remaining` 需要成为 loop-carried state，则应先强类型化。
 
 推荐规则：
 
 - 语法层允许直接写 Python 标量字面量
-- 所有 Python 字面量先进入统一的 literal typing 入口
-- 语义层按上下文推断其 DSL 标量类型
-- 如果上下文不足以唯一确定类型，则要求显式写 `pto.const(..., ty)`
-
-建议的第一阶段最小推断规则：
-
 - `bool` -> `i1`
 - `float` -> 默认 `f32`
-- `int` -> 依上下文决定；若无足够上下文，则报错或要求显式写类型
+- `int` 不作为 DSL 机器整数类型的表面写法
+- 固定宽度整数统一显式写成 `pto.i32` / `pto.i64`
+- 若上下文不足以唯一确定类型，则报错或要求显式写类型
 
 例如：
 
@@ -207,17 +250,24 @@ mask, rem = pto.plt_b32(1024)
 这里的 `1024` 可以按 `i32` 常量解释；
 
 ```python
-lane0 = pto.const(0, pto.index)
+remaining = pto.i32(1024)
 ```
 
-当用户需要明确位宽或 index 语义时，应允许并鼓励显式类型写法。
+当用户需要明确位宽时，应允许并鼓励显式类型写法。
 
 实现上，建议不要在各个 op builder 中分散处理字面量推断，而是统一通过 literal typing 阶段完成：
 
 - AST `Constant`
 - 未定型 DSL literal
-- 由上下文和 op schema 约束定型
+- 由当前表达式上下文和 op schema 约束定型
 - 生成 DSL 常量值 / MLIR constant
+
+但这套弱延迟定型仅应用于“表达式级常量提升”：
+
+- `tmp = 1024`
+- `x = pid + tmp`
+
+不应扩展到跨 `for` / `if` / region 的结构化数据流类型推断。
 
 ## 值模型
 
@@ -255,6 +305,7 @@ if x:
 - 顶层 kernel 函数定义
 - 参数类型注解
 - 赋值语句
+- 带类型注解的赋值语句
 - tuple unpack 赋值
 - 表达式语句
 - 空 `return`
@@ -375,13 +426,15 @@ lowering 层再将这种绑定环境变化映射为：
 对于 loop-carried state，建议优先使用 Python 默认赋值语法来表达，而不是在用户层直接暴露 `yield` 风格 API。例如：
 
 ```python
-rem = rem0
+rem: int = rem0
 for lane in range(lb, ub, step):
     mask, rem = pto.plt_b32(rem)
     ...
 ```
 
 DSL 语义层应将这种跨迭代保留并更新的绑定解释为 loop-carried state，并 lowering 为 `scf.for` 的 `iter_args` / `scf.yield`。
+
+这里的 `rem` 在进入 loop-carried state 之前已经是强类型绑定；是否最终落成内部 `i32`，由 op schema 和 lowering 规则决定，但不再依赖跨结构的全局延迟推断。
 
 对用户语义而言，loop 结束后的 `rem` 应等价于对应 `scf.for` 返回结果。
 在 `@pto.vkernel` 中，这类重绑定按 DSL 的统一迭代状态传递机制解释，而不是按 Python 运行时普通局部变量覆盖语义解释。
@@ -437,7 +490,7 @@ def abs_kernel(src: pto.ptr(pto.f32, "gm"),
     with pto.strict_vecscope(ub_in, ub_out, 0, 1024, 64, 1024) as (
         vin, vout, lb, ub, step, rem0
     ):
-        rem = rem0
+        rem: pto.i32 = rem0
         for lane in range(lb, ub, step):
             mask, rem = pto.plt_b32(rem)
             vec = pto.vlds(vin, lane)
