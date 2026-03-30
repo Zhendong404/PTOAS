@@ -39,6 +39,24 @@ def VecScopeOp : PTO_Op<"vecscope", [SingleBlock, NoTerminator]> {
   let assemblyFormat = "$body attr-dict";
 }
 
+def StrictVecScopeOp : PTO_Op<"strict_vecscope", [SingleBlock, NoTerminator,
+                                                  IsolatedFromAbove]> {
+  let summary = "Structured VPTO vector scope with explicit captures only";
+  let description = [{
+    `pto.strict_vecscope` is the strict form of `pto.vecscope`. Values used by
+    the body must be passed explicitly through op operands and corresponding
+    block arguments; implicit SSA capture from the surrounding scope is
+    rejected.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$captures);
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    `(` $captures `)` $body attr-dict `:` functional-type($captures, results)
+  }];
+}
+
 class PTO_BinaryI64ConfigOp<string mnemonic> : PTO_Op<mnemonic> {
   let arguments = (ins
     I64:$first,
