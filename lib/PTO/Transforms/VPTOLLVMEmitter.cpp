@@ -2008,6 +2008,12 @@ collectVecScopeLoopCounts(ModuleOp module) {
       return;
     counts[func.getName().str()]++;
   });
+  module.walk([&](pto::StrictVecScopeOp vecScope) {
+    auto func = vecScope->getParentOfType<func::FuncOp>();
+    if (!func)
+      return;
+    counts[func.getName().str()]++;
+  });
   return counts;
 }
 
@@ -2034,6 +2040,36 @@ static void materializeVecScopeCarrierLoops(ModuleOp module) {
                                         vecScopeBody.begin(),
                                         vecScopeBody.end());
     rewriter.eraseOp(vecScope);
+  }
+
+  SmallVector<pto::StrictVecScopeOp, 16> strictScopes;
+  module.walk(
+      [&](pto::StrictVecScopeOp strictVecScope) { strictScopes.push_back(strictVecScope); });
+
+  for (pto::StrictVecScopeOp strictVecScope : llvm::reverse(strictScopes)) {
+    if (!strictVecScope || strictVecScope.getBody().empty())
+      continue;
+
+    rewriter.setInsertionPoint(strictVecScope);
+    auto loc = strictVecScope.getLoc();
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    scf::ForOp carrier = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
+
+    Block &strictBody = strictVecScope.getBody().front();
+    Block *carrierBody = carrier.getBody();
+    Operation *yield = carrierBody->getTerminator();
+
+    IRMapping mapping;
+    for (auto [blockArg, capture] :
+         llvm::zip(strictBody.getArguments(), strictVecScope.getCaptures()))
+      mapping.map(blockArg, capture);
+
+    rewriter.setInsertionPoint(yield);
+    for (Operation &nested : strictBody.getOperations())
+      rewriter.clone(nested, mapping);
+
+    rewriter.eraseOp(strictVecScope);
   }
 }
 

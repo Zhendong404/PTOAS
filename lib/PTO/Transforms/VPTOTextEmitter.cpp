@@ -515,6 +515,40 @@ private:
     return success();
   }
 
+  LogicalResult emitStrictVecScopeOp(pto::StrictVecScopeOp op) {
+    ++vecScopeDepth;
+    auto restoreDepth = llvm::make_scope_exit([&] { --vecScopeDepth; });
+
+    SmallVector<std::pair<Value, llvm::Value *>, 4> savedBindings;
+    Block &body = op.getBody().front();
+    savedBindings.reserve(body.getNumArguments());
+
+    for (auto [blockArg, capture] :
+         llvm::zip(body.getArguments(), op.getCaptures())) {
+      llvm::Value *captureValue = lookup(capture);
+      if (!captureValue) {
+        diagOS << "VPTO emission failed: unresolved strict_vecscope capture\n";
+        return failure();
+      }
+      savedBindings.emplace_back(blockArg, lookup(blockArg));
+      bind(blockArg, captureValue);
+    }
+
+    auto restoreBindings = llvm::make_scope_exit([&] {
+      for (auto &[value, oldBinding] : savedBindings) {
+        if (oldBinding)
+          bind(value, oldBinding);
+        else
+          values.erase(value);
+      }
+    });
+
+    for (Operation &nested : body)
+      if (failed(emitOperation(&nested)))
+        return failure();
+    return success();
+  }
+
   LogicalResult emitForOp(scf::ForOp op) {
     llvm::Function *fn = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock *condBB =
@@ -1241,6 +1275,9 @@ private:
 
     if (auto vecScope = dyn_cast<pto::VecScopeOp>(op))
       return emitVecScopeOp(vecScope);
+
+    if (auto strictVecScope = dyn_cast<pto::StrictVecScopeOp>(op))
+      return emitStrictVecScopeOp(strictVecScope);
 
     if (auto forOp = dyn_cast<scf::ForOp>(op))
       return emitForOp(forOp);
