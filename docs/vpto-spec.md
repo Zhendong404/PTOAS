@@ -149,7 +149,7 @@ Without proper barriers, loads may see stale data or stores may be reordered inc
 
 `__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF) launch. In the PTO architecture, it defines the hardware interface between the Scalar Unit and the Vector Thread.
 
-It is not a dedicated `pto` op. In the PTO micro Instruction, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
+In the current PTO micro Instruction source IR, this scope is modeled as a dedicated `pto.vecscope` region so the vector interval remains explicit without overloading a dummy loop.
 
 **Scalar-Vector Interface:**
 
@@ -167,12 +167,12 @@ The execution model follows non-blocking fork semantics:
 **MLIR Representation:**
 
 ```mlir
-scf.for %dummy = %c0 to %c1 step %c1 {
+pto.vecscope {
   %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
   %v = pto.vlds %ub[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
   %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
   pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
-} {llvm.loop.aivector_scope}
+}
 ```
 
 ### Example: Abs
@@ -188,14 +188,14 @@ pto.copy_gm_to_ubuf %7, %2, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c0_i64,
 pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
-scf.for %dummy = %c0 to %c1 step %c1 {
+pto.vecscope {
   scf.for %lane = %c0 to %9 step %c64 {
     %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
     %v = pto.vlds %2[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
     %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
     pto.vsts %abs, %8[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
   }
-} {llvm.loop.aivector_scope}
+}
 
 pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
@@ -320,7 +320,7 @@ The following lowered-style fragment shows how typed PTO pointers flow through p
 ```mlir
 %0 = pto.castptr %c0 : i64 -> !pto.ptr<f32, ub>
 %1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
-scf.for %arg2 = %c0 to %c1 step %c1 {
+pto.vecscope {
   %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
     %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask, i32
     %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
@@ -328,7 +328,7 @@ scf.for %arg2 = %c0 to %c1 step %c1 {
     pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
     scf.yield %scalar_out : i32
   }
-} {llvm.loop.aivector_scope}
+}
 ```
 
 In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `pto.vlds` / `pto.vsts` applies an additional element offset relative to that base.
