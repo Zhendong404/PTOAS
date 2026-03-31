@@ -693,6 +693,7 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   //   -> PTOVPTOVersionSelection -> PTOToVPTO
   //   -> PTOValidateVPTOIR
   //   -> PTOVPTOIfCanonicalize
+  //   -> PTOFusionMergeVecScope
   //   -> PTOLowLevelLoopFusion -> Canonicalize
   //   -> CSE -> PTOFusionPredicateElision
   //   -> PTOFusionLoadStoreElision -> PTOFlattenFusionRegion
@@ -709,6 +710,8 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
 
   if (enableFusionMainline) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVPTOIfCanonicalizePass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionMergeVecScopePass());
     pto::PTOLowLevelLoopFusionOptions loopFusionOptions;
     loopFusionOptions.debug = opFusionDebug;
     pm.addPass(pto::createPTOLowLevelLoopFusionPass(loopFusionOptions));

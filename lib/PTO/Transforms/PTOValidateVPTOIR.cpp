@@ -94,18 +94,23 @@ public:
     return loop && loop->hasAttr(kAIVectorScopeAttrName);
   }
 
-  static scf::ForOp getEnclosingAIVectorScope(Operation *op) {
-    for (Operation *parent = op ? op->getParentOp() : nullptr; parent;
-         parent = parent->getParentOp()) {
-      if (auto loop = dyn_cast<scf::ForOp>(parent);
-          isAIVectorScopeCarrier(loop))
-        return loop;
-    }
-    return {};
+  static bool isDedicatedVecScopeCarrier(Operation *op) {
+    return isa_and_nonnull<VecScopeOp, StrictVecScopeOp>(op);
   }
 
-  static bool hasNestedAIVectorScope(scf::ForOp loop) {
-    return loop && static_cast<bool>(getEnclosingAIVectorScope(loop));
+  static bool isAnyVectorScopeCarrier(Operation *op) {
+    if (auto loop = dyn_cast_or_null<scf::ForOp>(op))
+      return isAIVectorScopeCarrier(loop);
+    return isDedicatedVecScopeCarrier(op);
+  }
+
+  static Operation *getEnclosingVectorScopeCarrier(Operation *op) {
+    for (Operation *parent = op ? op->getParentOp() : nullptr; parent;
+         parent = parent->getParentOp()) {
+      if (isAnyVectorScopeCarrier(parent))
+        return parent;
+    }
+    return nullptr;
   }
 
   static std::optional<VPTOMaskGranularity> getMaskGranularity(Type type) {
@@ -561,14 +566,37 @@ private:
       if (!VPTOLegalityHelper::isAIVectorScopeCarrier(loop))
         return WalkResult::advance();
 
-      if (!VPTOLegalityHelper::hasNestedAIVectorScope(loop))
+      Operation *parentScope =
+          VPTOLegalityHelper::getEnclosingVectorScopeCarrier(loop);
+      if (!parentScope)
         return WalkResult::advance();
 
-      loop.emitOpError() << "does not allow nested scf.for with '"
-                         << kAIVectorScopeAttrName << "'";
+      if (isa<scf::ForOp>(parentScope)) {
+        loop.emitOpError() << "does not allow nested scf.for with '"
+                           << kAIVectorScopeAttrName << "'";
+        return WalkResult::interrupt();
+      }
+
+      loop.emitOpError()
+          << "does not allow legacy scf.for carrier nested inside dedicated "
+             "pto.vecscope/pto.strict_vecscope";
       return WalkResult::interrupt();
     });
     if (loopWalkResult.wasInterrupted())
+      return failure();
+
+    WalkResult vecScopeWalkResult = helper.getModule().walk([&](Operation *op) {
+      if (!VPTOLegalityHelper::isDedicatedVecScopeCarrier(op))
+        return WalkResult::advance();
+
+      if (!VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op))
+        return WalkResult::advance();
+
+      op->emitOpError()
+          << "does not allow nested dedicated pto.vecscope/pto.strict_vecscope";
+      return WalkResult::interrupt();
+    });
+    if (vecScopeWalkResult.wasInterrupted())
       return failure();
 
     WalkResult opWalkResult = helper.getModule().walk([&](Operation *op) {
@@ -578,7 +606,7 @@ private:
       if (!VPTOLegalityHelper::requiresVecScope(op))
         return WalkResult::advance();
 
-      if (VPTOLegalityHelper::getEnclosingAIVectorScope(op))
+      if (VPTOLegalityHelper::getEnclosingVectorScopeCarrier(op))
         return (failed(validateFamilySuffixMaskContracts(op)) ||
                 failed(validateMaskGranularityContracts(op)))
                    ? WalkResult::interrupt()
@@ -587,6 +615,7 @@ private:
       op->emitOpError()
           << "requires enclosing scf.for with '"
           << kAIVectorScopeAttrName
+          << "' or dedicated pto.vecscope/pto.strict_vecscope"
           << "' because it consumes or produces !pto.vreg/!pto.mask/!pto.align";
       return WalkResult::interrupt();
     });

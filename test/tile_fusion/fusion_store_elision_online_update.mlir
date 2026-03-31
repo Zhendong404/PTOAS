@@ -2,8 +2,9 @@
 
 // VPTO-focused regression:
 // - keep yielded frontier materialization (`%9` / `%17` stores remain)
-// - eliminate round-trip reloads and dead intermediate stores inside the
-//   straight-line fusion_region path when forwarding is provably mask-compatible.
+// - after vecscope became a region, store-elision must still forward SSA
+//   values inside each vecscope leaf body instead of reloading from the
+//   just-materialized intermediate tiles.
 // - normalize fusion-region yielded frontier to the underlying memrefs at
 //   store-elision time, while re-binding region results for downstream users.
 
@@ -16,11 +17,22 @@
 // CHECK: %[[STRAIGHT_MAX:[0-9]+]] = pto.vmax %[[STRAIGHT_SRC]], %[[STRAIGHT_SRC0]], %mask
 // CHECK: pto.vsts %[[STRAIGHT_MAX]], %9[%[[STRAIGHT_INDEX]]], %mask
 // CHECK-NOT: pto.vlds %9[%[[STRAIGHT_INDEX]]]
-// CHECK: %[[STRAIGHT_SUB:[0-9]+]] = pto.vsub %{{[0-9]+}}, %[[STRAIGHT_MAX]], %mask
+// CHECK: %[[STRAIGHT_SRC1:[0-9]+]] = pto.vlds %4[%[[STRAIGHT_INDEX]]]
+// CHECK: %[[STRAIGHT_SUB:[0-9]+]] = pto.vsub %[[STRAIGHT_SRC1]], %[[STRAIGHT_MAX]], %mask
 // CHECK: %[[STRAIGHT_EXP0:[0-9]+]] = pto.vexp %[[STRAIGHT_SUB]], %mask
 // CHECK: pto.vsts %[[STRAIGHT_EXP0]], %12[%[[STRAIGHT_INDEX]]], %mask
+// CHECK: %[[STRAIGHT_SRC2:[0-9]+]] = pto.vlds %0[%[[STRAIGHT_INDEX]]]
+// CHECK: %[[STRAIGHT_SUB1:[0-9]+]] = pto.vsub %[[STRAIGHT_SRC2]], %[[STRAIGHT_MAX]], %mask
+// CHECK: %[[STRAIGHT_EXP1:[0-9]+]] = pto.vexp %[[STRAIGHT_SUB1]], %mask
+// CHECK: pto.vsts %[[STRAIGHT_EXP1]], %14[%[[STRAIGHT_INDEX]]], %mask
+// CHECK-NOT: pto.vlds %11[%[[STRAIGHT_INDEX]]]
 // CHECK-NOT: pto.vlds %12[%[[STRAIGHT_INDEX]]]
-// CHECK: %[[STRAIGHT_ADD:[0-9]+]] = pto.vadd %{{[0-9]+}}, %{{[0-9]+}}, %mask
+// CHECK-NOT: pto.vlds %14[%[[STRAIGHT_INDEX]]]
+// CHECK: %[[STRAIGHT_LOAD5:[0-9]+]] = pto.vlds %5[%[[STRAIGHT_INDEX]]]
+// CHECK: %[[STRAIGHT_MUL0:[0-9]+]] = pto.vmul %[[STRAIGHT_EXP0]], %[[STRAIGHT_LOAD5]], %mask
+// CHECK: %[[STRAIGHT_LOAD1:[0-9]+]] = pto.vlds %1[%[[STRAIGHT_INDEX]]]
+// CHECK: %[[STRAIGHT_MUL1:[0-9]+]] = pto.vmul %[[STRAIGHT_EXP1]], %[[STRAIGHT_LOAD1]], %mask
+// CHECK: %[[STRAIGHT_ADD:[0-9]+]] = pto.vadd %[[STRAIGHT_MUL0]], %[[STRAIGHT_MUL1]], %mask
 // CHECK: pto.vsts %[[STRAIGHT_ADD]], %17[%[[STRAIGHT_INDEX]]], %mask
 // CHECK: pto.yield(%9, %12, %14, %17) : (memref<1x16xf32
 // CHECK: } {pto.fusion.group_id = 0 : i64} : memref<1x16xf32
@@ -31,7 +43,6 @@
 // CHECK: %[[G1_LOAD1:[0-9]+]] = pto.vlds %2[%{{[^]]+}}]
 // CHECK: %[[G1_MUL1:[0-9]+]] = pto.vmul %[[G1_LOAD1]], %{{[0-9]+}}, %mask
 // CHECK: pto.vsts %[[G1_MUL1]], %6[%{{[^]]+}}], %mask
-// CHECK-NOT: pto.vlds %8[%{{[^]]+}}]
 // CHECK-NOT: pto.vlds %6[%{{[^]]+}}]
 // CHECK: %[[G1_ADD:[0-9]+]] = pto.vadd %[[G1_MUL0]], %[[G1_MUL1]], %mask
 // CHECK: pto.vsts %[[G1_ADD]], %2[%{{[^]]+}}], %mask

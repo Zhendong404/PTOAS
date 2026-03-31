@@ -342,14 +342,35 @@ def PTOVPTOPtrBoundary
                            "mlir::memref::MemRefDialect"];
 }
 
+def PTOFusionMergeVecScope
+    : Pass<"pto-fusion-merge-vecscope", "func::FuncOp"> {
+  let summary =
+      "Merge adjacent VPTO vecscope regions inside pto.fusion_region";
+  let description = [{
+    Coalesces adjacent sibling `pto.vecscope` regions that belong to the same
+    `pto.fusion_region`, while also sinking pure inter-scope setup ops into the
+    merged scope body. This normalization preserves one vector-scope carrier
+    for each fusion-local stage run so `PTOLowLevelLoopFusion` can continue to
+    operate on low-level `scf.for + pto.*` loop nests inside the region body of
+    the merged scope.
+  }];
+  let constructor = "mlir::pto::createPTOFusionMergeVecScopePass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect"];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
       "Fuse adjacent VPTO post-lowering loop nests inside pto.fusion_region";
   let description = [{
     Conservatively fuses adjacent post-lowering loop stages for already-planned
     fusion groups after PTOToVPTO. The formal input contract for this pass is
-    low-level `scf.for + pto.*` structure that remains inside
-    `pto.fusion_region` until explicit flatten.
+    low-level `scf.for + pto.*` structure nested inside one
+    `pto.vecscope` / `pto.strict_vecscope` carrier that remains inside
+    `pto.fusion_region` until explicit flatten. A prior vecscope-merge
+    normalization may collapse multiple sibling `pto.vecscope` into one
+    carrier region first, but this pass MUST still only fuse stages within
+    each individual vector-scope body and MUST NOT cross vecscope boundaries.
     Legacy `pto.simd.vec_scope` / `vector.masked_*` bridge IR is no longer the
     documented mainline contract for the A5 backend pipeline.
   }];
