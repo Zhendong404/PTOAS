@@ -504,7 +504,11 @@ def TStoreOp: PTO_TOp<"tstore", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    Optional<I64>:$preQuantScalar,
+    DefaultValuedAttr<PTO_STPhaseAttr, "::mlir::pto::STPhase::Unspecified">:$stPhase,
+    DefaultValuedAttr<PTO_AtomicTypeAttr, "::mlir::pto::AtomicType::AtomicNone">:$atomicType,
+    DefaultValuedAttr<PTO_ReluPreModeAttr, "::mlir::pto::ReluPreMode::NoRelu">:$reluPreMode
   );
 
   let results = (outs
@@ -514,7 +518,8 @@ def TStoreOp: PTO_TOp<"tstore", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
+    `ins` `(` $src `:` qualified(type($src))
+           (`,` $preQuantScalar^ `:` type($preQuantScalar))? `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
     (`->` qualified(type($result))^)?

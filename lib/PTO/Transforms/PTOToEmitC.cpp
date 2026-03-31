@@ -3548,13 +3548,43 @@ struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
 struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
   using OpConversionPattern<pto::TStoreOp>::OpConversionPattern;
 
+  static std::string stPhaseTok(pto::STPhase phase) {
+    switch (phase) {
+      case pto::STPhase::Unspecified: return "STPhase::Unspecified";
+      case pto::STPhase::Partial: return "STPhase::Partial";
+      case pto::STPhase::Final: return "STPhase::Final";
+    }
+    return "STPhase::Unspecified";
+  }
+
+  static std::string atomicTypeTok(pto::AtomicType atomicType) {
+    switch (atomicType) {
+      case pto::AtomicType::AtomicNone: return "AtomicType::AtomicNone";
+      case pto::AtomicType::AtomicAdd: return "AtomicType::AtomicAdd";
+    }
+    return "AtomicType::AtomicNone";
+  }
+
+  static std::string reluPreModeTok(pto::ReluPreMode reluPreMode) {
+    switch (reluPreMode) {
+      case pto::ReluPreMode::NoRelu: return "ReluPreMode::NoRelu";
+      case pto::ReluPreMode::NormalRelu: return "ReluPreMode::NormalRelu";
+    }
+    return "ReluPreMode::NoRelu";
+  }
+
   LogicalResult matchAndRewrite(pto::TStoreOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     if (!op.getDst())
       return rewriter.notifyMatchFailure(op, "expected outs(dst) on pto.tstore");
 
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
+    Value preQuantScalar;
+    if (op.getPreQuantScalar())
+      preQuantScalar = peelUnrealized(adaptor.getPreQuantScalar());
     Value dstArg = dst;
     if (auto dstMrTy = dyn_cast<MemRefType>(op.getDst().getType())) {
       bool isGlobal = true;
@@ -3569,10 +3599,90 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
       }
     }
 
+    const auto phase = op.getStPhase();
+    const auto atomicType = op.getAtomicType();
+    const auto reluPreMode = op.getReluPreMode();
+    const bool hasPreQuantScalar = static_cast<bool>(preQuantScalar);
+    const bool phaseNonDefault = phase != pto::STPhase::Unspecified;
+    const bool atomicNonDefault = atomicType != pto::AtomicType::AtomicNone;
+    const bool reluNonDefault = reluPreMode != pto::ReluPreMode::NoRelu;
+
+    auto getOpaqueTok = [&](Value v, StringRef name) -> FailureOr<std::string> {
+      if (auto ot = v.getType().dyn_cast<emitc::OpaqueType>())
+        return ot.getValue().str();
+      return rewriter.notifyMatchFailure(op, (name + " must be emitc::OpaqueType").str());
+    };
+
+    ArrayAttr targs;
+    // Map op attributes/operands to the exact TSTORE overload family:
+    //  1) TSTORE(dst, src)
+    //  2) TSTORE<Phase>(dst, src)
+    //  3) TSTORE<TileData, GlobalData, AtomicType>(dst, src)
+    //  4) TSTORE<Phase, TileData, GlobalData, AtomicType>(dst, src)
+    //  5) TSTORE<TileData, GlobalData, AtomicType, ReluPreMode>(dst, src)
+    //  6) TSTORE<Phase, TileData, GlobalData, AtomicType, ReluPreMode>(dst, src)
+    //  7) TSTORE<TileData, GlobalData, AtomicType, ReluPreMode>(dst, src, preQuant)
+    //  8) TSTORE<Phase, TileData, GlobalData, AtomicType, ReluPreMode>(dst, src, preQuant)
+    if (!hasPreQuantScalar && !reluNonDefault && !atomicNonDefault) {
+      if (phaseNonDefault) {
+        targs = rewriter.getArrayAttr({
+            emitc::OpaqueAttr::get(ctx, stPhaseTok(phase)),
+        });
+      } else {
+        targs = ArrayAttr{};
+      }
+    } else {
+      auto srcTokOr = getOpaqueTok(src, "src");
+      auto dstTokOr = getOpaqueTok(dstArg, "dst");
+      if (failed(srcTokOr) || failed(dstTokOr))
+        return failure();
+
+      // If there is no preQuant and relu stays default, emit the atomic-only
+      // overloads (#3/#4) without ReluPreMode template argument.
+      if (!hasPreQuantScalar && !reluNonDefault) {
+        if (phaseNonDefault) {
+          targs = rewriter.getArrayAttr({
+              emitc::OpaqueAttr::get(ctx, stPhaseTok(phase)),
+              emitc::OpaqueAttr::get(ctx, *srcTokOr),
+              emitc::OpaqueAttr::get(ctx, *dstTokOr),
+              emitc::OpaqueAttr::get(ctx, atomicTypeTok(atomicType)),
+          });
+        } else {
+          targs = rewriter.getArrayAttr({
+              emitc::OpaqueAttr::get(ctx, *srcTokOr),
+              emitc::OpaqueAttr::get(ctx, *dstTokOr),
+              emitc::OpaqueAttr::get(ctx, atomicTypeTok(atomicType)),
+          });
+        }
+      } else {
+        // Relu/preQuant families (#5/#6/#7/#8): keep AtomicType + ReluPreMode.
+        if (phaseNonDefault) {
+          targs = rewriter.getArrayAttr({
+              emitc::OpaqueAttr::get(ctx, stPhaseTok(phase)),
+              emitc::OpaqueAttr::get(ctx, *srcTokOr),
+              emitc::OpaqueAttr::get(ctx, *dstTokOr),
+              emitc::OpaqueAttr::get(ctx, atomicTypeTok(atomicType)),
+              emitc::OpaqueAttr::get(ctx, reluPreModeTok(reluPreMode)),
+          });
+        } else {
+          targs = rewriter.getArrayAttr({
+              emitc::OpaqueAttr::get(ctx, *srcTokOr),
+              emitc::OpaqueAttr::get(ctx, *dstTokOr),
+              emitc::OpaqueAttr::get(ctx, atomicTypeTok(atomicType)),
+              emitc::OpaqueAttr::get(ctx, reluPreModeTok(reluPreMode)),
+          });
+        }
+      }
+    }
+
+    SmallVector<Value, 3> operands{dstArg, src};
+    if (hasPreQuantScalar)
+      operands.push_back(preQuantScalar);
+
     rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TSTORE",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dstArg, src});
+        loc, TypeRange{}, "TSTORE",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/targs,
+        /*operands=*/operands);
 
     if (op->getNumResults() == 1) {
       rewriter.replaceOp(op, dst);

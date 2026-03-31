@@ -709,7 +709,7 @@ pto.tload ins(%pv : !pto.partition_tensor_view<16x16xf16>)
 
 ##### `pto.tstore` - Store Tile to Partition View
 
-**Summary:** Stores a 2-D tile buffer back to a 2-D partition view.
+**Summary:** Stores a 2-D tile buffer back to a 2-D partition view. Supports phase/atomic/relu/pre-quant controls that lower to the corresponding `TSTORE` template overload family.
 
 **Semantics:**
 
@@ -720,44 +720,100 @@ For each element (i, j) in the tile valid region:
 
 **Arguments:**
 
-| Name | Type | Description |
-|------|------|-------------|
-| `src` | `pto.tile_buf` | Source tile buffer |
-| `dst` | `PartitionTensorViewType` | Destination partition view |
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `src` | `pto.tile_buf` | `NA` |Source tile buffer |
+| `dst` | `PartitionTensorViewType` | `NA` | Destination partition view |
+| `preQuantScalar` | `i64` (optional) | `NA` |Optional scalar used by pre-quantized `acc` store forms |
+| `stPhase` | `#pto<st_phase ...>` | `unspecified` | Store phase selector (`unspecified/partial/final`) |
+| `atomicType` | `#pto<atomic_type ...>` | `atomic_none` | Atomic mode (`atomic_none/atomic_add`) |
+| `reluPreMode` | `#pto<relu_pre_mode ...>` | `no_relu` | ReLU pre-processing mode (`no_relu/normal_relu`) |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- **Implementation checks (A2A3)**
-  - The source tile must use one of `loc=vec`, `loc=mat`, or `loc=acc`.
-  - Runtime: all destination partition extents and the source valid region must be positive.
-  - For `loc=vec` / `loc=mat`:
-    - Tile element type must be one of: `i8`, `i16`, `i32`, `i64`, `f16`, `bf16`, `f32`.
-    - The source tile element type and destination partition element type must have the same bitwidth.
-  - For `loc=acc` (including quantized/atomic variants):
-    - Source dtype must be `i32` or `f32`.
-    - When not using quantization, destination dtype must be `i32/f32/f16/bf16`.
-    - Static tile shape constraints: `1 <= cols <= 4095`; 
-    - Runtime: `1 <= src valid column <= 4095`.
-- **Implementation checks (A5)**
-  - The source tile must use `loc=vec` or `loc=acc` (A5 does not support `loc=mat` stores here).
-  - For `loc=vec`:
-    - The source tile element type and destination partition element type must have the same bitwidth.
-    - Tile element type must be one of: `i8`, `i16`, `i32`, `i64`, `f16`, `bf16`, `f32`.
+- Common checks:
+  - `src` must be `!pto.tile_buf`, `dst` must be `!pto.partition_tensor_view`.
+  - Static `dst` shape dims and static `src` valid-shape dims must be positive.
+  - If `preQuantScalar` is present, `src` must be `loc=acc`.
+  - If `reluPreMode != no_relu`, `src` must be `loc=acc`.
+- A2/A3 checks:
+  - `src.loc` must be one of `vec/mat/acc`.
+  - For `loc=vec` or `loc=mat`:
+    - `preQuantScalar` is not allowed.
+    - `src` element type must be one of `i8/i16/i32/i64/f16/bf16/f32`.
+    - `src`/`dst` element bitwidth must match.
   - For `loc=acc`:
-    - source dtype must be `i32` or `f32`.
-    - When not using quantization, destination dtype must be `i32/f32/f16/bf16`.
+    - `src` element type must be `i32` or `f32`.
+    - Without `preQuantScalar`: `dst` element type must be `i32/f32/f16/bf16`.
+    - With `preQuantScalar`:
+      - `src=i32` -> `dst=i8(ui8)/f16`
+      - `src=f32` -> `dst=i8(ui8)`
+    - Static/runtime column bound checks on `src`: `1 <= cols <= 4095` and `1 <= valid_shape[1] <= 4095` (when static).
+- A5 checks:
+  - `src.loc` must be `vec` or `acc` (A5 does not support `mat` here).
+  - For `loc=vec`:
+    - `preQuantScalar` is not allowed.
+    - `src` element type must be one of `i8/i16/i32/i64/f16/bf16/f32`.
+    - `src`/`dst` element bitwidth must match.
+  - For `loc=acc`:
+    - `src` element type must be `i32` or `f32`.
+    - Without `preQuantScalar`: `dst` element type must be `i32/f32/f16/bf16`.
+    - With `preQuantScalar`:
+      - `src=i32` -> `dst=i8(ui8)/f16/bf16`
+      - `src=f32` -> `dst=i8(ui8)/f16/bf16/f32`
+
+**Type Note (PTO IR):**
+
+- PTO IR uses signless integers. There is no distinct unsigned integer type in verifier rules; documentation strings like `ui8` are represented by signless `i8` in IR type checks.
 
 **Hardware Mapping:**
 
-- Executes on the **DMA pipeline** (`PIPE_MTE3`, UB -> GM)
+- `src=loc=acc`: uses **PIPE_FIX** path.
+- `src=loc=vec` or `src=loc=mat`: uses **PIPE_MTE3** path.
 
 **Basic Example:**
 
 ```mlir
+// 1) TSTORE(dst, src)
 pto.tstore ins(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
            outs(%pv : !pto.partition_tensor_view<16x16xf16>)
+
+// 2) TSTORE<STPhase::Final>(dst, src)
+pto.tstore ins(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+           outs(%pv : !pto.partition_tensor_view<16x16xf16>)
+           {stPhase = #pto<st_phase final>}
+
+// 3) TSTORE<TileData, GlobalData, AtomicType::AtomicAdd>(dst, src)
+pto.tstore ins(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+           outs(%pv : !pto.partition_tensor_view<16x16xf16>)
+           {atomicType = #pto<atomic_type atomic_add>}
+
+// 4) TSTORE<STPhase::Final, TileData, GlobalData, AtomicType::AtomicAdd>(dst, src)
+pto.tstore ins(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+           outs(%pv : !pto.partition_tensor_view<16x16xf16>)
+           {stPhase = #pto<st_phase final>, atomicType = #pto<atomic_type atomic_add>}
+
+// 5) TSTORE<TileData, GlobalData, AtomicType::AtomicAdd, ReluPreMode::NormalRelu>(dst, src)
+pto.tstore ins(%acc : !pto.tile_buf<loc=acc, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+           outs(%pv2 : !pto.partition_tensor_view<32x32xf16>)
+           {atomicType = #pto<atomic_type atomic_add>, reluPreMode = #pto<relu_pre_mode normal_relu>}
+
+// 6) TSTORE<STPhase::Final, TileData, GlobalData, AtomicType::AtomicAdd, ReluPreMode::NormalRelu>(dst, src)
+pto.tstore ins(%acc : !pto.tile_buf<loc=acc, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+           outs(%pv2 : !pto.partition_tensor_view<32x32xf16>)
+           {stPhase = #pto<st_phase final>, atomicType = #pto<atomic_type atomic_add>, reluPreMode = #pto<relu_pre_mode normal_relu>}
+
+// 7) TSTORE<TileData, GlobalData, AtomicType::AtomicAdd, ReluPreMode::NormalRelu>(dst, src, preQuantScalar)
+pto.tstore ins(%acc : !pto.tile_buf<loc=acc, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, %pq : i64)
+           outs(%pv2 : !pto.partition_tensor_view<32x32xf16>)
+           {atomicType = #pto<atomic_type atomic_add>, reluPreMode = #pto<relu_pre_mode normal_relu>}
+
+// 8) TSTORE<STPhase::Final, TileData, GlobalData, AtomicType::AtomicAdd, ReluPreMode::NormalRelu>(dst, src, preQuantScalar)
+pto.tstore ins(%acc : !pto.tile_buf<loc=acc, dtype=i32, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, %pq : i64)
+           outs(%pv2 : !pto.partition_tensor_view<32x32xf16>)
+           {stPhase = #pto<st_phase final>, atomicType = #pto<atomic_type atomic_add>, reluPreMode = #pto<relu_pre_mode normal_relu>}
 ```
 
 ---

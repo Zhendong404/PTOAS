@@ -1648,6 +1648,9 @@ LogicalResult TStoreOp::verify() {
     return ty.isInteger(8) || ty.isInteger(16) || ty.isInteger(32) ||
            ty.isInteger(64) || ty.isF16() || ty.isBF16() || ty.isF32();
   };
+  auto isI8Like = [&](Type ty) -> bool { return ty.isSignlessInteger(8); };
+  bool hasPreQuant = static_cast<bool>(getPreQuantScalar());
+  auto reluMode = getReluPreMode();
 
   auto verifyA2A3 = [&]() -> LogicalResult {
     auto common = verifyCommon();
@@ -1659,10 +1662,16 @@ LogicalResult TStoreOp::verify() {
                       *srcSpace != pto::AddressSpace::MAT &&
                       *srcSpace != pto::AddressSpace::ACC))
       return emitOpError("expects A2/A3 tstore src to use loc=vec, loc=mat, or loc=acc");
+    if (hasPreQuant && *srcSpace != pto::AddressSpace::ACC)
+      return emitOpError("expects preQuantScalar form to use loc=acc src");
+    if (reluMode != pto::ReluPreMode::NoRelu && *srcSpace != pto::AddressSpace::ACC)
+      return emitOpError("expects reluPreMode form to use loc=acc src");
 
     Type srcElem = srcTile.getElementType();
     Type dstElem = dstPart.getElementType();
     if (*srcSpace == pto::AddressSpace::VEC || *srcSpace == pto::AddressSpace::MAT) {
+      if (hasPreQuant)
+        return emitOpError("expects preQuantScalar form to use loc=acc src");
       if (!isLoadStoreElemType(srcElem))
         return emitOpError("expects A2/A3 vec/mat tstore src element type to be i8/i16/i32/i64/u64/f16/bf16/f32");
       if (getElemByteSize(srcElem) != getElemByteSize(dstElem))
@@ -1672,9 +1681,19 @@ LogicalResult TStoreOp::verify() {
 
     if (!(srcElem.isSignlessInteger(32) || srcElem.isF32()))
       return emitOpError("expects A2/A3 acc tstore src element type to be i32 or f32");
-    if (!(dstElem.isSignlessInteger(32) || dstElem.isF32() || dstElem.isF16() ||
-          dstElem.isBF16()))
-      return emitOpError("expects A2/A3 acc tstore dst element type to be i32/f32/f16/bf16");
+    if (hasPreQuant) {
+      if (srcElem.isSignlessInteger(32)) {
+        if (!(isI8Like(dstElem) || dstElem.isF16()))
+          return emitOpError("expects A2/A3 acc preQuantScalar tstore dst type to be i8/ui8/f16");
+      } else if (srcElem.isF32()) {
+        if (!isI8Like(dstElem))
+          return emitOpError("expects A2/A3 acc preQuantScalar tstore dst type to be i8/ui8");
+      }
+    } else {
+      if (!(dstElem.isSignlessInteger(32) || dstElem.isF32() || dstElem.isF16() ||
+            dstElem.isBF16()))
+        return emitOpError("expects A2/A3 acc tstore dst element type to be i32/f32/f16/bf16");
+    }
 
     auto srcShape = srcTile.getShape();
     if (srcShape[1] != ShapedType::kDynamic &&
@@ -1696,10 +1715,16 @@ LogicalResult TStoreOp::verify() {
     if (!srcSpace || (*srcSpace != pto::AddressSpace::VEC &&
                       *srcSpace != pto::AddressSpace::ACC))
       return emitOpError("expects A5 tstore src to use loc=vec or loc=acc");
+    if (hasPreQuant && *srcSpace != pto::AddressSpace::ACC)
+      return emitOpError("expects preQuantScalar form to use loc=acc src");
+    if (reluMode != pto::ReluPreMode::NoRelu && *srcSpace != pto::AddressSpace::ACC)
+      return emitOpError("expects reluPreMode form to use loc=acc src");
 
     Type srcElem = srcTile.getElementType();
     Type dstElem = dstPart.getElementType();
     if (*srcSpace == pto::AddressSpace::VEC) {
+      if (hasPreQuant)
+        return emitOpError("expects preQuantScalar form to use loc=acc src");
       if (!isLoadStoreElemType(srcElem))
         return emitOpError("expects A5 vec tstore src element type to be i8/i16/i32/i64/u64/f16/bf16/f32");
       if (getElemByteSize(srcElem) != getElemByteSize(dstElem))
@@ -1709,9 +1734,19 @@ LogicalResult TStoreOp::verify() {
 
     if (!(srcElem.isSignlessInteger(32) || srcElem.isF32()))
       return emitOpError("expects A5 acc tstore src element type to be i32 or f32");
-    if (!(dstElem.isSignlessInteger(32) || dstElem.isF32() || dstElem.isF16() ||
-          dstElem.isBF16()))
-      return emitOpError("expects A5 acc tstore dst element type to be i32/f32/f16/bf16");
+    if (hasPreQuant) {
+      if (srcElem.isSignlessInteger(32)) {
+        if (!(isI8Like(dstElem) || dstElem.isF16() || dstElem.isBF16()))
+          return emitOpError("expects A5 acc preQuantScalar tstore dst type to be i8/ui8/f16/bf16");
+      } else if (srcElem.isF32()) {
+        if (!(isI8Like(dstElem) || dstElem.isF16() || dstElem.isBF16() || dstElem.isF32()))
+          return emitOpError("expects A5 acc preQuantScalar tstore dst type to be i8/ui8/f16/bf16/f32");
+      }
+    } else {
+      if (!(dstElem.isSignlessInteger(32) || dstElem.isF32() || dstElem.isF16() ||
+            dstElem.isBF16()))
+        return emitOpError("expects A5 acc tstore dst element type to be i32/f32/f16/bf16");
+    }
     return success();
   };
 
@@ -7758,6 +7793,9 @@ void TAbsOp::getEffects(
 // Read: src, Write: dst (GM)
 void TStoreOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  auto preQuantRange = getPreQuantScalarMutable();
+  if (!preQuantRange.empty())
+    addEffect(effects, &*preQuantRange.begin(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
 }
 

@@ -1320,9 +1320,16 @@ struct PTOViewToMemrefPass
 
         Value src = op->getOperand(0); 
         Value dst = op->getOperand(1);
+        Value preQuant = op.getPreQuantScalar();
 
-        auto newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
-                                                    src, dst);
+        pto::TStoreOp newOp;
+        if (preQuant) {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, preQuant);
+        } else {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, Value{});
+        }
         newOp->setAttrs(op->getAttrs());
         rewriter.replaceOp(op, newOp->getResults());
       }
