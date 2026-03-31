@@ -1,4 +1,4 @@
-// RUN: ptoas %s --enable-op-fusion --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1 | FileCheck %s
+// RUN: ptoas %s --enable-op-fusion --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1 | FileCheck %s
 // XFAIL: *
 
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall

@@ -1,4 +1,4 @@
-// RUN: ptoas %S/compare_bitwise_family_emitc.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.cpp
+// RUN: ptoas %S/compare_bitwise_family_emitc.pto --pto-arch=a5 -o %t.cpp
 // RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 // XFAIL: *
 

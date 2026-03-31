@@ -7,7 +7,7 @@
 // RUN: cp %S/../../oplib/level3/broadcast_row_binary_templates.mlir %t.dir/
 // XFAIL: *
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.dir/families/
-// RUN: { ptoas %s --enable-op-fusion --op-lib-dir=%t.dir --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
+// RUN: { ptoas %s --enable-op-fusion --pto-arch=a5 --print-ir-after-all -o /dev/null 2>&1; } | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOInstantiateAndLowerToLibCall
 // CHECK-DAG: func.func private @__pto_oplib_inst_l3_float_tile_scalar_template_tdivs_tile_scalar(

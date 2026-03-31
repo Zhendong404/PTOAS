@@ -1,4 +1,4 @@
-// RUN: ptoas %s --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 --pto-level=level3 -o %t.cpp
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level3 -o %t.cpp
 // RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 // XFAIL: *
 
