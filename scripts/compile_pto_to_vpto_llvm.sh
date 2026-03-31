@@ -10,6 +10,7 @@ OUT_DIR_ARG="${2:-}"
 PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
 VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
+FUSION_FLAGS="${FUSION_FLAGS:---enable-op-fusion}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
 BISHENG_BIN=""
@@ -48,6 +49,7 @@ Environment overrides:
   PTOAS_BIN     path to ptoas
   PTOAS_FLAGS   default: --pto-arch a5
   VPTO_FLAGS    default: --pto-backend=vpto --vpto-emit-hivm-llvm
+  FUSION_FLAGS  default: --enable-op-fusion
   ASCEND_HOME_PATH default: \$HOME/cann
   BISHENG_BIN
   BISHENG_FLAGS extra flags passed to bisheng when compiling .ll to .o
@@ -97,7 +99,7 @@ LLVM_IR="${OUT_DIR}/${pto_base}.ll"
 DEVICE_OBJ="${OUT_DIR}/${pto_base}.o"
 
 log "step 1/2: lower PTO to VPTO LLVM IR"
-"${PTOAS_BIN}" ${PTOAS_FLAGS} ${VPTO_FLAGS} \
+"${PTOAS_BIN}" ${PTOAS_FLAGS} ${VPTO_FLAGS} ${FUSION_FLAGS} \
   "${pto_abs}" \
   -o "${LLVM_IR}"
 
