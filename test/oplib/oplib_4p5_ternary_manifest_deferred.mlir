@@ -1,4 +1,4 @@
-// RUN: ptoas %s --pto-arch=a5 --pto-level=level3 --op-lib-dir=%S/../../oplib/level3 -o %t.cpp
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level3 -o %t.cpp
 // RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 
 // EMITC-LABEL: __global__ AICORE void taddc_deferred(

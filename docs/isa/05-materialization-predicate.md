@@ -65,7 +65,9 @@ for (int i = 0; i < N; i++)
 
 ### `pto.pset_b8` / `pto.pset_b16` / `pto.pset_b32`
 
-- **syntax:** `%result = pto.pset_b32 "PAT_*" : !pto.mask`
+- **syntax:** `%result = pto.pset_b8 "PAT_*" : !pto.mask<b8>`
+- **syntax:** `%result = pto.pset_b16 "PAT_*" : !pto.mask<b16>`
+- **syntax:** `%result = pto.pset_b32 "PAT_*" : !pto.mask<b32>`
 - **semantics:** Generate predicate from pattern.
 
 **Patterns:**
@@ -81,19 +83,21 @@ for (int i = 0; i < N; i++)
 
 **Example — All 64 f32 lanes active:**
 ```mlir
-%all_active = pto.pset_b32 "PAT_ALL" : !pto.mask
+%all_active = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
 ```
 
 **Example — First 16 lanes active:**
 ```mlir
-%first_16 = pto.pset_b32 "PAT_VL16" : !pto.mask
+%first_16 = pto.pset_b32 "PAT_VL16" : !pto.mask<b32>
 ```
 
 ---
 
 ### `pto.pge_b8` / `pto.pge_b16` / `pto.pge_b32`
 
-- **syntax:** `%result = pto.pge_b32 "PAT_*" : !pto.mask`
+- **syntax:** `%result = pto.pge_b8 "PAT_*" : !pto.mask<b8>`
+- **syntax:** `%result = pto.pge_b16 "PAT_*" : !pto.mask<b16>`
+- **syntax:** `%result = pto.pge_b32 "PAT_*" : !pto.mask<b32>`
 - **semantics:** Generate tail mask — first N lanes active.
 
 ```c
@@ -103,15 +107,17 @@ for (int i = 0; i < TOTAL_LANES; i++)
 
 **Example — Tail mask for remainder loop:**
 ```mlir
-%tail_mask = pto.pge_b32 "PAT_VL8" : !pto.mask
+%tail_mask = pto.pge_b32 "PAT_VL8" : !pto.mask<b32>
+```
 
 ---
 
 ### `pto.plt_b8` / `pto.plt_b16` / `pto.plt_b32`
 
-- **syntax:** `%mask, %scalar_out = pto.plt_b32 %scalar : i32 -> !pto.mask, i32`
+- **syntax:** `%mask, %scalar_out = pto.plt_b8 %scalar : i32 -> !pto.mask<b8>, i32`
+- **syntax:** `%mask, %scalar_out = pto.plt_b16 %scalar : i32 -> !pto.mask<b16>, i32`
+- **syntax:** `%mask, %scalar_out = pto.plt_b32 %scalar : i32 -> !pto.mask<b32>, i32`
 - **semantics:** Generate predicate state together with updated scalar state.
-```
 
 ---
 
@@ -119,7 +125,7 @@ for (int i = 0; i < TOTAL_LANES; i++)
 
 ### `pto.ppack`
 
-- **syntax:** `%result = pto.ppack %input, "PART" : !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.ppack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Narrowing pack of predicate register.
 
 **Part tokens:** `LOWER`, `HIGHER`
@@ -128,7 +134,7 @@ for (int i = 0; i < TOTAL_LANES; i++)
 
 ### `pto.punpack`
 
-- **syntax:** `%result = pto.punpack %input, "PART" : !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.punpack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Widening unpack of predicate register.
 
 ---
@@ -137,7 +143,7 @@ for (int i = 0; i < TOTAL_LANES; i++)
 
 ### `pto.pand`
 
-- **syntax:** `%result = pto.pand %src0, %src1, %mask : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.pand %src0, %src1, %mask : !pto.mask<G>, !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Predicate bitwise AND.
 
 ```c
@@ -149,7 +155,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.por`
 
-- **syntax:** `%result = pto.por %src0, %src1, %mask : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.por %src0, %src1, %mask : !pto.mask<G>, !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Predicate bitwise OR.
 
 ```c
@@ -161,7 +167,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.pxor`
 
-- **syntax:** `%result = pto.pxor %src0, %src1, %mask : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.pxor %src0, %src1, %mask : !pto.mask<G>, !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Predicate bitwise XOR.
 
 ```c
@@ -173,7 +179,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.pnot`
 
-- **syntax:** `%result = pto.pnot %input, %mask : !pto.mask, !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.pnot %input, %mask : !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Predicate bitwise NOT.
 
 ```c
@@ -185,7 +191,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.psel`
 
-- **syntax:** `%result = pto.psel %src0, %src1, %sel : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.psel %src0, %src1, %sel : !pto.mask<G>, !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Predicate select (mux).
 
 ```c
@@ -199,7 +205,7 @@ for (int i = 0; i < N; i++)
 
 ### `pto.ppack`
 
-- **syntax:** `%result = pto.ppack %input, "PART" : !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.ppack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Narrowing pack of predicate register.
 
 ```c
@@ -211,21 +217,21 @@ for (int i = 0; i < N; i++)
 
 ### `pto.punpack`
 
-- **syntax:** `%result = pto.punpack %input, "PART" : !pto.mask -> !pto.mask`
+- **syntax:** `%result = pto.punpack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - **semantics:** Widening unpack of predicate register.
 
 ---
 
 ### `pto.pdintlv_b8`
 
-- **syntax:** `%low, %high = pto.pdintlv_b8 %src0, %src1 : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
+- **syntax:** `%low, %high = pto.pdintlv_b8 %src0, %src1 : !pto.mask<b8>, !pto.mask<b8> -> !pto.mask<b8>, !pto.mask<b8>`
 - **semantics:** Predicate deinterleave.
 
 ---
 
 ### `pto.pintlv_b16`
 
-- **syntax:** `%low, %high = pto.pintlv_b16 %src0, %src1 : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
+- **syntax:** `%low, %high = pto.pintlv_b16 %src0, %src1 : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>`
 - **semantics:** Predicate interleave.
 
 ---
@@ -234,17 +240,17 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Generate all-active mask for f32 (64 lanes)
-%all = pto.pset_b32 "PAT_ALL" : !pto.mask
+%all = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
 
 // Generate tail mask for remainder (last 12 elements)
-%tail = pto.pge_b32 "PAT_VL12" : !pto.mask
+%tail = pto.pge_b32 "PAT_VL12" : !pto.mask<b32>
 
 // Compare and generate mask
-%cmp_mask = pto.vcmp %a, %b, %all, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
+%cmp_mask = pto.vcmp %a, %b, %all, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.mask<b32>
 
 // Combine masks: only process tail elements that passed comparison
-%combined = pto.pand %cmp_mask, %tail, %all : !pto.mask, !pto.mask, !pto.mask -> !pto.mask
+%combined = pto.pand %cmp_mask, %tail, %all : !pto.mask<b32>, !pto.mask<b32>, !pto.mask<b32> -> !pto.mask<b32>
 
 // Use for predicated operation
-%result = pto.vsel %true_vals, %false_vals, %combined : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%result = pto.vsel %true_vals, %false_vals, %combined : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 ```

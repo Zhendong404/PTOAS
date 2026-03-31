@@ -111,7 +111,7 @@ For conversions that change width (e.g., f32→f16), use even/odd parts and comb
     : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
 %odd  = pto.vcvt %in1 {round_mode = "ROUND_R", sat = "RS_ENABLE", part = "PART_ODD"}
     : !pto.vreg<64xf32> -> !pto.vreg<128xf16>
-%result = pto.vor %even, %odd, %mask : !pto.vreg<128xf16>, !pto.vreg<128xf16>, !pto.mask -> !pto.vreg<128xf16>
+%result = pto.vor %even, %odd, %mask : !pto.vreg<128xf16>, !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<128xf16>
 ```
 
 ---
@@ -150,7 +150,7 @@ for (int i = 0; i < N; i++)
 
 ```mlir
 // Quantization: f32 → i8 with saturation
-%scaled = pto.vmuls %input, %scale, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
+%scaled = pto.vmuls %input, %scale, %mask : !pto.vreg<64xf32>, f32, !pto.mask<b32> -> !pto.vreg<64xf32>
 %quantized = pto.vcvt %scaled {round_mode = "ROUND_R", sat = "RS_ENABLE"}
     : !pto.vreg<64xf32> -> !pto.vreg<64xi32>
 // Then narrow i32 → i8 via pack ops

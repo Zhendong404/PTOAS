@@ -1284,6 +1284,30 @@ pto::VRegType getVPTOVRegType(MLIRContext *context, Type elementType) {
   return pto::VRegType::get(context, 2048 / bitWidth, elementType);
 }
 
+pto::MaskType getVPTOMaskType(MLIRContext *context, StringRef granularity) {
+  return pto::MaskType::get(context, granularity);
+}
+
+pto::MaskType getVPTOMaskTypeForElementType(MLIRContext *context,
+                                            Type elementType) {
+  unsigned bitWidth = 0;
+  if (auto floatType = dyn_cast<FloatType>(elementType))
+    bitWidth = floatType.getWidth();
+  else if (auto intType = dyn_cast<IntegerType>(elementType))
+    bitWidth = intType.getWidth();
+
+  switch (bitWidth) {
+  case 8:
+    return getVPTOMaskType(context, "b8");
+  case 16:
+    return getVPTOMaskType(context, "b16");
+  case 32:
+    return getVPTOMaskType(context, "b32");
+  default:
+    return {};
+  }
+}
+
 ArrayAttr asI64ArrayAttr(Builder &builder, ArrayRef<int64_t> values) {
   SmallVector<Attribute> attrs;
   attrs.reserve(values.size());
@@ -2146,7 +2170,7 @@ PredicateMaterialization buildPredicateForLaneCount(PatternRewriter &rewriter,
                                                     Location loc,
                                                     Type elementType,
                                                     Value laneCount) {
-  auto maskType = pto::MaskType::get(rewriter.getContext());
+  auto maskType = getVPTOMaskTypeForElementType(rewriter.getContext(), elementType);
   Value laneCountI32 = laneCount;
   if (laneCount.getType().isIndex()) {
     laneCountI32 =
@@ -2188,7 +2212,7 @@ Value buildPredicateMaskForLaneCount(PatternRewriter &rewriter, Location loc,
 
 Value buildAllPredicateMask(PatternRewriter &rewriter, Location loc,
                             Type elementType) {
-  auto maskType = pto::MaskType::get(rewriter.getContext());
+  auto maskType = getVPTOMaskTypeForElementType(rewriter.getContext(), elementType);
   StringAttr allPattern = rewriter.getStringAttr("PAT_ALL");
   unsigned bitWidth = 0;
   if (auto intType = dyn_cast<IntegerType>(elementType))
@@ -5012,7 +5036,9 @@ LogicalResult buildPackedCmp32VecScope(StringRef family,
   int64_t pairedRepeats = repeatTimes / 2;
   int64_t remainRepeats = repeatTimes % 2;
 
-  auto maskType = pto::MaskType::get(rewriter.getContext());
+  auto compareMaskType =
+      getVPTOMaskTypeForElementType(rewriter.getContext(), contract.elementType);
+  auto packedMaskType = getVPTOMaskType(rewriter.getContext(), "b8");
   Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
   Value pairUpper = rewriter.create<arith::ConstantIndexOp>(loc, pairedRepeats);
@@ -5040,16 +5066,24 @@ LogicalResult buildPackedCmp32VecScope(StringRef family,
                                                    pairDstStride);
   Value dstBase = adjustPointerByElemOffset(dstBuffer, dstOffset, 4, rewriter, loc);
   Value dstZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  auto pairMask0 = rewriter.create<pto::PltB32Op>(loc, maskType,
+  auto pairMask0 = rewriter.create<pto::PltB32Op>(loc, compareMaskType,
                                                    rewriter.getI32Type(),
                                                    remaining);
-  auto pairMask1 = rewriter.create<pto::PltB32Op>(loc, maskType,
+  auto pairMask1 = rewriter.create<pto::PltB32Op>(loc, compareMaskType,
                                                    rewriter.getI32Type(),
                                                    pairMask0.getScalarOut());
   Value cmp0 = emitCompare(rewriter, loc, pairBase, pairMask0.getMask());
   Value cmp1 = emitCompare(rewriter, loc, pairNext, pairMask1.getMask());
-  auto interleaved = rewriter.create<pto::PdintlvB8Op>(loc, maskType, maskType,
-                                                        cmp0, cmp1);
+  Value packedCmp0 = rewriter
+                         .create<pto::PpackOp>(loc, packedMaskType, cmp0,
+                                               rewriter.getStringAttr("LOWER"))
+                         .getResult();
+  Value packedCmp1 = rewriter
+                         .create<pto::PpackOp>(loc, packedMaskType, cmp1,
+                                               rewriter.getStringAttr("LOWER"))
+                         .getResult();
+  auto interleaved = rewriter.create<pto::PdintlvB8Op>(
+      loc, packedMaskType, packedMaskType, packedCmp0, packedCmp1);
   rewriter.create<pto::PstsOp>(loc, interleaved.getLow(), dstBase, dstZero);
   rewriter.create<scf::YieldOp>(loc, pairMask1.getScalarOut());
 
@@ -5061,12 +5095,12 @@ LogicalResult buildPackedCmp32VecScope(StringRef family,
   Value tailDst = rewriter.create<arith::ConstantIndexOp>(loc, pairedRepeats * 4);
   Value tailDstBase = adjustPointerByElemOffset(dstBuffer, tailDst, 4, rewriter, loc);
   Value tailDstZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  auto tailMask = rewriter.create<pto::PltB32Op>(loc, maskType,
+  auto tailMask = rewriter.create<pto::PltB32Op>(loc, compareMaskType,
                                                   rewriter.getI32Type(),
                                                   pairLoop.getResult(0));
   Value tailCmp = emitCompare(rewriter, loc, tailBase, tailMask.getMask());
   Value packedTail = rewriter
-                         .create<pto::PpackOp>(loc, maskType, tailCmp,
+                         .create<pto::PpackOp>(loc, packedMaskType, tailCmp,
                                                 rewriter.getStringAttr("LOWER"))
                          .getResult();
   rewriter.create<pto::PstsOp>(loc, packedTail, tailDstBase, tailDstZero);
@@ -5119,7 +5153,9 @@ LogicalResult lowerTCmpS(TCmpSOp op, PatternRewriter &rewriter) {
             nestedRewriter.create<pto::VldsOp>(nestedLoc, vecType, srcBuffer, offset, StringAttr());
         return nestedRewriter
             .create<pto::VcmpsOp>(nestedLoc,
-                                   pto::MaskType::get(nestedRewriter.getContext()),
+                                   getVPTOMaskTypeForElementType(
+                                       nestedRewriter.getContext(),
+                                       contract.elementType),
                                    loaded.getResult(), op.getScalar(), mask, cmpMode)
             .getResult();
       });
@@ -5182,7 +5218,9 @@ LogicalResult lowerTCmp(TCmpOp op, PatternRewriter &rewriter) {
             nestedRewriter.create<pto::VldsOp>(nestedLoc, vecType, src1Buffer, offset, StringAttr());
         return nestedRewriter
             .create<pto::VcmpOp>(nestedLoc,
-                                  pto::MaskType::get(nestedRewriter.getContext()),
+                                  getVPTOMaskTypeForElementType(
+                                      nestedRewriter.getContext(),
+                                      contract.elementType),
                                   lhs.getResult(), rhs.getResult(), mask, cmpMode)
             .getResult();
       });
@@ -6376,9 +6414,8 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
   Value offset = chunkLoop.getInductionVar();
 
-  auto fullMask = rewriter.create<pto::PsetB8Op>(
-      op.getLoc(), pto::MaskType::get(rewriter.getContext()),
-      rewriter.getStringAttr("PAT_ALL"));
+  Value fullMask =
+      buildAllPredicateMask(rewriter, op.getLoc(), contract.elementType);
   auto maskVec = rewriter.create<pto::VldsOp>(op.getLoc(), vecType, maskBuffer,
                                                offset, StringAttr());
   auto srcVec = rewriter.create<pto::VldsOp>(op.getLoc(), vecType, srcBuffer,
@@ -6387,8 +6424,9 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
       rewriter.create<arith::ConstantOp>(op.getLoc(),
                                          rewriter.getZeroAttr(contract.elementType));
   auto maskPred = rewriter.create<pto::VcmpsOp>(
-      op.getLoc(), pto::MaskType::get(rewriter.getContext()), maskVec.getResult(),
-      scalarZero, fullMask.getResult(), rewriter.getStringAttr("ne"));
+      op.getLoc(),
+      getVPTOMaskTypeForElementType(rewriter.getContext(), contract.elementType),
+      maskVec.getResult(), scalarZero, fullMask, rewriter.getStringAttr("ne"));
   Value scalarVec = rewriter.create<pto::VdupOp>(
       op.getLoc(), vecType, op.getScalar(), rewriter.getStringAttr("POS_LOWEST"));
   Value selected = rewriter
@@ -6483,9 +6521,9 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
   rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
+  auto splitMaskType = getVPTOMaskType(rewriter.getContext(), "b16");
   Value fullMask = rewriter
-                       .create<pto::PsetB16Op>(op.getLoc(),
-                                                pto::MaskType::get(rewriter.getContext()),
+                       .create<pto::PsetB16Op>(op.getLoc(), splitMaskType,
                                                 rewriter.getStringAttr("PAT_ALL"))
                        .getResult();
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, validRowsValue, c1);
@@ -6506,13 +6544,12 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), maskOffsetImm));
     Value rawMask = rewriter
                         .create<pto::PldsOp>(op.getLoc(),
-                                              pto::MaskType::get(rewriter.getContext()),
+                                              splitMaskType,
                                               maskBuffer, maskOffset,
                                               rewriter.getStringAttr("US"))
                         .getResult();
     auto splitMask = rewriter.create<pto::PintlvB16Op>(
-        op.getLoc(), pto::MaskType::get(rewriter.getContext()),
-        pto::MaskType::get(rewriter.getContext()), rawMask, fullMask);
+        op.getLoc(), splitMaskType, splitMaskType, rawMask, fullMask);
 
     Value dataOffset0 = rewriter.create<arith::AddIOp>(
         op.getLoc(), rowBase,
@@ -6560,13 +6597,13 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
         rewriter.create<arith::ConstantIndexOp>(op.getLoc(), maskOffsetImm));
     Value rawMask = rewriter
                         .create<pto::PldsOp>(op.getLoc(),
-                                              pto::MaskType::get(rewriter.getContext()),
+                                              splitMaskType,
                                               maskBuffer, maskOffset,
                                               rewriter.getStringAttr("US"))
                         .getResult();
     Value unpackedMask = rewriter
                              .create<pto::PunpackOp>(
-                                 op.getLoc(), pto::MaskType::get(rewriter.getContext()),
+                                 op.getLoc(), splitMaskType,
                                  rawMask, rewriter.getStringAttr("LOWER"))
                              .getResult();
     Value dataOffset = rewriter.create<arith::AddIOp>(

@@ -1,4 +1,4 @@
-// RUN: ptoas %S/reduction_broadcast_family_emitc.pto --op-lib-dir=%S/../../oplib/level3 --pto-arch=a5 -o %t.cpp
+// RUN: ptoas %S/reduction_broadcast_family_emitc.pto --pto-arch=a5 -o %t.cpp
 // RUN: FileCheck %s --check-prefix=EMITC < %t.cpp
 // XFAIL: *
 

@@ -29,9 +29,13 @@ namespace {
 // Contract note:
 //   PTOLowLevelLoopFusion now runs on VPTO post-lowering `scf.for + pto.*`
 //   loop nests that remain inside pto.fusion_region until explicit flatten.
-//   The matcher below intentionally stays conservative: it only fuses adjacent
-//   loop stages with the same loop-header structure and side-effect-free setup
-//   scaffolding between them.
+//   A prior vecscope-merge normalization may first sink multiple sibling
+//   pto.vecscope bodies into one carrier region. This pass must then stay
+//   inside each individual pto.vecscope / pto.strict_vecscope body and must
+//   not fuse loop stages across vector-scope boundaries. The matcher below
+//   intentionally stays conservative: it only fuses adjacent loop stages with
+//   the same loop-header structure and side-effect-free setup scaffolding
+//   between them.
 
 struct LoopLevelInfo {
   scf::ForOp loop;
@@ -473,8 +477,16 @@ struct PTOLowLevelLoopFusionPass
 
       bool changed = false;
       func.walk([&](pto::FusionRegionOp fusionRegion) {
-        changed |= fuseStageRunsInBlock(fusionRegion.getBody().front(),
-                                        debug ? &llvm::errs() : nullptr);
+        fusionRegion.walk([&](pto::VecScopeOp vecScope) {
+          if (!vecScope.getBody().empty())
+            changed |= fuseStageRunsInBlock(vecScope.getBody().front(),
+                                            debug ? &llvm::errs() : nullptr);
+        });
+        fusionRegion.walk([&](pto::StrictVecScopeOp vecScope) {
+          if (!vecScope.getBody().empty())
+            changed |= fuseStageRunsInBlock(vecScope.getBody().front(),
+                                            debug ? &llvm::errs() : nullptr);
+        });
       });
       if (changed)
         ++fusedFuncs;

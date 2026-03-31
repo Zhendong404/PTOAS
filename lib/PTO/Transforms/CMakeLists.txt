@@ -44,11 +44,13 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/PTOFusionPlan.cpp
   TileFusion/PTOOpScheduling.cpp
   TileFusion/PTOFusionRegionGen.cpp
+  TileFusion/PTOFusionMergeVecScope.cpp
   TileFusion/PTOFusionPredicateElision.cpp
   TileFusion/PTOFusionLoadStoreElision.cpp
   TileFusion/PTOFlattenFusionRegion.cpp
   PTOLowerToOpLibCalls.cpp
   PTOInstantiateAndInlineOpLib.cpp
+  PTOValidateVPTOIR.cpp
   PTOValidateSimdIR.cpp
   PTOLowerSimdToVector.cpp
   TileFusion/PTOLowLevelLoopFusion.cpp

@@ -13,6 +13,7 @@
 // CHECK-LABEL: IR Dump After PTOVPTOVersionSelection
 // CHECK-LABEL: IR Dump After PTOToVPTO
 // CHECK-LABEL: IR Dump After PTOVPTOIfCanonicalize
+// CHECK-LABEL: IR Dump After PTOFusionMergeVecScope
 // CHECK-LABEL: IR Dump After PTOLowLevelLoopFusion
 // CHECK-LABEL: IR Dump After PTOFusionPredicateElision
 // CHECK-LABEL: IR Dump After PTOFusionLoadStoreElision

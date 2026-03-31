@@ -241,6 +241,39 @@ def PTOValidateSimdIR : Pass<"pto-validate-simd-ir", "ModuleOp"> {
                            "mlir::arith::ArithDialect"];
 }
 
+def PTOValidateVPTOIR : Pass<"pto-validate-vpto-ir", "ModuleOp"> {
+  let summary =
+      "Validate authoring-stage VPTO legality before ptr-boundary canonicalization";
+  let description = [{
+    Runs the authoring-stage VPTO legality verifier on post-mainline VPTO IR.
+    This stage keeps the memref-first authoring surface legal, while checking
+    the shared structural contracts that must hold before emission-boundary
+    canonicalization.
+  }];
+  let constructor = "mlir::pto::createPTOValidateVPTOIRPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
+def PTOValidateVPTOEmissionIR
+    : Pass<"pto-validate-vpto-emission-ir", "ModuleOp"> {
+  let summary =
+      "Validate emission-stage VPTO legality after ptr-boundary canonicalization";
+  let description = [{
+    Runs the emission-stage VPTO legality verifier on ptr-form VPTO IR after
+    `PTOVPTOPtrBoundary`. This stage re-checks the shared authoring contracts
+    and confirms the final emission surface no longer carries memref boundary
+    state or residual bridge scaffold.
+  }];
+  let constructor = "mlir::pto::createPTOValidateVPTOEmissionIRPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOLowerSimdToVector : Pass<"pto-lower-simd-to-vector", "ModuleOp"> {
   let summary = "Lower pto.simd bridge ops to standard vector/memref/arith ops";
   let description = [{
@@ -309,14 +342,35 @@ def PTOVPTOPtrBoundary
                            "mlir::memref::MemRefDialect"];
 }
 
+def PTOFusionMergeVecScope
+    : Pass<"pto-fusion-merge-vecscope", "func::FuncOp"> {
+  let summary =
+      "Merge adjacent VPTO vecscope regions inside pto.fusion_region";
+  let description = [{
+    Coalesces adjacent sibling `pto.vecscope` regions that belong to the same
+    `pto.fusion_region`, while also sinking pure inter-scope setup ops into the
+    merged scope body. This normalization preserves one vector-scope carrier
+    for each fusion-local stage run so `PTOLowLevelLoopFusion` can continue to
+    operate on low-level `scf.for + pto.*` loop nests inside the region body of
+    the merged scope.
+  }];
+  let constructor = "mlir::pto::createPTOFusionMergeVecScopePass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect"];
+}
+
 def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
   let summary =
       "Fuse adjacent VPTO post-lowering loop nests inside pto.fusion_region";
   let description = [{
     Conservatively fuses adjacent post-lowering loop stages for already-planned
     fusion groups after PTOToVPTO. The formal input contract for this pass is
-    low-level `scf.for + pto.*` structure that remains inside
-    `pto.fusion_region` until explicit flatten.
+    low-level `scf.for + pto.*` structure nested inside one
+    `pto.vecscope` / `pto.strict_vecscope` carrier that remains inside
+    `pto.fusion_region` until explicit flatten. A prior vecscope-merge
+    normalization may collapse multiple sibling `pto.vecscope` into one
+    carrier region first, but this pass MUST still only fuse stages within
+    each individual vector-scope body and MUST NOT cross vecscope boundaries.
     Legacy `pto.simd.vec_scope` / `vector.masked_*` bridge IR is no longer the
     documented mainline contract for the A5 backend pipeline.
   }];

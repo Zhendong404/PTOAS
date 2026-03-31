@@ -159,7 +159,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsldb`
 
-- **syntax:** `%result = pto.vsldb %source, %offset, %mask : !pto.ptr<T, ub>, i32, !pto.mask -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vsldb %source, %offset, %mask : !pto.ptr<T, ub>, i32, !pto.mask<G> -> !pto.vreg<NxT>`
 - **semantics:** Block-strided load for 2D tile access.
 - **inputs:**
   `%source` is the UB base pointer, `%offset` is the packed stride/control word,
@@ -219,7 +219,7 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vgather2_bc`
 
-- **syntax:** `%result = pto.vgather2_bc %source, %offsets, %mask : !pto.ptr<T, ub>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
+- **syntax:** `%result = pto.vgather2_bc %source, %offsets, %mask : !pto.ptr<T, ub>, !pto.vreg<NxI>, !pto.mask<G> -> !pto.vreg<NxT>`
 - **semantics:** Gather with broadcast, conditioned by mask.
 - **inputs:**
   `%source` is the UB base pointer, `%offsets` contains gather indices, and
@@ -237,7 +237,7 @@ for (int i = 0; i < active_lanes; i++)
 
 ### `pto.vsts`
 
-- **syntax:** `pto.vsts %value, %dest[%offset], %mask {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>, !pto.mask`
+- **syntax:** `pto.vsts %value, %dest[%offset], %mask {dist = "DIST"} : !pto.vreg<NxT>, !pto.ptr<T, ub>, !pto.mask<G>`
 - **semantics:** Vector store with distribution mode.
 - **inputs:**
   `%value` is the source vector, `%dest` is the UB base pointer, `%offset` is
@@ -262,7 +262,7 @@ for (int i = 0; i < active_lanes; i++)
 
 **Example — Contiguous store:**
 ```mlir
-pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<G>
 ```
 
 ---
@@ -271,7 +271,7 @@ pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.p
 
 ### `pto.vstx2`
 
-- **syntax:** `pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask`
+- **syntax:** `pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask<G>`
 - **semantics:** Dual interleaved store (SoA → AoS conversion).
 - **inputs:**
   `%low` and `%high` are the two source vectors, `%dest` is the UB base pointer,
@@ -315,7 +315,7 @@ for (int i = 0; i < 64; i++) {
 
 ### `pto.vsstb`
 
-- **syntax:** `pto.vsstb %value, %dest, %offset, %mask : !pto.vreg<NxT>, !pto.ptr<T, ub>, i32, !pto.mask`
+- **syntax:** `pto.vsstb %value, %dest, %offset, %mask : !pto.vreg<NxT>, !pto.ptr<T, ub>, i32, !pto.mask<G>`
 - **semantics:** Block-strided store for 2D tile access.
 - **inputs:**
   `%value` is the source vector, `%dest` is the UB base pointer, `%offset` is

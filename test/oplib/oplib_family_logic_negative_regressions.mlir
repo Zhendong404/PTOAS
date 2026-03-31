@@ -1,7 +1,7 @@
 // RUN: rm -rf %t.bad_roles && mkdir -p %t.bad_roles/families
 // RUN: cp %S/../../oplib/level3/broadcast_row_binary_templates.mlir %t.bad_roles/
 // RUN: cp %S/../../oplib/level3/families/a5_oplib_v1_manifest.yaml %t.bad_roles/families/
-// RUN: ! ptoas %s --enable-op-fusion --op-lib-dir=%t.bad_roles --pto-arch=a5 -o /dev/null > %t.bad_roles.log 2>&1
+// RUN: ! ptoas %s --enable-op-fusion --pto-arch=a5 -o /dev/null > %t.bad_roles.log 2>&1
 // RUN: FileCheck %s --check-prefix=BAD-BROADCAST-ROLES < %t.bad_roles.log
 // XFAIL: *
 
