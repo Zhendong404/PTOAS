@@ -119,11 +119,17 @@ def abs(src: pto.ptr(pto.f32, "gm"),
 - DSL if -> `scf.if`
 - DSL ops -> `pto.*` / `arith.*`
 
+## 模板化与 JIT 绑定
+
+相关规划已移至 [`VPTO_VKERNEL_TEMPLATE_BINDING_PLAN.md`](./VPTO_VKERNEL_TEMPLATE_BINDING_PLAN.md)。
+
+当前文档只保留第一阶段 `@pto.vkernel` 的语法、类型系统、控制流与 VPTO lowering 设计，避免后续模板化/JIT 绑定计划干扰当前工作重点。
+
 ## 类型系统
 
 DSL 表面类型建议分为两层：
 
-- Python 标量类型：
+- Python 标量字面量语法：
   - `bool`
   - `int`
   - `float`
@@ -181,6 +187,7 @@ False
 - Python `int` 只是字面量写法
 - Python `float` 只是字面量写法
 - Python `bool` 只是字面量写法
+- Python 原生标量类型不作为需要落到 IR 数据流边界的强类型注解
 - 真正进入 DSL IR / VPTO MLIR 时，仍要落到 `i1`、`i32`、`i64`、`f32` 等后端标量类型
 
 设计收敛：
@@ -231,8 +238,9 @@ for lane in range(0, 1024, 64):
 - 语法层允许直接写 Python 标量字面量
 - `bool` -> `i1`
 - `float` -> 默认 `f32`
-- `int` 不作为 DSL 机器整数类型的表面写法
+- `int` 不作为 DSL 机器整数类型或强类型注解的表面写法
 - 固定宽度整数统一显式写成 `pto.i32` / `pto.i64`
+- 任何跨结构流动或落到 IR 数据流边界的值，都应使用 PTO 显式类型
 - 若上下文不足以唯一确定类型，则报错或要求显式写类型
 
 例如：
@@ -426,7 +434,7 @@ lowering 层再将这种绑定环境变化映射为：
 对于 loop-carried state，建议优先使用 Python 默认赋值语法来表达，而不是在用户层直接暴露 `yield` 风格 API。例如：
 
 ```python
-rem: int = rem0
+rem: pto.i32 = rem0
 for lane in range(lb, ub, step):
     mask, rem = pto.plt_b32(rem)
     ...
@@ -434,7 +442,7 @@ for lane in range(lb, ub, step):
 
 DSL 语义层应将这种跨迭代保留并更新的绑定解释为 loop-carried state，并 lowering 为 `scf.for` 的 `iter_args` / `scf.yield`。
 
-这里的 `rem` 在进入 loop-carried state 之前已经是强类型绑定；是否最终落成内部 `i32`，由 op schema 和 lowering 规则决定，但不再依赖跨结构的全局延迟推断。
+这里的 `rem` 在进入 loop-carried state 之前已经是强类型绑定；其位宽在用户层已经显式写为 `pto.i32`，后续只需由 op schema 和 lowering 规则保持一致，而不再依赖跨结构的全局延迟推断。
 
 对用户语义而言，loop 结束后的 `rem` 应等价于对应 `scf.for` 返回结果。
 在 `@pto.vkernel` 中，这类重绑定按 DSL 的统一迭代状态传递机制解释，而不是按 Python 运行时普通局部变量覆盖语义解释。
@@ -445,7 +453,6 @@ DSL 语义层应将这种跨迭代保留并更新的绑定解释为 loop-carried
 
 第一阶段建议优先支持这些 API：
 
-- `pto.const(value, ty=None)`
 - `pto.castptr(addr, ty)`
 - `pto.addptr(ptr, offset)`
 - `pto.set_loop_size_outtoub(...)`
@@ -592,7 +599,6 @@ strict_vecscope body cannot capture outer value 'ub_in' implicitly; pass it in t
 - 统一的分支合流机制
 - 统一的迭代状态传递机制
 - 统一的 region 输入绑定机制
-- `pto.const`
 - `pto.castptr`
 - `pto.set_loop_size_outtoub`
 - `pto.set_loop_size_ubtoout`
