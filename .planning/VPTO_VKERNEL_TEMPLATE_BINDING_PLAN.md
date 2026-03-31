@@ -17,17 +17,21 @@
 
 首版只引入两个概念：
 
-- `pto.tile`
+- `@pto.struct`
 - `pto.const(...)`
 
 其中：
 
-- `pto.tile` 是 caller 构造的复合参数对象
+- `@pto.struct` 用来定义 DSL 可识别的参数结构类型
 - `pto.const(...)` 是通用静态绑定标记
 
-## `pto.tile` 首版模型
+## `@pto.struct` 首版模型
 
-`pto.tile` 当前只承载：
+首版机制层使用通用 `@pto.struct`。
+
+在库层，我们可以内置一个标准参数结构 `Tile`；但它不是语法特例，而是通过同一套 `@pto.struct` 机制定义出来的普通 DSL 参数结构。
+
+首版先用这个内置 `Tile` 结构来承载：
 
 - `ub_ptr`
 - `shape`
@@ -35,21 +39,38 @@
 示意：
 
 ```python
-src_tile = pto.tile(
-    ub_ptr=src_ub,
-    shape=pto.const([32, 32]),
-)
+@pto.struct
+class Tile:
+    ub_ptr: pto.ptr
+    shape: pto.const
 ```
+
+这意味着两件事：
+
+- `pto.Tile` 只是库里预置好的一个 `@pto.struct`
+- 用户后续若需要别的参数结构，也可以用同样写法自行定义普通 class
+
+例如：
+
+```python
+@pto.struct
+class Block:
+    ub_ptr: pto.ptr
+    shape: pto.const
+```
+
+这里 `Block` 和 `Tile` 在机制层没有区别，只是库层约定和命名不同。
 
 约定：
 
-- `ub_ptr` 表示一个动态指针值；其中类型对象参数进入模板化维度，内存空间仍属于静态指针类型对象的一部分，不参与 runtime 传值
-- `shape` 可以通过 `pto.const(...)` 标记为静态绑定值
-- 后续若增加别的结构体，也沿用 `pto.const(...)` 语义，而不是为某个结构单独硬编码静态字段
+- `ub_ptr` 表示一个动态指针值字段；其中类型对象参数进入模板化维度，内存空间仍属于静态指针类型对象的一部分，不参与 runtime 传值
+- `shape` 表示一个 `pto.const(...)` 静态值字段
+- `Tile` 只是库内置的一个标准结构，不是机制层保留关键字
+- 后续若增加别的参数结构，或用户自己定义新的参数结构，也沿用同一套 `@pto.struct` + `pto.const(...)` 语义，而不是为某个结构单独硬编码机制
 
-## 固定设计: `pto.tile` 与 `pto.ptr`
+## 固定设计: `@pto.struct` 与 `pto.ptr`
 
-这一版先把 `pto.tile` 和 `pto.ptr` 的语义固定下来，后续模板化/JIT 绑定都以这组约束为准。
+这一版先把 `@pto.struct` 和 `pto.ptr` 的语义固定下来，后续模板化/JIT 绑定都以这组约束为准。
 
 ### `pto.ptr`
 
@@ -77,18 +98,32 @@ src_tile = pto.tile(
 - 任何依赖元素类型的信息，例如元素字节数、vector step、访存解释，都应从静态指针类型对象推导，而不是作为额外动态参数传入
 - 在这版模板化设计里，`elem_type` 对应的类型对象进入模板化维度，可以在 `.jit(...)` 时参与实例化；`memory_space` 暂不进入模板化维度，仍由 DSL 函数签名中的 `pto.ptr(..., memory_space)` 静态确定
 
-### `pto.tile`
+### `@pto.struct`
 
-`pto.tile` 是模板化 kernel 的复合参数对象，当前固定只有三个字段：
+`@pto.struct` 用来把一个普通 Python class 声明提升成 DSL 可识别的参数结构类型。
 
-- `ub_ptr`
-- `shape`
+因此：
+
+- 机制层提供的是 `@pto.struct`
+- 库层可以内置若干标准结构，例如 `Tile`
+- 用户也可以按同样方式自定义别的参数结构 class
+
+首版先以：
+
+```python
+@pto.struct
+class Tile:
+    ub_ptr: pto.ptr
+    shape: pto.const
+```
+
+作为模板化样例。
 
 其中：
 
 - `ub_ptr` 的字段类型固定为某个指针类型对象 `pto.ptr(...)`
 - `ub_ptr` 里只有指针值动态；其中类型对象参数可模板化，`memory_space` 静态
-- `shape` 表达 tile 元数据
+- `shape` 表达结构上的静态元数据
 - `shape` 首版通过 `pto.const(...)` 绑定为静态值
 - 因此这版模板参数包含两部分：
   - 类型对象参数：`ub_ptr` 的 `elem_type`
@@ -100,13 +135,13 @@ src_tile = pto.tile(
 下文的模板化 `abs` 用例按这组固定设计来写：
 
 - `src.ub_ptr` / `dst.ub_ptr`
-  - 对应 `pto.tile` 的动态 pointer value 字段
+  - 对应 `@pto.struct` 参数对象中的动态 pointer value 字段
 - `src.shape[0] * src.shape[1]`
   - 对应从 tile 静态 `shape` 推导总元素数
 - `256 // src.ub_ptr.elem_bytes`
   - 对应从 `pto.ptr` 的模板化类型对象参数推导 vector step
 - `.jit(src=src_tile, dst=dst_tile)`
-  - 对应 caller 提供动态 pointer value，同时用类型对象参数和 `pto.const(...)` 静态值参数共同决定实例化结果；不需要再次绑定 `memory_space`
+  - 对应 caller 绑定类型对象参数和 `pto.const(...)` 静态值参数，共同决定实例化结果；不需要再次绑定 `memory_space`
 
 ## `pto.const(...)` 绑定语义
 
@@ -145,24 +180,24 @@ src_tile = pto.tile(
 例如：
 
 ```python
-src0 = pto.tile(
-    ub_ptr=src_ub0,
+src0 = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 
-src1 = pto.tile(
-    ub_ptr=src_ub1,
+src1 = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 ```
 
-这里 `src0` 和 `src1` 的动态指针值不同，但它们的类型对象参数和 `shape` 这个 `pto.const(...)` 静态值参数完全相同，因此应落到同一个 specialization key；差异只体现在最终 runtime ABI 传入的动态指针值上。
+这里 `src0` 和 `src1` 绑定出的类型对象参数和 `shape` 这个 `pto.const(...)` 静态值参数完全相同，因此应落到同一个 specialization key。
 
 相对地：
 
 ```python
-src2 = pto.tile(
-    ub_ptr=src_ub2,
+src2 = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([64, 32]),
 )
 ```
@@ -183,17 +218,22 @@ compiled_f16 = abs_kernel.jit(src=src_tile_f16, dst=dst_tile_f16)
 示意：
 
 ```python
+@pto.struct
+class Tile:
+    ub_ptr: pto.ptr
+    shape: pto.const
+
 @pto.vkernel
-def abs_kernel(src: pto.tile, dst: pto.tile):
+def abs_kernel(src: Tile, dst: Tile):
     ...
 
-src_tile = pto.tile(
-    ub_ptr=src_ub,
+src_tile = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 
-dst_tile = pto.tile(
-    ub_ptr=dst_ub,
+dst_tile = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 
@@ -203,7 +243,7 @@ compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 职责划分：
 
 - caller:
-  - 构造 `pto.tile`
+  - 构造 `@pto.struct` 参数对象实例
   - 决定哪些字段通过 `pto.const(...)` 标记为静态值
 - `kernel.jit(...)`:
   - 读取 tile 实例
@@ -215,7 +255,7 @@ compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 
 ## kernel body 中的 `tile` 访问
 
-首版建议让 `pto.tile` 在 kernel body 中保持显式对象语义，而不是在进入 body 前被偷偷拆平。
+首版建议让 `@pto.struct` 参数对象在 kernel body 中保持显式对象语义，而不是在进入 body 前被偷偷拆平。
 
 也就是说，用户在 DSL 中直接写：
 
@@ -231,6 +271,7 @@ compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 这种写法可以把“用户看到的参数结构”和“JIT 绑定后的 ABI 收敛”分开：
 
 - 表面 DSL 仍以 `tile` 为参数对象
+- 例如 `Tile` 只是用户定义的一个具体参数结构名；机制本身来自 `@pto.struct`
 - JIT/实例化阶段再决定哪些字段被折叠为常量、哪些字段继续进入 runtime ABI
 
 ## 编译阶段
@@ -239,11 +280,11 @@ compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 
 1. Python AST 解析阶段
 - 解析 `@pto.vkernel`
-- 识别 `pto.tile` 类型参数位
-- 建立 kernel 形参中的 tile 占位模型
+- 识别 `@pto.struct` 类型参数位
+- 建立 kernel 形参中的参数结构占位模型
 
 2. JIT 绑定阶段
-- caller 构造具体 `pto.tile`
+- caller 构造具体 `@pto.struct` 参数对象
 - `kernel.jit(...)` 读取 tile 实例
 - 提取 `ub_ptr`、`shape`
 - 根据 `pto.const(...)` 完成静态/动态拆分
@@ -267,17 +308,17 @@ compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 
 ## 内部表示
 
-建议 `pto.tile` 在 DSL IR 内部显式存在，而不是只在 Python 注解里短暂出现。
+建议 `@pto.struct` 参数对象在 DSL IR 内部显式存在，而不是只在 Python 注解里短暂出现。
 
 最小内部模型：
 
 ```text
 KernelSignature
-  tile_params:
-    - src:
+  struct_params:
+    - src: Tile
         ub_ptr: !pto.ptr<T, ub>
         shape: const([32, 32])
-    - dst:
+    - dst: Tile
         ub_ptr: !pto.ptr<T, ub>
         shape: const([32, 32])
   template_params:
@@ -301,15 +342,20 @@ KernelSignature
 
 参考现有 `abs` 语义，首版模板化用例应明确为“tile 级实现”：
 
-- caller 负责准备好 UB tile，并把 `ub_ptr/shape` 封装进 `pto.tile`
+- caller 负责准备好 UB tile，并把 `ub_ptr/shape` 封装进 `Tile`
 - 这个模板化 kernel 只描述 tile 内的计算语义，不负责 GM <-> UB 搬运
 - 当 `shape=[32, 32]` 时，它表达的核心 vector 计算语义应与现有 `abs` 测例中的 vecscope 主体一致
 
 示例：
 
 ```python
+@pto.struct
+class Tile:
+    ub_ptr: pto.ptr
+    shape: pto.const
+
 @pto.vkernel
-def abs_kernel(src: pto.tile, dst: pto.tile):
+def abs_kernel(src: Tile, dst: Tile):
     total = src.shape[0] * src.shape[1]
     # `elem_bytes` 来自模板化类型对象参数；动态部分只有指针值本身。
     step = 256 // src.ub_ptr.elem_bytes
@@ -319,7 +365,7 @@ def abs_kernel(src: pto.tile, dst: pto.tile):
     ) as (
         vin, vout, lb, ub, vec_step, rem0
     ):
-        rem: pto.i32 = rem0
+        rem = rem0
         for lane in range(lb, ub, vec_step):
             mask, rem = pto.plt_b32(rem)
             vec = pto.vlds(vin, lane)
@@ -330,26 +376,26 @@ def abs_kernel(src: pto.tile, dst: pto.tile):
 对应的 caller 侧示意：
 
 ```python
-src_tile = pto.tile(
-    ub_ptr=src_ub,
+src_tile = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 
-dst_tile = pto.tile(
-    ub_ptr=dst_ub,
+dst_tile = Tile(
+    ub_ptr=pto.ptr(pto.f32, "ub"),
     shape=pto.const([32, 32]),
 )
 
 compiled = abs_kernel.jit(src=src_tile, dst=dst_tile)
 
 # 同一份 kernel body 也可以实例化为 f16 版本。
-src_tile_f16 = pto.tile(
-    ub_ptr=src_ub_f16,
+src_tile_f16 = Tile(
+    ub_ptr=pto.ptr(pto.f16, "ub"),
     shape=pto.const([32, 32]),
 )
 
-dst_tile_f16 = pto.tile(
-    ub_ptr=dst_ub_f16,
+dst_tile_f16 = Tile(
+    ub_ptr=pto.ptr(pto.f16, "ub"),
     shape=pto.const([32, 32]),
 )
 
@@ -382,7 +428,7 @@ def abs_kernel_instantiated(
 
 这个模板化 `abs` 用例要表达的约束是：
 
-- `shape` 信息明确挂在 `tile` 上
+- `shape` 信息明确挂在 `Tile` 这类 `@pto.struct` 参数对象上
 - kernel body 通过 `src.shape[i]` / `src.ub_ptr` 直接访问这些字段
 - 这个用例当前是 tile 级计算 kernel，输入输出都是 UB tile，而不是完整的 GM <-> UB 搬运 kernel
 - `src.ub_ptr` / `dst.ub_ptr` 只有指针值本身是动态的；类型对象参数进入模板化维度，`memory_space` 属于静态指针类型对象的一部分
@@ -396,9 +442,9 @@ def abs_kernel_instantiated(
 
 首版建议只支持：
 
-- `pto.tile`
-- tile 的动态指针值 `ub_ptr`
-- tile 的 `shape`
+- `@pto.struct`
+- 参数对象中的动态指针值字段 `ub_ptr`
+- 参数对象中的 `shape`
 - `pto.const(...)`
 - 基于类型对象参数和 `pto.const(...)` 静态值参数的单层实现实例化
 
@@ -413,13 +459,13 @@ def abs_kernel_instantiated(
 
 ## 分步计划
 
-Step 1. `pto.tile` 数据模型
-- 增加 `pto.tile(ub_ptr=..., shape=...)`
-- 增加 DSL IR 数据结构表示 tile 参数
-- 验证 caller 可以独立构造 tile 数据对象
+Step 1. `@pto.struct` 数据模型
+- 增加 `@pto.struct class Tile: ...`
+- 增加 DSL IR 数据结构表示参数结构
+- 验证 caller 可以独立构造参数结构对象
 
 Step 2. JIT 绑定与拆分
-- 给 `kernel.jit(...)` 增加 tile 参数绑定逻辑
+- 给 `kernel.jit(...)` 增加 `@pto.struct` 参数绑定逻辑
 - 在绑定阶段提取 `ub_ptr`、`shape`
 - 支持 `pto.const(...)` 驱动的静态/动态拆分
 - 明确 `ub_ptr` 的类型对象参数进入模板化绑定，`memory_space` 继续来自静态指针类型对象，只有指针值进入动态绑定
@@ -435,7 +481,7 @@ Step 4. DSL 实例化上下文
 - 支持用 tile 元数据消解受限的常量表达式
 
 Step 5. runtime ABI 收敛
-- 将 tile 的动态指针值收敛为最终 kernel 入参
+- 将参数结构中的动态指针值收敛为最终 kernel 入参
 - `pto.const(...)` 绑定值只保留在实例化结果里，不进入 runtime ABI
 
 Step 6. 实例化后导出 VPTO
@@ -456,4 +502,4 @@ Step 7. inline 与后续优化验证
 
 2. 多实例复用样例
 - 同一份 DSL 定义分别实例化为不同 `shape` / 类型对象参数
-- 检查只有 tile 元数据相关 IR 不同，runtime ABI 仍只保留动态指针值输入
+- 检查只有参数结构元数据相关 IR 不同，runtime ABI 仍只保留动态指针值输入

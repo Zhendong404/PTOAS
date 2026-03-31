@@ -369,6 +369,40 @@ class _VKernelVRegType(_VKernelType):
         return f"!pto.vreg<{self.lanes}x{self.elem.render()}>"
 
 
+@_dataclass(frozen=True)
+class _VKernelConstBinding:
+    value: object
+
+
+@_dataclass(frozen=True)
+class _VKernelStructDef(_VKernelType):
+    name: str
+    fields: tuple
+
+    def render(self):
+        raise _VKernelCompileError(f"{self.name} is a template-only surface type; use .jit(...) to specialize it")
+
+    def __call__(self, **kwargs):
+        return _VKernelStructBinding(self, dict(kwargs))
+
+
+@_dataclass(frozen=True)
+class _VKernelStructBinding:
+    schema: _VKernelStructDef
+    values: dict
+
+
+@_dataclass(frozen=True)
+class _VKStaticSequence:
+    values: tuple
+
+
+@_dataclass(frozen=True)
+class _VKStructValue:
+    schema: _VKernelStructDef
+    fields: dict
+
+
 i1 = _VKernelScalarType("i1")
 i8 = _VKernelScalarType("i8")
 i16 = _VKernelScalarType("i16")
@@ -388,6 +422,33 @@ def ptr(elem_type, space):
 
 def vreg(lanes, elem_type):
     return _VKernelVRegType(lanes, elem_type)
+
+
+def const(value):
+    return _VKernelConstBinding(value)
+
+
+def struct(cls):
+    annotations = dict(getattr(cls, "__annotations__", {}))
+    if not annotations:
+        raise _VKernelCompileError("@pto.struct requires annotated fields")
+    fields = []
+    for name, field_ty in annotations.items():
+        if field_ty not in (ptr, const):
+            raise _VKernelCompileError(
+                f"unsupported field annotation for {cls.__name__}.{name}: {field_ty!r}"
+            )
+        fields.append((name, field_ty))
+    return _VKernelStructDef(cls.__name__, tuple(fields))
+
+
+@struct
+class Tile:
+    ub_ptr: ptr
+    shape: const
+
+
+tile = Tile
 
 
 class _VKernelCompileError(Exception):
@@ -469,13 +530,36 @@ def _coerce_surface_type(value):
     return value
 
 
+def _ptr_elem_bytes(ptr_type):
+    if not isinstance(ptr_type, _VKernelPtrType):
+        raise _VKernelCompileError("elem_bytes requires a ptr type")
+    elem_name = ptr_type.elem.render()
+    table = {
+        "i8": 1,
+        "i16": 2,
+        "i32": 4,
+        "i64": 8,
+        "f16": 2,
+        "bf16": 2,
+        "f32": 4,
+    }
+    if elem_name not in table:
+        raise _VKernelCompileError(f"unsupported elem_bytes for {elem_name}")
+    return table[elem_name]
+
+
+def _ptr_vector_lanes(ptr_type):
+    return 256 // _ptr_elem_bytes(ptr_type)
+
+
 class _VKernelBuilder:
-    def __init__(self, py_fn, fn_def, target, kernel_name):
+    def __init__(self, py_fn, fn_def, target, kernel_name, specialization=None):
         self.py_fn = py_fn
         self.fn_def = fn_def
         self.target = target
         self.kernel_name = kernel_name
         self.ctx = _VKernelContext()
+        self.specialization = specialization or {}
 
     def _emit(self, lines, indent, text):
         lines.append("  " * indent + text)
@@ -520,14 +604,79 @@ class _VKernelBuilder:
             return value
         return self._materialize_value(value, lines, indent)
 
+    def _lower_attribute(self, node, env, lines, indent, expected_type=None):
+        if isinstance(node.value, _ast.Name):
+            if node.value.id not in env:
+                raise _VKernelCompileError(f"unknown name '{node.value.id}'")
+            base = env[node.value.id]
+        else:
+            base = self._lower_expr(node.value, env, lines, indent)
+        if isinstance(base, _VKStructValue):
+            if node.attr not in base.fields:
+                raise _VKernelCompileError(f"unsupported struct attribute '{node.attr}'")
+            field = base.fields[node.attr]
+            if isinstance(field, _VKValue):
+                return self._materialize_value(field, lines, indent, expected_type)
+            return field
+        if isinstance(base, _VKValue) and isinstance(base.type, _VKernelPtrType):
+            if node.attr == "elem_bytes":
+                return _VKValue(type=expected_type, literal=_ptr_elem_bytes(base.type))
+        raise _VKernelCompileError(f"unsupported attribute access '{node.attr}'")
+
+    def _lower_subscript(self, node, env, lines, indent, expected_type=None):
+        base = self._lower_expr(node.value, env, lines, indent)
+        if not isinstance(base, _VKStaticSequence):
+            raise _VKernelCompileError("subscript base must be a static sequence")
+        if not isinstance(node.slice, _ast.Constant) or not isinstance(node.slice.value, int):
+            raise _VKernelCompileError("only constant integer subscripts are supported")
+        index = node.slice.value
+        if index < 0 or index >= len(base.values):
+            raise _VKernelCompileError("subscript out of range")
+        value = base.values[index]
+        if not isinstance(value, _VKValue):
+            value = _VKValue(type=expected_type, literal=value)
+        return self._materialize_value(value, lines, indent, expected_type) if expected_type is not None else value
+
+    def _lower_binop(self, node, env, lines, indent, expected_type=None):
+        lhs = self._lower_expr(node.left, env, lines, indent)
+        rhs = self._lower_expr(node.right, env, lines, indent)
+        if lhs.literal is not None and rhs.literal is not None:
+            if isinstance(node.op, _ast.Mult):
+                result = lhs.literal * rhs.literal
+            elif isinstance(node.op, _ast.FloorDiv):
+                result = lhs.literal // rhs.literal
+            else:
+                raise _VKernelCompileError(f"unsupported binary operator: {type(node.op).__name__}")
+            return _VKValue(type=expected_type, literal=result)
+        raise _VKernelCompileError("non-constant binary expressions are not supported yet")
+
     def _lower_expr(self, node, env, lines, indent, expected_type=None):
         if isinstance(node, _ast.Name):
             if node.id not in env:
                 raise _VKernelCompileError(f"unknown name '{node.id}'")
             value = env[node.id]
+            if isinstance(value, (_VKStructValue, _VKStaticSequence)):
+                raise _VKernelCompileError(f"name '{node.id}' is not a scalar/SSA value")
+            if (
+                isinstance(value, _VKValue)
+                and value.name is None
+                and value.literal is not None
+                and expected_type is not None
+            ):
+                return self._materialize_value(
+                    _VKValue(type=expected_type, literal=value.literal),
+                    lines,
+                    indent,
+                )
             return self._materialize_value(value, lines, indent, expected_type)
         if isinstance(node, _ast.Constant):
             return self._literal_value(node, lines, indent, expected_type)
+        if isinstance(node, _ast.Attribute):
+            return self._lower_attribute(node, env, lines, indent, expected_type)
+        if isinstance(node, _ast.Subscript):
+            return self._lower_subscript(node, env, lines, indent, expected_type)
+        if isinstance(node, _ast.BinOp):
+            return self._lower_binop(node, env, lines, indent, expected_type)
         if isinstance(node, _ast.Call):
             results = self._lower_call(node, env, lines, indent, expected_types=[expected_type] if expected_type else None)
             if len(results) != 1:
@@ -544,7 +693,14 @@ class _VKernelBuilder:
         if isinstance(node, _ast.Name):
             if node.id not in env:
                 raise _VKernelCompileError(f"unknown name '{node.id}'")
-            return env[node.id].type
+            value = env[node.id]
+            return value.type if isinstance(value, _VKValue) else None
+        if isinstance(node, _ast.Attribute):
+            try:
+                value = self._lower_attribute(node, env, [], 0)
+            except _VKernelCompileError:
+                return None
+            return value.type if isinstance(value, _VKValue) else None
         if isinstance(node, _ast.Constant):
             return None
         return None
@@ -620,7 +776,7 @@ class _VKernelBuilder:
             if not isinstance(ptr_value.type, _VKernelPtrType):
                 raise _VKernelCompileError("pto.vlds expects a ptr operand")
             offset = self._lower_expr(node.args[1], env, lines, indent, _vk_index)
-            result = self._new_value(vreg(64, ptr_value.type.elem))
+            result = self._new_value(vreg(_ptr_vector_lanes(ptr_value.type), ptr_value.type.elem))
             self._emit(lines, indent,
                        f"{result.name} = pto.vlds {ptr_value.name}[{offset.name}] : {ptr_value.render_type()} -> {result.render_type()}")
             return [result]
@@ -902,6 +1058,53 @@ class _VKernelBuilder:
                 raise _VKernelCompileError(f"missing type annotation for argument '{arg.arg}'")
             if not isinstance(arg_ty, _VKernelType):
                 raise _VKernelCompileError(f"unsupported type annotation for argument '{arg.arg}'")
+            if isinstance(arg_ty, _VKernelStructDef):
+                if arg.arg not in self.specialization:
+                    raise _VKernelCompileError(
+                        f"template argument '{arg.arg}: {arg_ty.name}' requires .jit(...) specialization"
+                    )
+                binding = self.specialization[arg.arg]
+                if not isinstance(binding, _VKernelStructBinding) or binding.schema != arg_ty:
+                    raise _VKernelCompileError(
+                        f"specialization for '{arg.arg}' must be a {arg_ty.name}(...) binding"
+                    )
+                struct_fields = {}
+                for field_name, field_kind in arg_ty.fields:
+                    if field_name not in binding.values:
+                        raise _VKernelCompileError(
+                            f"missing field '{field_name}' in specialization for '{arg.arg}'"
+                        )
+                    field_value = binding.values[field_name]
+                    if field_kind is ptr:
+                        if not isinstance(field_value, _VKernelPtrType):
+                            raise _VKernelCompileError(
+                                f"{arg_ty.name}.{field_name} must be a pto.ptr(...) type object"
+                            )
+                        arg_val = self._new_arg_value(field_value)
+                        arg_types.append(f"{arg_val.name}: {field_value.render()}")
+                        struct_fields[field_name] = arg_val
+                        continue
+                    if field_kind is const:
+                        if not isinstance(field_value, _VKernelConstBinding):
+                            raise _VKernelCompileError(
+                                f"{arg_ty.name}.{field_name} must use pto.const(...)"
+                            )
+                        static_value = field_value.value
+                        if not isinstance(static_value, (list, tuple)) or not all(
+                            isinstance(v, int) for v in static_value
+                        ):
+                            raise _VKernelCompileError(
+                                f"{arg_ty.name}.{field_name} must be a list/tuple of ints"
+                            )
+                        struct_fields[field_name] = _VKStaticSequence(
+                            tuple(_VKValue(literal=v) for v in static_value)
+                        )
+                        continue
+                    raise _VKernelCompileError(
+                        f"unsupported struct field kind for {arg_ty.name}.{field_name}"
+                    )
+                env[arg.arg] = _VKStructValue(arg_ty, struct_fields)
+                continue
             arg_val = self._new_arg_value(arg_ty)
             arg_types.append(f"{arg_val.name}: {arg_ty.render()}")
             env[arg.arg] = arg_val
@@ -916,11 +1119,12 @@ class _VKernelBuilder:
 
 
 class VKernelHandle:
-    def __init__(self, py_fn, target="a5", name=None, verify=True):
+    def __init__(self, py_fn, target="a5", name=None, verify=True, specialization=None):
         self._py_fn = py_fn
         self._target = target
         self._name = name or py_fn.__name__
         self._verify = verify
+        self._specialization = specialization or {}
         self._cached_text = None
 
     def _load_ast(self):
@@ -933,7 +1137,13 @@ class VKernelHandle:
 
     def mlir_text(self):
         if self._cached_text is None:
-            builder = _VKernelBuilder(self._py_fn, self._load_ast(), self._target, self._name)
+            builder = _VKernelBuilder(
+                self._py_fn,
+                self._load_ast(),
+                self._target,
+                self._name,
+                specialization=self._specialization,
+            )
             self._cached_text = builder.build_text()
         return self._cached_text
 
@@ -955,6 +1165,15 @@ class VKernelHandle:
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.mlir_text())
 
+    def jit(self, **kwargs):
+        return VKernelHandle(
+            self._py_fn,
+            target=self._target,
+            name=self._name,
+            verify=self._verify,
+            specialization=kwargs,
+        )
+
     def __str__(self):
         return self.mlir_text()
 
@@ -971,6 +1190,10 @@ def vkernel(py_fn=None, *, target="a5", name=None, verify=True):
 __all__.extend([
     "vkernel",
     "VKernelHandle",
+    "struct",
+    "Tile",
+    "tile",
+    "const",
     "ptr",
     "vreg",
     "i1", "i8", "i16", "i32", "i64",
