@@ -28,6 +28,21 @@ def VRegType : TypeDef<PTO_Dialect, "VReg"> {
 def MaskType : TypeDef<PTO_Dialect, "Mask"> {
   let mnemonic = "mask";
   let summary = "A PTO low-level predicate/mask register";
+
+  let parameters = (ins
+    StringRefParameter<"mask granularity view">:$granularity
+  );
+
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+
+  let extraClassDeclaration = [{
+    static bool isSupportedGranularity(::llvm::StringRef granularity);
+
+    bool isB8() const { return getGranularity() == "b8"; }
+    bool isB16() const { return getGranularity() == "b16"; }
+    bool isB32() const { return getGranularity() == "b32"; }
+  }];
 }
 
 def AlignType : TypeDef<PTO_Dialect, "Align"> {

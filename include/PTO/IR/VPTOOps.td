@@ -16,6 +16,15 @@ def PTO_VectorType : Type<CPred<"::llvm::isa<::mlir::pto::VRegType>($_self)">,
                            "PTO low-level vector type">;
 def PTO_MaskTypeConstraint : Type<CPred<"::llvm::isa<::mlir::pto::MaskType>($_self)">,
                                    "PTO low-level mask type">;
+def PTO_B8MaskTypeConstraint : Type<
+  CPred<"::llvm::isa<::mlir::pto::MaskType>($_self) && ::llvm::cast<::mlir::pto::MaskType>($_self).isB8()">,
+  "PTO low-level b8 mask type">;
+def PTO_B16MaskTypeConstraint : Type<
+  CPred<"::llvm::isa<::mlir::pto::MaskType>($_self) && ::llvm::cast<::mlir::pto::MaskType>($_self).isB16()">,
+  "PTO low-level b16 mask type">;
+def PTO_B32MaskTypeConstraint : Type<
+  CPred<"::llvm::isa<::mlir::pto::MaskType>($_self) && ::llvm::cast<::mlir::pto::MaskType>($_self).isB32()">,
+  "PTO low-level b32 mask type">;
 def PTO_AlignTypeConstraint : Type<CPred<"::llvm::isa<::mlir::pto::AlignType>($_self)">,
                                     "PTO low-level align type">;
 
@@ -215,7 +224,7 @@ def PTO_VdupOp : PTO_Op<"vdup", [Pure]> {
 
 def PTO_PsetB8Op : PTO_Op<"pset_b8", [Pure]> {
   let arguments = (ins StrAttr:$pattern);
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_B8MaskTypeConstraint:$result);
 
   let hasVerifier = 1;
 
@@ -226,7 +235,7 @@ def PTO_PsetB8Op : PTO_Op<"pset_b8", [Pure]> {
 
 def PTO_PsetB16Op : PTO_Op<"pset_b16", [Pure]> {
   let arguments = (ins StrAttr:$pattern);
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_B16MaskTypeConstraint:$result);
 
   let hasVerifier = 1;
 
@@ -241,7 +250,7 @@ def PTO_PsetB16Op : PTO_Op<"pset_b16", [Pure]> {
 // PTO lowering or end-to-end sample execution.
 def PTO_PsetB32Op : PTO_Op<"pset_b32", [Pure]> {
   let arguments = (ins StrAttr:$pattern);
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_B32MaskTypeConstraint:$result);
 
   let hasVerifier = 1;
 
@@ -250,9 +259,9 @@ def PTO_PsetB32Op : PTO_Op<"pset_b32", [Pure]> {
   }];
 }
 
-class PTO_PgeOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
+def PTO_PgeB8Op : PTO_Op<"pge_b8", [Pure]> {
   let arguments = (ins StrAttr:$pattern);
-  let results = (outs PTO_MaskTypeConstraint:$result);
+  let results = (outs PTO_B8MaskTypeConstraint:$result);
 
   let hasVerifier = 1;
 
@@ -261,13 +270,31 @@ class PTO_PgeOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   }];
 }
 
-def PTO_PgeB8Op : PTO_PgeOp<"pge_b8">;
-def PTO_PgeB16Op : PTO_PgeOp<"pge_b16">;
-def PTO_PgeB32Op : PTO_PgeOp<"pge_b32">;
+def PTO_PgeB16Op : PTO_Op<"pge_b16", [Pure]> {
+  let arguments = (ins StrAttr:$pattern);
+  let results = (outs PTO_B16MaskTypeConstraint:$result);
 
-class PTO_PltOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $pattern attr-dict `:` type($result)
+  }];
+}
+
+def PTO_PgeB32Op : PTO_Op<"pge_b32", [Pure]> {
+  let arguments = (ins StrAttr:$pattern);
+  let results = (outs PTO_B32MaskTypeConstraint:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $pattern attr-dict `:` type($result)
+  }];
+}
+
+def PTO_PltB8Op : PTO_Op<"plt_b8", [Pure]> {
   let arguments = (ins I32:$scalar);
-  let results = (outs PTO_MaskTypeConstraint:$mask, I32:$scalar_out);
+  let results = (outs PTO_B8MaskTypeConstraint:$mask, I32:$scalar_out);
 
   let hasVerifier = 1;
 
@@ -276,9 +303,27 @@ class PTO_PltOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   }];
 }
 
-def PTO_PltB8Op : PTO_PltOp<"plt_b8">;
-def PTO_PltB16Op : PTO_PltOp<"plt_b16">;
-def PTO_PltB32Op : PTO_PltOp<"plt_b32">;
+def PTO_PltB16Op : PTO_Op<"plt_b16", [Pure]> {
+  let arguments = (ins I32:$scalar);
+  let results = (outs PTO_B16MaskTypeConstraint:$mask, I32:$scalar_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $scalar attr-dict `:` type($scalar) `->` type($mask) `,` type($scalar_out)
+  }];
+}
+
+def PTO_PltB32Op : PTO_Op<"plt_b32", [Pure]> {
+  let arguments = (ins I32:$scalar);
+  let results = (outs PTO_B32MaskTypeConstraint:$mask, I32:$scalar_out);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $scalar attr-dict `:` type($scalar) `->` type($mask) `,` type($scalar_out)
+  }];
+}
 
 class PTO_MaskUnaryOp<string mnemonic> : PTO_Op<mnemonic, [Pure]> {
   let arguments = (ins PTO_MaskTypeConstraint:$input);
@@ -615,12 +660,12 @@ def PTO_VcmpsOp : PTO_Op<"vcmps", [Pure]> {
 
 def PTO_PdintlvB8Op : PTO_Op<"pdintlv_b8", [Pure]> {
   let arguments = (ins
-    PTO_MaskTypeConstraint:$lhs,
-    PTO_MaskTypeConstraint:$rhs
+    PTO_B8MaskTypeConstraint:$lhs,
+    PTO_B8MaskTypeConstraint:$rhs
   );
   let results = (outs
-    PTO_MaskTypeConstraint:$low,
-    PTO_MaskTypeConstraint:$high
+    PTO_B8MaskTypeConstraint:$low,
+    PTO_B8MaskTypeConstraint:$high
   );
 
   let hasVerifier = 1;
@@ -632,12 +677,12 @@ def PTO_PdintlvB8Op : PTO_Op<"pdintlv_b8", [Pure]> {
 
 def PTO_PintlvB16Op : PTO_Op<"pintlv_b16", [Pure]> {
   let arguments = (ins
-    PTO_MaskTypeConstraint:$lhs,
-    PTO_MaskTypeConstraint:$rhs
+    PTO_B16MaskTypeConstraint:$lhs,
+    PTO_B16MaskTypeConstraint:$rhs
   );
   let results = (outs
-    PTO_MaskTypeConstraint:$low,
-    PTO_MaskTypeConstraint:$high
+    PTO_B16MaskTypeConstraint:$low,
+    PTO_B16MaskTypeConstraint:$high
   );
 
   let hasVerifier = 1;

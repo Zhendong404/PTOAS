@@ -168,10 +168,10 @@ The execution model follows non-blocking fork semantics:
 
 ```mlir
 scf.for %dummy = %c0 to %c1 step %c1 {
-  %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+  %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
   %v = pto.vlds %ub[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
-  pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+  pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
 } {llvm.loop.aivector_scope}
 ```
 
@@ -190,10 +190,10 @@ pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
 scf.for %dummy = %c0 to %c1 step %c1 {
   scf.for %lane = %c0 to %9 step %c64 {
-    %mask = pto.pset_b32 "PAT_ALL" : !pto.mask
+    %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
     %v = pto.vlds %2[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-    %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
-    pto.vsts %abs, %8[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+    %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+    pto.vsts %abs, %8[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
   }
 } {llvm.loop.aivector_scope}
 
@@ -224,8 +224,8 @@ PTO micro Instruction source programs are not restricted to `pto` operations alo
 
 - `vreg<T>`: `!pto.vreg<NxT>`
   Fixed-width VPTO vector type with total width exactly 256 bytes.
-- `mask`: `!pto.mask`
-  `TODO(user): extend this type entry to describe how the mask data type is represented in VPTO syntax and semantics.`
+- `mask<G>`: `!pto.mask<G>`
+  Typed predicate-register view. `G` is one of `b8`, `b16`, `b32` and records the byte-granularity interpretation used by VPTO ops and verifiers.
 - `align`: `!pto.align`
 - `buf`: buffer-like LLVM pointer type accepted by the dialect
 - `buf_like`: `memref<...>` or `!llvm.ptr<AS>` for stateless/predicate
@@ -322,10 +322,10 @@ The following lowered-style fragment shows how typed PTO pointers flow through p
 %1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
 scf.for %arg2 = %c0 to %c1 step %c1 {
   %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
-    %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask, i32
+    %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask<b32>, i32
     %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
-    %18 = pto.vabs %17, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
-    pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+    %18 = pto.vabs %17, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+    pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
     scf.yield %scalar_out : i32
   }
 } {llvm.loop.aivector_scope}
@@ -335,19 +335,39 @@ In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shi
 
 ### Special Types
 
-#### `!pto.mask`
+#### `!pto.mask<G>`
 
-`!pto.mask` models an A5 predicate register (256-bit), not an integer vector.
+`!pto.mask<G>` models an A5 predicate register (256-bit) under a typed granularity view, not an integer vector.
+
+`G` is part of the type and MUST be one of:
+
+- `b32`
+- `b16`
+- `b8`
+
+All three forms describe the same physical 256-bit predicate-register class. The type parameter does not encode how many lanes are currently active. Instead, it records how VPTO interprets the register when matching mask-producing ops, mask-consuming ops, and verifier legality rules.
+
+In the ISA chapters below, this document uses `!pto.mask<G>` as shorthand when a
+family is generic over granularity. For op families whose names already encode
+the granularity, such as `pset_b32`, `pge_b16`, `plt_b8`,
+`pdintlv_b8`, and `pintlv_b16`, examples use the corresponding concrete typed
+mask.
 
 **Mask Granularity:**
 
-The mask is 256 bits in length, where each bit controls 1 byte of data. This means mask granularity varies by element type:
+The predicate register is 256 bits in length, where each bit controls 1 byte of data. `G` therefore describes how many bytes form one logical element slot:
 
-| Element Type | Bits/Element | Mask Bits per Element |
-|--------------|--------------|----------------------|
-| `f32`/`i32` | 32 | 4 bits |
-| `f16`/`bf16`/`i16` | 16 | 2 bits |
-| `f8`/`i8` | 8 | 1 bit |
+| Mask Type | Bytes / Element Slot | Typical Element Family | Derived Logical Lanes |
+|-----------|----------------------|------------------------|-----------------------|
+| `!pto.mask<b32>` | 4 | `f32` / `i32` | 64 |
+| `!pto.mask<b16>` | 2 | `f16` / `bf16` / `i16` | 128 |
+| `!pto.mask<b8>` | 1 | 8-bit element family | 256 |
+
+This is intentionally different from a lane-vector model such as `mask<64xi1>`:
+
+- `!pto.mask<b32>` still denotes a 256-bit predicate register;
+- `64` is only the derived logical lane count for the `b32` view;
+- value-level patterns such as `PAT_VL32` describe which lanes are active, not a different type.
 
 **Predication Behavior (Zero-Merge):**
 
@@ -359,14 +379,14 @@ dst[i] = mask[i] ? op(src0[i], src1[i]) : 0    // ZEROING mode
 
 ```mlir
 // Predicated add: inactive lanes produce zero
-%mask = pto.pset_b32 "PAT_VL32" : !pto.mask   // first 32 lanes active
-%result = pto.vcmp %a, %b, %mask, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
+%mask = pto.pset_b32 "PAT_VL32" : !pto.mask<b32>   // first 32 logical b32 lanes active
+%result = pto.vcmp %a, %b, %mask, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.mask<b32>
 ```
 
 ```mlir
 // Compare and select: generate mask from comparison, use for conditional select
-%mask = pto.vcmp %lhs, %rhs, %seed, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.mask
-%out = pto.vsel %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%mask = pto.vcmp %lhs, %rhs, %seed, "lt" : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.mask<b32>
+%out = pto.vsel %x, %y, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 ```
 
 #### `!pto.align`
@@ -427,13 +447,13 @@ pto.vsts %value, %destination[%offset] {dist = "DIST"} : !pto.vreg<NxT>, !pto.pt
 **Dual Store (two inputs, one interleaved store):**
 
 ```mlir
-pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask
+pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.ptr<T, ub>, index, !pto.mask<G>
 ```
 
 **Compare (two vectors + seed mask in, mask out):**
 
 ```mlir
-%mask = pto.vcmp %src0, %src1, %seed, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.mask
+%mask = pto.vcmp %src0, %src1, %seed, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.mask<G>
 ```
 
 **Conversion (one vector in, different-typed vector out):**
@@ -445,8 +465,8 @@ pto.vstx2 %low, %high, %dest[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg
 **Predicate construction:**
 
 ```mlir
-%mask = pto.pset_b32 "PAT_ALL" : !pto.mask
-%tail = pto.pge_b32 "PAT_VL16" : !pto.mask
+%mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+%tail = pto.pge_b32 "PAT_VL16" : !pto.mask<b32>
 ```
 
 **Sync operations:**
@@ -699,7 +719,7 @@ Address-form policy for this section:
 ### `pto.vplds`
 
 - syntax:
-  `%result = pto.vplds %source[%offset] {dist = "DIST"} : buf_like -> !pto.mask`
+  `%result = pto.vplds %source[%offset] {dist = "DIST"} : buf_like -> !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -709,7 +729,7 @@ Address-form policy for this section:
 ### `pto.vpld`
 
 - syntax:
-  `%result = pto.vpld %source[%offset], "DIST" : buf_like, index -> !pto.mask`
+  `%result = pto.vpld %source[%offset], "DIST" : buf_like, index -> !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -719,7 +739,7 @@ Address-form policy for this section:
 ### `pto.vpldi`
 
 - syntax:
-  `%result = pto.vpldi %source, %offset, "DIST" : buf_like, i32 -> !pto.mask`
+  `%result = pto.vpldi %source, %offset, "DIST" : buf_like, i32 -> !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -759,7 +779,7 @@ Address-form policy for this section:
 ### `pto.vgather2_bc`
 
 - syntax:
-  `%result = pto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !pto.vreg<NxI>, !pto.mask -> !pto.vreg<NxT>`
+  `%result = pto.vgather2_bc %source, %offsets, %mask : !llvm.ptr<AS>, !pto.vreg<NxI>, !pto.mask<G> -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -779,7 +799,7 @@ Address-form policy for this section:
 ### `pto.vsldb`
 
 - syntax:
-  `%result = pto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !pto.mask -> !pto.vreg<NxT>`
+  `%result = pto.vsldb %source, %offset, %mask : !llvm.ptr<AS>, i32, !pto.mask<G> -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -810,7 +830,7 @@ Address-form policy for this section:
 ### `pto.vpset_b8`
 
 - syntax:
-  `%result = pto.vpset_b8 "PAT_*" : !pto.mask`
+  `%result = pto.vpset_b8 "PAT_*" : !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -820,7 +840,7 @@ Address-form policy for this section:
 ### `pto.vpset_b16`
 
 - syntax:
-  `%result = pto.vpset_b16 "PAT_*" : !pto.mask`
+  `%result = pto.vpset_b16 "PAT_*" : !pto.mask<b16>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -830,7 +850,7 @@ Address-form policy for this section:
 ### `pto.vpset_b32`
 
 - syntax:
-  `%result = pto.vpset_b32 "PAT_*" : !pto.mask`
+  `%result = pto.vpset_b32 "PAT_*" : !pto.mask<b32>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -840,7 +860,7 @@ Address-form policy for this section:
 ### `pto.vpge_b8`
 
 - syntax:
-  `%result = pto.vpge_b8 "PAT_*" : !pto.mask`
+  `%result = pto.vpge_b8 "PAT_*" : !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -850,7 +870,7 @@ Address-form policy for this section:
 ### `pto.vpge_b16`
 
 - syntax:
-  `%result = pto.vpge_b16 "PAT_*" : !pto.mask`
+  `%result = pto.vpge_b16 "PAT_*" : !pto.mask<b16>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -860,7 +880,7 @@ Address-form policy for this section:
 ### `pto.vpge_b32`
 
 - syntax:
-  `%result = pto.vpge_b32 "PAT_*" : !pto.mask`
+  `%result = pto.vpge_b32 "PAT_*" : !pto.mask<b32>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -870,7 +890,7 @@ Address-form policy for this section:
 ### `pto.vppack`
 
 - syntax:
-  `%result = pto.vppack %input, "PART" : !pto.mask -> !pto.mask`
+  `%result = pto.vppack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -879,7 +899,7 @@ Address-form policy for this section:
 ### `pto.vpunpack`
 
 - syntax:
-  `%result = pto.vpunpack %input, "PART" : !pto.mask -> !pto.mask`
+  `%result = pto.vpunpack %input, "PART" : !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1196,7 +1216,7 @@ Address-form policy for this section:
 ### `pto.vaddc`
 
 - syntax:
-  `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
+  `%result, %carry = pto.vaddc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1206,7 +1226,7 @@ Address-form policy for this section:
 ### `pto.vsubc`
 
 - syntax:
-  `%result, %carry = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
+  `%result, %carry = pto.vsubc %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1216,7 +1236,7 @@ Address-form policy for this section:
 ### `pto.vaddcs`
 
 - syntax:
-  `%result, %carry = pto.vaddcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
+  `%result, %carry = pto.vaddcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1226,7 +1246,7 @@ Address-form policy for this section:
 ### `pto.vsubcs`
 
 - syntax:
-  `%result, %carry = pto.vsubcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask, !pto.mask -> !pto.vreg<NxT>, !pto.mask`
+  `%result, %carry = pto.vsubcs %lhs, %rhs, %carry_in, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1236,7 +1256,7 @@ Address-form policy for this section:
 ### `pto.vsel`
 
 - syntax:
-  `%result = pto.vsel %src0, %src1, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
+  `%result = pto.vsel %src0, %src1, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1266,7 +1286,7 @@ Address-form policy for this section:
 ### `pto.vcmp`
 
 - syntax:
-  `%result = pto.vcmp %src0, %src1, %mask, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.mask`
+  `%result = pto.vcmp %src0, %src1, %mask, "CMP_MODE" : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1276,7 +1296,7 @@ Address-form policy for this section:
 ### `pto.vcmps`
 
 - syntax:
-  `%result = pto.vcmps %src, %scalar, %mask, "CMP_MODE" : !pto.vreg<NxT>, T, !pto.mask -> !pto.mask`
+  `%result = pto.vcmps %src, %scalar, %mask, "CMP_MODE" : !pto.vreg<NxT>, T, !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1286,7 +1306,7 @@ Address-form policy for this section:
 ### `pto.vpnot`
 
 - syntax:
-  `%result = pto.vpnot %input, %mask : !pto.mask, !pto.mask -> !pto.mask`
+  `%result = pto.vpnot %input, %mask : !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1295,7 +1315,7 @@ Address-form policy for this section:
 ### `pto.vpsel`
 
 - syntax:
-  `%result = pto.vpsel %src0, %src1, %mask : !pto.mask, !pto.mask, !pto.mask -> !pto.mask`
+  `%result = pto.vpsel %src0, %src1, %mask : !pto.mask<G>, !pto.mask<G>, !pto.mask<G> -> !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1306,7 +1326,7 @@ Address-form policy for this section:
 ### `pto.vpdintlv_b8`
 
 - syntax:
-  `%low, %high = pto.vpdintlv_b8 %lhs, %rhs : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
+  `%low, %high = pto.vpdintlv_b8 %lhs, %rhs : !pto.mask<b8>, !pto.mask<b8> -> !pto.mask<b8>, !pto.mask<b8>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1315,7 +1335,7 @@ Address-form policy for this section:
 ### `pto.vpintlv_b16`
 
 - syntax:
-  `%low, %high = pto.vpintlv_b16 %lhs, %rhs : !pto.mask, !pto.mask -> !pto.mask, !pto.mask`
+  `%low, %high = pto.vpintlv_b16 %lhs, %rhs : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1419,7 +1439,7 @@ Address-form policy for this section:
 ### `pto.vmull`
 
 - syntax:
-  `%low, %high = pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>, !pto.vreg<NxT>`
+  `%low, %high = pto.vmull %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>, !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1429,7 +1449,7 @@ Address-form policy for this section:
 ### `pto.vmula`
 
 - syntax:
-  `%result = pto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask -> !pto.vreg<NxT>`
+  `%result = pto.vmula %acc, %lhs, %rhs, %mask {mode = "MODE"} : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1477,7 +1497,7 @@ Address-form policy for this section:
 ### `pto.vpsts`
 
 - syntax:
-  `pto.vpsts %value, %destination[%offset] : !pto.mask, buf_like`
+  `pto.vpsts %value, %destination[%offset] : !pto.mask<b8>, buf_like`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1487,7 +1507,7 @@ Address-form policy for this section:
 ### `pto.vpst`
 
 - syntax:
-  `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask, buf_like, index`
+  `pto.vpst %value, %destination[%offset], "DIST" : !pto.mask<b8>, buf_like, index`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1497,7 +1517,7 @@ Address-form policy for this section:
 ### `pto.vpsti`
 
 - syntax:
-  `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask, buf_like, i32`
+  `pto.vpsti %value, %destination, %offset, "DIST" : !pto.mask<b8>, buf_like, i32`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1517,7 +1537,7 @@ Address-form policy for this section:
 ### `pto.vstx2`
 
 - syntax:
-  `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, buf_like, index, !pto.mask`
+  `pto.vstx2 %low, %high, %destination[%offset], "DIST", %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, buf_like, index, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1527,7 +1547,7 @@ Address-form policy for this section:
 ### `pto.vsstb`
 
 - syntax:
-  `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, buf_like, i32, !pto.mask`
+  `pto.vsstb %value, %destination, %offset, %mask : !pto.vreg<NxT>, buf_like, i32, !pto.mask<G>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1574,7 +1594,7 @@ accepted for these operands in the current contract.
 ### `pto.vpstu`
 
 - syntax:
-  `%align_out, %base_out = pto.vpstu %align_in, %value, %base : !pto.align, !pto.mask, !llvm.ptr<AS> -> !pto.align, !llvm.ptr<AS>`
+  `%align_out, %base_out = pto.vpstu %align_in, %value, %base : !pto.align, !pto.mask<G>, !llvm.ptr<AS> -> !pto.align, !llvm.ptr<AS>`
 - semantics:
   TODO(user): add one-line semantics for external developers.
 - CCE correspondence:
@@ -1832,30 +1852,30 @@ Group 14 covers the full scalar `arith` surface. The rows below list common PTO 
 
 ```mlir
 // 1. Find max
-%max_vec = pto.vcmax %logits, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
-pto.vsts %max_vec, %ub_tmp[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+%max_vec = pto.vcmax %logits, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+pto.vsts %max_vec, %ub_tmp[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
 %max_bc = pto.vlds %ub_tmp[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 
 // 2. exp(x - max) using fused op
 %exp = pto.vexpdiff %logits, %max_bc : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
 
 // 3. Sum
-%sum = pto.vcadd %exp, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
-pto.vsts %sum, %ub_tmp[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+%sum = pto.vcadd %exp, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+pto.vsts %sum, %ub_tmp[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
 %sum_bc = pto.vlds %ub_tmp[%c0] {dist = "BRC_B32"} : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 
 // 4. Divide
-%softmax = pto.vdiv %exp, %sum_bc, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%softmax = pto.vdiv %exp, %sum_bc, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 ```
 
 ### ReLU Variants
 
 ```mlir
 // Standard ReLU
-%relu = pto.vrelu %input, %mask : !pto.vreg<64xf32>, !pto.mask -> !pto.vreg<64xf32>
+%relu = pto.vrelu %input, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 
 // Leaky ReLU (scalar alpha)
-%lrelu = pto.vlrelu %input, %alpha, %mask : !pto.vreg<64xf32>, f32, !pto.mask -> !pto.vreg<64xf32>
+%lrelu = pto.vlrelu %input, %alpha, %mask : !pto.vreg<64xf32>, f32, !pto.mask<b32> -> !pto.vreg<64xf32>
 
 // Parametric ReLU (per-element alpha)
 %prelu = pto.vprelu %input, %alpha_vec : !pto.vreg<64xf32>, !pto.vreg<64xf32> -> !pto.vreg<64xf32>
@@ -1871,7 +1891,7 @@ pto.vsts %sum, %ub_tmp[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.
 %x, %y = pto.vldx2 %ub_xy[%offset], "DINTLV_B32" : !pto.ptr<f32, ub>, index -> !pto.vreg<64xf32>, !pto.vreg<64xf32>
 
 // SoA → AoS (interleave)
-pto.vstx2 %x, %y, %ub_xy[%offset], "INTLV_B32", %all_mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.ptr<f32, ub>, index, !pto.mask
+pto.vstx2 %x, %y, %ub_xy[%offset], "INTLV_B32", %all_mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.ptr<f32, ub>, index, !pto.mask<b32>
 ```
 
 ---
