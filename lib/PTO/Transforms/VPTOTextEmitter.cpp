@@ -21,6 +21,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -141,6 +142,7 @@ private:
   std::vector<UnresolvedEmissionRecord> unresolvedRecords;
   std::vector<IntrinsicSelection> intrinsicSelections;
   std::unordered_map<std::string, llvm::Function *> declarations;
+  unsigned vecScopeDepth = 0;
 
   llvm::Type *getIntegerType(unsigned width) {
     return llvm::Type::getIntNTy(llvmContext, width);
@@ -504,6 +506,49 @@ private:
     branch->setMetadata(llvm::LLVMContext::MD_loop, loopID);
   }
 
+  LogicalResult emitVecScopeOp(pto::VecScopeOp op) {
+    ++vecScopeDepth;
+    auto restoreDepth = llvm::make_scope_exit([&] { --vecScopeDepth; });
+    for (Operation &nested : op.getBody().front())
+      if (failed(emitOperation(&nested)))
+        return failure();
+    return success();
+  }
+
+  LogicalResult emitStrictVecScopeOp(pto::StrictVecScopeOp op) {
+    ++vecScopeDepth;
+    auto restoreDepth = llvm::make_scope_exit([&] { --vecScopeDepth; });
+
+    SmallVector<std::pair<Value, llvm::Value *>, 4> savedBindings;
+    Block &body = op.getBody().front();
+    savedBindings.reserve(body.getNumArguments());
+
+    for (auto [blockArg, capture] :
+         llvm::zip(body.getArguments(), op.getCaptures())) {
+      llvm::Value *captureValue = lookup(capture);
+      if (!captureValue) {
+        diagOS << "VPTO emission failed: unresolved strict_vecscope capture\n";
+        return failure();
+      }
+      savedBindings.emplace_back(blockArg, lookup(blockArg));
+      bind(blockArg, captureValue);
+    }
+
+    auto restoreBindings = llvm::make_scope_exit([&] {
+      for (auto &[value, oldBinding] : savedBindings) {
+        if (oldBinding)
+          bind(value, oldBinding);
+        else
+          values.erase(value);
+      }
+    });
+
+    for (Operation &nested : body)
+      if (failed(emitOperation(&nested)))
+        return failure();
+    return success();
+  }
+
   LogicalResult emitForOp(scf::ForOp op) {
     llvm::Function *fn = builder.GetInsertBlock()->getParent();
     llvm::BasicBlock *condBB =
@@ -541,7 +586,7 @@ private:
     if (!builder.GetInsertBlock()->getTerminator()) {
       llvm::Value *next = builder.CreateAdd(iv, step, "iv.next");
       auto *backedge = builder.CreateBr(condBB);
-      if (op->hasAttr("llvm.loop.aivector_scope"))
+      if (vecScopeDepth != 0)
         attachLoopMetadata(backedge);
       iv->addIncoming(next, builder.GetInsertBlock());
     }
@@ -1227,6 +1272,12 @@ private:
       bind(castPtr.getResult(), result);
       return success();
     }
+
+    if (auto vecScope = dyn_cast<pto::VecScopeOp>(op))
+      return emitVecScopeOp(vecScope);
+
+    if (auto strictVecScope = dyn_cast<pto::StrictVecScopeOp>(op))
+      return emitStrictVecScopeOp(strictVecScope);
 
     if (auto forOp = dyn_cast<scf::ForOp>(op))
       return emitForOp(forOp);

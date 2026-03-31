@@ -7139,6 +7139,44 @@ computeExpectedTileBufMemrefStrides(TileBufType tileTy,
 }
 
 // ---- Tile Fusion Region Ops ----
+LogicalResult VecScopeOp::verify() {
+  Region &bodyRegion = getBody();
+  if (bodyRegion.empty())
+    return emitOpError("expects a non-empty body region");
+
+  Block &body = bodyRegion.front();
+  if (body.getNumArguments() != 0)
+    return emitOpError() << "expects body block to have no arguments, got "
+                         << body.getNumArguments();
+
+  return success();
+}
+
+LogicalResult StrictVecScopeOp::verify() {
+  Region &bodyRegion = getBody();
+  if (bodyRegion.empty())
+    return emitOpError("expects a non-empty body region");
+
+  Block &body = bodyRegion.front();
+  if (body.getNumArguments() != getCaptures().size())
+    return emitOpError() << "expects body block to have "
+                         << getCaptures().size()
+                         << " arguments to match explicit captures, got "
+                         << body.getNumArguments();
+
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(body.getArguments(), getCaptures()))) {
+    BlockArgument blockArg = std::get<0>(pair);
+    Value capture = std::get<1>(pair);
+    if (blockArg.getType() != capture.getType())
+      return emitOpError() << "expects body block argument #" << idx
+                           << " to have type " << capture.getType()
+                           << ", got " << blockArg.getType();
+  }
+
+  return success();
+}
+
 LogicalResult FusionRegionOp::verify() {
   Region &bodyRegion = getBody();
   if (bodyRegion.empty())

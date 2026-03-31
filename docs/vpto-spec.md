@@ -149,7 +149,7 @@ Without proper barriers, loads may see stale data or stores may be reordered inc
 
 `__VEC_SCOPE__` is the IR-level representation of a Vector Function (VF) launch. In the PTO architecture, it defines the hardware interface between the Scalar Unit and the Vector Thread.
 
-It is not a dedicated `pto` op. In the PTO micro Instruction, this scope is modeled as a specialized `scf.for` loop annotated with `llvm.loop.aivector_scope`. This gives the compiler a natural structural boundary for identifying the code block that must be lowered into a discrete VF hardware instruction sequence.
+In PTO micro Instruction source IR, vector execution scopes are modeled as dedicated region ops. The default form is `pto.vecscope`; when the scope body must reject implicit capture and require explicit region arguments, use `pto.strict_vecscope`.
 
 **Scalar-Vector Interface:**
 
@@ -167,15 +167,34 @@ The execution model follows non-blocking fork semantics:
 **MLIR Representation:**
 
 ```mlir
-scf.for %dummy = %c0 to %c1 step %c1 {
+pto.vecscope {
   %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
   %v = pto.vlds %ub[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
   %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
   pto.vsts %abs, %ub_out[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
-} {llvm.loop.aivector_scope}
+}
 ```
 
-### Example: Abs
+**Strict MLIR Representation:**
+
+```mlir
+pto.strict_vecscope(%ub, %ub_out, %lane) {
+^bb0(%in: !pto.ptr<f32, ub>, %out: !pto.ptr<f32, ub>, %iv: index):
+  %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+  %v = pto.vlds %in[%iv] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+  pto.vsts %abs, %out[%iv], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+} : (!pto.ptr<f32, ub>, !pto.ptr<f32, ub>, index) -> ()
+```
+
+`pto.strict_vecscope` is the strict form of `pto.vecscope`.
+
+- `pto.vecscope` allows the body to use surrounding SSA values directly.
+- `pto.strict_vecscope` requires every external value used by the body to be passed through the op operand list and received as a body block argument.
+- `pto.strict_vecscope` rejects implicit capture from the surrounding scope.
+- both ops still represent one explicit VPTO vector interval.
+
+### Example: VecScope
 
 ```mlir
 pto.set_loop2_stride_outtoub %c4096_i64, %c4096_i64 : i64, i64
@@ -188,14 +207,14 @@ pto.copy_gm_to_ubuf %7, %2, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c0_i64,
 pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
-scf.for %dummy = %c0 to %c1 step %c1 {
+pto.vecscope {
   scf.for %lane = %c0 to %9 step %c64 {
     %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
     %v = pto.vlds %2[%lane] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
     %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
     pto.vsts %abs, %8[%lane], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
   }
-} {llvm.loop.aivector_scope}
+}
 
 pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
 pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
@@ -205,6 +224,20 @@ pto.set_loop2_stride_ubtoout %c4096_i64, %c4096_i64 : i64, i64
 pto.copy_ubuf_to_gm %8, %14, %3, %3, %c0_i64, %c32_i64, %4, %c0_i64, %c128_i64, %c128_i64
     : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64, i64, i64
 ```
+
+### Example: Strict VecScope
+
+```mlir
+pto.strict_vecscope(%ub_in, %ub_out, %lane, %remaining) {
+^bb0(%in: !pto.ptr<f32, ub>, %out: !pto.ptr<f32, ub>, %iv: index, %rem: i32):
+  %mask, %next_remaining = pto.plt_b32 %rem : i32 -> !pto.mask<b32>, i32
+  %v = pto.vlds %in[%iv] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+  %abs = pto.vabs %v, %mask : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+  pto.vsts %abs, %out[%iv], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+} : (!pto.ptr<f32, ub>, !pto.ptr<f32, ub>, index, i32) -> ()
+```
+
+Use `pto.strict_vecscope` when the source form should make all vector-scope inputs explicit in the region signature instead of relying on surrounding SSA visibility. The scope op itself only defines the vector-interval boundary and region argument contract.
 
 ### Scope
 
@@ -320,7 +353,7 @@ The following lowered-style fragment shows how typed PTO pointers flow through p
 ```mlir
 %0 = pto.castptr %c0 : i64 -> !pto.ptr<f32, ub>
 %1 = pto.addptr %0, %c1024 : !pto.ptr<f32, ub> -> !pto.ptr<f32, ub>
-scf.for %arg2 = %c0 to %c1 step %c1 {
+pto.vecscope {
   %16 = scf.for %arg3 = %c0 to %11 step %c64 iter_args(%arg4 = %12) -> (i32) {
     %mask, %scalar_out = pto.plt_b32 %arg4 : i32 -> !pto.mask<b32>, i32
     %17 = pto.vlds %1[%arg3] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
@@ -328,7 +361,7 @@ scf.for %arg2 = %c0 to %c1 step %c1 {
     pto.vsts %18, %10[%arg3], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
     scf.yield %scalar_out : i32
   }
-} {llvm.loop.aivector_scope}
+}
 ```
 
 In this pattern, `pto.castptr` materializes a typed UB pointer, `pto.addptr` shifts the base by 1024 `f32` elements, and the subsequent `[%arg3]` indexing on `pto.vlds` / `pto.vsts` applies an additional element offset relative to that base.

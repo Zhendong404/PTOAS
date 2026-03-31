@@ -2002,15 +2002,75 @@ static void normalizeFuncSignaturesForOfficialLLVMLowering(ModuleOp module) {
 static llvm::StringMap<unsigned>
 collectVecScopeLoopCounts(ModuleOp module) {
   llvm::StringMap<unsigned> counts;
-  module.walk([&](scf::ForOp forOp) {
-    if (!forOp->hasAttr("llvm.loop.aivector_scope"))
+  module.walk([&](pto::VecScopeOp vecScope) {
+    auto func = vecScope->getParentOfType<func::FuncOp>();
+    if (!func)
       return;
-    auto func = forOp->getParentOfType<func::FuncOp>();
+    counts[func.getName().str()]++;
+  });
+  module.walk([&](pto::StrictVecScopeOp vecScope) {
+    auto func = vecScope->getParentOfType<func::FuncOp>();
     if (!func)
       return;
     counts[func.getName().str()]++;
   });
   return counts;
+}
+
+static void materializeVecScopeCarrierLoops(ModuleOp module) {
+  SmallVector<pto::VecScopeOp, 16> scopes;
+  module.walk([&](pto::VecScopeOp vecScope) { scopes.push_back(vecScope); });
+
+  IRRewriter rewriter(module.getContext());
+  for (pto::VecScopeOp vecScope : llvm::reverse(scopes)) {
+    if (!vecScope || vecScope.getBody().empty())
+      continue;
+
+    rewriter.setInsertionPoint(vecScope);
+    auto loc = vecScope.getLoc();
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    scf::ForOp carrier = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
+
+    Block &vecScopeBody = vecScope.getBody().front();
+    Block *carrierBody = carrier.getBody();
+    Operation *yield = carrierBody->getTerminator();
+    carrierBody->getOperations().splice(Block::iterator(yield),
+                                        vecScopeBody.getOperations(),
+                                        vecScopeBody.begin(),
+                                        vecScopeBody.end());
+    rewriter.eraseOp(vecScope);
+  }
+
+  SmallVector<pto::StrictVecScopeOp, 16> strictScopes;
+  module.walk(
+      [&](pto::StrictVecScopeOp strictVecScope) { strictScopes.push_back(strictVecScope); });
+
+  for (pto::StrictVecScopeOp strictVecScope : llvm::reverse(strictScopes)) {
+    if (!strictVecScope || strictVecScope.getBody().empty())
+      continue;
+
+    rewriter.setInsertionPoint(strictVecScope);
+    auto loc = strictVecScope.getLoc();
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    scf::ForOp carrier = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
+
+    Block &strictBody = strictVecScope.getBody().front();
+    Block *carrierBody = carrier.getBody();
+    Operation *yield = carrierBody->getTerminator();
+
+    IRMapping mapping;
+    for (auto [blockArg, capture] :
+         llvm::zip(strictBody.getArguments(), strictVecScope.getCaptures()))
+      mapping.map(blockArg, capture);
+
+    rewriter.setInsertionPoint(yield);
+    for (Operation &nested : strictBody.getOperations())
+      rewriter.clone(nested, mapping);
+
+    rewriter.eraseOp(strictVecScope);
+  }
 }
 
 static bool satisfiesAIVectorScopeLatchPostcondition(llvm::Loop *loop) {
@@ -2642,21 +2702,23 @@ static std::unique_ptr<llvm::Module>
 buildLLVMModuleFromPreparedVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
                                 const VPTOEmissionOptions &options,
                                 llvm::raw_ostream &diagOS) {
-  auto vecScopeCounts = collectVecScopeLoopCounts(module);
+  OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
+  auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
+  materializeVecScopeCarrierLoops(*cloned);
 
-  if (failed(normalizePtoMemRefSpaces(module, diagOS)))
+  if (failed(normalizePtoMemRefSpaces(*cloned, diagOS)))
     return nullptr;
 
-  if (failed(normalizePtoPtrsToLLVM(module, diagOS)))
+  if (failed(normalizePtoPtrsToLLVM(*cloned, diagOS)))
     return nullptr;
 
-  if (failed(rewriteVPTOOps(module, diagOS))) {
+  if (failed(rewriteVPTOOps(*cloned, diagOS))) {
     diagOS << "VPTO LLVM emission failed: VPTO-to-call rewriting failed\n";
     return nullptr;
   }
-  normalizeFuncSignaturesForOfficialLLVMLowering(module);
+  normalizeFuncSignaturesForOfficialLLVMLowering(*cloned);
 
-  PassManager pm(module.getContext());
+  PassManager pm(cloned->getContext());
   pm.enableVerifier();
   pm.addPass(createConvertSCFToCFPass());
   pm.addPass(createArithToLLVMConversionPass());
@@ -2665,17 +2727,17 @@ buildLLVMModuleFromPreparedVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
   pm.addPass(createConvertFuncToLLVMPass());
   pm.addPass(createConvertControlFlowToLLVMPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
-  if (failed(pm.run(module))) {
+  if (failed(pm.run(*cloned))) {
     diagOS << "VPTO LLVM emission failed: official lowering pipeline failed\n";
     return nullptr;
   }
 
-  if (failed(applyQueriedTargetAttrs(module, options, diagOS)))
+  if (failed(applyQueriedTargetAttrs(*cloned, options, diagOS)))
     return nullptr;
 
-  registerBuiltinDialectTranslation(*module.getContext());
-  registerLLVMDialectTranslation(*module.getContext());
-  auto llvmModule = translateModuleToLLVMIR(module.getOperation(), llvmContext);
+  registerBuiltinDialectTranslation(*cloned->getContext());
+  registerLLVMDialectTranslation(*cloned->getContext());
+  auto llvmModule = translateModuleToLLVMIR(cloned.get(), llvmContext);
   if (!llvmModule) {
     diagOS << "VPTO LLVM emission failed: LLVM IR export failed\n";
     return nullptr;

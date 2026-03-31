@@ -2004,19 +2004,17 @@ LogicalResult lowerUnsupportedMatStore(Location loc) {
 
 } // namespace
 
-LogicalResult attachLoopScopeMetadata(LoopLikeOpInterface loop,
-                                      const VPTOLoopScopeContract &contract,
-                                      PatternRewriter &rewriter) {
-  if (!loop)
-    return failure();
+FailureOr<pto::VecScopeOp>
+createLoopScopeRegion(Location loc, const VPTOLoopScopeContract &contract,
+                      PatternRewriter &rewriter) {
   if (contract.kind == VPTOLoopScopeKind::None)
-    return success();
+    return failure();
   if (contract.kind != VPTOLoopScopeKind::AIVVectorScope)
     return failure();
 
-  Operation *loopOp = loop.getOperation();
-  loopOp->setAttr(contract.loweredAttr, rewriter.getUnitAttr());
-  return success();
+  auto vecScope = rewriter.create<pto::VecScopeOp>(loc);
+  vecScope.getBody().push_back(new Block());
+  return vecScope;
 }
 
 void set_loop2_stride_outtoub(Operation *copyOp, int64_t dstStride,
@@ -2396,12 +2394,13 @@ LogicalResult buildRowReduceVecScope(StringRef family,
   Value vectorWidthValue = rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value initScalar = rewriter.create<arith::ConstantOp>(loc, cast<TypedAttr>(initValue));
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   Value dstPredicate =
       buildPredicateMaskForLaneCount(rewriter, loc, contract.elementType, c1);
   Value validColsValue =
@@ -2553,12 +2552,13 @@ LogicalResult buildColReduceVecScope(StringRef family,
   Value vectorWidthValue = rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value initScalar = rewriter.create<arith::ConstantOp>(loc, cast<TypedAttr>(initValue));
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto chunkLoop = rewriter.create<scf::ForOp>(loc, c0, repeatUpper, c1);
 
   OpBuilder::InsertionGuard chunkGuard(rewriter);
@@ -2843,11 +2843,12 @@ LogicalResult buildPartVecScope(StringRef family, const VPTOPartContract &contra
 
   Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
 
   auto condSrc0EqDst = contract.src0ValidRows == contract.dstValidRows &&
                        contract.src0ValidCols == contract.dstValidCols;
@@ -3054,12 +3055,13 @@ LogicalResult buildUnaryVecScope(StringRef family,
   Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
                                                               validColsValue);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
     scf::ForOp chunkLoop;
     if (strategy == VPTOLoweringStrategy::PostUpdate) {
@@ -3240,12 +3242,13 @@ LogicalResult buildBinaryVecScope(StringRef family,
   Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
                                                               validColsValue);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
     scf::ForOp chunkLoop;
     if (strategy == VPTOLoweringStrategy::PostUpdate) {
@@ -3424,12 +3427,13 @@ LogicalResult buildExpandScalarVecScope(const VPTOUnaryContract &contract,
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstStride);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
     Value scalarInit = rewriter.create<arith::IndexCastUIOp>(
         loc, rewriter.getI32Type(), totalElementsValue);
@@ -3532,12 +3536,13 @@ LogicalResult buildScalarUnaryVecScope(StringRef family,
   Value srcStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, srcStride);
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstStride);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
     auto emitComputed = [&](Value loadedVec) -> FailureOr<Value> {
       if (family == "adds")
@@ -3691,12 +3696,13 @@ LogicalResult buildScalarBitwiseVecScope(StringRef family,
   Value vectorWidthValue =
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto chunkLoop =
       rewriter.create<scf::ForOp>(loc, c0, totalElementsValue, vectorStepValue);
 
@@ -3806,12 +3812,13 @@ LogicalResult buildScalarDivVecScope(const VPTOUnaryContract &contract,
     return failure();
   };
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto emit1DBody = [&]() -> LogicalResult {
     if (strategy == VPTOLoweringStrategy::NoPostUpdate) {
       auto chunkLoop =
@@ -3974,12 +3981,13 @@ LogicalResult buildRowExpandVecScope(const VPTOExpandContract &contract,
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
   Value rowScalarInit = rewriter.create<arith::IndexCastUIOp>(loc, rewriter.getI32Type(),
                                                               validColsValue);
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   Value repeatUpper = rewriter.create<arith::CeilDivUIOp>(loc, validColsValue,
                                                           vectorStepValue);
   if (strategy == VPTOLoweringStrategy::NoPostUpdate) {
@@ -4072,12 +4080,13 @@ LogicalResult buildColExpandVecScope(const VPTOExpandContract &contract,
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(loc, dstCols);
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(loc, vectorWidth);
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto rowLoop = rewriter.create<scf::ForOp>(loc, c0, validRowsValue, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
   auto chunkLoop =
@@ -4765,12 +4774,13 @@ LogicalResult lowerTRSQRT(TRsqrtOp op, PatternRewriter &rewriter) {
   TypedAttr oneAttr = FloatAttr::get(contract.elementType, 1.0);
   Value one = rewriter.create<arith::ConstantOp>(op.getLoc(), oneAttr);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, validRowsValue, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
   auto ones = rewriter.create<pto::VdupOp>(op.getLoc(), vecType, one, StringAttr());
@@ -4927,12 +4937,13 @@ LogicalResult lowerTCVT(TCvtOp op, PatternRewriter &rewriter) {
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vectorWidth);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto chunkLoop =
       rewriter.create<scf::ForOp>(op.getLoc(), c0, totalElementsValue, vectorStepValue);
   OpBuilder::InsertionGuard chunkGuard(rewriter);
@@ -5037,12 +5048,13 @@ LogicalResult buildPackedCmp32VecScope(StringRef family,
   Value laneCount = rewriter.create<arith::ConstantIntOp>(loc, repeatElem, 32);
   Value totalRemaining = rewriter.create<arith::ConstantIntOp>(loc, totalElements, 32);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(loc, c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return emitError(loc) << "failed to attach AIV loop scope metadata";
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(loc, contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return emitError(loc) << "failed to create AIV vector scope region";
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto pairLoop =
       rewriter.create<scf::ForOp>(loc, c0, pairUpper, c1, ValueRange{totalRemaining});
   rewriter.setInsertionPointToStart(pairLoop.getBody());
@@ -5360,12 +5372,13 @@ LogicalResult lowerTTRANS(TTransOp op, PatternRewriter &rewriter) {
   Value dstStrideValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstStride);
   Value srcStrideI32 = rewriter.create<arith::ConstantIntOp>(op.getLoc(), srcStride, 32);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto colLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, colsUpper, c1);
   rewriter.setInsertionPointToStart(colLoop.getBody());
   auto chunkLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, chunkUpper, c1);
@@ -5464,12 +5477,13 @@ LogicalResult lowerTFillPadCommon(FillPadOpTy op, PatternRewriter &rewriter,
   Value validColsValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), contract.validCols);
   Value dstColsValue = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dstCols);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
 
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, srcRowsUpper, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
@@ -5629,12 +5643,13 @@ LogicalResult lowerTGather(TGatherOp op, PatternRewriter &rewriter) {
   loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
 
   if (Value indices = op.getIndices()) {
     if (failed(requireVecRowMajor(indices, "indices")))
@@ -5836,12 +5851,13 @@ LogicalResult lowerTGatherB(TGatherBOp op, PatternRewriter &rewriter) {
   loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
 
   if (staticRepeatTimes > staticRows) {
     auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, validRowsValue, c1);
@@ -5981,12 +5997,13 @@ LogicalResult lowerTScatter(TScatterOp op, PatternRewriter &rewriter) {
   loopScope.loweredAttr = kLoweredLoopScopeAttrName;
   loopScope.loopDepth = 0;
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, validRowsValue, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
   auto chunkLoop =
@@ -6385,12 +6402,13 @@ LogicalResult lowerTSelS(TSelSOp op, PatternRewriter &rewriter) {
   Value vectorStepValue =
       rewriter.create<arith::ConstantIndexOp>(op.getLoc(), vectorWidth);
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto chunkLoop =
       rewriter.create<scf::ForOp>(op.getLoc(), c0, totalElementsValue, vectorStepValue);
   rewriter.setInsertionPointToStart(chunkLoop.getBody());
@@ -6496,12 +6514,13 @@ LogicalResult lowerTSel(TSelOp op, PatternRewriter &rewriter) {
   int64_t remainRepeat = repeatTimes % unrollConstant;
   int64_t repeatIdxBase = pairedRepeatTimes * unrollConstant;
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, contract.loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), contract.loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto splitMaskType = getVPTOMaskType(rewriter.getContext(), "b16");
   Value fullMask = rewriter
                        .create<pto::PsetB16Op>(op.getLoc(), splitMaskType,
@@ -7020,12 +7039,13 @@ LogicalResult lowerTRowExpandBinaryLike(OpTy op, PatternRewriter &rewriter,
     return failure();
   };
 
-  auto aivScopeLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, c1, c1);
-  if (failed(attachLoopScopeMetadata(aivScopeLoop, loopScope, rewriter)))
-    return op.emitOpError("failed to attach AIV loop scope metadata");
+  FailureOr<pto::VecScopeOp> vecScope =
+      createLoopScopeRegion(op.getLoc(), loopScope, rewriter);
+  if (failed(vecScope))
+    return op.emitOpError("failed to create AIV vector scope region");
 
   OpBuilder::InsertionGuard aivGuard(rewriter);
-  rewriter.setInsertionPointToStart(aivScopeLoop.getBody());
+  rewriter.setInsertionPointToStart(&(*vecScope).getBody().front());
   auto rowLoop = rewriter.create<scf::ForOp>(op.getLoc(), c0, rowsUpper, c1);
   rewriter.setInsertionPointToStart(rowLoop.getBody());
   Value row = rowLoop.getInductionVar();
