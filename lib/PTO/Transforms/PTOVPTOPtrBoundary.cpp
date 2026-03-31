@@ -6,6 +6,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
@@ -330,6 +331,26 @@ LogicalResult mlir::pto::convertVPTOEmissionBoundaryToPtr(
     return failure();
 
   return eraseDeadVPTOMemRefScaffold(module);
+}
+
+FailureOr<OwningOpRef<ModuleOp>>
+mlir::pto::prepareVPTOEmissionModule(ModuleOp sourceModule,
+                                     llvm::raw_ostream *diagOS) {
+  OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(sourceModule->clone()));
+
+  if (failed(convertVPTOEmissionBoundaryToPtr(*cloned, diagOS)))
+    return failure();
+
+  PassManager pm(cloned->getContext());
+  pm.addPass(createPTOValidateVPTOEmissionIRPass());
+  if (failed(pm.run(*cloned))) {
+    if (diagOS)
+      *diagOS << "VPTO emission preparation failed: emission-stage legality "
+                 "verification failed\n";
+    return failure();
+  }
+
+  return cloned;
 }
 
 std::unique_ptr<Pass> mlir::pto::createPTOVPTOPtrBoundaryPass() {

@@ -2639,28 +2639,24 @@ static LogicalResult rewriteFunctionsToEmitCStyleABI(
 }
 
 static std::unique_ptr<llvm::Module>
-buildLLVMModuleFromVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
-                        const VPTOEmissionOptions &options,
-                        llvm::raw_ostream &diagOS) {
-  OwningOpRef<ModuleOp> cloned(cast<ModuleOp>(module->clone()));
-  auto vecScopeCounts = collectVecScopeLoopCounts(*cloned);
+buildLLVMModuleFromPreparedVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
+                                const VPTOEmissionOptions &options,
+                                llvm::raw_ostream &diagOS) {
+  auto vecScopeCounts = collectVecScopeLoopCounts(module);
 
-  if (failed(convertVPTOEmissionBoundaryToPtr(*cloned, &diagOS)))
+  if (failed(normalizePtoMemRefSpaces(module, diagOS)))
     return nullptr;
 
-  if (failed(normalizePtoMemRefSpaces(*cloned, diagOS)))
+  if (failed(normalizePtoPtrsToLLVM(module, diagOS)))
     return nullptr;
 
-  if (failed(normalizePtoPtrsToLLVM(*cloned, diagOS)))
-    return nullptr;
-
-  if (failed(rewriteVPTOOps(*cloned, diagOS))) {
+  if (failed(rewriteVPTOOps(module, diagOS))) {
     diagOS << "VPTO LLVM emission failed: VPTO-to-call rewriting failed\n";
     return nullptr;
   }
-  normalizeFuncSignaturesForOfficialLLVMLowering(*cloned);
+  normalizeFuncSignaturesForOfficialLLVMLowering(module);
 
-  PassManager pm(cloned->getContext());
+  PassManager pm(module.getContext());
   pm.enableVerifier();
   pm.addPass(createConvertSCFToCFPass());
   pm.addPass(createArithToLLVMConversionPass());
@@ -2669,17 +2665,17 @@ buildLLVMModuleFromVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
   pm.addPass(createConvertFuncToLLVMPass());
   pm.addPass(createConvertControlFlowToLLVMPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
-  if (failed(pm.run(*cloned))) {
+  if (failed(pm.run(module))) {
     diagOS << "VPTO LLVM emission failed: official lowering pipeline failed\n";
     return nullptr;
   }
 
-  if (failed(applyQueriedTargetAttrs(*cloned, options, diagOS)))
+  if (failed(applyQueriedTargetAttrs(module, options, diagOS)))
     return nullptr;
 
-  registerBuiltinDialectTranslation(*cloned->getContext());
-  registerLLVMDialectTranslation(*cloned->getContext());
-  auto llvmModule = translateModuleToLLVMIR(cloned.get(), llvmContext);
+  registerBuiltinDialectTranslation(*module.getContext());
+  registerLLVMDialectTranslation(*module.getContext());
+  auto llvmModule = translateModuleToLLVMIR(module.getOperation(), llvmContext);
   if (!llvmModule) {
     diagOS << "VPTO LLVM emission failed: LLVM IR export failed\n";
     return nullptr;
@@ -2696,11 +2692,12 @@ buildLLVMModuleFromVPTO(ModuleOp module, llvm::LLVMContext &llvmContext,
 } // namespace
 
 LogicalResult
-translateVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
-                              const VPTOEmissionOptions &options,
-                              llvm::raw_ostream &diagOS) {
+translatePreparedVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
+                                      const VPTOEmissionOptions &options,
+                                      llvm::raw_ostream &diagOS) {
   llvm::LLVMContext llvmContext;
-  auto llvmModule = buildLLVMModuleFromVPTO(module, llvmContext, options, diagOS);
+  auto llvmModule =
+      buildLLVMModuleFromPreparedVPTO(module, llvmContext, options, diagOS);
   if (!llvmModule)
     return failure();
   llvmModule->print(os, nullptr);
@@ -2708,15 +2705,40 @@ translateVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
 }
 
 LogicalResult
-translateVPTOModuleToLLVMBitcode(ModuleOp module, llvm::raw_ostream &os,
-                                 const VPTOEmissionOptions &options,
-                                 llvm::raw_ostream &diagOS) {
+translatePreparedVPTOModuleToLLVMBitcode(ModuleOp module,
+                                         llvm::raw_ostream &os,
+                                         const VPTOEmissionOptions &options,
+                                         llvm::raw_ostream &diagOS) {
   llvm::LLVMContext llvmContext;
-  auto llvmModule = buildLLVMModuleFromVPTO(module, llvmContext, options, diagOS);
+  auto llvmModule =
+      buildLLVMModuleFromPreparedVPTO(module, llvmContext, options, diagOS);
   if (!llvmModule)
     return failure();
   llvm::WriteBitcodeToFile(*llvmModule, os);
   return success();
+}
+
+LogicalResult
+translateVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
+                              const VPTOEmissionOptions &options,
+                              llvm::raw_ostream &diagOS) {
+  FailureOr<OwningOpRef<ModuleOp>> prepared =
+      prepareVPTOEmissionModule(module, &diagOS);
+  if (failed(prepared))
+    return failure();
+  return translatePreparedVPTOModuleToLLVMText(**prepared, os, options, diagOS);
+}
+
+LogicalResult
+translateVPTOModuleToLLVMBitcode(ModuleOp module, llvm::raw_ostream &os,
+                                 const VPTOEmissionOptions &options,
+                                 llvm::raw_ostream &diagOS) {
+  FailureOr<OwningOpRef<ModuleOp>> prepared =
+      prepareVPTOEmissionModule(module, &diagOS);
+  if (failed(prepared))
+    return failure();
+  return translatePreparedVPTOModuleToLLVMBitcode(**prepared, os, options,
+                                                  diagOS);
 }
 
 } // namespace mlir::pto

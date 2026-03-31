@@ -691,6 +691,7 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   // Keep the A5 backend lowering boundary explicit:
   //   FusionRegionGen -> shared pre-backend normalization
   //   -> PTOVPTOVersionSelection -> PTOToVPTO
+  //   -> PTOValidateVPTOIR
   //   -> PTOVPTOIfCanonicalize
   //   -> PTOLowLevelLoopFusion -> Canonicalize
   //   -> CSE -> PTOFusionPredicateElision
@@ -703,6 +704,8 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   } else {
     pm.addPass(pto::createLowerPTOToVPTOPass(vptoLoweringStrategy));
   }
+
+  pm.addPass(pto::createPTOValidateVPTOIRPass());
 
   if (enableFusionMainline) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVPTOIfCanonicalizePass());
@@ -727,6 +730,15 @@ static void addVPTOBackendMainlinePasses(OpPassManager &pm,
   }
 
   pm.addPass(mlir::createCSEPass());
+}
+
+static LogicalResult runVPTOAuthoringValidation(MLIRContext &context,
+                                                ModuleOp module,
+                                                const llvm::StringSet<> &userFuncNames) {
+  PassManager validationPM(&context);
+  maybeEnablePrintIRAfterAll(validationPM, userFuncNames);
+  validationPM.addPass(pto::createPTOValidateVPTOIRPass());
+  return validationPM.run(module);
 }
 
 static void printVPTOIROpSummary(ModuleOp module, llvm::raw_ostream &os) {
@@ -1464,6 +1476,11 @@ int main(int argc, char **argv) {
         llvm::errs() << "Error: VPTO backend lowering pass execution failed.\n";
         return 1;
       }
+    } else if (failed(runVPTOAuthoringValidation(context, *module,
+                                                 inputFuncNames))) {
+      llvm::errs() << "Error: VPTO authoring-stage legality verification "
+                      "failed.\n";
+      return 1;
     }
 
     std::error_code ec;
@@ -1477,24 +1494,6 @@ int main(int argc, char **argv) {
       printVPTOIROpSummary(*module, llvm::errs());
       module->print(llvm::errs());
       llvm::errs() << "\n";
-    }
-
-    OwningOpRef<ModuleOp> emissionModule(cast<ModuleOp>(module->clone()));
-    PassManager emissionPM(&context);
-    maybeEnablePrintIRAfterAll(emissionPM, inputFuncNames);
-    emissionPM.addPass(pto::createPTOVPTOPtrBoundaryPass());
-    if (failed(emissionPM.run(*emissionModule))) {
-      llvm::errs()
-          << "Error: VPTO pre-emission ptr-boundary pass execution failed.\n";
-      return 1;
-    }
-
-    if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
-                     !vptoEmitHIVMOfficialBitcode)) {
-      emissionModule->print(outputFile.os());
-      outputFile.os() << "\n";
-      outputFile.keep();
-      return 0;
     }
 
     pto::VPTOEmissionOptions options;
@@ -1515,18 +1514,40 @@ int main(int argc, char **argv) {
           "+MOVX8,+SPR7bits,+SyncV,+dav-c310-vec";
     }
 
+    if (emitVPTO || vptoEmitHIVMText ||
+        (!vptoEmitHIVMOfficialLLVM && !vptoEmitHIVMOfficialBitcode)) {
+      FailureOr<OwningOpRef<ModuleOp>> emissionModule =
+          pto::prepareVPTOEmissionModule(*module, &llvm::errs());
+      if (failed(emissionModule)) {
+        llvm::errs() << "Error: VPTO emission preparation failed.\n";
+        return 1;
+      }
+
+      if (emitVPTO || (!vptoEmitHIVMText && !vptoEmitHIVMOfficialLLVM &&
+                       !vptoEmitHIVMOfficialBitcode)) {
+        (*emissionModule)->print(outputFile.os());
+        outputFile.os() << "\n";
+        outputFile.keep();
+        return 0;
+      }
+
+      if (failed(pto::translateVPTOModuleToText(**emissionModule,
+                                                outputFile.os(), options,
+                                                llvm::errs()))) {
+        llvm::errs() << "Error: Failed to emit VPTO text.\n";
+        return 1;
+      }
+      outputFile.keep();
+      return 0;
+    }
+
     LogicalResult emissionStatus =
         vptoEmitHIVMOfficialBitcode
-            ? pto::translateVPTOModuleToLLVMBitcode(*emissionModule,
+            ? pto::translateVPTOModuleToLLVMBitcode(*module,
                                                     outputFile.os(),
                                                     options, llvm::errs())
-            : vptoEmitHIVMOfficialLLVM
-                  ? pto::translateVPTOModuleToLLVMText(*emissionModule,
-                                                       outputFile.os(),
-                                                       options, llvm::errs())
-                  : pto::translateVPTOModuleToText(*emissionModule,
-                                                   outputFile.os(),
-                                                   options, llvm::errs());
+            : pto::translateVPTOModuleToLLVMText(*module, outputFile.os(),
+                                                 options, llvm::errs());
     if (failed(emissionStatus)) {
       llvm::errs() << "Error: Failed to emit VPTO text.\n";
       return 1;

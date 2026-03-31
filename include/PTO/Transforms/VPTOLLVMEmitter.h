@@ -14,6 +14,17 @@ class raw_ostream;
 namespace mlir::pto {
 
 LogicalResult
+translatePreparedVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
+                                      const VPTOEmissionOptions &options,
+                                      llvm::raw_ostream &diagOS);
+
+LogicalResult
+translatePreparedVPTOModuleToLLVMBitcode(ModuleOp module,
+                                         llvm::raw_ostream &os,
+                                         const VPTOEmissionOptions &options,
+                                         llvm::raw_ostream &diagOS);
+
+LogicalResult
 translateVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
                               const VPTOEmissionOptions &options,
                               llvm::raw_ostream &diagOS);

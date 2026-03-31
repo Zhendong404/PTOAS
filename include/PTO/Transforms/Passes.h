@@ -81,6 +81,8 @@ std::unique_ptr<Pass> createPTOInstantiateAndLowerToLibCallPass(
     const PTOInstantiateAndLowerToLibCallOptions &options = {});
 std::unique_ptr<Pass>
 createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOValidateVPTOIRPass();
+std::unique_ptr<Pass> createPTOValidateVPTOEmissionIRPass();
 std::unique_ptr<Pass> createPTOValidateSimdIRPass();
 std::unique_ptr<Pass> createPTOLowerSimdToVectorPass();
 std::unique_ptr<Pass> createPTOLowLevelLoopFusionPass(
