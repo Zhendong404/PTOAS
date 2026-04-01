@@ -1,5 +1,5 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
-// RUN: ./build/tools/ptoas/ptoas --pto-arch a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck --check-prefix=CHECK-HIVM %s
+// RUN: ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
+// RUN: ptoas --pto-arch a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck --check-prefix=CHECK-HIVM %s
 
 // CHECK-LABEL: func.func @copy_dynamic_transfer_operands
 // CHECK-DAG: %[[STRIDE_BYTES:.*]] = arith.constant 128 : i64

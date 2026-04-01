@@ -805,6 +805,27 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
   return success();
 }
 
+static bool containsVPTOOpPrefix(llvm::StringRef line,
+                                 llvm::StringRef opPrefix) {
+  size_t searchFrom = 0;
+  while (searchFrom < line.size()) {
+    size_t pos = line.find(opPrefix, searchFrom);
+    if (pos == llvm::StringRef::npos)
+      return false;
+
+    if (pos == 0)
+      return true;
+
+    unsigned char before = static_cast<unsigned char>(line[pos - 1]);
+    if (std::isspace(before) || before == '(' || before == '=' ||
+        before == ',')
+      return true;
+
+    searchFrom = pos + 1;
+  }
+  return false;
+}
+
 static bool containsVPTOIR(llvm::StringRef input) {
   llvm::StringRef rest = input;
   while (!rest.empty()) {
@@ -812,13 +833,19 @@ static bool containsVPTOIR(llvm::StringRef input) {
     llvm::StringRef line = split.first.trim();
     if (!line.starts_with("//") &&
         (line.contains("!pto.vec<") || line.contains("!pto.mask") ||
-         line.contains("!pto.align") || line.contains("pto.copy_") ||
-         line.contains("pto.set_loop") || line.contains("pto.v") ||
-         line.contains("pto.plt_") || line.contains("pto.pset_") ||
-         line.contains("pto.psts") || line.contains("pto.pdintlv_") ||
-         line.contains("pto.set_flag") || line.contains("pto.wait_flag") ||
-         line.contains("pto.pipe_barrier") || line.contains("pto.get_buf") ||
-         line.contains("pto.rls_buf")))
+         line.contains("!pto.align") ||
+         containsVPTOOpPrefix(line, "pto.copy_") ||
+         containsVPTOOpPrefix(line, "pto.set_loop") ||
+         containsVPTOOpPrefix(line, "pto.v") ||
+         containsVPTOOpPrefix(line, "pto.plt_") ||
+         containsVPTOOpPrefix(line, "pto.pset_") ||
+         containsVPTOOpPrefix(line, "pto.psts") ||
+         containsVPTOOpPrefix(line, "pto.pdintlv_") ||
+         containsVPTOOpPrefix(line, "pto.set_flag") ||
+         containsVPTOOpPrefix(line, "pto.wait_flag") ||
+         containsVPTOOpPrefix(line, "pto.pipe_barrier") ||
+         containsVPTOOpPrefix(line, "pto.get_buf") ||
+         containsVPTOOpPrefix(line, "pto.rls_buf")))
       return true;
     rest = split.second;
   }

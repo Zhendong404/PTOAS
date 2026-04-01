@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
+// RUN: ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tload_copy_family_shape
 // CHECK-DAG: %[[ZERO_I64:.*]] = arith.constant 0 : i64

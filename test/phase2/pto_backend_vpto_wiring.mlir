@@ -1,6 +1,6 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s --check-prefix=VPTO
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --vpto-print-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SUMMARY --check-prefix=VPTO
-// RUN: ./build/tools/ptoas/ptoas --pto-arch=a5 --pto-backend=emitc %s -o - 2>/dev/null | FileCheck %s --check-prefix=EMITC
+// RUN: ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s --check-prefix=VPTO
+// RUN: ptoas --pto-backend=vpto --vpto-print-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SUMMARY --check-prefix=VPTO
+// RUN: ptoas --pto-arch=a5 --pto-backend=emitc %s -o - 2>/dev/null | FileCheck %s --check-prefix=EMITC
 
 // SUMMARY: VPTO IR op: pto.copy_gm_to_ubuf
 // SUMMARY: VPTO IR op: pto.copy_ubuf_to_gm

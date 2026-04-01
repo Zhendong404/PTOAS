@@ -1,13 +1,12 @@
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-text --print-ir-after-all %s -o /dev/null 2>&1 | sed -n '/IR Dump After PTOVPTOPtrBoundary/,/IR Dump After /p' | FileCheck %s
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
 
-// CHECK-LABEL: IR Dump After PTOVPTOPtrBoundary
-// CHECK: func.func @bind_tile_pointer_cast_boundary(%arg0: !pto.mask)
+// CHECK: func.func @bind_tile_pointer_cast_boundary(%arg0: !pto.mask<b32>)
 // CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: pto.bind_tile
 // CHECK: %[[BASE0:.+]] = pto.castptr %{{.+}} : i64 -> !pto.ptr<f32, ub>
 // CHECK: %[[LOAD:.+]] = pto.vlds %[[BASE0]][%{{.+}}] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
 // CHECK: %[[BASE1:.+]] = pto.castptr %{{.+}} : i64 -> !pto.ptr<f32, ub>
-// CHECK: pto.vsts %[[LOAD]], %[[BASE1]][%{{.+}}], %arg0 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask
+// CHECK: pto.vsts %[[LOAD]], %[[BASE1]][%{{.+}}], %arg0 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
 // CHECK-LABEL: func.func @bind_tile_castptr_boundary()
 // CHECK-NOT: pto.pointer_cast
 // CHECK-NOT: pto.bind_tile
@@ -15,15 +14,17 @@
 // CHECK: pto.copy_ubuf_to_gm %[[PTR]], %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}} : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64
 
 module {
-  func.func @bind_tile_pointer_cast_boundary(%mask: !pto.mask) {
+  func.func @bind_tile_pointer_cast_boundary(%mask: !pto.mask<b32>) attributes {pto.version_selection_applied} {
     %c0 = arith.constant 0 : index
     %c0_i64 = arith.constant 0 : i64
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
     %buf = pto.pointer_cast(%c0_i64) : memref<1x64xf32, #pto.address_space<vec>>
     %tile = pto.bind_tile %buf, %c1, %c64 {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>>} : memref<1x64xf32, #pto.address_space<vec>> -> memref<1x64xf32, #pto.address_space<vec>>
-    %v = pto.vlds %tile[%c0] : memref<1x64xf32, #pto.address_space<vec>> -> !pto.vreg<64xf32>
-    pto.vsts %v, %tile[%c0], %mask : !pto.vreg<64xf32>, memref<1x64xf32, #pto.address_space<vec>>, !pto.mask
+    pto.vecscope {
+      %v = pto.vlds %tile[%c0] : memref<1x64xf32, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+      pto.vsts %v, %tile[%c0], %mask : !pto.vreg<64xf32>, memref<1x64xf32, #pto.address_space<vec>>, !pto.mask<b32>
+    }
     return
   }
 

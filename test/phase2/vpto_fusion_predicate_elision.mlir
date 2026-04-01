@@ -3,6 +3,6 @@
 
 // POST-LABEL: IR Dump After PTOFusionPredicateElision
 // POST: %[[LOOPRES:[^ ]+]] = scf.for %{{[^ ]+}} = %c0 to %c2 step %c1 iter_args(%[[ARG:[^ ]+]] = %c128_i32) -> (i32) {
-// POST: %[[MASK:[^,]+]], %[[OUT:[^ ]+]] = pto.plt_b32 %[[ARG]] : i32 -> !pto.mask, i32
+// POST: %[[MASK:[^,]+]], %[[OUT:[^ ]+]] = pto.plt_b32 %[[ARG]] : i32 -> !pto.mask<b32>, i32
 // POST-NOT: -> (i32, i32)
 // POST: scf.yield %[[OUT]] : i32

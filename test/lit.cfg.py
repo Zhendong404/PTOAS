@@ -5,7 +5,7 @@ config.name = "PTOAS"
 config.test_format = lit.formats.ShTest(execute_external=True)
 
 # Keep discovery focused on lit-style tests.
-config.suffixes = [".mlir"]
+config.suffixes = [".mlir", ".pto"]
 config.excludes = [
     "CMakeLists.txt",
     "README.md",

@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas %s 2>&1 | FileCheck %s
+// RUN: ! ptoas %s 2>&1 | FileCheck %s
 
 // The corrected Phase 1 contract keeps the normalized vector spelling while
 // enforcing the 256-byte VPTO vector width contract.

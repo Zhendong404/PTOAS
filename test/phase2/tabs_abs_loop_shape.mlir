@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
+// RUN: ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @tabs_abs_loop_shape
 // CHECK: %[[BASE:[^ ]+]] = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
