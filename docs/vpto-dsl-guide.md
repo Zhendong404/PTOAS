@@ -4,48 +4,92 @@ The VPTO Python DSL provides a high-level, Pythonic interface for authoring vect
 
 ## Quick Start
 
-Here's a minimal example of a vector absolute value kernel:
+Here's a minimal example of a tile scaling kernel using the new Tile type:
 
 ```python
 import pto
-from pto import MemorySpace, PIPE, EVENT
 
-@pto.vkernel(target="a5", name="abs_kernel")
-def abs_kernel(src: pto.ptr(pto.f32, MemorySpace.GM),
-               dst: pto.ptr(pto.f32, MemorySpace.GM)):
-    # Configure DMA copy parameters
-    pto.set_loop_size_outtoub(1, 1)
-
-    # Allocate UB pointers
-    ub_in = pto.castptr(0, pto.ptr(pto.f32, MemorySpace.UB))
-    ub_out = pto.castptr(4096, pto.ptr(pto.f32, MemorySpace.UB))
-
-    # Copy data from GM to UB
-    pto.copy_gm_to_ubuf(src, ub_in, 0, 32, 128, 0, 0, False, 0, 128, 128)
-
-    # Synchronize pipelines
-    pto.set_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
-    pto.wait_flag(PIPE.MTE2, PIPE.V, EVENT.ID0)
-
-    # Vector computation scope
-    with pto.strict_vecscope(ub_in, ub_out, 0, 1024, 64, pto.i32(1024)) as (
-        vin, vout, lb, ub, step, rem0
-    ):
-        rem: pto.i32 = rem0
-        for lane in range(lb, ub, step):
-            mask, rem = pto.plt_b32(rem)
-            vec = pto.vlds(vin, lane)
-            out = pto.vabs(vec, mask)
-            pto.vsts(out, vout, lane, mask)
-
-    # Synchronize and copy back
-    pto.set_flag(PIPE.V, PIPE.MTE3, EVENT.ID0)
-    pto.wait_flag(PIPE.V, PIPE.MTE3, EVENT.ID0)
-    pto.copy_ubuf_to_gm(ub_out, dst, 0, 32, 128, 0, 128, 128)
-    pto.pipe_barrier(PIPE.ALL)
+@pto.vkernel(target="a5", name="tile_scale")
+def tile_scale(input_tile: pto.Tile,   # Input tile (shape: 256x128, f32, GM)
+               output_tile: pto.Tile,  # Output tile (same shape and type)
+               scale_factor: pto.f32): # Scaling factor
+    # Access tile properties
+    rows, cols = input_tile.shape      # (256, 128)
+    dtype = input_tile.element_type    # pto.f32
+    
+    # Create a temporary tile in UB for computation
+    ub_tile = pto.tile((rows, cols), dtype, pto.MemorySpace.UB)
+    
+    # Copy input tile from GM to UB
+    # Note: Simplified syntax pto.copy_gm_to_ub would be provided as syntax sugar
+    # Using underlying operation with explicit parameters
+    pto.copy_gm_to_ubuf(input_tile.as_ptr(), ub_tile.as_ptr(),
+                        0, cols * 4, cols * 4,  # strides in bytes
+                        0, 0, False, 0, cols * 4, cols * 4)
+    
+    # Vector computation: scale all elements in the tile
+    with pto.vecscope():
+        all_mask = pto.pset_b32("PAT_ALL")
+        
+        # Process tile in row-major order
+        for row in range(0, rows):
+            row_offset = row * cols * 4  # f32 = 4 bytes
+            
+            # Process each row in vector chunks (64 elements per vector)
+            for chunk in range(0, cols, 64):
+                offset = row_offset + chunk * 4
+                
+                # Load vector from UB tile (implicit tile→UBRef conversion)
+                vec = pto.vlds(ub_tile, offset)
+                
+                # Scale vector
+                scaled = pto.vmuls(vec, scale_factor, all_mask)
+                
+                # Store result back to UB tile
+                pto.vsts(scaled, ub_tile, offset, all_mask)
+    
+    # Copy result from UB back to GM output tile
+    # Note: Simplified syntax pto.copy_ub_to_gm would be provided as syntax sugar
+    pto.copy_ubuf_to_gm(ub_tile.as_ptr(), output_tile.as_ptr(),
+                        0, cols * 4, cols * 4,
+                        0, cols * 4, cols * 4)
 ```
 
-This kernel demonstrates the key DSL concepts: kernel declaration with `@pto.vkernel`, typed pointers, pipeline synchronization, vector scopes, typed masks, and vector operations.
+This example demonstrates:
+1. **Tile parameters** in kernel declaration
+2. **Tile property access** (shape, element_type)  
+3. **Tile creation** for temporary buffers
+4. **Tile to pointer conversion** for copy operations (`.as_ptr()`)
+5. **Implicit tile→UBRef conversion** in vector load/store operations
+6. **Future syntax sugar** for simplified copy operations (commented)
+
+For an even more concise example showing pure computation on UB tiles (assuming data is already in UB):
+
+```python
+@pto.vkernel(target="a5", name="ub_tile_computation")
+def ub_tile_computation(a: pto.Tile,  # UB tile
+                        b: pto.Tile,  # UB tile  
+                        c: pto.Tile): # UB tile (output)
+    # All tiles are in UB memory space
+    with pto.vecscope():
+        all_mask = pto.pset_b32("PAT_ALL")
+        rows, cols = a.shape
+        
+        # Element-wise: c = a + b * 2.0
+        for i in range(0, rows * cols, 64):
+            # Load vectors from UB tiles
+            vec_a = pto.vlds(a, i * 4)      # Implicit tile→UBRef
+            vec_b = pto.vlds(b, i * 4)
+            
+            # Compute: b * 2.0
+            scaled_b = pto.vmuls(vec_b, pto.f32(2.0), all_mask)
+            
+            # Compute: a + scaled_b
+            result = pto.vadd(vec_a, scaled_b, all_mask)
+            
+            # Store result to output tile
+            pto.vsts(result, c, i * 4, all_mask)
+```
 
 ## Core Concepts
 
