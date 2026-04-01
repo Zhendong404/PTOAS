@@ -539,14 +539,14 @@ pto.copy_ubuf_to_gm(ub_ptr, gm_ptr, 0, 32, 128, 0, 128, 128)
 
 Operations for loading data from memory into vector registers.
 
-#### `pto.vlds(buf: BufLike, offset: Index) -> VRegType`
+#### `pto.vlds(buf: UBRef, offset: Index) -> VRegType`
 
 **Description**: Stateless vector load from buffer.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `BufLike` | Buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 
 **Returns**:
@@ -563,14 +563,14 @@ Operations for loading data from memory into vector registers.
 vec = pto.vlds(ub_ptr, lane * 256)
 ```
 
-#### `pto.vldas(buf: BufLike, offset: Index, align: pto.align) -> VRegType`
+#### `pto.vldas(buf: UBRef, offset: Index, align: pto.align) -> VRegType`
 
 **Description**: Aligned vector load with explicit alignment carrier.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `BufLike` | Buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 | `align` | `pto.align` | Alignment specification |
 
@@ -579,14 +579,14 @@ vec = pto.vlds(ub_ptr, lane * 256)
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vldus(buf: BufLike, offset: Index) -> VRegType`
+#### `pto.vldus(buf: UBRef, offset: Index) -> VRegType`
 
 **Description**: Unaligned vector load.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `BufLike` | Buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 
 **Returns**:
@@ -594,14 +594,14 @@ vec = pto.vlds(ub_ptr, lane * 256)
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vplds(buf: BufLike, offset: Index, pred: MaskType) -> VRegType`
+#### `pto.vplds(buf: UBRef, offset: Index, pred: MaskType) -> VRegType`
 
 **Description**: Predicated vector load stateless.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `BufLike` | Buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 | `pred` | `MaskType` | Predicate mask |
 
@@ -610,15 +610,15 @@ vec = pto.vlds(ub_ptr, lane * 256)
 |--------------|------|-------------|
 | `vec` | `VRegType` | Loaded vector register |
 
-#### `pto.vldx2(buf1: BufLike, buf2: BufLike, offset: Index) -> (VRegType, VRegType)`
+#### `pto.vldx2(buf1: UBRef, buf2: UBRef, offset: Index) -> (VRegType, VRegType)`
 
 **Description**: Dual vector load from two buffers.
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf1` | `BufLike` | First buffer or pointer |
-| `buf2` | `BufLike` | Second buffer or pointer |
+| `buf1` | `UBRef` | First buffer or pointer |
+| `buf2` | `UBRef` | Second buffer or pointer |
 | `offset` | `Index` | Byte offset (applied to both buffers) |
 
 **Returns**:
@@ -627,14 +627,14 @@ vec = pto.vlds(ub_ptr, lane * 256)
 | `vec1` | `VRegType` | Vector from first buffer |
 | `vec2` | `VRegType` | Vector from second buffer |
 
-#### `pto.vsld(buf: BufLike, offset: Index) -> VRegType`
+#### `pto.vsld(buf: UBRef, offset: Index) -> VRegType`
 
 **Description**: Scalar load to vector (broadcast scalar to all lanes).
 
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `buf` | `BufLike` | Buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 
 **Returns**:
@@ -1545,7 +1545,7 @@ Type conversion and specialized operations.
 
 Operations for storing data from vector registers to memory (stateless).
 
-#### `pto.vsts(vec: VRegType, buf: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vsts(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Stateless vector store to buffer.
 
@@ -1553,7 +1553,7 @@ Operations for storing data from vector registers to memory (stateless).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `BufLike` | Destination buffer or pointer (UB memory space) |
+| `buf` | `UBRef` | Destination buffer or pointer (UB memory space) |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
@@ -1568,7 +1568,7 @@ Operations for storing data from vector registers to memory (stateless).
 pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 ```
 
-#### `pto.psts(mask: MaskType, buf: BufLike, offset: Index) -> None`
+#### `pto.psts(mask: MaskType, buf: UBRef, offset: Index) -> None`
 
 **Description**: Predicate store to buffer.
 
@@ -1576,12 +1576,12 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Mask to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsst(scalar: ScalarType, buf: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vsst(scalar: ScalarType, buf: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Scalar to vector store (broadcast scalar to all lanes).
 
@@ -1589,13 +1589,13 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `scalar` | `ScalarType` | Scalar value |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: BufLike, buf2: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vstx2(vec1: VRegType, vec2: VRegType, buf1: UBRef, buf2: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Dual vector store to two buffers.
 
@@ -1604,14 +1604,14 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 |-----------|------|-------------|
 | `vec1` | `VRegType` | First vector to store |
 | `vec2` | `VRegType` | Second vector to store |
-| `buf1` | `BufLike` | First destination buffer |
-| `buf2` | `BufLike` | Second destination buffer |
+| `buf1` | `UBRef` | First destination buffer |
+| `buf2` | `UBRef` | Second destination buffer |
 | `offset` | `Index` | Byte offset (applied to both buffers) |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vsta(vec: VRegType, buf: BufLike, offset: Index, align: pto.align, mask: MaskType) -> None`
+#### `pto.vsta(vec: VRegType, buf: UBRef, offset: Index, align: pto.align, mask: MaskType) -> None`
 
 **Description**: Aligned vector store with explicit alignment carrier.
 
@@ -1619,7 +1619,7 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 | `align` | `pto.align` | Alignment specification |
 | `mask` | `MaskType` | Predicate mask |
@@ -1630,7 +1630,7 @@ pto.vsts(vec_f32, ub_ptr, lane * 256, mask32)
 
 Operations for storing data with stateful semantics.
 
-#### `pto.pstu(mask: MaskType, buf: BufLike, offset: Index) -> None`
+#### `pto.pstu(mask: MaskType, buf: UBRef, offset: Index) -> None`
 
 **Description**: Predicate stateful store.
 
@@ -1638,12 +1638,12 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `mask` | `MaskType` | Mask to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstu(vec: VRegType, buf: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vstu(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Vector stateful store.
 
@@ -1651,13 +1651,13 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstus(vec: VRegType, buf: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vstus(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Vector store update stateless.
 
@@ -1665,13 +1665,13 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
 **Returns**: None (side-effect operation)
 
-#### `pto.vstur(vec: VRegType, buf: BufLike, offset: Index, mask: MaskType) -> None`
+#### `pto.vstur(vec: VRegType, buf: UBRef, offset: Index, mask: MaskType) -> None`
 
 **Description**: Vector store update register.
 
@@ -1679,7 +1679,7 @@ Operations for storing data with stateful semantics.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `vec` | `VRegType` | Vector to store |
-| `buf` | `BufLike` | Destination buffer or pointer |
+| `buf` | `UBRef` | Destination buffer or pointer |
 | `offset` | `Index` | Byte offset |
 | `mask` | `MaskType` | Predicate mask |
 
