@@ -234,18 +234,6 @@ static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   return false;
 }
 
-static llvm::StringRef stringifyBuildLevel(PTOBuildLevel level) {
-  switch (level) {
-  case PTOBuildLevel::Level1:
-    return "level1";
-  case PTOBuildLevel::Level2:
-    return "level2";
-  case PTOBuildLevel::Level3:
-    return "level3";
-  }
-  llvm_unreachable("unsupported PTOBuildLevel");
-}
-
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
     "barrier_all";
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
@@ -1031,10 +1019,6 @@ int main(int argc, char **argv) {
                  << "'. Expected 'level1', 'level2', or 'level3'.\n";
     return 1;
   }
-
-  module->getOperation()->setAttr(
-      "pto.build_level",
-      mlir::StringAttr::get(&context, stringifyBuildLevel(effectiveLevel)));
 
   bool invalidAutoSyncTailHint = false;
   module->walk([&](mlir::func::FuncOp func) {
