@@ -521,6 +521,7 @@ def store_scalar(ptr, offset, value, *, loc=None, ip=None):
         ip=ip,
     )
 
+
 # -----------------------------------------------------------------------------
 # Export enum aliases for terse calls: pto.record_event(TLOAD, TLOAD, EVENT_ID0)
 # -----------------------------------------------------------------------------
