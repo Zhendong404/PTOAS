@@ -605,8 +605,8 @@ def abs_kernel(src: pto.ptr(pto.f32, "gm"),
 
 ```python
 @pto.vkernel(name="copy_line")
-def copy_line(src: pto.memref((256,), pto.f32, "ub"),
-              dst: pto.memref((256,), pto.f32, "ub")):
+def copy_line(src: pto.memref(256, pto.f32, "ub"),
+              dst: pto.memref(256, pto.f32, "ub")):
     with pto.vecscope():
         all_mask: pto.mask_b32 = pto.pset_b32("PAT_ALL")
         for offset in range(0, 256, 64):
