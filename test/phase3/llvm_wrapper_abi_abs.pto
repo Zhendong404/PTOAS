@@ -1,3 +1,15 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o - 2>/dev/null | FileCheck %s
+
+// CHECK-LABEL: define{{( dso_local)?}} void @abs_wrapper_abi(ptr addrspace(1) %{{[0-9a-zA-Z._]+}}, ptr addrspace(1) %{{[0-9a-zA-Z._]+}})
+// CHECK: call void @llvm.hivm.MOV.OUT.TO.UB.ALIGN.V2.f32.DV
+// CHECK: call { <64 x float>, ptr addrspace(6) } @llvm.hivm.vldsx1.post.v64f32
+// CHECK: call <64 x float> @llvm.hivm.vabs.v64f32.x
+// CHECK: call ptr addrspace(6) @llvm.hivm.vstsx1.post.v64f32
+// CHECK: call void @llvm.hivm.MOV.UB.TO.OUT.ALIGN.V2.DV
+// CHECK-NOT: __ptoas_impl_
+// CHECK-NOT: insertvalue
+// CHECK-NOT: addrspacecast
+
 module {
   func.func @abs_wrapper_abi(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index

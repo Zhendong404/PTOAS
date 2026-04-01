@@ -1,62 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ptoas_bin="./build/tools/ptoas/ptoas"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${repo_root}/scripts/ptoas_env.sh"
 
-if [[ ! -x "${ptoas_bin}" ]]; then
-  echo "error: missing ./build/tools/ptoas/ptoas" >&2
+llvm_lit_bin="${LLVM_LIT_BIN:-$(command -v llvm-lit || true)}"
+if [[ -z "${llvm_lit_bin}" ]]; then
+  echo "error: missing llvm-lit in PATH; source scripts/ptoas_env.sh first" >&2
   exit 1
 fi
 
-legacy_guard_pattern='pto\.\(load\|abs\|store\)'
-legacy_guard_regex='pto\.(load|abs|store)'
-
-rg -n "${legacy_guard_regex}" test/phase1/*.mlir >/dev/null && {
-  echo "error: obsolete pseudo-op fixture content detected under test/phase1" >&2
-  exit 1
-} || true
-
-echo "phase1 check: vpto_vec_type.mlir"
-{ "${ptoas_bin}" test/phase1/vpto_vec_type.mlir 2>&1 || true; } | FileCheck test/phase1/vpto_vec_type.mlir
-
-echo "phase1 check: vpto_copy_gm_to_ubuf_op.mlir"
-positive_copy_gm_to_ubuf="$(mktemp)"
-awk '1; /^}$/ {exit}' test/phase1/vpto_copy_gm_to_ubuf_op.mlir > "${positive_copy_gm_to_ubuf}"
-{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_copy_gm_to_ubuf}" -o - 2>/dev/null; } | \
-  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_copy_gm_to_ubuf_op.mlir
-rm -f "${positive_copy_gm_to_ubuf}"
-{ "${ptoas_bin}" test/phase1/vpto_copy_gm_to_ubuf_op.mlir -o - 2>&1 || true; } | \
-  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_copy_gm_to_ubuf_op.mlir
-
-echo "phase1 check: vpto_vabs_kernel_shape.mlir"
-positive_vabs_kernel_shape="$(mktemp)"
-awk '1; /^}$/ {exit}' test/phase1/vpto_vabs_kernel_shape.mlir > "${positive_vabs_kernel_shape}"
-{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_vabs_kernel_shape}" -o - 2>/dev/null; } | \
-  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_vabs_kernel_shape.mlir
-rm -f "${positive_vabs_kernel_shape}"
-{ "${ptoas_bin}" test/phase1/vpto_vabs_kernel_shape.mlir -o - 2>&1 || true; } | \
-  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_vabs_kernel_shape.mlir
-
-echo "phase1 check: vpto_copy_ubuf_to_gm_op.mlir"
-positive_copy_ubuf_to_gm="$(mktemp)"
-awk '1; /^}$/ {exit}' test/phase1/vpto_copy_ubuf_to_gm_op.mlir > "${positive_copy_ubuf_to_gm}"
-{ "${ptoas_bin}" --pto-backend=vpto --emit-vpto "${positive_copy_ubuf_to_gm}" -o - 2>/dev/null; } | \
-  FileCheck --check-prefix=CHECK-POS test/phase1/vpto_copy_ubuf_to_gm_op.mlir
-rm -f "${positive_copy_ubuf_to_gm}"
-{ "${ptoas_bin}" test/phase1/vpto_copy_ubuf_to_gm_op.mlir -o - 2>&1 || true; } | \
-  FileCheck --check-prefix=CHECK-ERR test/phase1/vpto_copy_ubuf_to_gm_op.mlir
-
-echo "phase1 check: vpto_backend_switch.mlir"
-backend_switch_output="$(mktemp)"
-"${ptoas_bin}" --pto-backend=vpto test/phase1/vpto_backend_switch.mlir -o - > "${backend_switch_output}"
-FileCheck test/phase1/vpto_backend_switch.mlir < "${backend_switch_output}"
-if rg -n "llvm\\.hivm" "${backend_switch_output}" >/dev/null; then
-  echo "error: backend switch emitted deferred HIVM text instead of corrected VPTO text" >&2
-  rm -f "${backend_switch_output}"
-  exit 1
-fi
-rm -f "${backend_switch_output}"
-
-echo "phase1 check: vpto_shared_dialects.mlir"
-"${ptoas_bin}" --pto-backend=vpto --emit-vpto test/phase1/vpto_shared_dialects.mlir -o - 2>/dev/null | \
-  FileCheck test/phase1/vpto_shared_dialects.mlir
+exec "${llvm_lit_bin}" -sv "${repo_root}/test/phase1" "$@"

@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s
+// RUN: ! ptoas --pto-backend=vpto --emit-vpto %s -o - 2>&1 | FileCheck %s
 
 // CHECK: TSTORE ACC lowering TODO for vpto backend
 // CHECK: TSTORE MAT lowering TODO for vpto backend

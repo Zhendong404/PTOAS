@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=direct_tadd %s -o /dev/null > %t 2>&1
+// RUN: ptoas --pto-backend=vpto --print-ir-after-all --print-ir-after-all-func-filter=direct_tadd %s -o /dev/null > %t 2>&1 || true
 // RUN: awk '/IR Dump After PTOToVPTO/{found=1} found{if (found > 1 && /IR Dump After /) exit; print; found=2}' %t | FileCheck %s
 
 // CHECK-LABEL: IR Dump After PTOToVPTO

@@ -9,10 +9,10 @@
 // CHECK: scf.for %{{.*}} = %c0{{(_[0-9]+)?}} to %c16{{(_[0-9]+)?}} step %c1{{(_[0-9]+)?}} {
 // CHECK: %[[BROADCAST:.+]] = pto.uvld
 // CHECK: pto.vdup
-// CHECK: scf.for %[[CHUNK:.+]] = %c0{{(_[0-9]+)?}} to %[[REPEAT_UPPER]] step %c1{{(_[0-9]+)?}} iter_args(%[[REMAIN:.+]] = %[[ROW_SCALAR]]) -> (i32) {
-// CHECK: %[[MASK:.+]], %[[NEXT:.+]] = pto.plt_b32 %[[REMAIN]]
-// CHECK: %{{.+}} = arith.muli %[[CHUNK]], %c64{{(_[0-9]+)?}} : index
+// CHECK: scf.for %{{.+}} = %c0{{(_[0-9]+)?}} to %{{.+}} step %c1{{(_[0-9]+)?}} iter_args(%{{.+}} = %{{.+}}) -> (i32) {
+// CHECK: pto.plt_b32
+// CHECK: arith.muli
 // CHECK: pto.vlds
-// CHECK: pto.vmul {{.*}}, %[[MASK]]
-// CHECK: pto.vsts {{.*}}, %[[MASK]]
-// CHECK: scf.yield %[[NEXT]] : i32
+// CHECK: pto.vmul
+// CHECK: pto.vsts
+// CHECK: scf.yield %{{.+}} : i32

@@ -1,4 +1,4 @@
-// RUN: ./build/tools/ptoas/ptoas --pto-backend=vpto %s -o /dev/null 2>&1 | FileCheck %s
+// RUN: ! ptoas --pto-backend=vpto %s -o /dev/null 2>&1 | FileCheck %s
 
 // CHECK: expects src to be in the vec address space
 // CHECK: expects src to use the row_major blayout

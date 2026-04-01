@@ -103,26 +103,26 @@ module {
 }
 
 // B8-LABEL: func.func @family_b8(
-// B8: %[[MASK8:[^,]+]], %[[SCALAR8:[^ ]+]] = pto.plt_b8 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// B8: %[[MASK8:[^,]+]], %[[SCALAR8:[^ ]+]] = pto.plt_b8 %{{[^ ]+}} : i32 -> !pto.mask<b8>, i32
 // B8-NOT: pto.plt_b8
 // B8: scf.yield %[[SCALAR8]], %[[SCALAR8]] : i32, i32
 
 // B16-LABEL: func.func @family_b16(
-// B16: %[[MASK16:[^,]+]], %[[SCALAR16:[^ ]+]] = pto.plt_b16 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// B16: %[[MASK16:[^,]+]], %[[SCALAR16:[^ ]+]] = pto.plt_b16 %{{[^ ]+}} : i32 -> !pto.mask<b16>, i32
 // B16-NOT: pto.plt_b16
 // B16: scf.yield %[[SCALAR16]], %[[SCALAR16]] : i32, i32
 
 // B32-LABEL: func.func @family_b32(
-// B32: %[[MASK32:[^,]+]], %[[SCALAR32:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// B32: %[[MASK32:[^,]+]], %[[SCALAR32:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask<b32>, i32
 // B32-NOT: pto.plt_b32
 // B32: scf.yield %[[SCALAR32]], %[[SCALAR32]] : i32, i32
 
 // BIT-LABEL: func.func @bitwidth_negative(
-// BIT: pto.plt_b16 %{{[^ ]+}} : i32 -> !pto.mask, i32
-// BIT: pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// BIT: pto.plt_b16 %{{[^ ]+}} : i32 -> !pto.mask<b16>, i32
+// BIT: pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask<b32>, i32
 
 // REC-LABEL: func.func @recurrence_negative_init_mismatch(
-// REC: %[[MASK0:[^,]+]], %[[OUT0:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// REC: %[[MASK0:[^,]+]], %[[OUT0:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask<b32>, i32
 // REC: scf.yield %[[OUT0]] : i32
-// REC: %[[MASK1:[^,]+]], %[[OUT1:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask, i32
+// REC: %[[MASK1:[^,]+]], %[[OUT1:[^ ]+]] = pto.plt_b32 %{{[^ ]+}} : i32 -> !pto.mask<b32>, i32
 // REC: scf.yield %[[OUT1]] : i32
