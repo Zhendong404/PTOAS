@@ -13,7 +13,7 @@ Here's a minimal example of a tile scaling kernel using the new Tile type:
 ```python
 import pto
 
-@pto.vkernel(target="a5", name="tile_scale")
+@pto.vkernel(target="a5", op="scale", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)
 def tile_scale(input_tensor: pto.TensorView,   # Input tensor view (shape: 256x128, f32, GM)
                output_tensor: pto.TensorView,  # Output tensor view (same shape and type)
                scale_factor: pto.f32): # Scaling factor
@@ -61,7 +61,7 @@ This example demonstrates:
 For an even more concise example showing pure computation on UB tiles (assuming data is already in UB):
 
 ```python
-@pto.vkernel(target="a5", name="ub_tile_computation")
+@pto.vkernel(target="a5", op="elementwise", dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)], priority=10)
 def ub_tile_computation(a: pto.Tile,  # UB tile
                         b: pto.Tile,  # UB tile  
                         c: pto.Tile): # UB tile (output)
@@ -91,17 +91,209 @@ def ub_tile_computation(a: pto.Tile,  # UB tile
 
 ### Kernel Declaration
 
-Kernels are defined using the `@pto.vkernel` decorator:
+Kernels are defined using the `@pto.vkernel` decorator with enhanced matching capabilities for PTO operations. The decorator specifies matching criteria for target architecture, operation type, data types, and additional constraints, along with a priority for disambiguation when multiple kernels match.
+
+#### Basic Syntax
 
 ```python
-@pto.vkernel(target="a5", name="kernel_name")
-def kernel_name(param1: type1, param2: type2) -> None:
-    # kernel body
+@pto.vkernel(
+    target="a5",                     # Target architecture
+    op="matmul",                    # PTO operation name to match
+    dtypes=[(pto.f16, pto.f16, pto.f32)],  # Type signatures
+    constraints=[                    # Additional constraints
+        AnyOf(k_dim_aligned_64, continuous_memory),
+        Not(requires_ub_memory)
+    ],
+    priority=100                    # Priority for selection
+)
+def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
+    # kernel implementation
 ```
 
-- `target`: Target architecture (currently "a5" for Ascend 950)
-- `name`: Optional kernel name (defaults to function name)
-- Parameters must have type annotations using DSL types
+#### Decorator Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | `str` | Yes | Target hardware architecture (e.g., `"a5"` for Ascend 950). |
+| `op` | `str` | Yes | Name of the PTO operation to match (e.g., `"matmul"`, `"conv2d"`, `"add"`). |
+| `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands (inputs and outputs) in order. |
+| `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for the kernel to be selected. Can include logical combinations (`AnyOf`, `AllOf`, `Not`). Default: empty list. |
+| `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
+| `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
+
+#### Type Matching Rules
+
+The `dtypes` parameter supports flexible type matching:
+
+1. **Concrete Types**: Exact type matches using DSL scalar types:
+   - `pto.f16`, `pto.f32`, `pto.bf16`
+   - `pto.i8`, `pto.i16`, `pto.i32`, `pto.i64`
+   - `pto.mask_b8`, `pto.mask_b16`, `pto.mask_b32`
+
+2. **Type Wildcards**: Generic type patterns:
+   - `pto.AnyFloat`: Matches any floating-point type (`f16`, `bf16`, `f32`)
+   - `pto.AnyInt`: Matches any integer type (`i8`, `i16`, `i32`, `i64`)
+   - `pto.AnyType`: Matches any scalar type
+   - `pto.AnyMask`: Matches any mask type (`mask_b8`, `mask_b16`, `mask_b32`)
+
+3. **Type Variables**: Named type variables that enforce consistency within a signature:
+   ```python
+   T = pto.TypeVar('T')  # Define a type variable
+   
+   @pto.vkernel(
+       target="a5",
+       op="elementwise",
+       dtypes=[(T, T, T)],  # All three operands must have the same type
+       constraints=[]
+   )
+   def elementwise_same_type(x: pto.Tile, y: pto.Tile, out: pto.Tile) -> None:
+       # x, y, and out must have identical element types
+       pass
+   ```
+
+4. **Mixed Signatures**: Multiple type signatures for the same operation:
+   ```python
+   @pto.vkernel(
+       target="a5",
+       op="add",
+       dtypes=[
+           (pto.AnyFloat, pto.AnyFloat, pto.AnyFloat),  # Float addition
+           (pto.AnyInt, pto.AnyInt, pto.AnyInt)         # Integer addition
+       ]
+   )
+   def generic_add(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
+       # Supports both float and integer types
+       pass
+   ```
+
+#### Constraint System
+
+Constraints are compile-time predicates that refine kernel selection. The system supports logical combinations of constraints.
+
+##### Predefined Constraints
+
+| Constraint | Description |
+|------------|-------------|
+| `k_dim_aligned_64` | K dimension is aligned to 64 elements (for matmul kernels). |
+| `continuous_memory` | Operands reside in contiguous memory regions. |
+| `requires_ub_memory` | Operation requires Unified Buffer memory (vs. Global Memory). |
+| `tensor_rank(rank)` | Operand tensor has specified rank (e.g., `tensor_rank(2)` for 2D tensors). |
+| `broadcastable` | Operands are broadcastable according to NumPy-style broadcasting rules. |
+| `static_shape` | All tensor dimensions are known at compile time (no dynamic shapes). |
+
+##### Logical Constraint Combinators
+
+| Combinator | Description | Example |
+|------------|-------------|---------|
+| `AnyOf(c1, c2, ...)` | At least one of the constraints must be satisfied. | `AnyOf(k_dim_aligned_64, continuous_memory)` |
+| `AllOf(c1, c2, ...)` | All constraints must be satisfied. | `AllOf(tensor_rank(2), static_shape)` |
+| `Not(c)` | The constraint must not be satisfied. | `Not(requires_ub_memory)` |
+
+##### Custom Constraints
+
+Users can define custom constraints using predicate functions:
+
+```python
+# Define a custom constraint
+def large_batch(batch_size: pto.i32) -> pto.Constraint:
+    """Batch size must be ≥ 1024."""
+    return pto.Constraint(lambda op: op.batch_size >= batch_size)
+
+@pto.vkernel(
+    target="a5",
+    op="matmul",
+    dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)],
+    constraints=[large_batch(1024)]
+)
+def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
+    # Optimized for large batch sizes
+    pass
+```
+
+#### Kernel Selection Mechanism
+
+When a PTO operation needs implementation, the system performs the following matching process:
+
+1. **Target Filtering**: Select kernels with matching `target` architecture.
+2. **Operation Filtering**: Select kernels with matching `op` name.
+3. **Type Matching**: For each kernel's `dtypes` list, check if any signature matches the operation's operand types:
+   - Concrete types must match exactly.
+   - Wildcard types match according to their category.
+   - Type variables must be consistent within the signature.
+4. **Constraint Validation**: For each matching kernel, evaluate all `constraints`. If any constraint fails, the kernel is rejected.
+5. **Priority Selection**: From the remaining kernels, select the one with the highest `priority` value.
+6. **Fallback**: If no kernel matches, compilation fails with an error.
+
+#### Examples
+
+##### Matmul with Multiple Implementations
+
+```python
+# High-performance kernel for aligned K dimension
+@pto.vkernel(
+    target="a5",
+    op="matmul",
+    dtypes=[(pto.f16, pto.f16, pto.f32)],
+    constraints=[k_dim_aligned_64],
+    priority=200
+)
+def matmul_aligned_k(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
+    # Optimized implementation for aligned K
+    pass
+
+# General-purpose fallback
+@pto.vkernel(
+    target="a5",
+    op="matmul",
+    dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)],
+    constraints=[],
+    priority=100
+)
+def matmul_general(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
+    # Generic implementation
+    pass
+```
+
+##### Elementwise Operation with Type Polymorphism
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="add",
+    dtypes=[
+        (pto.AnyFloat, pto.AnyFloat, pto.AnyFloat),
+        (pto.AnyInt, pto.AnyInt, pto.AnyInt)
+    ],
+    constraints=[broadcastable]
+)
+def polymorphic_add(a: pto.Tile, b: pto.Tile, out: pto.Tile) -> None:
+    # Single implementation handles both float and integer types
+    dtype = a.element_type
+    all_mask = pto.make_mask(dtype, PAT.ALL)
+    # ... implementation using generic vector operations
+    pass
+```
+
+##### Constrained Convolution Kernel
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="conv2d",
+    dtypes=[(pto.f16, pto.f16, pto.f32)],
+    constraints=[
+        AllOf(
+            tensor_rank(4),          # NHWC format
+            static_shape,            # No dynamic dimensions
+            Not(requires_ub_memory)  # GM memory preferred
+        )
+    ],
+    priority=150
+)
+def conv2d_nhwc_f16_f32(input: pto.Tile, filter: pto.Tile, output: pto.Tile) -> None:
+    # Optimized for NHWC layout with static shapes
+    pass
+```
 
 ### Value Model
 
@@ -235,7 +427,7 @@ TensorView types are parameterized by shape and element type:
 
 ```python
 # Kernel parameter using TensorView
-@pto.vkernel(target="a5", name="tiled_kernel")
+@pto.vkernel(target="a5", op="custom", dtypes=[(pto.AnyFloat, pto.AnyFloat, pto.AnyFloat)], priority=10)
 def tiled_kernel(
     input_tensor: pto.TensorView,   # GM tensor view
     output_tensor: pto.TensorView,  # GM tensor view
@@ -465,7 +657,7 @@ reshaped = tile.reshape((32768,))     # 1D reshape of 256x128 tile
 #### Kernel Parameter Usage
 
 ```python
-@pto.vkernel(target="a5", name="tiled_kernel")
+@pto.vkernel(target="a5", op="scale", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)
 def tiled_kernel(
     input_tile: pto.Tile,              # Tile parameter
     output_tile: pto.Tile,             # Another tile parameter
@@ -1254,7 +1446,7 @@ vec = pto.vlds(tile[i, j:])      # Load from row i, columns j to j+vector_lanes-
 vec = pto.vlds(tile[k:])         # Load from 1D tile, elements k to k+vector_lanes-1
 
 # Generic kernel that works for both f16 and f32
-@pto.vkernel(target="a5", name="generic_scale")
+@pto.vkernel(target="a5", op="scale", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)
 def generic_scale(src: pto.Tile, dst: pto.Tile, scale: pto.f32):
     rows, cols = src.shape
     all_mask = pto.make_mask(src.element_type, PAT.ALL)
@@ -2439,7 +2631,7 @@ pto.vsts(vec, tile[i, j:], mask)      # Store to row i, columns j to j+vector_la
 pto.vsts(vec, tile[k:], mask)         # Store to 1D tile, elements k to k+vector_lanes-1
 
 # In a generic kernel
-@pto.vkernel(target="a5", name="generic_store")
+@pto.vkernel(target="a5", op="copy", dtypes=[(pto.AnyFloat, pto.AnyFloat)], priority=10)
 def generic_store(src: pto.Tile, dst: pto.Tile):
     rows, cols = src.shape
     all_mask = pto.make_mask(src.element_type, PAT.ALL)
@@ -2639,7 +2831,7 @@ Operations for storing data with stateful semantics.
 ### Simple Vector Copy
 
 ```python
-@pto.vkernel(name="vector_copy")
+@pto.vkernel(...)
 def vector_copy(src: pto.memref(256, pto.f32, MemorySpace.UB),
                 dst: pto.memref(256, pto.f32, MemorySpace.UB)):
     all_mask = pto.make_mask(pto.f32, PAT.ALL)
@@ -2651,7 +2843,7 @@ def vector_copy(src: pto.memref(256, pto.f32, MemorySpace.UB),
 ### Conditional Computation
 
 ```python
-@pto.vkernel(name="conditional_scale")
+@pto.vkernel(...)
 def conditional_scale(src: pto.ptr(pto.f32, MemorySpace.GM),
                       dst: pto.ptr(pto.f32, MemorySpace.GM),
                       threshold: pto.f32):
@@ -2676,7 +2868,7 @@ def conditional_scale(src: pto.ptr(pto.f32, MemorySpace.GM),
 ### Loop with Carry
 
 ```python
-@pto.vkernel(name="prefix_sum")
+@pto.vkernel(...)
 def prefix_sum(src: pto.ptr(pto.i32, MemorySpace.UB),
                dst: pto.ptr(pto.i32, MemorySpace.UB)):
     all_mask = pto.make_mask(pto.i32, PAT.ALL)
