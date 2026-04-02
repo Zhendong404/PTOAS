@@ -1,6 +1,6 @@
 # PTO micro Instruction Spec — Draft (A5)
 
-- v0.2: Merge `docs/vpto-spec.md` with `docs/isa/*.md`; add TOC; move `Quick Reference by Category` to the end; remove update, appendix, and correspondence content
+- v0.2: Update micro Instruction latency and throughput
 - v0.1: Doc Init
 
 [toc]
@@ -16,6 +16,50 @@ This document defines the PTO micro Instruction, a compiler-internal and externa
 #### Position in the Stack and Layer Modeled
 
 The PTO micro Instruction operates as a very low-level intermediate representation within the PTO compiler stack. It is uniquely designed to accurately and comprehensively express all architectural information of the Ascend 950 hardware. It specifically models the bare-metal vector execution layer, making hardware-specific capabilities and constraints, such as exact vector lane configurations, memory space hierarchies, and hardware-specific fusion semantics, fully transparent and controllable.
+
+#### PTO Instruction Modes and Compilation Flows
+
+Within the end-to-end PTO software stack, PTO instructions may appear in three closely related authoring or lowering modes:
+
+- **PTO Tile Instruction**: tile-oriented PTO code that serves as a nano-kernel encapsulation of Tile operations, primarily expressing computation and data movement in terms of tile buffers, tile shapes, and tile-local layout.
+- **PTO micro Instruction**: vector-execution-oriented PTO code that makes DMA setup, vector registers, masks, synchronization, and `__VEC_SCOPE__` boundaries explicit. This document is centered on this mode.
+- **PTO Tile+micro Instruction**: a hybrid PTO form that keeps tile-level orchestration while embedding explicit micro-instruction regions where direct vector-pipeline control is required.
+
+From these PTO instruction forms, the stack can proceed along two main compilation flows:
+
+- **CCE generation flow**: PTO ISA is lowered into a CCE-oriented representation, which is then compiled by the BiSheng toolchain into Ascend device binaries.
+- **Bytecode generation flow**: PTO ISA is emitted as bytecode, which is then compiled by the BiSheng toolchain into Ascend device binaries.
+
+```text
+High-level frameworks / DSLs / library kernels
+                    |
+                    v
+         +----------------------------------+
+         |          PTO ISA layer           |
+         |                                  |
+         |  (1) PTO Tile Instruction        |
+         |  (2) PTO micro Instruction       |
+         |  (3) PTO Tile+micro Instruction  |
+         +----------------+-----------------+
+                          |
+             +------------+------------+
+             |                         |
+             v                         v
+ +-------------------------+   +-------------------------+
+ | Path A: generate CCE    |   | Path B: generate        |
+ | (CCE-oriented form)     |   | bytecode                |
+ +------------+------------+   +------------+------------+
+              |                             |
+              v                             v
+   +-----------------------------------------------+
+   |               BiSheng compiler                |
+   +---------------------------+-------------------+
+                               |
+                               v
+                 +-----------------------------+
+                 |   Ascend device binaries    |
+                 +-----------------------------+
+```
 
 #### Why External Developers Read or Author PTO micro Instruction
 
