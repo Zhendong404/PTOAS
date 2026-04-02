@@ -141,17 +141,20 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
 
 **Distribution modes:**
 
-| Mode | Description | C Semantics |
-|------|-------------|-------------|
-| `NORM` | Contiguous 256B load | `dst[i] = UB[base + i * sizeof(T)]` |
-| `BRC_B8/B16/B32` | Broadcast single element | `dst[i] = UB[base]` for all i |
-| `US_B8/B16` | Upsample (duplicate each element) | `dst[2*i] = dst[2*i+1] = UB[base + i]` |
-| `DS_B8/B16` | Downsample (every 2nd element) | `dst[i] = UB[base + 2*i]` |
-| `UNPK_B8/B16/B32` | Unpack (zero-extend to wider type) | `dst_i32[i] = (uint32_t)UB_i16[base + 2*i]` |
-| `SPLT4CHN_B8` | Split 4-channel (RGBA → R plane) | Extract every 4th byte |
-| `SPLT2CHN_B8/B16` | Split 2-channel | Extract every 2nd element |
-| `DINTLV_B32` | Deinterleave 32-bit | Even elements only |
-| `BLK` | Block load | Blocked access pattern |
+| Mode | Description | C Semantics | Latency |
+|------|-------------|-------------|---------------------|
+| `NORM` | Contiguous 256B load | `dst[i] = UB[base + i * sizeof(T)]` | **9** cycles |
+| `BRC_B32` | Broadcast single element | `dst[i] = UB[base]` for all i | **9** cycles |
+| `BRC_B8`, `BRC_B16` | Broadcast first lane element | Same idea at B8/B16 width | **9** cycles |
+| `US_B8/B16` | Upsample (duplicate each element) | `dst[2*i] = dst[2*i+1] = UB[base + i]` | **9** cycles |
+| `DS_B8/B16` | Downsample (every 2nd element) | `dst[i] = UB[base + 2*i]` | **9** cycles |
+| `UNPK_B8/B16/B32` | Unpack (zero-extend to wider type) | `dst_i32[i] = (uint32_t)UB_i16[base + 2*i]` | **9** cycles |
+| `SPLT4CHN_B8` | Split 4-channel (RGBA → R plane) | Extract every 4th byte | **9** cycles |
+| `SPLT2CHN_B8/B16` | Split 2-channel | Extract every 2nd element | **9** cycles |
+| `DINTLV_B32` | Deinterleave 32-bit | Even elements only | **9** cycles |
+| `DINTLV_B16`, `DINTLV_B8` | Deinterleave 16-bit / 8-bit | Pair lanes from interleaved UB | **9** cycles |
+| `BDINTLV` | Block deinterleave | (see PTO headers for exact tiling) | **9** cycles |
+| `BLK` | Block load | Blocked / tiled access pattern (see PTO headers) | **9** cycles (`dist:BRC_BLK` on `RV_VLD`) |
 
 **Example — Contiguous load:**
 ```mlir
@@ -178,6 +181,7 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
   This op is the required leading operation for a `pto.vldus` stream using the
   same alignment state. The source address itself need not be 32-byte aligned;
   hardware truncates it to the aligned block boundary for the priming load.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -196,6 +200,7 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
   A matching `pto.vldas` MUST appear before the first dependent `pto.vldus`
   stream in the same vector loop. Both the alignment state and the base address
   advance across the stream, and the PTO micro Instruction representation exposes those updates as SSA results.
+- **Latency:** **9** cycles.
 
 **Unaligned load pattern:**
 ```mlir
@@ -219,6 +224,7 @@ DMA **`TLOAD` / `TSTORE`** (global memory ↔ UB) use **MTE** pipes, not `RV_VLD
 - **constraints and limitations:**
   This family is only legal for interleave/deinterleave style distributions.
   The two outputs form an ordered pair, and that pairing MUST be preserved.
+- **Latency:** **`DINTLV_B32` → 9** cycles on `RV_VLDI`. **`DINTLV_B16` / `DINTLV_B8` → 9** cycles on `RV_VLDI`. **`BDINTLV` → 9** cycles on `RV_VLDI`.
 
 **Distribution modes:** `DINTLV_B8`, `DINTLV_B16`, `DINTLV_B32`, `BDINTLV`
 
@@ -251,6 +257,7 @@ for (int i = 0; i < 64; i++) {
 - **constraints and limitations:**
   This is a deprecated compatibility family. The selected stride token
   determines which sub-elements are read from each source block.
+- **Latency:** **9** cycles.
 
 **Stride modes:** `STRIDE_S3_B16`, `STRIDE_S4_B64`, `STRIDE_S8_B32`, `STRIDE_S2_B64`
 
@@ -269,6 +276,7 @@ for (int i = 0; i < 64; i++) {
   `%offset` is not a plain byte displacement; it encodes the block stride and
   repeat pattern. If a block is masked off, the corresponding destination block
   is zeroed and MUST NOT raise an address overflow exception for that block.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -287,6 +295,7 @@ for (int i = 0; i < 64; i++) {
   Only the first `%active_lanes` indices participate. The index element width
   and interpretation MUST match the selected gather form, and each effective
   address must satisfy that form's alignment rules.
+- **Latency:** **27–28** cycles per `RV_VGATHER2`; throughput much lower than contiguous `RV_VLD` (see **Latency and throughput (A5)** at the start of this chapter).
 
 ```c
 for (int i = 0; i < active_lanes; i++)
@@ -308,6 +317,7 @@ for (int i = 0; i < active_lanes; i++)
   This is a block gather, not a byte-per-lane gather. `%source` MUST be 32-byte
   aligned, each participating offset MUST describe a 32-byte-aligned block, and
   inactive blocks are zero-filled.
+- **Latency:** **~21** cycles issue→retire.
 
 ```c
 for (int i = 0; i < active_lanes; i++)
@@ -329,6 +339,7 @@ for (int i = 0; i < active_lanes; i++)
   This is a backward-compatible family. Masked-off lanes do not participate in
   address coalescing and do not trigger address overflow exceptions; their
   destination lanes are zero-filled.
+- **Latency:** **27–28** cycles (same as **`pto.vgather2`**).
 
 ---
 
@@ -352,12 +363,12 @@ for (int i = 0; i < active_lanes; i++)
 
 **Distribution modes:**
 
-| Mode | Description | C Semantics |
-|------|-------------|-------------|
-| `NORM_B8/B16/B32` | Contiguous store | `UB[base + i] = src[i]` |
-| `PK_B16/B32` | Pack/narrowing store | `UB_i16[base + 2*i] = truncate_16(src_i32[i])` |
-| `MRG4CHN_B8` | Merge 4 channels (R,G,B,A → RGBA) | Interleave 4 planes |
-| `MRG2CHN_B8/B16` | Merge 2 channels | Interleave 2 planes |
+| Mode | Description | C Semantics | Latency |
+|------|-------------|-------------|---------------------|
+| `NORM_B8/B16/B32` | Contiguous store | `UB[base + i] = src[i]` | **9** cycles |
+| `PK_B16/B32` | Pack/narrowing store | `UB_i16[base + 2*i] = truncate_16(src_i32[i])` | **9** cycles |
+| `MRG4CHN_B8` | Merge 4 channels (R,G,B,A → RGBA) | Interleave 4 planes | **9** cycles |
+| `MRG2CHN_B8/B16` | Merge 2 channels | Interleave 2 planes | **9** cycles |
 
 **Example — Contiguous store:**
 ```mlir
@@ -382,6 +393,7 @@ pto.vsts %v, %ub[%offset], %mask {dist = "NORM_B32"} : !pto.vreg<64xf32>, !pto.p
   This family is only legal for interleave distributions. The two source
   vectors form an ordered pair, and the interleave semantics of that pair MUST
   be preserved.
+- **Latency:** **`INTLV_B32` / `INTLV_B16` / `INTLV_B8` → 12** cycles on `RV_VSTI`.
 
 **Distribution modes:** `INTLV_B8`, `INTLV_B16`, `INTLV_B32`
 
@@ -409,6 +421,7 @@ for (int i = 0; i < 64; i++) {
 - **constraints and limitations:**
   This is a deprecated compatibility family. The stride token, not the vector
   lane number alone, determines which destination elements are written.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -424,6 +437,7 @@ for (int i = 0; i < 64; i++) {
 - **constraints and limitations:**
   `%offset` is a control word, not a plain byte displacement. This is a
   deprecated compatibility family kept for surface coverage.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -444,6 +458,7 @@ for (int i = 0; i < 64; i++) {
   must use a supported integer element type and layout for this family.
   Each computed address MUST be element-aligned. If two or more indices alias,
   only one write is guaranteed and the winning lane is implementation-defined.
+- **Latency:** **~17** cycles for **`Dtype: B16`**.
 
 ```c
 for (int i = 0; i < active_lanes; i++)
@@ -467,6 +482,7 @@ for (int i = 0; i < active_lanes; i++)
   The flush address MUST match the post-updated address expected by the
   preceding unaligned-store stream. After the flush, the corresponding store
   alignment state is consumed.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -481,6 +497,7 @@ for (int i = 0; i < active_lanes; i++)
 - **constraints and limitations:**
   This family uses the same buffered-tail semantics as `pto.vsta` but keeps the
   scalar-offset form explicit.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -495,6 +512,7 @@ for (int i = 0; i < active_lanes; i++)
 - **constraints and limitations:**
   The implicit update state consumed by this flush MUST correspond to the same
   store stream that produced `%value`.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -512,6 +530,7 @@ for (int i = 0; i < active_lanes; i++)
   This op models a stateful unaligned-store sequence in SSA form. A final
   `pto.vsta` / `pto.vstas` / `pto.vstar` is still required to flush the trailing
   buffered bytes.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -526,6 +545,7 @@ for (int i = 0; i < active_lanes; i++)
 - **constraints and limitations:**
   The same final flush requirement and state-threading constraints as
   `pto.vstu` apply.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -540,26 +560,7 @@ for (int i = 0; i < active_lanes; i++)
 - **constraints and limitations:**
   This op updates only the residual alignment state. A matching flush op is
   still required to emit the trailing bytes.
-
-- **syntax:** `pto.vstas %value, %dest, %offset : !pto.align, !pto.ptr<T, ub>, i32`
-- **semantics:** Flush alignment state with scalar offset.
-
----
-
-### `pto.vstar`
-
-- **syntax:** `pto.vstar %value, %dest : !pto.align, !pto.ptr<T, ub>`
-- **semantics:** Flush remaining alignment state.
-- **inputs:**
-  `%value` is the pending alignment/buffer state that still needs to be emitted,
-  and `%dest` is the UB destination base pointer.
-- **outputs:**
-  No SSA result. The effect is a memory-side flush that writes the remaining
-  buffered bytes to memory.
-- **constraints and limitations:**
-  This op terminates an unaligned-store sequence. It MUST be paired with a
-  compatible prior state-producing store sequence so that the pending tail state
-  is well-defined.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -582,6 +583,7 @@ These ops make reference-updated state explicit as SSA results.
   The alignment state MUST be threaded in program order. A terminating flush
   form such as `pto.vstar`/`pto.vstas` is still required to commit the buffered
   tail bytes.
+- **Latency:** **9** cycles.
 
 **Mode tokens:** `POST_UPDATE`, `NO_POST_UPDATE`
 
@@ -602,6 +604,7 @@ These ops make reference-updated state explicit as SSA results.
   This is the scalar-offset stateful form of the unaligned store family. The
   scalar offset width and update mode MUST match the selected form, and a later
   flush op is still required.
+- **Latency:** **9** cycles.
 
 ---
 
@@ -618,3 +621,4 @@ These ops make reference-updated state explicit as SSA results.
   This form exposes only the evolving state; it does not by itself guarantee
   that all buffered bytes have reached memory. A compatible final flush is still
   required unless the surrounding sequence is known to be complete.
+- **Latency:** **9** cycles.
