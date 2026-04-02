@@ -5462,8 +5462,6 @@ mlir::LogicalResult mlir::pto::TRemSOp::verify() {
     return failure();
   if (failed(verifyTileBufSameShapeAndElem(*this, ts, td, "src", "dst")))
     return failure();
-  if (!mlir::isa<mlir::FloatType>(getScalar().getType()))
-    return emitOpError("expects scalar to be a float type");
   return mlir::success();
 }
 
