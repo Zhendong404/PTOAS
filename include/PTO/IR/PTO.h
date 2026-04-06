@@ -45,7 +45,7 @@
 //===----------------------------------------------------------------------===//
 // PTO Interfaces
 //===----------------------------------------------------------------------===//
-
+ 
 #include "PTO/IR/PTOInterfaces.h.inc"
 
 //===----------------------------------------------------------------------===//
@@ -97,6 +97,7 @@ public:
 private:
   PTOParserTargetArch previousArch;
 };
+
 
 /// Function attribute that marks an explicit PTO kernel entry.
 inline constexpr llvm::StringLiteral kPTOEntryAttrName = "pto.entry";
