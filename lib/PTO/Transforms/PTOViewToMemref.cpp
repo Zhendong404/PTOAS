@@ -26,7 +26,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include "Utils.h" // 假设包含一些通用的工具函数
-#include "llvm/Support/CommandLine.h"
 
 #include <algorithm>
 #include <functional>
@@ -79,7 +78,7 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
       return *cfg;
     return {};
   }
-  
+
   // 2. 穿透 View 操作 (SubView, Cast 等) 向上查找
   if (auto subview = v.getDefiningOp<memref::SubViewOp>()) {
     return lookupConfig(subview.getSource());
@@ -90,7 +89,7 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
   if (auto cast = v.getDefiningOp<memref::CastOp>()) {
     return lookupConfig(cast.getSource());
   }
-  
+
   // 如果追溯到 BlockArgument (函数参数) 或其他无法穿透的 Op，则返回空
   return {}; 
 }
@@ -341,7 +340,7 @@ static void flattenAddExpr(AffineExpr expr, SmallVectorImpl<AffineExpr> &terms) 
 static void decomposeStridedLayout(AffineMap map, SmallVectorImpl<int64_t> &strides) {
   strides.assign(map.getNumDims(), 0);
   if (map.getNumResults() != 1) return;
-  
+
   SmallVector<AffineExpr, 4> terms;
   flattenAddExpr(map.getResult(0), terms);
 
@@ -437,7 +436,7 @@ static Type convertPTOTypeToMemRef(Type t) {
     return MemRefType::get({ShapedType::kDynamic}, pty.getElementType(),
                            MemRefLayoutAttrInterface(), pty.getMemorySpace());
   }
-  
+
   // 2. 处理 !pto.tile_buf<...>
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t)) {
     SmallVector<int64_t> strides;
