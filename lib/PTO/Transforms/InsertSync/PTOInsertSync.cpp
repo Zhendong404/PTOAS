@@ -5,19 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include "PTO/Transforms/Passes.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
+#include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
 #include "PTO/Transforms/InsertSync/InsertSyncAnalysis.h"
 #include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
-#include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "PTO/Transforms/InsertSync/MoveSyncState.h"
-#include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
 #include "PTO/Transforms/InsertSync/RemoveRedundantSync.h"
-#include "PTO/Transforms/InsertSync/SyncCodegen.h"
-#include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "PTO/Transforms/InsertSync/SyncEventIdAllocation.h"
-#include "PTO/Transforms/Passes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h" // [FIX] 确保 FuncOp 定义可见
+#include "PTO/Transforms/InsertSync/SyncCodegen.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h" // [FIX] 确保 FuncOp 定义可见
 
 // [CRITICAL FIX] 必须在包含 .inc 之前设置好命名空间环境
 // 将 Passes.h.inc 生成的声明包裹在 namespace mlir 中
@@ -26,26 +26,25 @@
 
 namespace mlir {
 namespace pto {
-// [FIX] 给 mlir::func 起别名为 func，这样 .inc 文件里的 func::FuncOp 就能找到了
-namespace func = ::mlir::func;
-
-#define GEN_PASS_DEF_PTOINSERTSYNC
-#include "PTO/Transforms/Passes.h.inc"
+  // [FIX] 给 mlir::func 起别名为 func，这样 .inc 文件里的 func::FuncOp 就能找到了
+  namespace func = ::mlir::func; 
+ 
+  #define GEN_PASS_DEF_PTOINSERTSYNC 
+  #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
-
+ 
 using namespace mlir;
 using namespace mlir::pto;
-
+ 
 namespace {
-
+ 
 // ==============================================================================
 // Main Pass Implementation
 // ==============================================================================
-
-struct PTOInsertSyncPass
-    : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSyncPass> {
-
+ 
+struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSyncPass> {
+  
   void runOnOperation() override {
     const bool phaseDebug =
         isInsertSyncDebugEnabled(InsertSyncDebugLevel::Phase);
@@ -89,8 +88,7 @@ struct PTOInsertSyncPass
     translator.Build();
 
     // 如果 IR 太简单，直接跳过
-    if (syncIR.size() <= 1)
-      return;
+    if (syncIR.size() <= 1) return;
 
     if (phaseDebug)
       dumpInsertSyncPhase("After Translator", syncIR, syncOpsStorage,
@@ -116,8 +114,7 @@ struct PTOInsertSyncPass
 
     // 4. [NEW] Optimization 2: Remove Redundant Sync
     // 消除由于 Motion 或 Analysis 产生的冗余同步对
-    RemoveRedundantSync removeRedundant(syncIR, syncOpsStorage,
-                                        SyncAnalysisMode::NORMALSYNC);
+    RemoveRedundantSync removeRedundant(syncIR, syncOpsStorage, SyncAnalysisMode::NORMALSYNC);
     removeRedundant.Run();
 
     if (phaseDebug)
