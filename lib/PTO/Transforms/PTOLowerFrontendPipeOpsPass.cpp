@@ -55,6 +55,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     if (arch == PTOArch::A5) {
       auto pipe = rewriter.create<InitializeL2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
+          BoolAttr{},
           localAddr, /*peer_local_addr=*/Value{});
       return pipe.getPipe();
     }
@@ -67,7 +68,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
     auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
         loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-        IntegerAttr{}, initOp.getGmSlotBuffer(), localAddr,
+        IntegerAttr{}, BoolAttr{}, initOp.getGmSlotBuffer(), localAddr,
         /*peer_local_addr=*/Value{});
     return pipe.getPipe();
   };
@@ -101,6 +102,7 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
     if (arch == PTOArch::A5) {
       auto pipe = rewriter.create<InitializeL2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
+          BoolAttr{},
           c2vAddr, v2cAddr);
       handles.c2vPipe = pipe.getPipe();
       handles.v2cPipe = pipe.getPipe();
@@ -113,7 +115,8 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
       auto localSlotNumAttr = rewriter.getI32IntegerAttr(4);
       auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
           loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-          IntegerAttr{}, initOp.getGmSlotBuffer(), c2vAddr, v2cAddr);
+          IntegerAttr{}, BoolAttr{}, initOp.getGmSlotBuffer(), c2vAddr,
+          v2cAddr);
       handles.c2vPipe = pipe.getPipe();
       handles.v2cPipe = pipe.getPipe();
       handles.anchorOp = pipe.getOperation();

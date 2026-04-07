@@ -372,12 +372,14 @@ getTPipeDirectionToken(bool isL2G2L, int8_t dirMask, PTOArch targetArch) {
 
 static std::string buildTPipeToken(int32_t flagBase, llvm::StringRef dirTok,
                                    int32_t slotSize, int32_t slotNum,
-                                   std::optional<int32_t> localSlotNum) {
+                                   std::optional<int32_t> localSlotNum,
+                                   bool nosplit) {
   std::string token = "TPipe<" + std::to_string(flagBase) + ", " + dirTok.str() +
                       ", " + std::to_string(slotSize) + ", " +
                       std::to_string(slotNum);
   if (localSlotNum)
     token += ", " + std::to_string(*localSlotNum);
+  token += nosplit ? ", true" : ", false";
   token += ">";
   return token;
 }
@@ -395,8 +397,9 @@ static FailureOr<std::string> buildTPipeTokenFromInitOp(Operation *op,
                                ? initOp.getLocalSlotNumAttr().getInt()
                                : initOp.getSlotNum();
     return buildTPipeToken(initOp.getFlagBaseAttr().getInt(), *dirTok,
-                           initOp.getSlotSize(),
-                           initOp.getSlotNum(), localSlotNum);
+                           initOp.getSlotSize(), initOp.getSlotNum(),
+                           localSlotNum, initOp.getNosplitAttr() &&
+                                             initOp.getNosplitAttr().getValue());
   }
 
   if (auto initOp = dyn_cast<pto::InitializeL2LPipeOp>(op)) {
@@ -407,8 +410,9 @@ static FailureOr<std::string> buildTPipeTokenFromInitOp(Operation *op,
     if (failed(dirTok))
       return failure();
     return buildTPipeToken(initOp.getFlagBaseAttr().getInt(), *dirTok,
-                           initOp.getSlotSize(),
-                           initOp.getSlotNum(), std::nullopt);
+                           initOp.getSlotSize(), initOp.getSlotNum(),
+                           std::nullopt, initOp.getNosplitAttr() &&
+                                             initOp.getNosplitAttr().getValue());
   }
 
   return failure();

@@ -145,6 +145,9 @@ def PTOResolveReservedBuffers : Pass<"pto-resolve-reserved-buffers", "ModuleOp">
     Runs after `pto-plan-memory`. Assumes `pto.reserve_buffer` base addresses
     have already been planned, then:
     - aligns missing `flag_base` attrs for peer internal pipe init ops
+    - infers implicit `nosplit = true` for internal pipe init ops when any
+      downstream `pto.tpush` / `pto.tpop` / `pto.tfree` user on the same
+      logical pipe has `split = 0`
     - rejects internal pipe init ops without explicit `flag_base` when their
       `local_addr` cannot be traced back to `pto.reserve_buffer` /
       `pto.import_reserved_buffer`
