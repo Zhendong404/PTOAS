@@ -79,7 +79,7 @@ def _match_descriptor(
         return None
 
     for desc in descriptors:
-        if desc.op != op_name:
+        if desc.selected_op != op_name:
             continue
         # Check dtype signature: all entries must match the target dtype.
         sig = desc.dtype_signature

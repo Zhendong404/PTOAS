@@ -6,7 +6,13 @@ from pathlib import Path
 
 import tilelang_dsl as pto
 import tilelang_dsl.kernel as kernel_impl
-from tilelang_dsl.frontend_ast import build_frontend_kernel_node
+from tilelang_dsl.frontend_ast import (
+    FrontendAssignStmt,
+    FrontendCallExpr,
+    FrontendForStmt,
+    FrontendStrictVecscopeStmt,
+    build_frontend_kernel_node,
+)
 from tilelang_dsl.lowering import AuthoringModule, lower_semantic_kernel
 from tilelang_dsl.semantic import (
     SemanticAssignStmt,
@@ -263,6 +269,143 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
             )
         self.assertIn("after constraint evaluation", str(ctx.exception))
 
+    def test_select_kernel_binds_selected_op_for_multi_op_descriptor(self) -> None:
+        @pto.vkernel(
+            ops=["matcher_multi_op_bind_add_unique", "matcher_multi_op_bind_sub_unique"],
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_multi_op_bind_sub_unique",
+            (pto.f32, pto.f32),
+        )
+
+        self.assertIs(selected.py_fn, kernel.py_fn)
+        self.assertEqual(selected.match_ops, ("matcher_multi_op_bind_add_unique", "matcher_multi_op_bind_sub_unique"))
+        self.assertEqual(selected.selected_op, "matcher_multi_op_bind_sub_unique")
+        self.assertEqual(selected.op, "matcher_multi_op_bind_sub_unique")
+        self.assertEqual(selected.dtype_signature, (pto.f32, pto.f32))
+
+    def test_select_kernel_hits_same_multi_op_descriptor_for_multiple_query_ops(self) -> None:
+        @pto.vkernel(
+            ops=[
+                "matcher_multi_hit_add_unique",
+                "matcher_multi_hit_mul_unique",
+                "matcher_multi_hit_div_unique",
+            ],
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        add_selected = pto.select_kernel(
+            "a5",
+            "matcher_multi_hit_add_unique",
+            (pto.f32, pto.f32),
+        )
+        mul_selected = pto.select_kernel(
+            "a5",
+            "matcher_multi_hit_mul_unique",
+            (pto.f32, pto.f32),
+        )
+
+        self.assertIs(add_selected.py_fn, kernel.py_fn)
+        self.assertIs(mul_selected.py_fn, kernel.py_fn)
+        self.assertEqual(add_selected.match_ops, kernel.match_ops)
+        self.assertEqual(mul_selected.match_ops, kernel.match_ops)
+        self.assertEqual(add_selected.selected_op, "matcher_multi_hit_add_unique")
+        self.assertEqual(mul_selected.selected_op, "matcher_multi_hit_mul_unique")
+        self.assertEqual(add_selected.op, "matcher_multi_hit_add_unique")
+        self.assertEqual(mul_selected.op, "matcher_multi_hit_mul_unique")
+
+    def test_select_kernel_prefers_higher_priority_single_op_over_multi_op(self) -> None:
+        @pto.vkernel(
+            op="matcher_single_beats_multi_priority_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            priority=12,
+        )
+        def single(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        @pto.vkernel(
+            ops=[
+                "matcher_single_beats_multi_priority_unique",
+                "matcher_single_beats_multi_priority_alt_unique",
+            ],
+            dtypes=[(pto.f32, pto.f32)],
+            priority=4,
+        )
+        def multi(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_single_beats_multi_priority_unique",
+            (pto.f32, pto.f32),
+        )
+
+        self.assertIs(selected.py_fn, single.py_fn)
+        self.assertEqual(selected.selected_op, "matcher_single_beats_multi_priority_unique")
+        self.assertEqual(selected.priority, 12)
+
+    def test_select_kernel_prefers_priority_over_single_op_specificity(self) -> None:
+        @pto.vkernel(
+            op="matcher_single_vs_multi_priority_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            priority=5,
+        )
+        def single(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        @pto.vkernel(
+            ops=["matcher_single_vs_multi_priority_unique", "matcher_single_vs_multi_priority_alt_unique"],
+            dtypes=[(pto.f32, pto.f32)],
+            priority=9,
+        )
+        def multi(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "matcher_single_vs_multi_priority_unique",
+            (pto.f32, pto.f32),
+        )
+
+        self.assertIs(selected.py_fn, multi.py_fn)
+        self.assertEqual(selected.selected_op, "matcher_single_vs_multi_priority_unique")
+        self.assertEqual(selected.priority, 9)
+
+    def test_select_kernel_raises_tie_error_when_single_and_multi_op_candidates_tie(self) -> None:
+        @pto.vkernel(
+            op="matcher_single_multi_tie_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            priority=17,
+        )
+        def single(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        @pto.vkernel(
+            ops=["matcher_single_multi_tie_unique", "matcher_single_multi_tie_alt_unique"],
+            dtypes=[(pto.f32, pto.f32)],
+            priority=17,
+        )
+        def multi(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        with self.assertRaises(LookupError) as ctx:
+            pto.select_kernel(
+                "a5",
+                "matcher_single_multi_tie_unique",
+                (pto.f32, pto.f32),
+            )
+
+        self.assertIn("multiple highest-priority kernels", str(ctx.exception))
+        self.assertIn("single(priority=17", str(ctx.exception))
+        self.assertIn("multi(priority=17", str(ctx.exception))
+
 
 class TileLangDSLDescriptorTests(unittest.TestCase):
     def test_descriptor_metadata_and_parameter_binding(self) -> None:
@@ -285,6 +428,108 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(kernel.parameters[0].element_dtype, pto.f32)
         self.assertEqual(kernel.parameters[1].element_dtype, pto.f16)
         self.assertIsNone(kernel.parameters[2].element_dtype)
+
+    def test_descriptor_accepts_multi_op_matcher_metadata(self) -> None:
+        @pto.vkernel(ops=["tadd", "tsub"], dtypes=[(pto.f32, pto.f32)])
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        self.assertEqual(kernel.match_ops, ("tadd", "tsub"))
+        self.assertIsNone(kernel.selected_op)
+        self.assertIsNone(kernel.metadata["op"])
+        self.assertEqual(kernel.metadata["match_ops"], ("tadd", "tsub"))
+        self.assertIsNone(kernel.metadata["selected_op"])
+        self.assertEqual(kernel.dtype_signature, (pto.f32, pto.f32))
+        self.assertEqual(
+            [(param.name, param.kind, param.dtype) for param in kernel.parameters],
+            [("inp", "tensorview", pto.f32), ("out", "tensorview", pto.f32)],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _ = kernel.op
+        self.assertIn("bind a concrete op", str(ctx.exception))
+
+    def test_descriptor_accepts_templates_metadata(self) -> None:
+        @pto.vkernel(
+            ops=["tadd", "tsub", "tmul"],
+            dtypes=[(pto.f32, pto.f32)],
+            templates={
+                "core": {
+                    "tadd": "vadd",
+                    "tsub": "vsub",
+                },
+                "post": {
+                    "tmul": "vrelu",
+                },
+            },
+        )
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        self.assertEqual(
+            kernel.templates,
+            {
+                "core": {
+                    "tadd": "vadd",
+                    "tsub": "vsub",
+                },
+                "post": {
+                    "tmul": "vrelu",
+                },
+            },
+        )
+        self.assertEqual(kernel.metadata["templates"], kernel.templates)
+
+    def test_descriptor_rejects_op_and_ops_together(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            @pto.vkernel(op="tadd", ops=["tsub"], dtypes=[(pto.f32,)])
+            def kernel(inp: pto.TensorView):
+                return None
+
+        self.assertIn("either op= or ops=", str(ctx.exception))
+
+    def test_descriptor_requires_one_of_op_or_ops(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            @pto.vkernel(dtypes=[(pto.f32,)])
+            def kernel(inp: pto.TensorView):
+                return None
+
+        self.assertIn("exactly one of op= or ops=", str(ctx.exception))
+
+    def test_descriptor_rejects_template_slot_with_non_string_name(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+            @pto.vkernel(
+                ops=["tadd"],
+                dtypes=[(pto.f32,)],
+                templates={1: {"tadd": "vadd"}},
+            )
+            def kernel(inp: pto.TensorView):
+                return None
+
+        self.assertIn("template slot names must be non-empty strings", str(ctx.exception))
+
+    def test_descriptor_rejects_template_op_outside_matcher_set(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            @pto.vkernel(
+                ops=["tadd", "tsub"],
+                dtypes=[(pto.f32, pto.f32)],
+                templates={"core": {"tmul": "vmul"}},
+            )
+            def kernel(inp: pto.TensorView, out: pto.TensorView):
+                return None
+
+        self.assertIn("outside descriptor matcher set", str(ctx.exception))
+
+    def test_descriptor_rejects_template_mapping_to_unknown_pto_op(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            @pto.vkernel(
+                ops=["tadd"],
+                dtypes=[(pto.f32,)],
+                templates={"core": {"tadd": "vunknown"}},
+            )
+            def kernel(inp: pto.TensorView):
+                return None
+
+        self.assertIn("maps to unsupported pto op", str(ctx.exception))
 
     def test_pointer_parameter_annotation_binds_as_ptr_kind(self) -> None:
         @pto.vkernel(op="ptr_surface", dtypes=[(pto.f32, pto.i64)], advanced=True)
@@ -339,6 +584,57 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             specialized.emit(out)
             self.assertEqual(out.read_text(encoding="utf-8"), text)
 
+    def test_multi_op_descriptor_requires_select_kernel_before_materialization_apis(self) -> None:
+        @pto.vkernel(
+            ops=["multi_op_gate_add_unique", "multi_op_gate_sub_unique"],
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        with self.assertRaises(ValueError) as text_ctx:
+            kernel.mlir_text()
+        self.assertIn("mlir_text() requires pto.select_kernel(...) to bind a concrete op", str(text_ctx.exception))
+
+        with self.assertRaises(ValueError) as module_ctx:
+            kernel.mlir_module()
+        self.assertIn(
+            "mlir_module() requires pto.select_kernel(...) to bind a concrete op",
+            str(module_ctx.exception),
+        )
+
+        with self.assertRaises(ValueError) as verify_ctx:
+            kernel.verify()
+        self.assertIn("verify() requires pto.select_kernel(...) to bind a concrete op", str(verify_ctx.exception))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "kernel.mlir"
+            with self.assertRaises(ValueError) as emit_ctx:
+                kernel.emit(out)
+        self.assertIn("emit() requires pto.select_kernel(...) to bind a concrete op", str(emit_ctx.exception))
+
+    def test_selected_multi_op_descriptor_can_materialize_normally(self) -> None:
+        @pto.vkernel(
+            ops=["multi_op_materialize_add_unique", "multi_op_materialize_sub_unique"],
+            dtypes=[(pto.f32, pto.f32)],
+        )
+        def kernel(inp: pto.TensorView, out: pto.TensorView):
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "multi_op_materialize_sub_unique",
+            (pto.f32, pto.f32),
+        )
+
+        text = selected.mlir_text()
+        self.assertIn("// tilelang.target = a5", text)
+        self.assertIn("// tilelang.op = multi_op_materialize_sub_unique", text)
+        self.assertIn(
+            'func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>) attributes { pto.tilelang.instance } {',
+            text,
+        )
+
     def test_verify_reports_structured_unavailable_when_ptoas_is_missing(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16)])
         def kernel(inp: pto.TensorView, tile: pto.Tile):
@@ -386,6 +682,284 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIsInstance(authoring_module, AuthoringModule)
         self.assertEqual(authoring_module.render(), specialized.mlir_text())
         self.assertIn("return", authoring_module.render())
+
+    def test_frontend_rewrites_template_slot_to_selected_real_op(self) -> None:
+        @pto.vkernel(
+            ops=["template_slot_add_unique", "template_slot_sub_unique"],
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={
+                "core": {
+                    "template_slot_add_unique": "vadd",
+                    "template_slot_sub_unique": "vsub",
+                }
+            },
+        )
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (
+                out_tile,
+                lhs_tile,
+                rhs_tile,
+                lb,
+                ub,
+                step,
+            ):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    lhs = pto.vlds(lhs_tile, lane)
+                    rhs = pto.vlds(rhs_tile, lane)
+                    out = pto.tpl("core", lhs, rhs, mask)
+                    pto.vsts(out, out_tile, lane, mask)
+            return None
+
+        add_selected = pto.select_kernel(
+            "a5",
+            "template_slot_add_unique",
+            (pto.f32, pto.f32, pto.f32),
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+        )
+        sub_selected = pto.select_kernel(
+            "a5",
+            "template_slot_sub_unique",
+            (pto.f32, pto.f32, pto.f32),
+        ).specialize(
+            dst=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+            src0=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        add_frontend = build_frontend_kernel_node(add_selected)
+        sub_frontend = build_frontend_kernel_node(sub_selected)
+
+        add_vecscope = add_frontend.body[0]
+        sub_vecscope = sub_frontend.body[0]
+        self.assertIsInstance(add_vecscope, FrontendStrictVecscopeStmt)
+        self.assertIsInstance(sub_vecscope, FrontendStrictVecscopeStmt)
+
+        add_loop = add_vecscope.body[0]
+        sub_loop = sub_vecscope.body[0]
+        self.assertIsInstance(add_loop, FrontendForStmt)
+        self.assertIsInstance(sub_loop, FrontendForStmt)
+
+        add_out_assign = add_loop.body[3]
+        sub_out_assign = sub_loop.body[3]
+        self.assertIsInstance(add_out_assign, FrontendAssignStmt)
+        self.assertIsInstance(sub_out_assign, FrontendAssignStmt)
+        self.assertIsInstance(add_out_assign.value, FrontendCallExpr)
+        self.assertIsInstance(sub_out_assign.value, FrontendCallExpr)
+        self.assertEqual(add_out_assign.value.namespace, "pto")
+        self.assertEqual(sub_out_assign.value.namespace, "pto")
+        self.assertEqual(add_out_assign.value.name, "vadd")
+        self.assertEqual(sub_out_assign.value.name, "vsub")
+
+        add_text = add_selected.mlir_text()
+        sub_text = sub_selected.mlir_text()
+        self.assertIn("pto.vadd", add_text)
+        self.assertNotIn("pto.vsub", add_text)
+        self.assertIn("pto.vsub", sub_text)
+        self.assertNotIn("pto.vadd", sub_text)
+
+    def test_template_slot_shared_kernel_body_expands_for_four_ops(self) -> None:
+        @pto.vkernel(
+            ops=[
+                "template_slot_tadd_unique",
+                "template_slot_tsub_unique",
+                "template_slot_tmul_unique",
+                "template_slot_tdiv_unique",
+            ],
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={
+                "core": {
+                    "template_slot_tadd_unique": "vadd",
+                    "template_slot_tsub_unique": "vsub",
+                    "template_slot_tmul_unique": "vmul",
+                    "template_slot_tdiv_unique": "vdiv",
+                }
+            },
+        )
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (
+                out_tile,
+                lhs_tile,
+                rhs_tile,
+                lb,
+                ub,
+                step,
+            ):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    lhs = pto.vlds(lhs_tile, lane)
+                    rhs = pto.vlds(rhs_tile, lane)
+                    out = pto.tpl("core", lhs, rhs, mask)
+                    pto.vsts(out, out_tile, lane, mask)
+            return None
+
+        isolated_registry = pto.KernelRegistry((kernel,))
+        expected_ops = {
+            "template_slot_tadd_unique": "vadd",
+            "template_slot_tsub_unique": "vsub",
+            "template_slot_tmul_unique": "vmul",
+            "template_slot_tdiv_unique": "vdiv",
+        }
+
+        for query_op, real_op in expected_ops.items():
+            selected = pto.select_kernel(
+                "a5",
+                query_op,
+                (pto.f32, pto.f32, pto.f32),
+                registry=isolated_registry,
+            ).specialize(
+                dst=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+                src0=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+                src1=pto.TileSpecialization(shape=(16, 16), memory_space=pto.MemorySpace.UB),
+            )
+
+            frontend_kernel = build_frontend_kernel_node(selected)
+            vecscope = frontend_kernel.body[0]
+            self.assertIsInstance(vecscope, FrontendStrictVecscopeStmt)
+            loop_stmt = vecscope.body[0]
+            self.assertIsInstance(loop_stmt, FrontendForStmt)
+            out_assign = loop_stmt.body[3]
+            self.assertIsInstance(out_assign, FrontendAssignStmt)
+            self.assertIsInstance(out_assign.value, FrontendCallExpr)
+            self.assertEqual(out_assign.value.name, real_op)
+
+            text = selected.mlir_text()
+            self.assertIn(f"pto.{real_op}", text)
+            self.assertNotIn("pto.tpl(", text)
+
+    def test_template_slot_rejects_non_literal_slot_name(self) -> None:
+        slot_name = "core"
+
+        @pto.vkernel(
+            op="template_slot_non_literal_unique",
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={"core": {"template_slot_non_literal_unique": "vadd"}},
+        )
+        def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    out = pto.tpl(slot_name, lhs_tile, rhs_tile, mask)
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+            build_frontend_kernel_node(kernel)
+
+        self.assertIn("pto.tpl() requires a non-empty string literal slot name", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_template_slot_rejects_unknown_slot_before_ir_generation(self) -> None:
+        @pto.vkernel(
+            op="template_slot_unknown_slot_unique",
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={"core": {"template_slot_unknown_slot_unique": "vadd"}},
+        )
+        def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    out = pto.tpl("missing", lhs_tile, rhs_tile, mask)
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+            build_frontend_kernel_node(kernel)
+
+        self.assertIn("unknown template slot 'missing'", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_template_slot_rejects_missing_selected_op_mapping(self) -> None:
+        @pto.vkernel(
+            ops=["template_slot_missing_map_add_unique", "template_slot_missing_map_sub_unique"],
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={"core": {"template_slot_missing_map_add_unique": "vadd"}},
+        )
+        def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    out = pto.tpl("core", lhs_tile, rhs_tile, mask)
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "template_slot_missing_map_sub_unique",
+            (pto.f32, pto.f32, pto.f32),
+        )
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+            build_frontend_kernel_node(selected)
+
+        self.assertIn("template slot 'core' does not define an implementation for selected op", str(ctx.exception))
+        self.assertIn("template_slot_missing_map_sub_unique", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_template_slot_requires_selected_op_before_expansion(self) -> None:
+        @pto.vkernel(
+            ops=["template_slot_unbound_add_unique", "template_slot_unbound_sub_unique"],
+            dtypes=[(pto.f32, pto.f32, pto.f32)],
+            templates={
+                "core": {
+                    "template_slot_unbound_add_unique": "vadd",
+                    "template_slot_unbound_sub_unique": "vsub",
+                }
+            },
+        )
+        def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                    out = pto.tpl("core", lhs_tile, rhs_tile, mask)
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+            build_frontend_kernel_node(kernel)
+
+        self.assertIn("pto.tpl() requires pto.select_kernel(...) to bind a concrete op before expansion", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_template_slot_respects_resolved_op_surface_rules(self) -> None:
+        @pto.vkernel(
+            op="template_slot_advanced_surface_unique",
+            dtypes=[(pto.i32, pto.i32, pto.i32)],
+            templates={"cmp": {"template_slot_advanced_surface_unique": "vcmp"}},
+        )
+        def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+            with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (out_tile, lhs_tile, rhs_tile, lb, ub, step):
+                for lane in range(lb, ub, step):
+                    mask = pto.make_mask(pto.i32, pto.PAT.ALL)
+                    out = pto.tpl("cmp", lhs_tile, rhs_tile, mask, "lt")
+            return None
+
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+            build_frontend_kernel_node(kernel)
+
+        self.assertIn("surface `pto.vcmp` requires advanced=True", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
+
+    def test_callable_based_runtime_template_dispatch_remains_rejected(self) -> None:
+        with self.assertRaises(pto.TileLangFrontendError) as ctx:
+
+            @pto.vkernel(op="template_slot_callable_dispatch_unique", dtypes=[(pto.f32, pto.f32, pto.f32)])
+            def kernel(dst: pto.TensorView, src0: pto.TensorView, src1: pto.TensorView):
+                table = {"core": pto.vadd}
+                with pto.strict_vecscope(dst, src0, src1, 0, 64, 64) as (
+                    out_tile,
+                    lhs_tile,
+                    rhs_tile,
+                    lb,
+                    ub,
+                    step,
+                ):
+                    for lane in range(lb, ub, step):
+                        mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                        out = table["core"](lhs_tile, rhs_tile, mask)
+                return None
+
+        self.assertIn("unsupported call surface in TileLang DSL v1", str(ctx.exception))
+        self.assertIn(f"{__file__}:", str(ctx.exception))
 
     def test_semantic_pipeline_binds_parameter_loop_and_strict_vecscope_types(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f16, pto.i32)])

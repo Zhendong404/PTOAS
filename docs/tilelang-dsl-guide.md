@@ -4,33 +4,6 @@ The TileLang Python DSL provides a high-level, Pythonic interface for authoring 
 
 The DSL is designed to generate MLIR function libraries rather than direct binary executables. These MLIR libraries are intended to be consumed by other compilation frameworks that transform high-level tile semantics into low-level vector operations. This enables library developers to focus on hardware-aware kernel authoring while relying on upstream compilers for tile-level optimizations and code generation.
 
-## Current Implementation Status
-
-The current `tilelang_dsl` package in this repository implements:
-- matcher support:
-  `KernelRegistry`, `pto.select_kernel(...)`, multi-signature `dtypes`,
-  `AnyFloat` / `AnyInt` / `AnyType` / `AnyMask`, `TypeVar`, `constraints`,
-  `priority`
-- advanced authoring support:
-  implicit vecscope inference in `advanced=True` kernels
-- raw pointer / low-level DMA support:
-  `ptr(...)`, `castptr`, `addptr`, low-level DMA config ops,
-  `copy_gm_to_ubuf`, `copy_ubuf_to_gm`, `copy_ubuf_to_ubuf`
-- advanced vector-family lowering:
-  compare/select, predicate movement, carry, rearrangement
-
-Still deferred in the current package head:
-- reduction-family authoring
-
-Reason:
-- the repo does not yet expose a public authoring-form VPTO reduction op that
-  the standalone TileLang DSL can target directly
-
-For the package-local source of truth, see:
-- `tilelang-dsl/docs/v1-surface.md`
-- `tilelang-dsl/docs/v1-lowering.md`
-- `tilelang-dsl/docs/matcher-and-advanced-surface-migration.md`
-
 ## Quick Start
 
 **Note on mask pattern enums**: For brevity, examples in this guide use `PAT` as an alias for `pto.MaskPattern` (e.g., `PAT.ALL` instead of `pto.MaskPattern.PAT_ALL`). You can create this alias with `from pto import MaskPattern as PAT` or `PAT = pto.MaskPattern`.
@@ -143,9 +116,9 @@ def matmul_fallback(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 |-----------|------|----------|-------------|
 | `target` | `str` | Yes | Target hardware architecture (e.g., `"a5"` for Ascend 950). |
 | `op` | `str` | No* | Name of the PTO operation to match (e.g., `"matmul"`, `"conv2d"`, `"add"`). **Mutually exclusive with `ops`**. |
-| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Required for template-based kernels. |
+| `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. Use this when one descriptor should match multiple concrete ops. |
 | `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands (inputs and outputs) in order. |
-| `templates` | `Dict[str, Dict[str, str]]` | No | Template definitions for multi-operation kernels. Required when using `ops`. |
+| `templates` | `Dict[str, Dict[str, str]]` | No | Static template-slot mappings. Each slot maps concrete matcher ops to real `pto.*` op names. Required when the kernel body uses `pto.tpl(...)`. |
 | `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for the kernel to be selected. Can include logical combinations (`AnyOf`, `AllOf`, `Not`). Default: empty list. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Higher values have higher priority. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
@@ -245,7 +218,9 @@ def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 When a PTO operation needs implementation, the system performs the following matching process:
 
 1. **Target Filtering**: Select kernels with matching `target` architecture.
-2. **Operation Filtering**: Select kernels with matching `op` name.
+2. **Operation Filtering**: Select kernels whose matcher metadata covers the concrete query op:
+   - `op="foo"` requires exact match
+   - `ops=[...]` requires the concrete query op to appear in that list
 3. **Type Matching**: For each kernel's `dtypes` list, check if any signature matches the operation's operand types:
    - Concrete types must match exactly.
    - Wildcard types match according to their category.
@@ -253,6 +228,10 @@ When a PTO operation needs implementation, the system performs the following mat
 4. **Constraint Validation**: For each matching kernel, evaluate all `constraints`. If any constraint fails, the kernel is rejected.
 5. **Priority Selection**: From the remaining kernels, select the one with the highest `priority` value.
 6. **Fallback**: If no kernel matches, compilation fails with an error.
+
+For multi-op descriptors selected through `ops=[...]`, `pto.select_kernel(...)`
+also binds the concrete query op before materialization. This bound
+`selected_op` is what template-slot expansion uses later.
 
 The package also exposes explicit selection utilities:
 
@@ -376,12 +355,17 @@ def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
             pto.vsts(out, dst[row, col:], mask)
 ```
 
+`op` and `ops` are mutually exclusive, and exactly one of them must be
+provided. `ops=[...]` only widens the matcher set; callers still use
+`pto.select_kernel(target, concrete_op, operand_types, ...)` with a concrete
+PTO op such as `"tadd"` or `"tmul"`.
+
 #### Template System
 
 The template system consists of three components:
 
 1. **`templates` parameter**: A dictionary mapping template names to operation-specific implementations
-2. **`pto.tpl()` function**: Dispatches to the appropriate implementation based on the current operation
+2. **`pto.tpl()` function**: A compile-time placeholder that resolves to the appropriate implementation for the currently selected concrete op
 3. **`ops` parameter**: Replaces the singular `op` parameter for multi-operation kernels
 
 ##### Template Definition
@@ -402,17 +386,34 @@ templates={
 }
 ```
 
-The implementation strings are typically vector operation names (e.g., `"vadd"`, `"vsub"`, `"vmul"`, `"vdiv"`) that will be resolved during kernel expansion.
+Template-slot metadata is static and validated when the descriptor is
+registered:
+
+- slot names must be non-empty strings
+- mapping keys must be concrete ops covered by the descriptor matcher set
+- mapping values must be supported real `pto.*` op names
+
+The implementation strings are typically vector operation names such as
+`"vadd"`, `"vsub"`, `"vmul"`, and `"vdiv"`, which are resolved during kernel
+expansion.
 
 ##### Template Usage with `pto.tpl()`
 
 Inside a kernel function, use `pto.tpl()` to invoke a template:
 
 ```python
-result = pto.tpl(template_name, *args, **kwargs)
+result = pto.tpl("template_name", *args)
 ```
 
-During kernel expansion for a specific operation (e.g., `"tadd"`), the system replaces `pto.tpl("core", lhs, rhs, mask)` with the appropriate implementation (e.g., `pto.vadd(lhs, rhs, mask)`).
+The first argument must be a string literal slot name. During frontend AST
+construction, after `pto.select_kernel(...)` has bound the concrete op, the
+system replaces `pto.tpl("core", lhs, rhs, mask)` with the appropriate real
+call, such as `pto.vadd(lhs, rhs, mask)`. Semantic checking and lowering then
+see only the resolved real `pto.*` call.
+
+If a descriptor has not been bound to a concrete op yet, or if the slot does
+not define an implementation for the bound op, materialization fails before
+any VPTO IR is produced.
 
 #### Decorator Parameters Update
 
@@ -422,13 +423,16 @@ During kernel expansion for a specific operation (e.g., `"tadd"`), the system re
 | `op` | `str` | No* | Name of the PTO operation to match. **Mutually exclusive with `ops`**. |
 | `ops` | `List[str]` | No* | List of PTO operation names to match. **Mutually exclusive with `op`**. |
 | `dtypes` | `List[Tuple[Type, ...]]` | Yes | List of type signatures. Each tuple specifies the expected data types for the operation's operands. |
-| `templates` | `Dict[str, Dict[str, str]]` | No | Template definitions for multi-operation kernels. Required when using `ops`. |
+| `templates` | `Dict[str, Dict[str, str]]` | No | Static slot mappings from concrete matcher ops to real `pto.*` op names. Required when the kernel body uses `pto.tpl(...)`. |
 | `constraints` | `List[Constraint]` | No | Additional constraints that must be satisfied for kernel selection. |
 | `priority` | `int` | No | Selection priority when multiple kernels match. Default: `0`. |
 | `name` | `str` | No | Kernel name (used for debugging and profiling). Defaults to the decorated function's name. |
 | `advanced` | `bool` | No | Enable implicit vecscope inference. Default: `False`. |
 
-**Note**: Either `op` or `ops` must be provided, but not both. When using `ops`, the `templates` parameter is required.
+**Note**:
+- Either `op` or `ops` must be provided, but not both.
+- `templates` is only needed when the kernel body uses `pto.tpl(...)`.
+- `pto.select_kernel(...)` still queries with a concrete op even for `ops=[...]` descriptors.
 
 #### Advanced Template Patterns
 
@@ -439,42 +443,38 @@ A kernel can define multiple templates for different aspects of the computation:
 ```python
 @pto.vkernel(
     target="a5",
-    ops=["tadd_relu", "tsub_relu"],
+    ops=["tadd_relu", "tsub_relu", "tadd_abs", "tsub_abs"],
     dtypes=[(T, T, T)],
     templates={
         "arithmetic": {
             "tadd_relu": "vadd",
             "tsub_relu": "vsub",
+            "tadd_abs": "vadd",
+            "tsub_abs": "vsub",
         },
-        "activation": {
+        "postprocess": {
             "tadd_relu": "vrelu",
             "tsub_relu": "vrelu",  # Same activation for both
+            "tadd_abs": "vabs",
+            "tsub_abs": "vabs",
         }
     }
 )
-def elementwise_with_activation(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+def elementwise_with_postprocess(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     # ... load vectors
     arith_result = pto.tpl("arithmetic", lhs, rhs, mask)
-    activated = pto.tpl("activation", arith_result, mask)
+    postprocessed = pto.tpl("postprocess", arith_result, mask)
     # ... store result
 ```
 
-##### Template with Additional Arguments
+##### Compile-time Substitution Model
 
-Templates can accept additional arguments beyond the base operation:
+Template-slot expansion happens before semantic checking and lowering:
 
-```python
-# In kernel using the template:
-result = pto.tpl("scale_add", lhs, rhs, scale_factor, mask)
-
-# Template definition:
-templates={
-    "scale_add": {
-        "tadd": "vmadd",  # Multiply-add operation
-        "tsub": "vmsub",  # Multiply-subtract operation
-    }
-}
-```
+- `pto.select_kernel(...)` first binds a concrete op such as `"tadd"`
+- the frontend then resolves `pto.tpl("core", ...)` using `templates["core"]["tadd"]`
+- the placeholder is rewritten to a real `pto.*` call before semantic analysis
+- diagnostics for unknown slots, missing mappings, or unsupported resolved surfaces are raised before any VPTO IR is generated
 
 #### Type Variables in Template Kernels
 
@@ -503,10 +503,11 @@ def typed_elementwise(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
 #### Selection Mechanism for Template Kernels
 
 When a PTO operation matches a template kernel:
-1. The system selects the kernel based on `ops` list inclusion
-2. During expansion, `pto.tpl()` calls are resolved using the template dictionary
-3. For operation `"op_name"`, template `"template_name"` resolves to `templates["template_name"]["op_name"]`
-4. The resolved string (e.g., `"vadd"`) is replaced with the corresponding DSL operation
+1. The system selects the descriptor based on `op` exact match or `ops` list inclusion.
+2. `pto.select_kernel(...)` binds the concrete query op as the descriptor's `selected_op`.
+3. During frontend expansion, `pto.tpl()` calls are resolved using that bound concrete op.
+4. For operation `"op_name"`, template `"template_name"` resolves to `templates["template_name"]["op_name"]`.
+5. The resolved string (e.g., `"vadd"`) is replaced with the corresponding real DSL operation before semantic analysis and lowering.
 
 #### Example: Unified Arithmetic Kernel
 
@@ -2853,7 +2854,7 @@ Type conversion and specialized operations.
 
 Operations for template-based kernel authoring, enabling code reuse across multiple related operations.
 
-#### `pto.tpl(template_name: str, *args, **kwargs) -> Any`
+#### `pto.tpl(template_name: str, *args) -> Any`
 
 **Description**: Template dispatch operation for multi-operation kernels. Resolves to different implementations based on the current operation being expanded.
 
@@ -2861,8 +2862,7 @@ Operations for template-based kernel authoring, enabling code reuse across multi
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `template_name` | `str` | Name of the template to dispatch |
-| `*args` | `Any` | Arguments passed to the template implementation |
-| `**kwargs` | `Any` | Keyword arguments passed to the template implementation |
+| `*args` | `Any` | Positional arguments passed unchanged to the resolved real implementation |
 
 **Returns**:
 | Return Value | Type | Description |
@@ -2871,9 +2871,12 @@ Operations for template-based kernel authoring, enabling code reuse across multi
 
 **Behavior**:
 - Only valid inside kernels decorated with `@pto.vkernel` that have a `templates` parameter
+- The first argument must be a string literal template-slot name
 - During kernel expansion for a specific operation `op_name`, `pto.tpl("template_name", ...)` is replaced with the implementation specified in `templates["template_name"]["op_name"]`
-- The replacement is a direct substitution; arguments are passed unchanged
+- The replacement is a direct compile-time substitution; positional arguments are passed unchanged
 - Template implementations are typically string names of vector operations (e.g., `"vadd"`, `"vsub"`)
+- `pto.select_kernel(...)` must bind a concrete op before template expansion can happen
+- Python dict lookup, callable values, lambdas, and other runtime dispatch patterns are not part of the supported kernel-body surface
 
 **Example**:
 ```python
@@ -2895,7 +2898,7 @@ def elementwise_kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
 
 **Constraints**:
 - Template names must be defined in the `templates` parameter of the `@pto.vkernel` decorator
-- For each operation in the `ops` list, every template must have a corresponding implementation
+- When a kernel body uses `pto.tpl("slot", ...)`, that slot must define an implementation for the currently selected concrete op
 - Template implementations must be valid operation names in the DSL
 
 ### Stateless Store Operations
@@ -3176,31 +3179,31 @@ def elementwise_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
             pto.vsts(out, dst[row, col:], mask)
 ```
 
-#### Multiple Templates with Activation
+#### Multiple Templates with Postprocess
 
-Kernel using separate templates for arithmetic and activation operations:
+Kernel using separate templates for arithmetic and postprocess operations:
 
 ```python
 @pto.vkernel(
     target="a5",
-    ops=["add_relu", "sub_relu", "add_sigmoid", "sub_sigmoid"],
+    ops=["add_relu", "sub_relu", "add_abs", "sub_abs"],
     dtypes=[(T, T, T)],
     templates={
         "arithmetic": {
             "add_relu": "vadd",
             "sub_relu": "vsub",
-            "add_sigmoid": "vadd",
-            "sub_sigmoid": "vsub",
+            "add_abs": "vadd",
+            "sub_abs": "vsub",
         },
-        "activation": {
+        "postprocess": {
             "add_relu": "vrelu",
             "sub_relu": "vrelu",
-            "add_sigmoid": "vsigmoid",
-            "sub_sigmoid": "vsigmoid",
+            "add_abs": "vabs",
+            "sub_abs": "vabs",
         }
     }
 )
-def elementwise_with_activation(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+def elementwise_with_postprocess(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
     dtype = dst.element_type
     rows, cols = dst.valid_shape
     
@@ -3214,44 +3217,22 @@ def elementwise_with_activation(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
             # Use arithmetic template
             arith_result = pto.tpl("arithmetic", lhs, rhs, mask)
             
-            # Apply activation template
-            activated = pto.tpl("activation", arith_result, mask)
+            # Apply postprocess template
+            activated = pto.tpl("postprocess", arith_result, mask)
             
             pto.vsts(activated, dst[row, col:], mask)
 ```
 
-#### Template with Additional Arguments
+#### Compile-time Substitution
 
-Template that accepts extra arguments beyond the base operation:
+Template substitution happens before semantic analysis and lowering:
 
 ```python
-@pto.vkernel(
-    target="a5",
-    ops=["scale_add", "scale_sub"],
-    dtypes=[(T, T, T, T)],  # dst, src0, src1, scale
-    templates={
-        "scaled_op": {
-            "scale_add": "vmadd",  # Multiply-add: src0 * scale + src1
-            "scale_sub": "vmsub",  # Multiply-sub: src0 * scale - src1
-        }
-    }
-)
-def scaled_elementwise(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, scale: pto.Tile):
-    """Elementwise operations with scaling factor."""
-    dtype = dst.element_type
-    rows, cols = dst.valid_shape
-    
-    for row in range(0, rows, 1):
-        remained = cols
-        for col in range(0, cols, pto.get_lanes(dtype)):
-            mask, remained = pto.make_mask(dtype, remained)
-            lhs = pto.vlds(src0[row, col:])
-            rhs = pto.vlds(src1[row, col:])
-            scale_vec = pto.vlds(scale[row, col:])
-            
-            # Template with three arguments
-            out = pto.tpl("scaled_op", lhs, scale_vec, rhs, mask)
-            pto.vsts(out, dst[row, col:], mask)
+selected = pto.select_kernel("a5", "tadd", (ptype, ptype, ptype))
+# frontend resolves:
+# pto.tpl("core", lhs, rhs, mask)
+# into:
+# pto.vadd(lhs, rhs, mask)
 ```
 
 #### Benefits of Template-based Authoring

@@ -40,6 +40,13 @@ from .support_matrix import (
 
 _UNSET = object()
 _PTOAS_BIN_ENV = "PTOAS_BIN"
+_SUPPORTED_TEMPLATE_PTO_CALLS = frozenset(
+    SUPPORTED_TOPLEVEL_PTO_CALLS
+    | SUPPORTED_VECSCOPE_PTO_CALLS
+    | ADVANCED_VECSCOPE_PTO_CALLS
+    | ADVANCED_EXPR_PTO_CALLS
+    | ADVANCED_TOPLEVEL_PTO_CALLS
+)
 
 
 def _validate_dtype_pattern(dtype: Any) -> ScalarType | WildcardType | TypeVariable:
@@ -164,6 +171,8 @@ class _KernelBodyValidator(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            if node.func.value.id == "pto" and node.func.attr == "tpl":
+                return
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_TOPLEVEL_PTO_CALLS:
                 return
             if node.func.value.id == "pto" and node.func.attr in SUPPORTED_VECSCOPE_PTO_CALLS:
@@ -312,7 +321,7 @@ class VKernelDescriptor:
     """Descriptor returned by `@tilelang_dsl.vkernel`."""
 
     target: str
-    op: str
+    match_ops: tuple[str, ...]
     dtypes: tuple[tuple[Any, ...], ...]
     name: str
     verify_enabled: bool
@@ -323,12 +332,34 @@ class VKernelDescriptor:
     specializations: tuple[tuple[str, TileSpecialization], ...] = ()
     constraints: tuple[Callable[[Mapping[str, Any]], Any], ...] = field(default=(), repr=False)
     priority: int = 0
+    _templates: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = field(default=(), repr=False)
+    _selected_op: str | None = None
     _selected_dtype_signature: tuple[ScalarType, ...] | None = None
     _parameters: tuple[BoundKernelParameter, ...] | None = field(default=None, repr=False)
 
     @property
     def py_fn(self) -> Callable[..., Any]:
         return self._py_fn
+
+    @property
+    def op(self) -> str:
+        if self._selected_op is None:
+            raise ValueError(
+                "descriptor requires pto.select_kernel(...) to bind a concrete op "
+                "before reading descriptor.op"
+            )
+        return self._selected_op
+
+    @property
+    def selected_op(self) -> str | None:
+        return self._selected_op
+
+    @property
+    def templates(self) -> dict[str, dict[str, str]]:
+        return {
+            slot: dict(op_bindings)
+            for slot, op_bindings in self._templates
+        }
 
     @property
     def dtype_signature(self) -> tuple[ScalarType, ...]:
@@ -352,13 +383,16 @@ class VKernelDescriptor:
     def metadata(self) -> dict[str, Any]:
         return {
             "target": self.target,
-            "op": self.op,
+            "op": self._selected_op,
+            "match_ops": self.match_ops,
+            "selected_op": self._selected_op,
             "dtypes": self.dtypes,
             "name": self.name,
             "verify": self.verify_enabled,
             "advanced": self.advanced_enabled,
             "constraints": self.constraints,
             "priority": self.priority,
+            "templates": self.templates,
         }
 
     @property
@@ -379,7 +413,7 @@ class VKernelDescriptor:
         bound_parameters = _bind_parameters(self._parameter_specs, dtype_signature)
         return VKernelDescriptor(
             target=self.target,
-            op=self.op,
+            match_ops=self.match_ops,
             dtypes=self.dtypes,
             name=self.name,
             verify_enabled=self.verify_enabled,
@@ -390,8 +424,37 @@ class VKernelDescriptor:
             specializations=self.specializations,
             constraints=self.constraints,
             priority=self.priority,
+            _templates=self._templates,
+            _selected_op=self._selected_op,
             _selected_dtype_signature=dtype_signature,
             _parameters=bound_parameters,
+        )
+
+    def _bind_selected_op(self, op: str) -> "VKernelDescriptor":
+        normalized_op = _validate_op(op)
+        if normalized_op not in self.match_ops:
+            raise ValueError(
+                f"selected op {normalized_op!r} is not in descriptor matcher set {self.match_ops!r}"
+            )
+        if self._selected_op == normalized_op:
+            return self
+        return VKernelDescriptor(
+            target=self.target,
+            match_ops=self.match_ops,
+            dtypes=self.dtypes,
+            name=self.name,
+            verify_enabled=self.verify_enabled,
+            advanced_enabled=self.advanced_enabled,
+            _parameter_specs=self._parameter_specs,
+            _py_fn=self._py_fn,
+            _source_info=self._source_info,
+            specializations=self.specializations,
+            constraints=self.constraints,
+            priority=self.priority,
+            _templates=self._templates,
+            _selected_op=normalized_op,
+            _selected_dtype_signature=self._selected_dtype_signature,
+            _parameters=self._parameters,
         )
 
     def specialize(self, **bindings: Any) -> "VKernelDescriptor":
@@ -417,7 +480,7 @@ class VKernelDescriptor:
 
         return VKernelDescriptor(
             target=self.target,
-            op=self.op,
+            match_ops=self.match_ops,
             dtypes=self.dtypes,
             name=self.name,
             verify_enabled=self.verify_enabled,
@@ -427,6 +490,8 @@ class VKernelDescriptor:
             specializations=tuple(sorted(updated.items())),
             constraints=self.constraints,
             priority=self.priority,
+            _templates=self._templates,
+            _selected_op=self._selected_op,
             _selected_dtype_signature=self._selected_dtype_signature,
             _parameters=self._parameters,
             _py_fn=self._py_fn,
@@ -448,6 +513,14 @@ class VKernelDescriptor:
                 f"{missing_names}",
             )
 
+    def _require_materialization_binding(self, api_name: str) -> None:
+        self.parameters
+        if len(self.match_ops) > 1 and self._selected_op is None:
+            raise ValueError(
+                f"{api_name}() requires pto.select_kernel(...) to bind a concrete op "
+                "before materialization"
+            )
+
     def _build_authoring_module(self):
         self.parameters
         frontend_kernel = build_frontend_kernel_node(self)
@@ -455,18 +528,22 @@ class VKernelDescriptor:
         return lower_semantic_kernel(semantic_kernel)
 
     def mlir_text(self) -> str:
+        self._require_materialization_binding("mlir_text")
         self._require_specialized_tiles("mlir_text")
         return self._build_authoring_module().render()
 
     def mlir_module(self) -> "MaterializedMLIRModule":
+        self._require_materialization_binding("mlir_module")
         self._require_specialized_tiles("mlir_module")
         return MaterializedMLIRModule(text=self.mlir_text(), target=self.target)
 
     def verify(self, *, ptoas_bin: str | Path | None = None) -> "VerificationResult":
+        self._require_materialization_binding("verify")
         self._require_specialized_tiles("verify")
         return self.mlir_module().verify(ptoas_bin=ptoas_bin)
 
     def emit(self, path: str | Path) -> None:
+        self._require_materialization_binding("emit")
         self._require_specialized_tiles("emit")
         output_path = Path(path)
         output_path.write_text(self.mlir_text(), encoding="utf-8")
@@ -686,6 +763,82 @@ def _validate_op(op: Any) -> str:
     if not isinstance(op, str) or not op:
         raise TypeError("op must be a non-empty string")
     return op
+
+
+def _freeze_match_ops(*, op: Any, ops: Any) -> tuple[str, ...]:
+    if op is not None and ops is not None:
+        raise ValueError("vkernel() accepts either op= or ops=, but not both")
+    if op is None and ops is None:
+        raise ValueError("vkernel() requires exactly one of op= or ops=")
+    if op is not None:
+        return (_validate_op(op),)
+    if not isinstance(ops, (list, tuple)):
+        raise TypeError("ops must be a sequence of non-empty strings")
+    if not ops:
+        raise ValueError("ops must contain at least one op")
+    normalized_ops = tuple(_validate_op(candidate) for candidate in ops)
+    if len(set(normalized_ops)) != len(normalized_ops):
+        raise ValueError("ops must not contain duplicates")
+    return normalized_ops
+
+
+def _validate_template_slot_name(slot: Any) -> str:
+    if not isinstance(slot, str) or not slot:
+        raise TypeError("template slot names must be non-empty strings")
+    return slot
+
+
+def _validate_template_value(slot: str, op_name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise TypeError(
+            f"templates[{slot!r}][{op_name!r}] must be a non-empty pto op name string"
+        )
+    if value not in _SUPPORTED_TEMPLATE_PTO_CALLS:
+        raise ValueError(
+            f"templates[{slot!r}][{op_name!r}] maps to unsupported pto op {value!r}"
+        )
+    return value
+
+
+def _freeze_templates(
+    templates: Any,
+    *,
+    match_ops: tuple[str, ...],
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    if templates in (_UNSET, None):
+        return ()
+    if not isinstance(templates, Mapping):
+        raise TypeError("templates must be a mapping of slot names to per-op mappings")
+
+    frozen_templates = []
+    for slot, op_bindings in templates.items():
+        normalized_slot = _validate_template_slot_name(slot)
+        if not isinstance(op_bindings, Mapping):
+            raise TypeError(
+                f"templates[{normalized_slot!r}] must be a mapping of concrete ops to pto op names"
+            )
+        if not op_bindings:
+            raise ValueError(
+                f"templates[{normalized_slot!r}] must contain at least one concrete-op mapping"
+            )
+
+        frozen_bindings = []
+        for concrete_op, real_op in op_bindings.items():
+            normalized_concrete_op = _validate_op(concrete_op)
+            if normalized_concrete_op not in match_ops:
+                raise ValueError(
+                    f"templates[{normalized_slot!r}] references op {normalized_concrete_op!r} "
+                    f"outside descriptor matcher set {match_ops!r}"
+                )
+            frozen_bindings.append(
+                (
+                    normalized_concrete_op,
+                    _validate_template_value(normalized_slot, normalized_concrete_op, real_op),
+                )
+            )
+        frozen_templates.append((normalized_slot, tuple(frozen_bindings)))
+
+    return tuple(frozen_templates)
 
 
 def _validate_name(py_fn: Callable[..., Any], name: Any) -> str:
@@ -1089,6 +1242,8 @@ def _build_descriptor(
     *,
     target: str,
     op: Any,
+    ops: Any,
+    templates: Any,
     dtypes: Any,
     name: Any,
     verify: Any,
@@ -1102,19 +1257,24 @@ def _build_descriptor(
     source_info = _load_function_source_info(py_fn)
     advanced_enabled = _validate_advanced(advanced)
     _validate_function_body(source_info, advanced_enabled=advanced_enabled)
+    match_ops = _freeze_match_ops(op=op, ops=ops)
+    frozen_templates = _freeze_templates(templates, match_ops=match_ops)
     frozen_dtypes = _freeze_dtypes(dtypes)
     parameter_specs = _collect_parameter_specs(py_fn)
     _validate_dtype_arity(parameter_specs, frozen_dtypes)
 
+    selected_op: str | None = None
     selected_dtype_signature: tuple[ScalarType, ...] | None = None
     bound_parameters: tuple[BoundKernelParameter, ...] | None = None
+    if len(match_ops) == 1:
+        selected_op = match_ops[0]
     if len(frozen_dtypes) == 1 and all(isinstance(dtype, ScalarType) for dtype in frozen_dtypes[0]):
         selected_dtype_signature = tuple(frozen_dtypes[0])
         bound_parameters = _bind_parameters(parameter_specs, selected_dtype_signature)
 
     return VKernelDescriptor(
         target=_validate_target(target),
-        op=_validate_op(op),
+        match_ops=match_ops,
         dtypes=frozen_dtypes,
         name=_validate_name(py_fn, name),
         verify_enabled=_validate_verify(verify),
@@ -1124,6 +1284,8 @@ def _build_descriptor(
         _source_info=source_info,
         constraints=_validate_constraints(constraints),
         priority=_validate_priority(priority),
+        _templates=frozen_templates,
+        _selected_op=selected_op,
         _selected_dtype_signature=selected_dtype_signature,
         _parameters=bound_parameters,
     )
@@ -1152,6 +1314,27 @@ def _format_descriptor_identity(descriptor: VKernelDescriptor) -> str:
     return f"{descriptor.name}(priority={descriptor.priority}, dtypes={dtype_signature!r})"
 
 
+def _match_descriptor_query(
+    descriptor: VKernelDescriptor,
+    *,
+    target: str,
+    op: str,
+    operand_types: tuple[ScalarType, ...],
+) -> VKernelDescriptor | None:
+    if descriptor.target != target:
+        return None
+    if op not in descriptor.match_ops:
+        return None
+
+    op_bound_descriptor = descriptor._bind_selected_op(op)
+    matched_signature = _match_descriptor_dtype_signature(op_bound_descriptor, operand_types)
+    if matched_signature is None:
+        return None
+    if op_bound_descriptor._selected_dtype_signature == matched_signature:
+        return op_bound_descriptor
+    return op_bound_descriptor._bind_selected_dtype_signature(matched_signature)
+
+
 def select_kernel(
     target: str,
     op: str,
@@ -1177,14 +1360,17 @@ def select_kernel(
         raise TypeError("registry must be a KernelRegistry or None")
 
     type_matched_candidates = [
-        descriptor._bind_selected_dtype_signature(matched_signature)
-        if descriptor._selected_dtype_signature != matched_signature
-        else descriptor
+        matched_descriptor
         for descriptor in active_registry
-        if descriptor.target == normalized_target
-        and descriptor.op == normalized_op
-        for matched_signature in (_match_descriptor_dtype_signature(descriptor, normalized_operand_types),)
-        if matched_signature is not None
+        for matched_descriptor in (
+            _match_descriptor_query(
+                descriptor,
+                target=normalized_target,
+                op=normalized_op,
+                operand_types=normalized_operand_types,
+            ),
+        )
+        if matched_descriptor is not None
     ]
 
     if not type_matched_candidates:
@@ -1225,6 +1411,8 @@ def vkernel(
     *,
     target: str = "a5",
     op: str | None = None,
+    ops: tuple[str, ...] | list[str] | None = None,
+    templates: Any = _UNSET,
     dtypes: Any = None,
     name: str | None = None,
     verify: bool = True,
@@ -1235,8 +1423,8 @@ def vkernel(
     """Create a TileLang DSL v1 kernel descriptor.
 
     v1 keeps only the minimal descriptor metadata surface:
-    `target`, `op`, `dtypes`, `constraints`, `priority`, `name`, `verify`,
-    and opt-in `advanced`.
+    `target`, `op`/`ops`, `templates`, `dtypes`, `constraints`, `priority`, `name`,
+    `verify`, and opt-in `advanced`.
     """
 
     def wrap(fn: Callable[..., Any]) -> VKernelDescriptor:
@@ -1244,6 +1432,8 @@ def vkernel(
             fn,
             target=target,
             op=op,
+            ops=ops,
+            templates=templates,
             dtypes=dtypes,
             name=name,
             verify=verify,
