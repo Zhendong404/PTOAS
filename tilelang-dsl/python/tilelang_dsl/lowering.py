@@ -87,6 +87,9 @@ class _AuthoringRenderer:
         self._constant_lines: list[str] = []
         self._constant_cache: dict[tuple[str, object], str] = {}
         self._castptr_cache: dict[tuple[str, str], str] = {}
+        self._tile_memref_cache: dict[str, _RenderedValue] = {}
+        self._tile_valid_dim_cache: dict[tuple[str, int], _RenderedValue] = {}
+        self._used_tile_buffers = self._collect_used_tile_buffers(kernel.body)
         self._temp_counter = 0
         self._loop_counter = 0
 
@@ -94,11 +97,23 @@ class _AuthoringRenderer:
         parameter_list = ", ".join(
             f"{param.ssa_name}: {self._render_type(param.type)}"
             for param in self.kernel.parameters
+            if param.kind != "tile_valid_shape"
         )
         env = {
             param.name: _RenderedValue(name=param.ssa_name, type=param.type)
             for param in self.kernel.parameters
+            if param.kind != "tile_valid_shape"
         }
+        entry_lines: list[str] = []
+        for param in self.kernel.parameters:
+            if param.kind != "tile":
+                continue
+            if param.name in self._used_tile_buffers:
+                self._materialize_tile_memref(
+                    env[param.name],
+                    indent=4,
+                    into=entry_lines,
+                )
         body_lines = self._render_block(self.kernel.body, env, indent=4)
 
         lines = [
@@ -109,21 +124,135 @@ class _AuthoringRenderer:
             f"// tilelang.advanced = {self.kernel.advanced_enabled}",
         ]
         for binding in self.kernel.tile_bindings:
+            valid_shape = ""
+            if binding.valid_shape is not None:
+                valid_shape = f" valid_shape={self._format_shape_tuple(binding.valid_shape)}"
             lines.append(
                 "// tilelang.specialize "
                 f"{binding.name} shape={binding.shape} memory_space={binding.memory_space} "
-                f"config={binding.config}"
+                f"config={binding.config}{valid_shape}"
             )
         lines.append(f'module attributes {{pto.target_arch = "{self.kernel.target}"}} {{')
         lines.append(
-            f"  func.func {_format_symbol_name(self.kernel.symbol_name)}({parameter_list}) {{"
+            "  func.func "
+            f"{_format_symbol_name(self.kernel.symbol_name)}({parameter_list}) "
+            "attributes { pto.tilelang.instance } {"
         )
         lines.extend(self._constant_lines)
+        lines.extend(entry_lines)
         lines.extend(body_lines)
         lines.append("  }")
         lines.append("}")
         lines.append("")
         return "\n".join(lines)
+
+    def _collect_used_tile_buffers(
+        self,
+        statements: tuple[SemanticStmt, ...],
+    ) -> set[str]:
+        used: set[str] = set()
+        for stmt in statements:
+            self._collect_used_tile_buffers_from_stmt(stmt, used)
+        return used
+
+    def _collect_used_tile_buffers_from_stmt(
+        self,
+        stmt: SemanticStmt,
+        used: set[str],
+    ) -> None:
+        if isinstance(stmt, SemanticAssignStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.value, used)
+            return
+        if isinstance(stmt, SemanticExprStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.expr, used)
+            return
+        if isinstance(stmt, SemanticDmaLoadStmt):
+            self._record_tile_buffer_use(stmt.dst, used)
+            self._collect_used_tile_buffers_from_expr(stmt.src, used)
+            return
+        if isinstance(stmt, SemanticDmaStoreStmt):
+            self._record_tile_buffer_use(stmt.src, used)
+            self._collect_used_tile_buffers_from_expr(stmt.dst, used)
+            return
+        if isinstance(stmt, SemanticVectorStoreStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.value, used)
+            self._record_tile_buffer_use(stmt.destination, used)
+            for index in stmt.indices:
+                self._collect_used_tile_buffers_from_expr(index, used)
+            self._collect_used_tile_buffers_from_expr(stmt.mask, used)
+            return
+        if isinstance(stmt, SemanticVecscopeStmt):
+            for nested in stmt.body:
+                self._collect_used_tile_buffers_from_stmt(nested, used)
+            return
+        if isinstance(stmt, SemanticStrictVecscopeStmt):
+            for capture in stmt.captures:
+                self._record_tile_buffer_use(capture, used)
+                self._collect_used_tile_buffers_from_expr(capture, used)
+            for nested in stmt.body:
+                self._collect_used_tile_buffers_from_stmt(nested, used)
+            return
+        if isinstance(stmt, SemanticForStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.lower_bound, used)
+            self._collect_used_tile_buffers_from_expr(stmt.upper_bound, used)
+            self._collect_used_tile_buffers_from_expr(stmt.step, used)
+            for nested in stmt.body:
+                self._collect_used_tile_buffers_from_stmt(nested, used)
+            return
+        if isinstance(stmt, SemanticIfStmt):
+            self._collect_used_tile_buffers_from_expr(stmt.condition, used)
+            for nested in stmt.then_body:
+                self._collect_used_tile_buffers_from_stmt(nested, used)
+            for nested in stmt.else_body:
+                self._collect_used_tile_buffers_from_stmt(nested, used)
+            return
+        if isinstance(stmt, SemanticReturnStmt) and stmt.value is not None:
+            self._collect_used_tile_buffers_from_expr(stmt.value, used)
+
+    def _collect_used_tile_buffers_from_expr(
+        self,
+        expr: SemanticExpr,
+        used: set[str],
+    ) -> None:
+        if isinstance(expr, SemanticCallExpr):
+            if expr.namespace == "pto" and expr.name == "vlds" and expr.args:
+                self._record_tile_buffer_use(expr.args[0], used)
+            for arg in expr.args:
+                self._collect_used_tile_buffers_from_expr(arg, used)
+            return
+        if isinstance(expr, SemanticBinaryExpr):
+            self._collect_used_tile_buffers_from_expr(expr.lhs, used)
+            self._collect_used_tile_buffers_from_expr(expr.rhs, used)
+            return
+        if isinstance(expr, SemanticTupleExpr):
+            for element in expr.elements:
+                self._collect_used_tile_buffers_from_expr(element, used)
+            return
+        if isinstance(expr, SemanticTensorSliceExpr):
+            self._collect_used_tile_buffers_from_expr(expr.base, used)
+            for slice_expr in expr.slices:
+                if slice_expr.start is not None:
+                    self._collect_used_tile_buffers_from_expr(slice_expr.start, used)
+                if slice_expr.stop is not None:
+                    self._collect_used_tile_buffers_from_expr(slice_expr.stop, used)
+                if slice_expr.step is not None:
+                    self._collect_used_tile_buffers_from_expr(slice_expr.step, used)
+            return
+        if isinstance(expr, SemanticAttributeAccess):
+            if expr.attr not in {"shape", "valid_shape", "element_type"}:
+                self._collect_used_tile_buffers_from_expr(expr.base, used)
+            return
+        if isinstance(expr, SemanticSubscriptAccess):
+            self._collect_used_tile_buffers_from_expr(expr.base, used)
+            self._collect_used_tile_buffers_from_expr(expr.index, used)
+
+    def _record_tile_buffer_use(
+        self,
+        expr: SemanticExpr,
+        used: set[str],
+    ) -> None:
+        if isinstance(expr, SemanticBindingRef) and isinstance(expr.type, SemanticTileType):
+            used.add(expr.binding.name)
 
     def _render_block(
         self,
@@ -458,6 +587,8 @@ class _AuthoringRenderer:
         lines: list[str] = []
         value = self._lower_expr(stmt.value, env, indent=indent, into=lines)
         destination = self._lower_expr(stmt.destination, env, indent=indent, into=lines)
+        if isinstance(destination.type, SemanticTileType):
+            destination = self._materialize_tile_memref(destination, indent=indent, into=lines)
         rendered_indices = self._render_index_list(stmt.indices, env, indent=indent, into=lines)
         mask = self._lower_expr(stmt.mask, env, indent=indent, into=lines)
         lines.append(
@@ -795,6 +926,8 @@ class _AuthoringRenderer:
 
         if expr.name == "vlds":
             source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            if isinstance(source.type, SemanticTileType):
+                source = self._materialize_tile_memref(source, indent=indent, into=into)
             rendered_indices = self._render_index_list(expr.args[1:], env, indent=indent, into=into)
             into.append(
                 self._indent(indent)
@@ -1035,6 +1168,9 @@ class _AuthoringRenderer:
         if existing is not None:
             return existing, ptr_type
 
+        if isinstance(value.type, SemanticTileType):
+            value = self._materialize_tile_memref(value, indent=indent, into=into)
+
         if self._is_memref_like_type(value.type):
             cast_name = self._new_temp()
             into.append(
@@ -1115,6 +1251,22 @@ class _AuthoringRenderer:
         desired_name: str | None,
         into: list[str] | None,
     ) -> _RenderedValue:
+        if (
+            into is not None
+            and isinstance(expr.base, SemanticAttributeAccess)
+            and expr.base.attr == "valid_shape"
+            and isinstance(expr.base.base, SemanticBindingRef)
+            and isinstance(expr.base.base.type, SemanticTileType)
+            and isinstance(expr.index, SemanticLiteralExpr)
+            and isinstance(expr.index.value, int)
+        ):
+            return self._materialize_tile_valid_dim(
+                expr.base.base.binding,
+                expr.index.value,
+                indent=indent,
+                into=into,
+                desired_name=desired_name,
+            )
         value = self._extract_shape_subscript_value(expr, env)
         if isinstance(value, _RenderedValue):
             return value
@@ -1133,6 +1285,60 @@ class _AuthoringRenderer:
     def _tensor_shape_binding_name(self, tensor_name: str, axis: int) -> str:
         return f"__shape_{tensor_name}_{axis}"
 
+    def _materialize_tile_memref(
+        self,
+        value: _RenderedValue,
+        *,
+        indent: int,
+        into: list[str],
+    ) -> _RenderedValue:
+        existing = self._tile_memref_cache.get(value.name)
+        if existing is not None:
+            return existing
+        if not isinstance(value.type, SemanticTileType):
+            return value
+        memref_type = _RenderedTextualType(
+            self._render_memref_type(
+                element_dtype=value.type.element_dtype.name,
+                shape=value.type.shape if value.type.shape is not None else ("?",) * value.type.rank,
+                memory_space=value.type.memory_space or "ub",
+            )
+        )
+        memref_name = self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{memref_name} = pto.tile_buf_addr {value.name} : "
+            + f"{self._render_type(value.type)} -> {self._render_type(memref_type)}"
+        )
+        rendered = _RenderedValue(name=memref_name, type=memref_type)
+        self._tile_memref_cache[value.name] = rendered
+        return rendered
+
+    def _materialize_tile_valid_dim(
+        self,
+        binding: object,
+        axis: int,
+        *,
+        indent: int,
+        into: list[str],
+        desired_name: str | None = None,
+    ) -> _RenderedValue:
+        cache_key = (binding.name, axis)
+        existing = self._tile_valid_dim_cache.get(cache_key)
+        if existing is not None:
+            return existing
+        source = _RenderedValue(name=binding.ssa_name, type=binding.type)
+        op_name = "pto.tile_valid_rows" if axis == 0 else "pto.tile_valid_cols"
+        result_name = desired_name or self._new_temp()
+        into.append(
+            self._indent(indent)
+            + f"{result_name} = {op_name} {source.name} : "
+            + f"{self._render_type(source.type)} -> index"
+        )
+        rendered = _RenderedValue(name=result_name, type=SemanticIndexType())
+        self._tile_valid_dim_cache[cache_key] = rendered
+        return rendered
+
     def _extract_shape_subscript_value(
         self,
         expr: SemanticSubscriptAccess,
@@ -1140,8 +1346,10 @@ class _AuthoringRenderer:
     ) -> int | _RenderedValue:
         if not isinstance(expr.base, SemanticAttributeAccess):
             raise NotImplementedError("only shape indexing is supported in TileLang DSL v1 lowering")
-        if expr.base.attr != "shape":
-            raise NotImplementedError("only `.shape[...]` indexing is supported in TileLang DSL v1 lowering")
+        if expr.base.attr not in {"shape", "valid_shape"}:
+            raise NotImplementedError(
+                "only `.shape[...]` and `.valid_shape[...]` indexing are supported in TileLang DSL v1 lowering"
+            )
         if not isinstance(expr.index, SemanticLiteralExpr) or not isinstance(expr.index.value, int):
             raise NotImplementedError("shape indices must be integer literals in TileLang DSL v1 lowering")
         if not isinstance(expr.base.base, SemanticBindingRef):
@@ -1153,20 +1361,30 @@ class _AuthoringRenderer:
         index = expr.index.value
 
         if isinstance(base_type, SemanticTileType):
-            if base_type.shape is None:
+            if expr.base.attr == "shape":
+                if base_type.shape is None:
+                    raise NotImplementedError("dynamic Tile shapes are not supported in TileLang DSL v1 lowering")
+                return base_type.shape[index]
+            if base_type.valid_shape is None:
                 raise NotImplementedError("dynamic Tile shapes are not supported in TileLang DSL v1 lowering")
-            return base_type.shape[index]
+            valid_dim = base_type.valid_shape[index]
+            if valid_dim is not None:
+                return valid_dim
+            return _RenderedValue(name=base_binding.ssa_name, type=base_type)
 
         if isinstance(base_type, SemanticTensorViewType):
             hidden_name = self._tensor_shape_binding_name(base_binding.name, index)
             hidden_value = env.get(hidden_name)
             if hidden_value is None:
                 raise NotImplementedError(
-                    f"missing TensorView shape binding for '{base_binding.name}.shape[{index}]'"
+                    f"missing TensorView shape binding for '{base_binding.name}.{expr.base.attr}[{index}]'"
                 )
             return hidden_value
 
         raise NotImplementedError("shape indexing expects a Tile or TensorView operand")
+
+    def _format_shape_tuple(self, shape: tuple[int | None, ...]) -> str:
+        return "(" + ", ".join("?" if dim is None else str(dim) for dim in shape) + ")"
 
     def _materialize_constant(self, value: object, ty: SemanticType) -> str:
         cache_key = (self._render_type(ty), value)
@@ -1237,13 +1455,7 @@ class _AuthoringRenderer:
                 memory_space="gm",
             )
         if isinstance(ty, SemanticTileType):
-            memory_space = ty.memory_space or "ub"
-            shape = ty.shape if ty.shape is not None else ("?",) * ty.rank
-            return self._render_memref_type(
-                element_dtype=ty.element_dtype.name,
-                shape=shape,
-                memory_space=memory_space,
-            )
+            return self._render_tile_buf_type(ty)
         if isinstance(ty, SemanticMaskType):
             return f"!pto.mask<{ty.granularity}>"
         if isinstance(ty, SemanticVRegType):
@@ -1251,7 +1463,9 @@ class _AuthoringRenderer:
         raise NotImplementedError(f"unsupported semantic type {ty!r}")
 
     def _is_memref_like_type(self, ty: SemanticType) -> bool:
-        return isinstance(ty, (SemanticTensorViewType, SemanticTileType))
+        return isinstance(ty, (SemanticTensorViewType, SemanticTileType)) or (
+            isinstance(ty, _RenderedTextualType) and ty.text.startswith("memref<")
+        )
 
     def _render_copy_buffer_type(self, ty: SemanticType) -> str:
         if isinstance(ty, SemanticPtrType):
@@ -1279,6 +1493,33 @@ class _AuthoringRenderer:
         if memory_space == "ub":
             return "#pto.address_space<vec>"
         raise NotImplementedError(f"unsupported memref memory space '{memory_space}' in TileLang DSL v1 lowering")
+
+    def _render_tile_buf_type(self, ty: SemanticTileType) -> str:
+        if ty.shape is None:
+            raise NotImplementedError("tile_buf lowering requires statically specialized Tile shape")
+        if ty.rank not in (1, 2):
+            raise NotImplementedError("tile_buf lowering only supports rank-1 or rank-2 Tile values")
+        rows = ty.shape[0]
+        cols = 1 if ty.rank == 1 else ty.shape[1]
+        valid_shape = ty.valid_shape or ty.shape
+        v_row = valid_shape[0]
+        v_col = 1 if ty.rank == 1 else valid_shape[1]
+        return (
+            f"!pto.tile_buf<loc={self._render_tile_buf_loc(ty.memory_space or 'ub')}, "
+            f"dtype={ty.element_dtype.name}, rows={rows}, cols={cols}, "
+            f"v_row={self._render_tile_buf_dim(v_row)}, v_col={self._render_tile_buf_dim(v_col)}, "
+            "blayout=row_major, slayout=none_box, fractal=512, pad=0>"
+        )
+
+    def _render_tile_buf_loc(self, memory_space: str) -> str:
+        if memory_space == "ub":
+            return "vec"
+        if memory_space == "gm":
+            return "gm"
+        raise NotImplementedError(f"unsupported tile_buf memory space '{memory_space}'")
+
+    def _render_tile_buf_dim(self, dim: int | None) -> str:
+        return "?" if dim is None else str(dim)
 
     def _dtype_byte_width(self, dtype: ScalarType) -> int:
         widths = {

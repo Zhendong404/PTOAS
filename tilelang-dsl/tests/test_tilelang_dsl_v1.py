@@ -116,7 +116,10 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
         specialized = selected.specialize(
             tile=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB)
         )
-        self.assertIn("memref<8x16xf32", specialized.mlir_text())
+        self.assertIn(
+            "!pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16",
+            specialized.mlir_text(),
+        )
 
     def test_select_kernel_matches_wildcards_deterministically(self) -> None:
         @pto.vkernel(
@@ -312,7 +315,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.specialize tile shape=(16, 32) memory_space=ub", text)
         self.assertIn('module attributes {pto.target_arch = "a5"} {', text)
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<16x32xf16, #pto.address_space<vec>>) {",
+            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
             text,
         )
         module = specialized.mlir_module()
@@ -446,7 +449,10 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn("%rows_", text)
         self.assertIn("= arith.constant 8 : index", text)
-        self.assertIn("pto.strict_vecscope(%tmp_0, %tmp_1, %arg2, %c0, %rows_", text)
+        self.assertRegex(
+            text,
+            r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %arg2, %c0, %rows_\d+, %rows_\d+\)",
+        )
         self.assertIn("^bb0(", text)
         self.assertIn("scf.for %lane_", text)
         self.assertIn("to %ub_6 step %vec_step_7 {", text)
@@ -471,26 +477,30 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>, %arg2: memref<16x16xf32, #pto.address_space<vec>>) {",
+            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>, %arg2: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
             text,
         )
-        self.assertIn(
-            "%tmp_0 = pto.castptr %arg0 : memref<?x?xf32, #pto.address_space<gm>> -> !pto.ptr<f32, gm>",
+        self.assertRegex(
             text,
+            r"%tmp_\d+ = pto\.tile_buf_addr %arg2 : !pto\.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> memref<16x16xf32, #pto\.address_space<vec>>",
         )
-        self.assertIn(
-            "%tmp_1 = pto.castptr %arg2 : memref<16x16xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>",
+        self.assertRegex(
             text,
+            r"%tmp_\d+ = pto\.castptr %arg0 : memref<\?x\?xf32, #pto\.address_space<gm>> -> !pto\.ptr<f32, gm>",
+        )
+        self.assertRegex(
+            text,
+            r"%tmp_\d+ = pto\.castptr %tmp_\d+ : memref<16x16xf32, #pto.address_space<vec>> -> !pto\.ptr<f32, ub>",
         )
         self.assertIn("pto.set_loop_size_outtoub %c1_i64, %c1_i64 : i64, i64", text)
-        self.assertIn(
-            "pto.copy_gm_to_ubuf %tmp_0, %tmp_1, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c64_i64, %c64_i64",
+        self.assertRegex(
             text,
+            r"pto\.copy_gm_to_ubuf %tmp_\d+, %tmp_\d+, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c64_i64, %c64_i64",
         )
         self.assertIn("pto.set_loop_size_ubtoout %c1_i64, %c1_i64 : i64, i64", text)
-        self.assertIn(
-            "pto.copy_ubuf_to_gm %tmp_1, %tmp_2, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c64_i64, %c64_i64",
+        self.assertRegex(
             text,
+            r"pto\.copy_ubuf_to_gm %tmp_\d+, %tmp_\d+, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c64_i64, %c64_i64",
         )
 
     def test_dynamic_tensorview_shape_profile_supports_runtime_bound_and_slice(self) -> None:
@@ -528,12 +538,12 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<16x16xf32, #pto.address_space<vec>>, %arg2: index) {",
+            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: index) attributes { pto.tilelang.instance } {",
             text,
         )
-        self.assertIn(
-            "pto.copy_gm_to_ubuf %tmp_0, %tmp_1, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c64_i64, %c64_i64",
+        self.assertRegex(
             text,
+            r"pto\.copy_gm_to_ubuf %tmp_\d+, %tmp_\d+, %c0_i64, %c16_i64, %c64_i64, %c0_i64, %c0_i64, %false, %c0_i64, %c64_i64, %c64_i64",
         )
         self.assertIn("scf.for %lane_", text)
         self.assertIn("to %arg2 step %c1 {", text)
@@ -725,13 +735,26 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertNotIn("pto.strict_vecscope(", text)
         self.assertRegex(text, r"pto\.vecscope \{\n(?:.|\n)*scf\.for %row_")
         self.assertEqual(text.count("pto.vecscope {"), 1)
-        self.assertLess(text.index("%rows_1 = arith.constant 8 : index"), text.index("pto.vecscope {"))
-        self.assertLess(text.index("%cols_2 = arith.constant 64 : index"), text.index("pto.vecscope {"))
-        self.assertRegex(text, r"pto\.vlds %arg1\[%row_\d+, %col_\d+\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
-        self.assertRegex(text, r"pto\.vlds %arg2\[%row_\d+, %col_\d+\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
-        self.assertRegex(text, r"pto\.vsts %summed_\d+, %arg0\[%row_\d+, %col_\d+\], %(?:all_mask|mask)_\d+ : !pto\.vreg<64xf32>, memref<8x64xf32, #pto\.address_space<vec>>, !pto\.mask<b32>")
+        self.assertIn("!pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64", text)
+        self.assertIn("pto.tile_valid_rows %arg0", text)
+        self.assertIn("pto.tile_valid_cols %arg0", text)
+        self.assertNotIn("pto.tile_valid_rows %arg1", text)
+        self.assertNotIn("pto.tile_valid_cols %arg1", text)
+        self.assertNotIn("pto.tile_valid_rows %arg2", text)
+        self.assertNotIn("pto.tile_valid_cols %arg2", text)
+        self.assertRegex(text, r"pto\.tile_buf_addr %arg1 : !pto\.tile_buf<loc=vec, dtype=f32, rows=8, cols=64, v_row=8, v_col=64")
+        self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\] : memref<8x64xf32, #pto\.address_space<vec>> -> !pto\.vreg<64xf32>")
+        self.assertRegex(text, r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %(?:all_mask|mask)_\d+ : !pto\.vreg<64xf32>, memref<8x64xf32, #pto\.address_space<vec>>, !pto\.mask<b32>")
         self.assertNotRegex(text, r"arith\.muli %row_\d+, %c64 : index")
         self.assertNotRegex(text, r"arith\.addi %tmp_\d+, %col_\d+ : index")
+        self.assertLess(text.index("pto.tile_buf_addr %arg1"), text.index("pto.vecscope {"))
+        self.assertLess(text.index("pto.tile_buf_addr %arg2"), text.index("pto.vecscope {"))
+        self.assertLess(text.index("pto.tile_buf_addr %arg0"), text.index("pto.vecscope {"))
+        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_rows %arg0"))
+        self.assertLess(text.index("pto.tile_valid_rows %arg0"), text.index("scf.for %row_"))
+        self.assertLess(text.index("pto.tile_valid_cols %arg0"), text.index("scf.for %row_"))
+        self.assertLess(text.index("pto.vecscope {"), text.index("scf.for %row_"))
+        self.assertLess(text.rindex("pto.vecscope {"), text.index("return"))
 
     def test_element_type_valid_shape_and_get_lanes_surface_lower_in_advanced_mode(self) -> None:
         @pto.vkernel(op="tadd", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
@@ -757,10 +780,188 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertRegex(text, r"%mask_\d+, %remained_\d+ = pto\.plt_b32 %remained_iter_\d+ : i32 -> !pto\.mask<b32>, i32")
         self.assertIn("pto.vadd", text)
         self.assertIn("pto.vsts", text)
-        self.assertRegex(text, r"pto\.vlds %arg1\[%row_\d+, %col_\d+\]")
-        self.assertRegex(text, r"pto\.vsts %summed_\d+, %arg0\[%row_\d+, %col_\d+\], %mask_\d+")
+        self.assertIn("pto.tile_valid_rows %arg0", text)
+        self.assertIn("pto.tile_valid_cols %arg0", text)
+        self.assertRegex(text, r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\]")
+        self.assertRegex(text, r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %mask_\d+")
 
-    def test_advanced_mode_scalar_boundary_cuts_inferred_vecscope(self) -> None:
+    def test_unused_tile_does_not_hoist_tile_buf_addr_or_valid_shape_intrinsics(self) -> None:
+        @pto.vkernel(op="tile_usage_scan_unique", dtypes=[(pto.f32, pto.f32, pto.f32)], advanced=True)
+        def kernel(dst: pto.Tile, src: pto.Tile, scratch: pto.Tile):
+            rows, cols = dst.valid_shape
+            mask = pto.make_mask(dst.element_type, pto.PAT.ALL)
+            for row in range(0, rows, 1):
+                for col in range(0, cols, pto.get_lanes(dst.element_type)):
+                    value = pto.vlds(src[row, col:])
+                    pto.vsts(value, dst[row, col:], mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+            scratch=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.tile_buf_addr %arg0", text)
+        self.assertIn("pto.tile_buf_addr %arg1", text)
+        self.assertNotIn("pto.tile_buf_addr %arg2", text)
+        self.assertIn("pto.tile_valid_rows %arg0", text)
+        self.assertIn("pto.tile_valid_cols %arg0", text)
+        self.assertNotIn("pto.tile_valid_rows %arg1", text)
+        self.assertNotIn("pto.tile_valid_cols %arg1", text)
+        self.assertNotIn("pto.tile_valid_rows %arg2", text)
+        self.assertNotIn("pto.tile_valid_cols %arg2", text)
+
+    def test_tile_dynamic_valid_shape_profile_lowers_to_runtime_bounds_in_advanced_mode(self) -> None:
+        elem = pto.TypeVar("Elem")
+
+        @pto.vkernel(op="tadd_dynamic_valid_shape_unique", dtypes=[(elem, elem, elem)], advanced=True)
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            valid_rows, valid_cols = dst.valid_shape
+            remained = valid_cols
+            for row in range(0, valid_rows, 1):
+                for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                    mask, remained = pto.make_mask(dtype, remained)
+                    summed = pto.vadd(pto.vlds(src0[row, col:]), pto.vlds(src1[row, col:]), mask)
+                    pto.vsts(summed, dst[row, col:], mask)
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "tadd_dynamic_valid_shape_unique",
+            (pto.f16, pto.f16, pto.f16),
+        )
+        specialized = selected.specialize(
+            dst=pto.TileSpecialization(
+                shape=(8, 128),
+                memory_space=pto.MemorySpace.UB,
+                valid_shape=("valid_rows", "valid_cols"),
+            ),
+            src0=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertEqual(
+            [(param.name, param.kind) for param in semantic_kernel.parameters],
+            [
+                ("dst", "tile"),
+                ("src0", "tile"),
+                ("src1", "tile"),
+                ("__valid_shape_dst_0", "tile_valid_shape"),
+                ("__valid_shape_dst_1", "tile_valid_shape"),
+            ],
+        )
+        self.assertEqual(semantic_kernel.tile_bindings[0].valid_shape, (None, None))
+
+        text = specialized.mlir_text()
+        self.assertIn(
+            "func.func @kernel(%arg0: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance } {",
+            text,
+        )
+        self.assertIn("valid_shape=(?, ?)", text)
+        self.assertIn("pto.vecscope {", text)
+        self.assertIn("step %c128", text)
+        self.assertIn("pto.tile_valid_rows %arg0", text)
+        self.assertIn("pto.tile_valid_cols %arg0", text)
+        self.assertNotIn("pto.tile_valid_rows %arg1", text)
+        self.assertNotIn("pto.tile_valid_cols %arg1", text)
+        self.assertNotIn("pto.tile_valid_rows %arg2", text)
+        self.assertNotIn("pto.tile_valid_cols %arg2", text)
+        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_rows %arg0"))
+        self.assertLess(text.index("pto.vecscope {"), text.index("pto.tile_valid_cols %arg0"))
+        self.assertRegex(text, r"scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
+        self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %valid_cols_\d+ step %c128")
+        self.assertRegex(text, r"%tmp_\d+ = arith\.index_cast %valid_cols_\d+ : index to i32")
+        self.assertRegex(
+            text,
+            r"pto\.tile_buf_addr %arg1 : !pto\.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128",
+        )
+        self.assertRegex(
+            text,
+            r"pto\.vlds %tmp_\d+\[%row_\d+, %col_\d+\] : memref<8x128xf16, #pto\.address_space<vec>> -> !pto\.vreg<128xf16>",
+        )
+        self.assertRegex(
+            text,
+            r"pto\.vsts %summed_\d+, %tmp_\d+\[%row_\d+, %col_\d+\], %mask_\d+ : !pto\.vreg<128xf16>, memref<8x128xf16, #pto\.address_space<vec>>, !pto\.mask<b16>",
+        )
+
+    def test_tile_partial_dynamic_valid_shape_profile_tracks_dynamic_axes_only(self) -> None:
+        elem = pto.TypeVar("Elem")
+
+        @pto.vkernel(op="tadd_partial_dynamic_valid_shape_unique", dtypes=[(elem, elem, elem)], advanced=True)
+        def kernel(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
+            dtype = dst.element_type
+            valid_rows, valid_cols = dst.valid_shape
+            remained = valid_cols
+            for row in range(0, valid_rows, 1):
+                for col in range(0, valid_cols, pto.get_lanes(dtype)):
+                    mask, remained = pto.make_mask(dtype, remained)
+                    summed = pto.vadd(pto.vlds(src0[row, col:]), pto.vlds(src1[row, col:]), mask)
+                    pto.vsts(summed, dst[row, col:], mask)
+            return None
+
+        selected = pto.select_kernel(
+            "a5",
+            "tadd_partial_dynamic_valid_shape_unique",
+            (pto.f16, pto.f16, pto.f16),
+        )
+
+        rows_dynamic = selected.specialize(
+            dst=pto.TileSpecialization(
+                shape=(8, 128),
+                memory_space=pto.MemorySpace.UB,
+                valid_shape=("valid_rows", 128),
+            ),
+            src0=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+        rows_dynamic_semantic = analyze_frontend_kernel(build_frontend_kernel_node(rows_dynamic))
+        self.assertEqual(
+            [(param.name, param.kind) for param in rows_dynamic_semantic.parameters],
+            [
+                ("dst", "tile"),
+                ("src0", "tile"),
+                ("src1", "tile"),
+                ("__valid_shape_dst_0", "tile_valid_shape"),
+            ],
+        )
+        rows_dynamic_text = rows_dynamic.mlir_text()
+        self.assertIn("valid_shape=(?, 128)", rows_dynamic_text)
+        self.assertIn("pto.tile_valid_rows %arg0", rows_dynamic_text)
+        self.assertIn("pto.tile_valid_cols %arg0", rows_dynamic_text)
+        self.assertRegex(rows_dynamic_text, r"scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
+        self.assertRegex(rows_dynamic_text, r"scf\.for %col_\d+ = %c0 to %valid_cols_\d+ step %c128")
+
+        cols_dynamic = selected.specialize(
+            dst=pto.TileSpecialization(
+                shape=(8, 128),
+                memory_space=pto.MemorySpace.UB,
+                valid_shape=(8, "valid_cols"),
+            ),
+            src0=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+            src1=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+        cols_dynamic_semantic = analyze_frontend_kernel(build_frontend_kernel_node(cols_dynamic))
+        self.assertEqual(
+            [(param.name, param.kind) for param in cols_dynamic_semantic.parameters],
+            [
+                ("dst", "tile"),
+                ("src0", "tile"),
+                ("src1", "tile"),
+                ("__valid_shape_dst_1", "tile_valid_shape"),
+            ],
+        )
+        cols_dynamic_text = cols_dynamic.mlir_text()
+        self.assertIn("valid_shape=(8, ?)", cols_dynamic_text)
+        self.assertIn("pto.tile_valid_rows %arg0", cols_dynamic_text)
+        self.assertIn("pto.tile_valid_cols %arg0", cols_dynamic_text)
+        self.assertRegex(cols_dynamic_text, r"scf\.for %row_\d+ = %c0 to %valid_rows_\d+ step %c1")
+        self.assertRegex(cols_dynamic_text, r"scf\.for %col_\d+ = %c0 to %valid_cols_\d+ step %c128")
+
+    def test_advanced_mode_scalar_statements_stay_inside_single_inferred_vecscope(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.Tile):
             dtype = src.element_type
@@ -778,11 +979,16 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
         )
 
-        text = specialized.mlir_text()
-        self.assertEqual(text.count("pto.vecscope {"), 2)
-        self.assertLess(text.index("%boundary_"), text.rindex("pto.vecscope {"))
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
 
-    def test_advanced_mode_control_flow_boundary_cuts_inferred_vecscope(self) -> None:
+        text = specialized.mlir_text()
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertLess(text.index("pto.vecscope {"), text.index("%boundary_"))
+        self.assertLess(text.index("%boundary_"), text.index("return"))
+
+    def test_advanced_mode_control_flow_stays_inside_single_inferred_vecscope(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32, pto.i32)], advanced=True)
         def kernel(src: pto.Tile, dst: pto.Tile, flag: pto.i32):
             dtype = src.element_type
@@ -800,10 +1006,15 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             dst=pto.TileSpecialization(shape=(8, 64), memory_space=pto.MemorySpace.UB),
         )
 
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+
         text = specialized.mlir_text()
         self.assertIn("scf.if", text)
-        self.assertEqual(text.count("pto.vecscope {"), 2)
-        self.assertLess(text.index("scf.if"), text.index("pto.vecscope {"))
+        self.assertEqual(text.count("pto.vecscope {"), 1)
+        self.assertLess(text.index("pto.vecscope {"), text.index("scf.if"))
+        self.assertLess(text.index("scf.if"), text.index("return"))
 
     def test_advanced_mode_keeps_strict_vecscope_as_hard_boundary(self) -> None:
         @pto.vkernel(op="eltwise", dtypes=[(pto.f32, pto.f32)], advanced=True)
@@ -865,13 +1076,15 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(semantic_kernel.parameters[0].type.memory_space, "gm")
         self.assertIsInstance(semantic_kernel.parameters[1].type, SemanticPtrType)
         self.assertEqual(semantic_kernel.parameters[1].type.memory_space, "gm")
-        self.assertTrue(any(isinstance(stmt, SemanticVecscopeStmt) for stmt in semantic_kernel.body))
-        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in semantic_kernel.body))
-        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in semantic_kernel.body))
+        vecscope_stmts = [stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt)]
+        self.assertEqual(len(vecscope_stmts), 1)
+        vecscope = vecscope_stmts[0]
+        self.assertTrue(any(isinstance(stmt, SemanticDmaConfigStmt) for stmt in vecscope.body))
+        self.assertTrue(any(isinstance(stmt, SemanticLowLevelCopyStmt) for stmt in vecscope.body))
 
         text = kernel.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: i64) {",
+            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: i64) attributes { pto.tilelang.instance } {",
             text,
         )
         self.assertRegex(
@@ -1073,16 +1286,16 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>, %arg2: memref<16x16xf32, #pto.address_space<vec>>, %arg3: i32, %arg4: index) {",
+            "func.func @kernel(%arg0: memref<?x?xf32, #pto.address_space<gm>>, %arg1: memref<?x?xf32, #pto.address_space<gm>>, %arg2: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg3: i32, %arg4: index) attributes { pto.tilelang.instance } {",
             text,
         )
-        self.assertIn(
-            "pto.copy_gm_to_ubuf %tmp_0, %tmp_1, %c0_i64, %c16_i64, %c64_i64",
+        self.assertRegex(
             text,
+            r"pto\.copy_gm_to_ubuf %tmp_\d+, %tmp_\d+, %c0_i64, %c16_i64, %c64_i64",
         )
-        self.assertIn(
-            "pto.strict_vecscope(%tmp_1, %tmp_1, %arg3, %c0, %arg4, %c64)",
+        self.assertRegex(
             text,
+            r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %arg3, %c0, %arg4, %c64\)",
         )
         self.assertRegex(
             text,
@@ -1092,9 +1305,9 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             text,
             r"%mask_\d+, %rem_\d+ = pto\.plt_b32 %rem_iter_\d+ : i32 -> !pto\.mask<b32>, i32",
         )
-        self.assertIn(
-            "pto.copy_ubuf_to_gm %tmp_1, %tmp_2, %c0_i64, %c16_i64, %c64_i64",
+        self.assertRegex(
             text,
+            r"pto\.copy_ubuf_to_gm %tmp_\d+, %tmp_\d+, %c0_i64, %c16_i64, %c64_i64",
         )
 
     def test_if_else_and_sync_ops_lower_to_scf_if_and_authoring_sync_ops(self) -> None:
@@ -1134,12 +1347,15 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn('pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]', text)
         self.assertIn('pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]', text)
         self.assertIn("= arith.cmpi ne, %arg2, %c0_i32 : i32", text)
-        self.assertIn("%step_3 = scf.if %tmp_0 -> (index) {", text)
+        self.assertRegex(text, r"%step_\d+ = scf\.if %tmp_\d+ -> \(index\) \{")
         self.assertIn('pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]', text)
         self.assertIn('pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]', text)
         self.assertRegex(text, r"scf\.yield %step_\d+ : index")
         self.assertIn("%step_2 = arith.constant 128 : index", text)
-        self.assertIn("pto.strict_vecscope(%tmp_1, %tmp_1, %c0, %c256, %step_3)", text)
+        self.assertRegex(
+            text,
+            r"pto\.strict_vecscope\(%tmp_\d+, %tmp_\d+, %c0, %c256, %step_\d+\)",
+        )
         self.assertIn("scf.for %lane_", text)
         self.assertIn("pto.barrier #pto.pipe<PIPE_ALL>", text)
 
@@ -1264,6 +1480,11 @@ class TileLangDSLDiagnosticsTests(unittest.TestCase):
             kernel.specialize(tile={"shape": (4, 4), "memory_space": "gm"})
         self.assertIn("v1 only supports MemorySpace.UB", str(space_ctx.exception))
         self.assertIn(f"{__file__}:", str(space_ctx.exception))
+
+        with self.assertRaises(pto.TileLangFrontendError) as valid_shape_ctx:
+            kernel.specialize(tile={"shape": (4, 4), "memory_space": "ub", "valid_shape": (5, 4)})
+        self.assertIn("valid_shape axis 0=5 must be <= shape axis 0=4", str(valid_shape_ctx.exception))
+        self.assertIn(f"{__file__}:", str(valid_shape_ctx.exception))
 
 
 if __name__ == "__main__":

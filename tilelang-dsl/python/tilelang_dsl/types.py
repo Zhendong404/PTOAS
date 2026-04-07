@@ -95,6 +95,7 @@ class TileSpecialization:
     shape: tuple[int, ...]
     memory_space: MemorySpace
     config: TileConfig | None = None
+    valid_shape: tuple[int | None, ...] | None = None
 
 
 i8 = ScalarType("i8")

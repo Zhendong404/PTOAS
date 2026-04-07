@@ -116,6 +116,7 @@ class SemanticTileType(SemanticType):
     element_dtype: ScalarType
     rank: int
     shape: tuple[int, ...] | None
+    valid_shape: tuple[int | None, ...] | None
     memory_space: str | None
 
 
@@ -182,6 +183,7 @@ class SemanticBinding:
 class SemanticTileBinding:
     name: str
     shape: tuple[int, ...]
+    valid_shape: tuple[int | None, ...] | None
     memory_space: str
     config: Any
 
@@ -415,7 +417,7 @@ class _SemanticAnalyzer:
         self._tile_specializations = {
             spec.name: spec for spec in node.tile_specializations
         }
-        self._tensor_shape_parameters: list[SemanticParameter] = []
+        self._hidden_parameters: list[SemanticParameter] = []
 
     def analyze(self) -> SemanticKernel:
         env: dict[str, SemanticBinding] = {}
@@ -430,11 +432,12 @@ class _SemanticAnalyzer:
             env[param.name] = binding
             parameters.append(SemanticParameter(binding=binding))
         body, _ = self._analyze_kernel_body(env)
-        parameters.extend(self._tensor_shape_parameters)
+        parameters.extend(self._hidden_parameters)
         tile_bindings = tuple(
             SemanticTileBinding(
                 name=spec.name,
                 shape=spec.shape,
+                valid_shape=spec.valid_shape,
                 memory_space=spec.memory_space,
                 config=spec.config,
             )
@@ -456,7 +459,19 @@ class _SemanticAnalyzer:
         self,
         env: dict[str, SemanticBinding],
     ) -> tuple[tuple[SemanticStmt, ...], dict[str, SemanticBinding]]:
-        return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
+        if not self.node.advanced_enabled:
+            return self._analyze_block(self.node.body, env, allow_outer_lookup=True)
+
+        self._disable_inference_depth += 1
+        try:
+            body, final_env = self._analyze_block_without_inference(
+                self.node.body,
+                env,
+                allow_outer_lookup=True,
+            )
+        finally:
+            self._disable_inference_depth -= 1
+        return self._wrap_kernel_body_in_inferred_vecscope(body), final_env
 
     def _parameter_type(self, param: Any) -> SemanticType:
         if param.kind == "tensorview":
@@ -465,11 +480,15 @@ class _SemanticAnalyzer:
             spec = self._tile_specializations.get(param.name)
             rank = 2 if spec is None else len(spec.shape)
             shape = None if spec is None else spec.shape
+            valid_shape = None if spec is None else (
+                spec.shape if spec.valid_shape is None else spec.valid_shape
+            )
             memory_space = None if spec is None else spec.memory_space
             return SemanticTileType(
                 element_dtype=param.dtype,
                 rank=rank,
                 shape=shape,
+                valid_shape=valid_shape,
                 memory_space=memory_space,
             )
         if param.kind == "ptr":
@@ -490,23 +509,41 @@ class _SemanticAnalyzer:
     def _tensor_shape_binding_name(self, tensor_name: str, axis: int) -> str:
         return f"__shape_{tensor_name}_{axis}"
 
+    def _tile_valid_shape_binding_name(self, tile_name: str, axis: int) -> str:
+        return f"__valid_shape_{tile_name}_{axis}"
+
+    def _ensure_hidden_parameter(
+        self,
+        hidden_name: str,
+        origin: str,
+    ) -> SemanticBinding:
+        for parameter in self._hidden_parameters:
+            if parameter.name == hidden_name:
+                return parameter.binding
+        binding = SemanticBinding(
+            name=hidden_name,
+            ssa_name=f"%arg{len(self.node.parameters) + len(self._hidden_parameters)}",
+            type=SemanticIndexType(),
+            origin=origin,
+        )
+        self._hidden_parameters.append(SemanticParameter(binding=binding))
+        return binding
+
     def _ensure_tensor_shape_parameter(
         self,
         tensor_binding: SemanticBinding,
         axis: int,
     ) -> SemanticBinding:
         hidden_name = self._tensor_shape_binding_name(tensor_binding.name, axis)
-        for parameter in self._tensor_shape_parameters:
-            if parameter.name == hidden_name:
-                return parameter.binding
-        binding = SemanticBinding(
-            name=hidden_name,
-            ssa_name=f"%arg{len(self.node.parameters) + len(self._tensor_shape_parameters)}",
-            type=SemanticIndexType(),
-            origin="tensorview_shape",
-        )
-        self._tensor_shape_parameters.append(SemanticParameter(binding=binding))
-        return binding
+        return self._ensure_hidden_parameter(hidden_name, "tensorview_shape")
+
+    def _ensure_tile_valid_shape_parameter(
+        self,
+        tile_binding: SemanticBinding,
+        axis: int,
+    ) -> SemanticBinding:
+        hidden_name = self._tile_valid_shape_binding_name(tile_binding.name, axis)
+        return self._ensure_hidden_parameter(hidden_name, "tile_valid_shape")
 
     def _make_binding(
         self,
@@ -571,6 +608,22 @@ class _SemanticAnalyzer:
             semantic_statements.append(semantic_stmt)
             index += 1
         return tuple(semantic_statements), current_env
+
+    def _wrap_kernel_body_in_inferred_vecscope(
+        self,
+        statements: tuple[SemanticStmt, ...],
+    ) -> tuple[SemanticStmt, ...]:
+        if not statements or not self._semantic_block_contains_vector_activity(statements):
+            return statements
+
+        body_end = len(statements)
+        while body_end > 0 and isinstance(statements[body_end - 1], SemanticReturnStmt):
+            body_end -= 1
+        if body_end == 0:
+            return statements
+
+        wrapped_body = SemanticVecscopeStmt(body=statements[:body_end])
+        return (wrapped_body, *statements[body_end:])
 
     def _should_infer_vecscope(
         self,
@@ -1429,6 +1482,8 @@ class _SemanticAnalyzer:
             return SemanticShapeType(rank=base_type.rank)
         if isinstance(base_type, SemanticTileType) and attr == "shape":
             return SemanticShapeType(rank=base_type.rank)
+        if isinstance(base_type, (SemanticTensorViewType, SemanticTileType)) and attr == "valid_shape":
+            return SemanticShapeType(rank=base_type.rank)
         raise TypeError(f"unsupported attribute access '{attr}' in TileLang DSL v1")
 
     def _element_type_expr(self, base: SemanticExpr) -> SemanticExpr:
@@ -1448,13 +1503,20 @@ class _SemanticAnalyzer:
             raise TypeError("unsupported attribute access 'valid_shape' in TileLang DSL v1")
         shape_access = SemanticAttributeAccess(
             base=base,
-            attr="shape",
+            attr="valid_shape",
             type=SemanticShapeType(rank=base_type.rank),
         )
         elements = []
         for axis in range(base_type.rank):
             if isinstance(base, SemanticBindingRef) and isinstance(base.type, SemanticTensorViewType):
                 self._ensure_tensor_shape_parameter(base.binding, axis)
+            if (
+                isinstance(base, SemanticBindingRef)
+                and isinstance(base.type, SemanticTileType)
+                and base.type.valid_shape is not None
+                and base.type.valid_shape[axis] is None
+            ):
+                self._ensure_tile_valid_shape_parameter(base.binding, axis)
             elements.append(
                 SemanticSubscriptAccess(
                     base=shape_access,

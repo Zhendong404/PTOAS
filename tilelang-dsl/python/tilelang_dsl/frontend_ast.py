@@ -21,6 +21,7 @@ class FrontendTileSpecializationNode:
     shape: tuple[int, ...]
     memory_space: str
     config: Any
+    valid_shape: tuple[int | None, ...] | None
 
 
 class FrontendExprNode:
@@ -335,6 +336,7 @@ def build_frontend_kernel_node(descriptor: Any) -> FrontendKernelNode:
             shape=spec.shape,
             memory_space=spec.memory_space.value,
             config=spec.config,
+            valid_shape=spec.valid_shape,
         )
         for name, spec in descriptor.specializations
     )

@@ -758,6 +758,67 @@ def _coerce_tile_config(value: Any, param_name: str) -> TileConfig | None:
     )
 
 
+def _coerce_tile_valid_shape(
+    shape: tuple[int, ...],
+    value: Any,
+    param_name: str,
+    source_info: _FunctionSourceInfo | None,
+) -> tuple[int | None, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        _raise_tile_param_error(
+            source_info,
+            param_name,
+            f"specialization for '{param_name}' must provide valid_shape as a tuple/list",
+            TypeError,
+        )
+    valid_shape = tuple(value)
+    if len(valid_shape) != len(shape):
+        _raise_tile_param_error(
+            source_info,
+            param_name,
+            f"illegal Tile profile for '{param_name}': valid_shape rank must match shape rank",
+        )
+
+    normalized: list[int | None] = []
+    for axis, (valid_dim, shape_dim) in enumerate(zip(valid_shape, shape)):
+        if isinstance(valid_dim, bool):
+            _raise_tile_param_error(
+                source_info,
+                param_name,
+                f"illegal Tile profile for '{param_name}': valid_shape axis {axis} must not be bool",
+                TypeError,
+            )
+        if isinstance(valid_dim, int):
+            if valid_dim <= 0:
+                _raise_tile_param_error(
+                    source_info,
+                    param_name,
+                    f"illegal Tile profile for '{param_name}': valid_shape axis {axis} must be positive",
+                )
+            if valid_dim > shape_dim:
+                _raise_tile_param_error(
+                    source_info,
+                    param_name,
+                    f"illegal Tile profile for '{param_name}': valid_shape axis {axis}={valid_dim} "
+                    f"must be <= shape axis {axis}={shape_dim}",
+                )
+            normalized.append(valid_dim)
+            continue
+        if valid_dim is None or isinstance(valid_dim, str):
+            normalized.append(None)
+            continue
+        _raise_tile_param_error(
+            source_info,
+            param_name,
+            f"illegal Tile profile for '{param_name}': valid_shape axis {axis} must be "
+            "a positive int, string symbol, or None",
+            TypeError,
+        )
+    return tuple(normalized)
+
+
 def _coerce_tile_specialization(
     param_name: str,
     binding: Any,
@@ -784,6 +845,7 @@ def _coerce_tile_specialization(
             shape=tuple(binding["shape"]),
             memory_space=_coerce_memory_space(binding["memory_space"], param_name),
             config=_coerce_tile_config(binding.get("config"), param_name),
+            valid_shape=binding.get("valid_shape"),
         )
     else:
         _raise_tile_param_error(
@@ -825,7 +887,13 @@ def _coerce_tile_specialization(
             param_name,
             f"illegal Tile profile for '{param_name}': v1 only supports MemorySpace.UB",
         )
-    return spec
+    valid_shape = _coerce_tile_valid_shape(spec.shape, spec.valid_shape, param_name, source_info)
+    return TileSpecialization(
+        shape=spec.shape,
+        memory_space=spec.memory_space,
+        config=spec.config,
+        valid_shape=valid_shape,
+    )
 
 
 def _validate_scalar_dtype(dtype: Any, param_name: str) -> ScalarType:
