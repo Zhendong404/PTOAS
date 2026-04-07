@@ -1,5 +1,3 @@
-# tilelang-dsl-kernel-matcher Specification
-
 ## MODIFIED Requirements
 
 ### Requirement: TileLang DSL MUST provide an explicit kernel registry and selection API
@@ -34,26 +32,6 @@ descriptor MUST 至少提供其中一种，且实现 MUST NOT 同时接受两者
 - **THEN** selector MUST 返回已经绑定 `selected_op="tmul"` 的 descriptor
 - **AND** 后续 materialization MUST 基于该 concrete `selected_op` 而不是未绑定的原始 matcher 集合
 
-### Requirement: matcher MUST support concrete types, `Any*`, and `TypeVar` across multiple signatures
-
-matcher MUST 支持：
-
-- 多个 `dtypes` signature
-- `AnyFloat`
-- `AnyInt`
-- `AnyType`
-- `AnyMask`
-- `TypeVar`
-
-`TypeVar` 在单个 signature 内 MUST 约束所有同名位置绑定到同一最终类型。  
-多个 `dtypes` signature MUST 逐个独立求值；某个 signature 的 `TypeVar` 绑定状态 MUST NOT 泄漏到另一个 signature。
-
-#### Scenario: wildcard and type-variable signatures match deterministically
-
-- **WHEN** 某个 kernel 使用多个 `dtypes` signature，并在其中混用 concrete type、`Any*` 与 `TypeVar`
-- **THEN** matcher MUST 对每个 signature 独立求值
-- **AND** 只有满足所有 `TypeVar` 一致性约束的 signature 才能视为匹配成功
-
 ### Requirement: selection order MUST be target -> op -> dtype signature -> constraints -> priority -> tie error
 
 对一个 registry 中的候选集合，selector MUST 按以下固定顺序求值：
@@ -85,29 +63,6 @@ matcher MUST 支持：
 - **WHEN** 同一个 concrete query `op` 同时命中 single-op descriptor 与 multi-op descriptor
 - **THEN** selector MUST 继续按既有的 `dtypes -> constraints -> priority -> tie error` 顺序求值
 - **AND** MUST NOT 仅因为 single-op descriptor 更“具体”就隐式优先选择它
-
-### Requirement: constraint evaluation MUST happen after type matching and before priority resolution
-
-对同一 `target/op` 的候选集合，matcher MUST 先完成 dtype matching，再评估 `constraints`。  
-只有通过 constraint evaluation 的候选，才允许进入 `priority` 比较阶段。
-
-#### Scenario: higher-priority kernel with failing constraint does not win
-
-- **WHEN** 一个更高 `priority` 的 kernel 在 target/op/type 层面匹配成功，但 `constraints` 评估失败
-- **THEN** 该 kernel MUST 从候选集合中移除
-- **AND** selector MUST 继续在剩余候选中选择合法 kernel
-
-### Requirement: priority ties MUST raise an explicit selection error
-
-若在 target/op/type/constraint 全部通过后，最高 `priority` 仍对应多个候选，matcher MUST 报显式选择错误。  
-系统 MUST NOT 依赖定义顺序、导入顺序或其他隐式规则做 tiebreak。
-
-#### Scenario: equal-priority winners cause deterministic tie error
-
-- **WHEN** 多个 kernel 在 target/op/type/constraint 匹配后拥有相同的最高 `priority`
-- **THEN** selector MUST 报错
-- **AND** 错误消息 MUST 指出发生 tie 的 kernel 集合
-- **AND** MUST NOT 静默选择第一个已注册 kernel
 
 ## ADDED Requirements
 
