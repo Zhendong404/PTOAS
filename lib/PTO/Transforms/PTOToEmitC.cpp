@@ -3395,9 +3395,22 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
             case 3: padStr = "PadValue::Min";  break;
         }
 
-        if (!slStr.empty()) {
-            extraParams += ", " + slStr + ", " + std::to_string(frVal) + ", " + padStr;
+        int32_t compactVal = 0;
+        if (auto attr = dyn_cast<CompactModeAttr>(config.getCompactMode()))
+            compactVal = static_cast<int32_t>(attr.getValue());
+
+        std::string compactStr = "CompactMode::Null";
+        switch (compactVal) {
+            case 1: compactStr = "CompactMode::Normal"; break;
+            case 2: compactStr = "CompactMode::RowPlusOne"; break;
         }
+
+        if (!slStr.empty()) {
+            extraParams += ", " + slStr + ", " + std::to_string(frVal) + ", " +
+                           padStr + ", " + compactStr;
+        }
+    } else {
+        extraParams = ", SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null";
     }
 
     // [核心修改] Valid Dims 处理逻辑 (支持混合静态/动态)
@@ -5171,7 +5184,8 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
         std::string("Tile<") + roleTok + ", " + elemTok + ", " +
         std::to_string(rows) + ", " + std::to_string(cols) +
         ", BLayout::RowMajor, " + std::to_string(rows) + ", " +
-        std::to_string(cols) + ", SLayout::NoneBox, 512, PadValue::Null>";
+        std::to_string(cols) +
+        ", SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>";
 
     auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
     Value tile = rewriter
@@ -8229,6 +8243,21 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         }
       }
 
+      std::string compactTok = "CompactMode::Null";
+      if (auto compactAttr = dyn_cast<CompactModeAttr>(configAttr.getCompactMode())) {
+        switch (static_cast<int32_t>(compactAttr.getValue())) {
+        case 1:
+          compactTok = "CompactMode::Normal";
+          break;
+        case 2:
+          compactTok = "CompactMode::RowPlusOne";
+          break;
+        default:
+          compactTok = "CompactMode::Null";
+          break;
+        }
+      }
+
       std::string vrowTok, vcolTok;
       bool useConstructor = false;
       bool rowIsDynamic = false;
@@ -8293,6 +8322,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
                                 ", " + std::to_string(cols) + ", " + blTok +
                                 ", " + vrowTok + ", " + vcolTok + ", " + slTok +
                                 ", " + std::to_string(fractal) + ", " + padTok +
+                                ", " + compactTok +
                                 ">";
       return TileBuildSpec{tileTypeStr, useConstructor, constructorArgs};
     };
