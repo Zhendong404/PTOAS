@@ -6083,6 +6083,87 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+ParseResult mlir::pto::TDequantOp::parse(OpAsmParser &parser,
+                                          OperationState &result) {
+  OpAsmParser::UnresolvedOperand src, scale, offset, dst;
+  Type srcTy, scaleTy, offsetTy, dstTy;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src) || parser.parseComma() ||
+      parser.parseOperand(scale) || parser.parseComma() ||
+      parser.parseOperand(offset) || parser.parseColon() ||
+      parser.parseType(srcTy) || parser.parseComma() ||
+      parser.parseType(scaleTy) || parser.parseComma() ||
+      parser.parseType(offsetTy) || parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  return parser.resolveOperands({src, scale, offset, dst},
+                                {srcTy, scaleTy, offsetTy, dstTy},
+                                parser.getCurrentLocation(), result.operands);
+}
+
+void mlir::pto::TDequantOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc() << ", " << getScale() << ", " << getOffset()
+    << " : " << getSrc().getType() << ", " << getScale().getType() << ", "
+    << getOffset().getType() << ")"
+    << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs());
+}
+
+mlir::LogicalResult mlir::pto::TDequantOp::verify() {
+  // Structural checks: src must be i8 or i16, dst/scale/offset must be f32.
+  auto verifyStructural = [&]() -> LogicalResult {
+    Type srcElemTy = getElemTy(getSrc().getType());
+    auto srcIntTy = dyn_cast<IntegerType>(srcElemTy);
+    if (!srcIntTy || !(srcIntTy.getWidth() == 8 || srcIntTy.getWidth() == 16) ||
+        !(srcIntTy.isSignless() || srcIntTy.isSigned()))
+      return emitOpError()
+             << "expects src element type i8 or i16";
+    if (!getElemTy(getDst().getType()).isF32())
+      return emitOpError() << "expects dst element type f32";
+    if (!getElemTy(getScale().getType()).isF32())
+      return emitOpError() << "expects scale element type f32";
+    if (!getElemTy(getOffset().getType()).isF32())
+      return emitOpError() << "expects offset element type f32";
+    return success();
+  };
+
+  if (failed(verifyStructural()))
+    return failure();
+
+  if (shouldBypassDecodedMemrefVerifier(getOperation()))
+    return success();
+
+  auto verifyCommon = [&]() -> LogicalResult {
+    if (failed(verifyTileBufCommon(*this, getSrc().getType(), "src")) ||
+        failed(verifyTileBufCommon(*this, getScale().getType(), "scale")) ||
+        failed(verifyTileBufCommon(*this, getOffset().getType(), "offset")) ||
+        failed(verifyTileBufCommon(*this, getDst().getType(), "dst")))
+      return failure();
+    return success();
+  };
+
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    if (failed(verifyCommon()))
+      return failure();
+    if (!isRowMajorTileBuf(getSrc().getType()) ||
+        !isRowMajorTileBuf(getDst().getType()))
+      return emitOpError()
+             << "expects A2/A3 src and dst to use row-major layout";
+    return success();
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult { return verifyCommon(); };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
 mlir::LogicalResult mlir::pto::TRecipOp::verify() {
   if (shouldBypassDecodedMemrefVerifier(getOperation()))
     return success();
@@ -9070,6 +9151,8 @@ void TQuantOp::getEffects(
     PTO_ADD_READ(offsetRange[0]);
   PTO_ADD_WRITE(getDstMutable());
 }
+PTO_DEFINE_TERNARY_EFFECTS(TDequantOp, getSrcMutable(), getScaleMutable(),
+                           getOffsetMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRecipOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TFModOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())

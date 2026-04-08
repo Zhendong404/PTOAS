@@ -6955,6 +6955,44 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
     return success();
   }
 };
+struct PTODequantToEmitC : public OpConversionPattern<pto::TDequantOp> {
+  using OpConversionPattern<pto::TDequantOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TDequantOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+
+    Value dst    = peelUnrealized(adaptor.getDst());
+    Value src    = peelUnrealized(adaptor.getSrc());
+    Value scale  = peelUnrealized(adaptor.getScale());
+    Value offset = peelUnrealized(adaptor.getOffset());
+
+    // TDEQUANT<DstTile, SrcTile, ParaTile>(dst, src, scale, offset)
+    ArrayAttr templateArgs;
+    auto dstOT   = dst.getType().dyn_cast<emitc::OpaqueType>();
+    auto srcOT   = src.getType().dyn_cast<emitc::OpaqueType>();
+    auto scaleOT = scale.getType().dyn_cast<emitc::OpaqueType>();
+    if (dstOT && srcOT && scaleOT) {
+      templateArgs = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, scaleOT.getValue().str()),
+      });
+    } else {
+      templateArgs = ArrayAttr{};
+    }
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TDEQUANT",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
+        /*operands=*/SmallVector<Value>{dst, src, scale, offset});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // PTOConvert.cpp  (add lowering + patterns.add for TMRGSORT DPS/memref op)
 //===----------------------------------------------------------------------===//
@@ -9486,6 +9524,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOGatherbToEmitC>(typeConverter, ctx);
   patterns.add<PTOMovFPToEmitC>(typeConverter, ctx);
   patterns.add<PTOQuantToEmitC>(typeConverter, ctx);
+  patterns.add<PTODequantToEmitC>(typeConverter, ctx);
   patterns.add<PTOOrsToEmitC>(typeConverter, ctx);
   patterns.add<PTOLogToEmitC>(typeConverter, ctx);
   patterns.add<FuncToEmitC>(typeConverter, ctx);
