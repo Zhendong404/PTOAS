@@ -101,9 +101,6 @@ static SmallVector<int64_t, 4> getShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Type ty);
 static SmallVector<int64_t, 4> getValidShapeVec(Value value);
 static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name);
-static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type rhs,
-                                                   StringRef lhsName,
-                                                   StringRef rhsName);
 static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs,
                                                StringRef lhsName,
                                                StringRef rhsName);
@@ -2293,17 +2290,6 @@ static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs
   return success();
 }
 
-static LogicalResult verifyTileBufSameShapeAndElem(Operation *op, Type lhs, Type rhs,
-                                                   StringRef lhsName,
-                                                   StringRef rhsName) {
-  if (failed(verifyTileBufSameElemType(op, lhs, rhs, lhsName, rhsName)))
-    return failure();
-  if (getShapeVec(lhs) != getShapeVec(rhs))
-    return op->emitOpError() << "expects " << lhsName << " and " << rhsName
-                             << " to have the same shape";
-  return success();
-}
-
 static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type rhs,
                                                  StringRef lhsName, StringRef rhsName) {
   if (!isTileLikeType(lhs) || !isTileLikeType(rhs))
@@ -3426,7 +3412,7 @@ LogicalResult pto::TColArgMaxOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
@@ -3493,7 +3479,7 @@ LogicalResult pto::TColArgMinOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyColArgReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyColReductionValidRegion(*this, srcTy, dstTy,
@@ -7812,7 +7798,7 @@ mlir::LogicalResult mlir::pto::TRowArgMaxOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
@@ -7886,7 +7872,7 @@ mlir::LogicalResult mlir::pto::TRowArgMinOp::verify() {
         failed(verifyVecTileCommon(*this, tmpTy, "tmp")) ||
         failed(verifyRowReductionDstLayout(*this, dstTy, "dst")))
       return failure();
-    if (failed(verifyTileBufSameShapeAndElem(*this, srcTy, tmpTy, "src", "tmp")) ||
+    if (failed(verifyTileBufSameElemType(*this, srcTy, tmpTy, "src", "tmp")) ||
         failed(verifyTileBufSameValidShape(*this, srcTy, tmpTy, "src", "tmp")))
       return failure();
     if (failed(verifyRowReductionValidRegion(*this, srcTy, dstTy)))
