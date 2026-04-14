@@ -125,10 +125,10 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
         self.assertEqual(pto.BLayout.ROW_MAJOR.value, "row_major")
         self.assertEqual(pto.SLayout.NONE_BOX.value, "none_box")
-        self.assertEqual(pto.PadValue.NULL.value, 0)
-        self.assertEqual(pto.PadValue.ZERO.value, 1)
-        self.assertEqual(pto.PadValue.MAX.value, 2)
-        self.assertEqual(pto.PadValue.MIN.value, 3)
+        self.assertEqual(pto.PadValue.NULL.encoded, 0)
+        self.assertEqual(pto.PadValue.ZERO.encoded, 1)
+        self.assertEqual(pto.PadValue.MAX.encoded, 2)
+        self.assertEqual(pto.PadValue.MIN.encoded, 3)
         self.assertEqual(pto.PadValue.NULL.text, "null")
         self.assertEqual(pto.DeinterleaveDist.DINTLV.value, "DINTLV")
         self.assertEqual(pto.DeinterleaveDist.BDINTLV.value, "BDINTLV")
@@ -180,7 +180,7 @@ class TileLangDSLPackageTests(unittest.TestCase):
         custom = pto.PadValue.custom_f32(-1.0)
         self.assertTrue(custom.is_custom)
         self.assertEqual(custom.float32_bits, 0xBF800000)
-        self.assertEqual(custom.value, pto.PadValue.CustomBase | (0xBF800000 << 32))
+        self.assertEqual(custom.encoded, pto.PadValue.CustomBase | (0xBF800000 << 32))
         self.assertAlmostEqual(custom.as_float32(), -1.0)
         self.assertAlmostEqual(custom.materialize_scalar(pto.f32), -1.0)
         self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.ui16), 0xFFFF)
@@ -188,6 +188,8 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.i16), 0x7FFF)
         self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.i16), -0x8000)
         self.assertIsNone(pto.PadValue.NULL.materialize_scalar(pto.f16))
+        with self.assertRaises(AttributeError):
+            _ = pto.PadValue.ZERO.value
 
 
 class TileLangDSLExpandHelperTests(unittest.TestCase):
@@ -200,7 +202,7 @@ def kernel(src: pto.Tile, dst: pto.Tile):
     rows, cols = src.valid_shape
     pad = dst.pad_value
     if pto.constexpr(pad != pto.PadValue.NULL):
-        scalar = pad.value
+        scalar = pad.eval()
     return None
 """
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1804,8 +1806,8 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             fractal = config.s_fractal_size
             pad = config.pad_value
             pad_direct = tile.pad_value
-            pad_scalar = pad.value
-            pad_direct_scalar = pad_direct.value
+            pad_scalar = pad.eval()
+            pad_direct_scalar = pad_direct.eval()
             rank = tile.rank
             space = tile.memory_space
             return None
@@ -1887,10 +1889,10 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertEqual(space_assign.value.value, pto.MemorySpace.UB)
         self.assertEqual(space_assign.value.type.kind, "memory_space")
 
-    def test_pad_value_value_requires_non_null_enum(self) -> None:
-        @pto.vkernel(op="tile_pad_value_null_value", dtypes=[(pto.f16,)])
+    def test_pad_value_eval_requires_non_null_enum(self) -> None:
+        @pto.vkernel(op="tile_pad_value_null_eval", dtypes=[(pto.f16,)])
         def kernel(tile: pto.Tile):
-            scalar = tile.pad_value.value
+            scalar = tile.pad_value.eval()
             return None
 
         specialized = kernel.specialize(
@@ -1903,7 +1905,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         with self.assertRaises(TypeError) as ctx:
             analyze_frontend_kernel(build_frontend_kernel_node(specialized))
 
-        self.assertIn("PadValue.NULL.value is invalid", str(ctx.exception))
+        self.assertIn("PadValue.NULL.eval() is invalid", str(ctx.exception))
 
 
     def test_make_mask_vlds_vsts_and_vector_families_lower_inside_strict_vecscope(self) -> None:

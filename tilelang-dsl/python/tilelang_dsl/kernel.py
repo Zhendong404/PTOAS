@@ -392,6 +392,19 @@ class _KernelBodyValidator(ast.NodeVisitor):
             seen.add(keyword.arg)
 
     def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "eval":
+            if node.keywords:
+                raise self.source_info.error(
+                    node,
+                    "`eval` does not support keyword arguments in TileLang DSL v1",
+                )
+            if node.args:
+                raise self.source_info.error(
+                    node,
+                    "`eval()` does not accept positional arguments in TileLang DSL v1",
+                )
+            return
+
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             if node.func.attr == "as_ptr":
                 if node.keywords:

@@ -2802,8 +2802,6 @@ class _SemanticAnalyzer:
                 return self._attach_expr_source_location(self._memory_space_expr(base), expr)
             if expr.attr == "pad_value" and isinstance(base.type, SemanticTileType):
                 return self._attach_expr_source_location(self._tile_pad_value_expr(base), expr)
-            if expr.attr == "value" and isinstance(base.type, SemanticPadValueType):
-                return self._attach_expr_source_location(self._pad_value_value_expr(base), expr)
             if expr.attr == "config":
                 return self._attach_expr_source_location(self._tile_config_expr(base), expr)
             if expr.attr == "valid_shape":
@@ -2850,6 +2848,33 @@ class _SemanticAnalyzer:
                     for arg in expr.args
                 )
                 return self._analyze_inline_proc_call_expr(expr.name, args)
+            if expr.namespace is None and expr.name == "eval":
+                if expr.keywords:
+                    raise TypeError("method call `eval` does not support keyword arguments in TileLang DSL v1")
+                if not expr.args:
+                    raise TypeError("`eval()` expects a receiver in TileLang DSL v1")
+                base = self._analyze_expr(expr.args[0], env, allow_outer_lookup=allow_outer_lookup)
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args[1:]
+                )
+                return self._analyze_eval_method(base, args)
+            if expr.namespace not in {None, "pto"} and expr.name == "eval":
+                if expr.keywords:
+                    raise TypeError("method call `eval` does not support keyword arguments in TileLang DSL v1")
+                binding = env.get(expr.namespace)
+                if binding is None:
+                    if allow_outer_lookup:
+                        raise ValueError(f"unknown name '{expr.namespace}'")
+                    raise ValueError(
+                        f"implicit capture of '{expr.namespace}' is not allowed in pto.strict_vecscope"
+                    )
+                base = SemanticBindingRef(binding=binding, type=binding.type)
+                args = tuple(
+                    self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                    for arg in expr.args
+                )
+                return self._analyze_eval_method(base, args)
             if expr.namespace not in {None, "pto"} and expr.name == "as_ptr":
                 if expr.keywords:
                     raise TypeError("method call `as_ptr` does not support keyword arguments in TileLang DSL v1")
@@ -3179,27 +3204,36 @@ class _SemanticAnalyzer:
             type=SemanticPadValueType(element_dtype=base_type.element_dtype),
         )
 
-    def _pad_value_value_expr(self, base: SemanticExpr) -> SemanticExpr:
+    def _pad_value_eval_expr(self, base: SemanticExpr) -> SemanticExpr:
         if not isinstance(base.type, SemanticPadValueType):
-            raise TypeError("unsupported attribute access 'value' in TileLang DSL v1")
+            raise TypeError("`eval()` expects a PadValue descriptor in TileLang DSL v1")
         if base.type.element_dtype is None:
             raise TypeError(
-                "PadValue.value requires a Tile-bound or TileConfig-bound pad descriptor with an owning "
+                "PadValue.eval() requires a Tile-bound or TileConfig-bound pad descriptor with an owning "
                 "Tile element dtype in TileLang DSL v1"
             )
         pad_value = self._try_static_value(base)
         if not isinstance(pad_value, PadValue):
-            raise TypeError("PadValue.value expects a statically known PadValue enum in TileLang DSL v1")
+            raise TypeError("PadValue.eval() expects a statically known PadValue enum in TileLang DSL v1")
         pad_scalar = pad_value.materialize_scalar(base.type.element_dtype)
         if pad_scalar is None:
             raise TypeError(
-                "PadValue.NULL.value is invalid in TileLang DSL v1; "
-                "guard it with `pto.constexpr(tile.pad_value != pto.PadValue.NULL)` before reading `.value`"
+                "PadValue.NULL.eval() is invalid in TileLang DSL v1; "
+                "guard it with `pto.constexpr(tile.pad_value != pto.PadValue.NULL)` before calling `.eval()`"
             )
         return SemanticLiteralExpr(
             value=pad_scalar,
             type=SemanticScalarType(dtype=base.type.element_dtype),
         )
+
+    def _analyze_eval_method(
+        self,
+        base: SemanticExpr,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        if args:
+            raise TypeError("`eval()` does not accept positional arguments in TileLang DSL v1")
+        return self._pad_value_eval_expr(base)
 
     def _tile_config_attr_expr(self, base: SemanticExpr, attr: str) -> SemanticExpr:
         config = self._try_static_value(base)
