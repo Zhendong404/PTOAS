@@ -1019,6 +1019,25 @@ def _build_expr(node: ast.AST, context: _FrontendBuildContext) -> FrontendExprNo
                 node,
                 context,
             )
+        if isinstance(node.func, ast.Attribute):
+            return _attach_source_location(
+                FrontendCallExpr(
+                    namespace=None,
+                    name=node.func.attr,
+                    args=(
+                        _build_expr(node.func.value, context),
+                        *(tuple(_build_expr(arg, context) for arg in node.args)),
+                    ),
+                    keywords=_build_call_keywords(
+                        node,
+                        namespace=None,
+                        name=node.func.attr,
+                        context=context,
+                    ),
+                ),
+                node,
+                context,
+            )
     raise context.error(
         node,
         f"unsupported expression `{type(node).__name__}` in TileLang DSL v1",

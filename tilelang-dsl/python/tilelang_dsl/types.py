@@ -264,7 +264,10 @@ class PadValue:
 
     @property
     def value(self) -> int:
-        return self.encoded
+        raise AttributeError(
+            "PadValue.value is not available; use PadValue.encoded for host-side payload access "
+            "or pad.eval() for Tile-bound scalar materialization"
+        )
 
     @property
     def text(self) -> str:
