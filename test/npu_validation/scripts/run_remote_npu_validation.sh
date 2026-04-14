@@ -170,6 +170,19 @@ if [[ "${RUN_MODE}" == "sim" ]]; then
 elif [[ "$(printf '%s' "${_board_chip}" | tr '[:upper:]' '[:lower:]')" == *910b* ]]; then
   export PTOAS_BOARD_IS_A3=1
   log "Detected A3 board from npu-smi chip name: ${_board_chip}"
+else
+  for _sim_dir in "${ASCEND_HOME_PATH}/aarch64-linux/simulator" \
+                  "${ASCEND_HOME_PATH}/x86_64-linux/simulator" \
+                  "${ASCEND_HOME_PATH}/simulator" \
+                  "${ASCEND_HOME_PATH}/tools/simulator"; do
+    for _d in "${_sim_dir}"/Ascend910B*/lib; do
+      if [[ -d "$_d" ]]; then
+        export PTOAS_BOARD_IS_A3=1
+        log "Detected A3 board from simulator dir fallback: $_d"
+        break 2
+      fi
+    done
+  done
 fi
 log "SIM_SOC_VERSION=${SIM_SOC_VERSION}"
 log "PTOAS_BOARD_IS_A3=${PTOAS_BOARD_IS_A3}"
