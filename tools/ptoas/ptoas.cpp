@@ -1085,6 +1085,7 @@ int main(int argc, char **argv) {
   
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addPass(pto::createPTOViewToMemrefPass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {

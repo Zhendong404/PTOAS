@@ -67,6 +67,10 @@ PadValue = _pto_mod.PadValue
 PadValueAttr = _pto_mod.PadValueAttr
 CompactMode = _pto_mod.CompactMode
 CompactModeAttr = _pto_mod.CompactModeAttr
+AccToVecMode = _pto_mod.AccToVecMode
+AccToVecModeAttr = _pto_mod.AccToVecModeAttr
+ReluPreMode = _pto_mod.ReluPreMode
+ReluPreModeAttr = _pto_mod.ReluPreModeAttr
 RoundMode = _pto_mod.RoundMode
 RoundModeAttr = _pto_mod.RoundModeAttr
 CmpMode = _pto_mod.CmpMode
@@ -105,6 +109,10 @@ __all__ = [
     "PadValueAttr",
     "CompactMode",
     "CompactModeAttr",
+    "AccToVecMode",
+    "AccToVecModeAttr",
+    "ReluPreMode",
+    "ReluPreModeAttr",
     "RoundMode",
     "RoundModeAttr",
     "CmpMode",
