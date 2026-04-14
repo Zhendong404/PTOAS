@@ -297,10 +297,10 @@ pad2 = pto.PadValue.custom_f32("0xBF800000")  # float32 bit pattern for -1.0f
 ```
 
 Notes:
-- `PadValue.value` on the host-side descriptor still exposes the encoded integer payload.
+- `PadValue.encoded` exposes the host-side uint64 payload. `PadValue.value` is intentionally unavailable to avoid confusion with kernel-side `.eval()`.
 - `PadValue.text` exposes the standard textual spelling for built-ins such as `null` and `zero`.
 - Custom pad values currently model an `f32` payload. In DSL v1, materializing a custom pad into a scalar is only supported for floating tile element dtypes.
-- `PadValue.NULL` does not denote a usable scalar fill constant. Reading `tile.pad_value.value` or `tile.config.pad_value.value` when the enum is `NULL` is a frontend error.
+- `PadValue.NULL` does not denote a usable scalar fill constant. Calling `tile.pad_value.eval()` or `tile.config.pad_value.eval()` when the enum is `NULL` is a frontend error.
 
 #### Tile Shape Concepts
 
@@ -330,13 +330,13 @@ pad_desc2 = tile.pad_value            # direct sugar for the same PadValue enum
 rank = tile.rank                      # 2
 ```
 
-`tile.config.pad_value` and `tile.pad_value` are enum-typed inside kernel code. Use `.value` to materialize the configured pad descriptor against the tile element dtype:
+`tile.config.pad_value` and `tile.pad_value` are enum-typed inside kernel code. Use `.eval()` to materialize the configured pad descriptor against the tile element dtype:
 
-- `tile.pad_value.value` with `PadValue.ZERO` becomes `0` / `0.0`
-- `tile.pad_value.value` with `PadValue.MAX` becomes dtype-aware max
-- `tile.pad_value.value` with `PadValue.MIN` becomes dtype-aware min
-- `tile.pad_value.value` with `PadValue.custom_f32(...)` becomes the authored floating scalar
-- `tile.pad_value.value` with `PadValue.NULL` raises a frontend error
+- `tile.pad_value.eval()` with `PadValue.ZERO` becomes `0` / `0.0`
+- `tile.pad_value.eval()` with `PadValue.MAX` becomes dtype-aware max
+- `tile.pad_value.eval()` with `PadValue.MIN` becomes dtype-aware min
+- `tile.pad_value.eval()` with `PadValue.custom_f32(...)` becomes the authored floating scalar
+- `tile.pad_value.eval()` with `PadValue.NULL` raises a frontend error
 
 Example: reading pad value from a `Tile`
 
@@ -352,8 +352,8 @@ def kernel(dst: pto.Tile):
     pad1 = dst.config.pad_value
 
     if pto.constexpr(pad0 != pto.PadValue.NULL):
-        scalar0 = pad0.value
-        scalar1 = pad1.value
+        scalar0 = pad0.eval()
+        scalar1 = pad1.eval()
         vec0 = pto.vdup(scalar0, mask)
         vec1 = pto.vdup(scalar1, mask)
         pto.vsts(vec0, dst[0, 0:], mask)
@@ -361,7 +361,7 @@ def kernel(dst: pto.Tile):
 ```
 
 If `dst` is specialized with `config=pto.TileConfig.from_mapping({"pad_value": pto.PadValue.ZERO})`,
-both `pad0` and `pad1` are `PadValue.ZERO`, and `pad0.value` / `pad1.value` materialize to the scalar `0.0` for an `f16` tile.
+both `pad0` and `pad1` are `PadValue.ZERO`, and `pad0.eval()` / `pad1.eval()` materialize to the scalar `0.0` for an `f16` tile.
 
 #### Conversion Operations
 
