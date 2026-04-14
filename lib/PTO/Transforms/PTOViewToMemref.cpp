@@ -27,6 +27,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassRegistry.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
@@ -3139,6 +3140,10 @@ struct PTOViewToMemrefPass
 
 std::unique_ptr<Pass> createPTOViewToMemrefPass() {
   return std::make_unique<PTOViewToMemrefPass>();
+}
+
+void registerPTOViewToMemrefPass() {
+  PassRegistration<PTOViewToMemrefPass>();
 }
 
 } // namespace pto
