@@ -152,6 +152,50 @@ def _find_matching_brace(text: str, open_brace_index: int) -> Optional[int]:
     return None
 
 
+def _find_matching_paren(text: str, open_paren_index: int) -> Optional[int]:
+    depth = 0
+    for idx in range(open_paren_index, len(text)):
+        ch = text[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return None
+
+
+def _split_top_level(text: str, sep: str) -> list[str]:
+    parts = []
+    start = 0
+    paren_depth = 0
+    brace_depth = 0
+    bracket_depth = 0
+    for idx, ch in enumerate(text):
+        if ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth = max(paren_depth - 1, 0)
+        elif ch == "{":
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth = max(brace_depth - 1, 0)
+        elif ch == "[":
+            bracket_depth += 1
+        elif ch == "]":
+            bracket_depth = max(bracket_depth - 1, 0)
+        elif (
+            ch == sep
+            and paren_depth == 0
+            and brace_depth == 0
+            and bracket_depth == 0
+        ):
+            parts.append(text[start:idx].strip())
+            start = idx + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
 def _extract_function_body(function_text: str) -> str:
     brace_index = function_text.find("{")
     if brace_index < 0:
@@ -1129,15 +1173,30 @@ def _infer_int_var_maxima(kernel_text: str, seed_env: Optional[dict] = None) -> 
         assigns.append((name, expr))
 
     loops = []
-    for m in re.finditer(
-        r"for\s*\(\s*(?:unsigned|int|long|size_t|int(?:8|16|32|64)_t|uint(?:8|16|32|64)_t)\s+(\w+)\s*=\s*([^;]+?)\s*;\s*\1\s*<\s*([^;]+?)\s*;\s*\1\s*\+=\s*([^)]+?)\s*\)",
-        kernel_text,
-    ):
-        ind = m.group(1)
-        start = m.group(2).strip()
-        end = m.group(3).strip()
-        step = m.group(4).strip()
-        loops.append((ind, start, end, step))
+    for m in re.finditer(r"\bfor\s*\(", kernel_text):
+        open_paren = kernel_text.find("(", m.start())
+        if open_paren < 0:
+            continue
+        close_paren = _find_matching_paren(kernel_text, open_paren)
+        if close_paren is None:
+            continue
+        header = kernel_text[open_paren + 1:close_paren]
+        parts = _split_top_level(header, ";")
+        if len(parts) != 3:
+            continue
+        init, cond, step = parts
+        init_m = re.match(
+            r"^\s*(?:unsigned|int|long|size_t|int(?:8|16|32|64)_t|uint(?:8|16|32|64)_t)\s+(\w+)\s*=\s*(.+?)\s*$",
+            init,
+        )
+        if not init_m:
+            continue
+        ind = init_m.group(1)
+        cond_m = re.match(rf"^\s*{re.escape(ind)}\s*<\s*(.+?)\s*$", cond)
+        step_m = re.match(rf"^\s*{re.escape(ind)}\s*\+=\s*(.+?)\s*$", step)
+        if not cond_m or not step_m:
+            continue
+        loops.append((ind, init_m.group(2).strip(), cond_m.group(1).strip(), step_m.group(1).strip()))
 
     maxima: dict[str, Optional[int]] = {
         k: (None if v is None else int(v))
