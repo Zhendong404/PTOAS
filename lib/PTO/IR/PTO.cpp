@@ -253,7 +253,7 @@ static VerifierTargetArch getVerifierTargetArch(Operation *op) {
                             : VerifierTargetArch::A2A3;
   }
 
-  switch (getPTOParserTargetArch()) {
+  switch (getPTOParserTargetArch(op ? op->getContext() : nullptr)) {
   case PTOParserTargetArch::A5:
     return VerifierTargetArch::A5;
   case PTOParserTargetArch::A3:
