@@ -6,9 +6,13 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 #include "PTO/Transforms/InsertSync/SyncEventIdAllocation.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
-#include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
  
 #define DEBUG_TYPE "pto-inject-sync"
@@ -164,10 +168,8 @@ void SyncEventIdAllocation::SetEventId(SyncOperation *sync) {
   SmallVector<bool> eventIdLifetimeAvailableStatus = GetEventPool(sync, poolSize);
   SmallVector<bool> eventIdIdleStatus = GetEventIdIdleStatus(sync, poolSize);
   
-  if (eventIdLifetimeAvailableStatus.size() != poolSize ||
-      eventIdIdleStatus.size() != poolSize) {
-    llvm::report_fatal_error("invalid event-id pool state");
-  }
+  assert(eventIdLifetimeAvailableStatus.size() == poolSize);
+  assert(eventIdIdleStatus.size() == poolSize);
 
   // Apply per-(src,dst) reservations by marking the "reserved tail" as
   // unavailable. Historically this pass treated reserved IDs as being at the
@@ -190,6 +192,7 @@ void SyncEventIdAllocation::SetEventId(SyncOperation *sync) {
   } else if (reallocatedPipePair.count(ScopePair(sync)) &&
              (canAllocaEventId.size() < idSize)) {
     // Reallocate strategy: reduce usage to 1
+    assert(canAllocaEventId.size() > 0);
     SetEventPool(sync, canAllocaEventId[0]);
     sync->eventIdNum = 1;
   }
@@ -686,8 +689,7 @@ bool SyncEventIdAllocation::TryWidenByOtherSync(const SyncOperation *sync) {
       }
     }
     widenSetSyncIR->pipeAfter = newPipeAfter;
-    if (!removeSync)
-      llvm::report_fatal_error("failed to remove widened sync from original position");
+    if (!removeSync) llvm_unreachable("in widen fun, remove sync failed");
   }
   return true;
 }

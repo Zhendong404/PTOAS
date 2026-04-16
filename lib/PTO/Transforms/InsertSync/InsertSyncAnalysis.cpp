@@ -6,6 +6,11 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 #include "PTO/Transforms/InsertSync/InsertSyncAnalysis.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -76,8 +81,7 @@ void InsertSyncAnalysis::DealWithLoopSync(LoopInstanceElement *nowElement) {
   }
 
   SyncIRs backSyncIr;
-  if (syncIR_.size() < nowElement->endId)
-    return;
+  assert(syncIR_.size() >= nowElement->endId);
   for (unsigned i = nowElement->beginId; i < nowElement->endId; i++) {
     if (auto *compound = dyn_cast<CompoundInstanceElement>(syncIR_[i].get())) {
       InsertBackForSync(compound, backSyncIr, nowElement);
@@ -161,8 +165,8 @@ void InsertSyncAnalysis::InsertSeqSync(
   for (int i = end - 1; i >= begin; i--) {
     auto &frontPtr = syncElement[i];
     unsigned frontIndex = frontPtr->GetIndex();
-    if (frontIndex >= syncIR_.size() || syncIR_[frontIndex] == nullptr)
-      continue;
+    assert(frontIndex < syncIR_.size());
+    assert(syncIR_[frontIndex] != nullptr);
 
     if (auto *frontCompound =
             dyn_cast<CompoundInstanceElement>(frontPtr.get())) {
@@ -239,8 +243,7 @@ unsigned InsertSyncAnalysis::InsertBranchSync(
     return (branchElement->endId - branchElement->beginId);
   } else if (branchElement->getBranchKind() == KindOfBranch::ELSE_BEGIN &&
              index != begin) {
-    if (nowCompound->GetIndex() <= branchElement->branchId)
-      return 0;
+    assert(nowCompound->GetIndex() > branchElement->branchId);
     return (branchElement->branchId - branchElement->beginId);
   }
   return 0;
@@ -381,8 +384,7 @@ void InsertSyncAnalysis::InsertSyncOperation(
   }
 
   syncIndex_++;
-  if (syncOperations_.size() != syncIndex_)
-    syncIndex_ = syncOperations_.size();
+  assert(syncOperations_.size() == syncIndex_);
 }
 
 // ==============================================================================
@@ -462,11 +464,9 @@ void InsertSyncAnalysis::UpdateSyncRecord(const SyncOperation *sync,
 void InsertSyncAnalysis::UpdateSyncRecordInfo(
     CompoundInstanceElement *frontCompound, SyncRecordList &syncRecordList) {
   (void)frontCompound;
-  if (syncOperations_.empty())
-    return;
+  assert(!syncOperations_.empty());
   auto &syncPair = syncOperations_.back();
-  if (syncPair.empty())
-    return;
+  assert(!syncPair.empty());
 
   auto *newSync = syncPair[0].get();
   for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
