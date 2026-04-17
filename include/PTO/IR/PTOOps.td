@@ -3266,7 +3266,7 @@ def TDivSOp : PTO_TOp<"tdivs", [
 
   let arguments = (ins
     AnyType:$src,
-    ScalarType:$scalar,
+    AnyType:$scalar,
     PTODpsType:$dst
   );
 

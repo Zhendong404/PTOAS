@@ -6650,43 +6650,16 @@ struct PTODivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    // Check types BEFORE conversion (using original op types, not adaptor types)
-    // The adaptor types may already be converted to emitc.opaque
-    Value origSrc = op.getSrc();
-    Value origScalar = op.getScalar();
-    
-    // Determine order based on original operand types
-    // Check if src is memref/tensor/partition_tensor_view/tile (not scalar)
-    bool srcIsMemref = (isa<MemRefType>(origSrc.getType()) || 
-                        isa<RankedTensorType>(origSrc.getType()) ||
-                        isa<mlir::pto::PartitionTensorViewType>(origSrc.getType()) ||
-                        isa<mlir::pto::TileBufType>(origSrc.getType()));
-    // Check if scalar is memref/tensor/partition_tensor_view/tile (not scalar)
-    bool scalarIsMemref = (isa<MemRefType>(origScalar.getType()) || 
-                           isa<RankedTensorType>(origScalar.getType()) ||
-                           isa<mlir::pto::PartitionTensorViewType>(origScalar.getType()) ||
-                           isa<mlir::pto::TileBufType>(origScalar.getType()));
-
     Value src    = peelUnrealized(adaptor.getSrc());
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
-
-    if (srcIsMemref && !scalarIsMemref) {
-      // memref/scalar: TDIVS(dst, src, scalar) - normal order
-      rewriter.create<emitc::CallOpaqueOp>(
-          loc, TypeRange{}, "TDIVS",
-          ArrayAttr{}, ArrayAttr{},
-          ValueRange{dst, src, scalar});
-    } else if (!srcIsMemref && scalarIsMemref) {
-          // scalar/memref: TDIVS(dst, scalar, src) - swapped order
-      rewriter.create<emitc::CallOpaqueOp>(
-          loc, TypeRange{}, "TDIVS",
-          ArrayAttr{}, ArrayAttr{},
-          ValueRange{dst, scalar, src});
-    } else {
-      // This should not happen if verifier is correct, but provide a fallback
-      return op.emitError("TDivSOp: expected exactly one memref/tensor operand and one scalar operand");
-    }
+    // Preserve source order from textual parse:
+    // ins(tile, scalar)   -> TDIVS(dst, tile, scalar)
+    // ins(scalar, tile)   -> TDIVS(dst, scalar, tile)
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TDIVS",
+        ArrayAttr{}, ArrayAttr{},
+        ValueRange{dst, src, scalar});
 
     rewriter.eraseOp(op);
     return success();
@@ -6709,30 +6682,10 @@ struct PTOTDivSToEmitC : public OpConversionPattern<pto::TDivSOp> {
     Value src    = peelUnrealized(adaptor.getSrc());
     Value scalar = peelUnrealized(adaptor.getScalar());
     Value dst    = peelUnrealized(adaptor.getDst());
-
-    // Determine order based on operand types
-    bool srcIsTile = isa<mlir::pto::TileBufType>(src.getType());
-    bool scalarIsTile = isa<mlir::pto::TileBufType>(scalar.getType());
-
-    if (srcIsTile && !scalarIsTile) {
-      // tile/scalar: TDIVS(dst, src, scalar)
-      rewriter.create<emitc::CallOpaqueOp>(
-          loc, TypeRange{}, "TDIVS",
-          ArrayAttr{}, ArrayAttr{},
-          ValueRange{dst, src, scalar});
-    } else if (!srcIsTile && scalarIsTile) {
-      // scalar/tile: TDIVS(dst, scalar, src)
-      rewriter.create<emitc::CallOpaqueOp>(
-          loc, TypeRange{}, "TDIVS",
-          ArrayAttr{}, ArrayAttr{},
-          ValueRange{dst, scalar, src});
-    } else {
-      // Default: assume src is tile (should not happen if types are correct)
-      rewriter.create<emitc::CallOpaqueOp>(
-          loc, TypeRange{}, "TDIVS",
-          ArrayAttr{}, ArrayAttr{},
-          ValueRange{dst, src, scalar});
-    }
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TDIVS",
+        ArrayAttr{}, ArrayAttr{},
+        ValueRange{dst, src, scalar});
 
     rewriter.eraseOp(op);
     return success();

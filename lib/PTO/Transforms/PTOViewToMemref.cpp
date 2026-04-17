@@ -2510,13 +2510,12 @@ struct PTOViewToMemrefPass
         // Check types - they might still be TileBufType or already converted to MemRefType
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto srcTileTy = dyn_cast<mlir::pto::TileBufType>(src.getType());
-        auto scaleTy = dyn_cast<FloatType>(scale.getType());
         auto scaleTileTy = dyn_cast<mlir::pto::TileBufType>(scale.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
         auto dstTileTy = dyn_cast<mlir::pto::TileBufType>(dst.getType());
         
-        // Determine which operand is the tile/memref and which is the scalar
-        // TDivSOp expects (memref, scalar, dst) internally, so we need to ensure correct order
+        // Determine which operand is tile-like and which is scalar-like.
+        // Keep the original operand order (set by parser textual form).
         // Check if src is memref/tensor/tile (not scalar)
         bool srcIsMemref = (srcTy != nullptr || srcTileTy != nullptr || 
                             isa<RankedTensorType>(src.getType()) ||
@@ -2544,23 +2543,11 @@ struct PTOViewToMemrefPass
           signalPassFailure();
           return;
         }
-        Value memrefOperand, scalarOperand;
-        if (srcIsMemref) {
-          // Normal order: (src=tile/memref, scale=scalar, dst)
-          memrefOperand = src;
-          scalarOperand = scale;
-        } else {
-          // Swapped order: (src=scalar, scale=tile/memref, dst)
-          // Need to swap to (memref, scalar, dst) for TDivSOp
-          memrefOperand = scale;
-          scalarOperand = src;
-        }
-
         rewriter.replaceOpWithNewOp<pto::TDivSOp>(
             op,
             TypeRange{},
-            memrefOperand,
-            scalarOperand,
+            src,
+            scale,
             dst);
       }
 

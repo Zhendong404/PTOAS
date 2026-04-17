@@ -2717,8 +2717,8 @@ For each element (i, j):
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `AnyType` | Source tile buffer |
-| `scalar` | `ScalarType` (signless integer / float) | Scalar divisor (or dividend in reverse mode) |
+| `src/scalar` | `pto.tile_buf/scalar` | Source tile buffer or Scalar divisor (or dividend in reverse mode)|
+| `src/scalar` | `pto.tile_buf/scalar` | Source tile buffer or Scalar divisor (or dividend in reverse mode)|
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
