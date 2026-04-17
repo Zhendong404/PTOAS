@@ -397,8 +397,7 @@ void TensorViewType::print(::mlir::AsmPrinter &printer) const {
 // pto.tdivs custom asm to support both:
 //   pto.tdivs ins(%src, %scalar : !pto.tile_buf<...>, f32) outs(%dst : !pto.tile_buf<...>)
 //   pto.tdivs ins(%scalar, %src : f32, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)
-// The operand order in the op remains (src, scalar, dst); order is determined
-// by the type of the first operand in the textual format.
+// The operand order in the op follows textual input order.
 //===----------------------------------------------------------------------===//
 
 ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -430,23 +429,11 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
     return parser.emitError(parser.getCurrentLocation(),
                             "expected outs type to be !pto.tile_buf<...>");
 
-  // Determine order based on types: if first operand is tile_buf, order is (tile, scalar)
-  // Otherwise, order is (scalar, tile)
-  const bool scalarFirst = (tile1 != nullptr);
-
-  if (!scalarFirst) {
-    // ins(%src, %scalar : tile_buf, scalar_ty)
-    // Operands in op: (src, scalar, dst)
-    if (parser.resolveOperand(op0, ty0, result.operands) ||
-        parser.resolveOperand(op1, ty1, result.operands))
-      return failure();
-  } else {
-    // ins(%scalar, %src : scalar_ty, tile_buf)
-    // Operands in op: (src, scalar, dst) - need to swap
-    if (parser.resolveOperand(op1, ty1, result.operands) ||
-        parser.resolveOperand(op0, ty0, result.operands))
-      return failure();
-  }
+  // Keep textual order so later lowering can distinguish the two APIs by the
+  // first ins operand type.
+  if (parser.resolveOperand(op0, ty0, result.operands) ||
+      parser.resolveOperand(op1, ty1, result.operands))
+    return failure();
 
   if (parser.resolveOperand(dst, dstTy, result.operands))
     return failure();
@@ -456,29 +443,9 @@ ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &resul
 }
 
 void mlir::pto::TDivSOp::print(OpAsmPrinter &p) {
-  // Determine order based on operand types
-  // If src is tile_buf and scalar is not, print (src, scalar)
-  // If src is scalar and scalar is tile_buf, print (scalar, src)
-  auto srcType = getSrc().getType();
-  auto scalarType = getScalar().getType();
-  
-  bool srcIsTile = isa<mlir::pto::TileBufType>(srcType);
-  bool scalarIsTile = isa<mlir::pto::TileBufType>(scalarType);
-  
   p << " ins(";
-  if (srcIsTile && !scalarIsTile) {
-    // Print: (tile, scalar) - operands are already in correct order
-    p << getSrc() << ", " << getScalar() << " : "
-      << getSrc().getType() << ", " << getScalar().getType();
-  } else if (!srcIsTile && scalarIsTile) {
-    // Print: (scalar, tile) - need to swap operands in output
-    p << getScalar() << ", " << getSrc() << " : "
-      << getScalar().getType() << ", " << getSrc().getType();
-  } else {
-    // Default: assume src is tile (should not happen if types are correct)
-    p << getSrc() << ", " << getScalar() << " : "
-      << getSrc().getType() << ", " << getScalar().getType();
-  }
+  p << getSrc() << ", " << getScalar() << " : "
+    << getSrc().getType() << ", " << getScalar().getType();
   p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
 
   p.printOptionalAttrDict((*this)->getAttrs());
@@ -3845,32 +3812,64 @@ LogicalResult mlir::pto::TDivOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TDivSOp::verify() {
+  auto isTileLike = [](Type ty) -> bool {
+    return isa<mlir::pto::TileBufType, MemRefType, RankedTensorType,
+               mlir::pto::PartitionTensorViewType>(ty);
+  };
+  auto isScalarLike = [](Type ty) -> bool {
+    return ty.isa<IntegerType, FloatType>();
+  };
+
   auto verifyA2A3 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
+    Type rhsTy = getScalar().getType();
     Type dstTy = getDst().getType();
-    if (failed(verifyScalarTileOp(*this, srcTy, dstTy, "src", "dst",
+
+    bool srcTile = isTileLike(srcTy);
+    bool rhsTile = isTileLike(rhsTy);
+    bool srcScalar = isScalarLike(srcTy);
+    bool rhsScalar = isScalarLike(rhsTy);
+
+    if (!(srcTile && rhsScalar) && !(srcScalar && rhsTile))
+      return emitOpError("expects one tile-like operand and one scalar operand in ins(...)");
+
+    Type tileTy = srcTile ? srcTy : rhsTy;
+    Type scalarTy = srcTile ? rhsTy : srcTy;
+
+    if (failed(verifyScalarTileOp(*this, tileTy, dstTy, "src", "dst",
                                   /*requireValidRowsEqual=*/true,
                                   /*requireValidColsEqual=*/true)))
       return failure();
-    Type scalarTy = getScalar().getType();
     if (!scalarTy.isa<IntegerType, FloatType>())
       return emitOpError("scalar must be a scalar type (integer/float)");
-    Type elem = getElemTy(srcTy);
+    Type elem = getElemTy(tileTy);
     if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isF16() || elem.isF32()))
       return emitOpError("expects A2/A3 tdivs element type to be i32/i16/f16/f32");
     return success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
+    Type rhsTy = getScalar().getType();
     Type dstTy = getDst().getType();
-    if (failed(verifyScalarTileOp(*this, srcTy, dstTy, "src", "dst",
+
+    bool srcTile = isTileLike(srcTy);
+    bool rhsTile = isTileLike(rhsTy);
+    bool srcScalar = isScalarLike(srcTy);
+    bool rhsScalar = isScalarLike(rhsTy);
+
+    if (!(srcTile && rhsScalar) && !(srcScalar && rhsTile))
+      return emitOpError("expects one tile-like operand and one scalar operand in ins(...)");
+
+    Type tileTy = srcTile ? srcTy : rhsTy;
+    Type scalarTy = srcTile ? rhsTy : srcTy;
+
+    if (failed(verifyScalarTileOp(*this, tileTy, dstTy, "src", "dst",
                                   /*requireValidRowsEqual=*/true,
                                   /*requireValidColsEqual=*/true)))
       return failure();
-    Type scalarTy = getScalar().getType();
     if (!scalarTy.isa<IntegerType, FloatType>())
       return emitOpError("scalar must be a scalar type (integer/float)");
-    Type elem = getElemTy(srcTy);
+    Type elem = getElemTy(tileTy);
     if (!(elem.isInteger(32) || elem.isInteger(16) || elem.isInteger(8) ||
           elem.isF16() || elem.isF32()))
       return emitOpError("expects A5 tdivs element type to be i32/i16/i8/f16/f32");
