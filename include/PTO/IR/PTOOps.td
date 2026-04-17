@@ -1365,6 +1365,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
+      OptionalAttr<BoolAttr>:$nosplit,
       Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
@@ -1375,7 +1376,9 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
 
   let assemblyFormat = [{
     `{` `dir_mask` `=` $dir_mask `,`
-        `slot_size` `=` $slot_size `}`
+        `slot_size` `=` $slot_size
+        (`,` `nosplit` `=` $nosplit^)?
+        `}`
     `(`
       (`gm_slot_buffer` `=` $gm_slot_buffer^ `:` type($gm_slot_buffer) `,`)?
       `c2v_consumer_buf` `=` $c2v_consumer_buf `:` type($c2v_consumer_buf) `,`
@@ -1391,6 +1394,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
+      OptionalAttr<BoolAttr>:$nosplit,
       Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
@@ -1401,7 +1405,9 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
 
   let assemblyFormat = [{
     `{` `dir_mask` `=` $dir_mask `,`
-        `slot_size` `=` $slot_size `}`
+        `slot_size` `=` $slot_size
+        (`,` `nosplit` `=` $nosplit^)?
+        `}`
     `(`
       (`gm_slot_buffer` `=` $gm_slot_buffer^ `:` type($gm_slot_buffer) `,`)?
       `c2v_consumer_buf` `=` $c2v_consumer_buf `:` type($c2v_consumer_buf) `,`
@@ -1672,6 +1678,7 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
       I32Attr:$slot_num,
       OptionalAttr<I32Attr>:$local_slot_num,
       OptionalAttr<I32Attr>:$flag_base,
+      OptionalAttr<BoolAttr>:$nosplit,
       AnyType:$gm_addr,
       AnyType:$local_addr,
       Optional<AnyType>:$peer_local_addr
@@ -1686,6 +1693,7 @@ def InitializeL2G2LPipeOp : PTO_Op<"initialize_l2g2l_pipe", [
         `slot_num` `=` $slot_num
         (`,` `local_slot_num` `=` $local_slot_num^)?
         (`,` `flag_base` `=` $flag_base^)?
+        (`,` `nosplit` `=` $nosplit^)?
         `}`
     `(` $gm_addr `:` type($gm_addr) `,` $local_addr `:` type($local_addr)
         (`,` $peer_local_addr^ `:` type($peer_local_addr))? `)`
@@ -1703,6 +1711,7 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
       I32Attr:$slot_size,
       I32Attr:$slot_num,
       OptionalAttr<I32Attr>:$flag_base,
+      OptionalAttr<BoolAttr>:$nosplit,
       AnyType:$local_addr,
       Optional<AnyType>:$peer_local_addr
   );
@@ -1715,6 +1724,7 @@ def InitializeL2LPipeOp : PTO_Op<"initialize_l2l_pipe", [
         `slot_size` `=` $slot_size `,`
         `slot_num` `=` $slot_num
         (`,` `flag_base` `=` $flag_base^)?
+        (`,` `nosplit` `=` $nosplit^)?
         `}`
     `(` $local_addr `:` type($local_addr)
         (`,` $peer_local_addr^ `:` type($peer_local_addr))? `)`
