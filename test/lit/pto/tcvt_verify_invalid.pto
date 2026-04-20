@@ -14,6 +14,7 @@
 // CHECK: error: 'pto.tcvt' op expects src and dst to have compatible shapes
 // CHECK: error: 'pto.tcvt' op expects src and dst to have the same valid_shape
 
+module {
 // -----------------------------------------------------------------------
 // Shape mismatch: src is 16x32, dst is 16x16 -> error
 // -----------------------------------------------------------------------
@@ -39,4 +40,5 @@ func.func @tcvt_valid_shape_mismatch() attributes {pto.kernel_kind = #pto.kernel
            outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
   return
+}
 }
