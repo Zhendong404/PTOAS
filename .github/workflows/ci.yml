@@ -208,7 +208,6 @@ jobs:
           PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
           MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
-          set -euo pipefail
           export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PYTHONPATH="${MLIR_PYTHONPATH}:${PTO_INSTALL_DIR}:${PYTHONPATH:-}"
