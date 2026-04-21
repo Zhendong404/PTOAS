@@ -205,12 +205,12 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(custom.float32_bits, 0xBF800000)
         self.assertEqual(custom.encoded, pto.PadValue.CustomBase | (0xBF800000 << 32))
         self.assertAlmostEqual(custom.as_float32(), -1.0)
-        self.assertAlmostEqual(custom.materialize_scalar(pto.f32), -1.0)
-        self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.ui16), 0xFFFF)
-        self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.ui16), 0)
-        self.assertEqual(pto.PadValue.MAX.materialize_scalar(pto.i16), 0x7FFF)
-        self.assertEqual(pto.PadValue.MIN.materialize_scalar(pto.i16), -0x8000)
-        self.assertIsNone(pto.PadValue.NULL.materialize_scalar(pto.f16))
+        self.assertAlmostEqual(custom.eval(pto.f32), -1.0)
+        self.assertEqual(pto.PadValue.MAX.eval(pto.ui16), 0xFFFF)
+        self.assertEqual(pto.PadValue.MIN.eval(pto.ui16), 0)
+        self.assertEqual(pto.PadValue.MAX.eval(pto.i16), 0x7FFF)
+        self.assertEqual(pto.PadValue.MIN.eval(pto.i16), -0x8000)
+        self.assertIsNone(pto.PadValue.NULL.eval(pto.f16))
         with self.assertRaises(AttributeError):
             _ = pto.PadValue.ZERO.value
 
@@ -2352,6 +2352,28 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             analyze_frontend_kernel(build_frontend_kernel_node(specialized))
 
         self.assertIn("PadValue.NULL.eval() is invalid", str(ctx.exception))
+
+    def test_standalone_pad_value_eval_accepts_explicit_dtype(self) -> None:
+        @pto.vkernel(op="standalone_pad_value_eval_dtype", dtypes=[(pto.f32,)])
+        def kernel(tile: pto.Tile):
+            scalar = pto.PadValue.MAX.eval(pto.f32)
+            return None
+
+        specialized = kernel.specialize(
+            tile=pto.TileSpecialization(
+                shape=(8, 16),
+                memory_space=pto.MemorySpace.UB,
+            )
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        scalar_assign = semantic_kernel.body[0]
+
+        self.assertIsInstance(scalar_assign, SemanticAssignStmt)
+        self.assertIsInstance(scalar_assign.value, SemanticLiteralExpr)
+        self.assertAlmostEqual(scalar_assign.value.value, pto.PadValue.MAX.eval(pto.f32))
+        self.assertIsInstance(scalar_assign.targets[0].type, SemanticScalarType)
+        self.assertEqual(scalar_assign.targets[0].type.dtype, pto.f32)
 
     def test_unsigned_integer_constants_lower_with_signless_arith_types(self) -> None:
         @pto.vkernel(op="tile_pad_value_ui32_max_eval_unique", dtypes=[(pto.ui32,)])

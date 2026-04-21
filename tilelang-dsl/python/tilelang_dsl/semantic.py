@@ -3504,18 +3504,32 @@ class _SemanticAnalyzer:
             type=SemanticPadValueType(element_dtype=base_type.element_dtype),
         )
 
-    def _pad_value_eval_expr(self, base: SemanticExpr) -> SemanticExpr:
+    def _pad_value_eval_expr(
+        self,
+        base: SemanticExpr,
+        dtype_expr: SemanticExpr | None = None,
+    ) -> SemanticExpr:
         if not isinstance(base.type, SemanticPadValueType):
             raise TypeError("`eval()` expects a PadValue descriptor in TileLang DSL v1")
-        if base.type.element_dtype is None:
+        element_dtype = base.type.element_dtype
+        if dtype_expr is not None:
+            if not (
+                isinstance(dtype_expr, SemanticSymbolExpr)
+                and isinstance(dtype_expr.type, SemanticMetaType)
+                and dtype_expr.type.kind == "dtype"
+                and isinstance(dtype_expr.value, ScalarType)
+            ):
+                raise TypeError("PadValue.eval(dtype) expects a TileLang scalar dtype symbol in TileLang DSL v1")
+            element_dtype = dtype_expr.value
+        if element_dtype is None:
             raise TypeError(
-                "PadValue.eval() requires a Tile-bound or TileConfig-bound pad descriptor with an owning "
-                "Tile element dtype in TileLang DSL v1"
+                "PadValue.eval() requires either a Tile-bound pad descriptor or an explicit dtype argument "
+                "in TileLang DSL v1"
             )
         pad_value = self._try_static_value(base)
         if not isinstance(pad_value, PadValue):
             raise TypeError("PadValue.eval() expects a statically known PadValue enum in TileLang DSL v1")
-        pad_scalar = pad_value.materialize_scalar(base.type.element_dtype)
+        pad_scalar = pad_value.eval(element_dtype)
         if pad_scalar is None:
             raise TypeError(
                 "PadValue.NULL.eval() is invalid in TileLang DSL v1; "
@@ -3523,7 +3537,7 @@ class _SemanticAnalyzer:
             )
         return SemanticLiteralExpr(
             value=pad_scalar,
-            type=SemanticScalarType(dtype=base.type.element_dtype),
+            type=SemanticScalarType(dtype=element_dtype),
         )
 
     def _analyze_eval_method(
@@ -3531,9 +3545,9 @@ class _SemanticAnalyzer:
         base: SemanticExpr,
         args: tuple[SemanticExpr, ...],
     ) -> SemanticExpr:
-        if args:
-            raise TypeError("`eval()` does not accept positional arguments in TileLang DSL v1")
-        return self._pad_value_eval_expr(base)
+        if len(args) > 1:
+            raise TypeError("`eval()` accepts at most one positional dtype argument in TileLang DSL v1")
+        return self._pad_value_eval_expr(base, args[0] if args else None)
 
     def _tile_config_attr_expr(self, base: SemanticExpr, attr: str) -> SemanticExpr:
         config = self._try_static_value(base)
