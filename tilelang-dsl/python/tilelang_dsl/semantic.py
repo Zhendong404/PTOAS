@@ -3073,6 +3073,27 @@ class _SemanticAnalyzer:
                 expr,
             )
         if isinstance(expr, FrontendCallExpr):
+            if expr.namespace is None:
+                binding = env.get(expr.name)
+                if (
+                    binding is not None
+                    and isinstance(binding.type, SemanticMetaType)
+                    and binding.type.kind == "dtype"
+                    and isinstance(binding.value, ScalarType)
+                ):
+                    if expr.keywords:
+                        raise TypeError(
+                            f"`{expr.name}` does not support keyword arguments in TileLang DSL v1"
+                        )
+                    args = tuple(
+                        self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+                        for arg in expr.args
+                    )
+                    return self._analyze_scalar_constructor_for_dtype(
+                        binding.value,
+                        args,
+                        surface_name=expr.name,
+                    )
             if expr.namespace is None and expr.name in self._inline_proc_nodes:
                 if expr.keywords:
                     raise TypeError(
@@ -4127,23 +4148,35 @@ class _SemanticAnalyzer:
         name: str,
         args: tuple[SemanticExpr, ...],
     ) -> SemanticExpr:
-        if len(args) != 1:
-            raise TypeError(f"pto.{name} expects exactly 1 positional argument in TileLang DSL v1")
+        return self._analyze_scalar_constructor_for_dtype(
+            _DTYPE_SYMBOLS[name],
+            args,
+            surface_name=f"pto.{name}",
+        )
 
-        target_dtype = _DTYPE_SYMBOLS[name]
+    def _analyze_scalar_constructor_for_dtype(
+        self,
+        target_dtype: ScalarType,
+        args: tuple[SemanticExpr, ...],
+        *,
+        surface_name: str,
+    ) -> SemanticExpr:
+        if len(args) != 1:
+            raise TypeError(f"{surface_name} expects exactly 1 positional argument in TileLang DSL v1")
+
         if (
             target_dtype.name in {"f16", "bf16", "f32"}
             and isinstance(args[0], SemanticLiteralExpr)
             and isinstance(args[0].type, SemanticMetaType)
             and args[0].type.kind == "string"
         ):
-            parsed = self._parse_float_literal_string(args[0].value, target_dtype, f"pto.{name} value")
+            parsed = self._parse_float_literal_string(args[0].value, target_dtype, f"{surface_name} value")
             return SemanticLiteralExpr(
                 value=parsed,
                 type=SemanticScalarType(dtype=target_dtype),
             )
 
-        value = self._require_scalar_or_index_expr(args[0], f"pto.{name} value")
+        value = self._require_scalar_or_index_expr(args[0], f"{surface_name} value")
 
         if isinstance(value.type, SemanticScalarType) and value.type.dtype == target_dtype:
             return value
@@ -4176,7 +4209,7 @@ class _SemanticAnalyzer:
                         max_value = (1 << (bits - 1)) - 1
                     if casted < min_value or casted > max_value:
                         raise TypeError(
-                            f"pto.{name} value {casted} is out of range for {target_dtype.name} in TileLang DSL v1"
+                            f"{surface_name} value {casted} is out of range for {target_dtype.name} in TileLang DSL v1"
                         )
                     return SemanticLiteralExpr(value=casted, type=SemanticScalarType(dtype=target_dtype))
             else:
@@ -4188,7 +4221,7 @@ class _SemanticAnalyzer:
 
         return SemanticCallExpr(
             namespace="pto",
-            name=name,
+            name=target_dtype.name,
             args=(value,),
             type=SemanticScalarType(dtype=target_dtype),
         )
