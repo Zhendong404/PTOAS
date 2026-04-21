@@ -193,6 +193,11 @@ static llvm::cl::opt<bool> emitAddPtrTrace(
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> emitMlirIR(
+    "emit-pto-ir",
+    llvm::cl::desc("Emit PTO IR after lowering instead of C++"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string> ptoTargetArch(
     "pto-arch",
     llvm::cl::desc("Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
@@ -920,6 +925,7 @@ int main(int argc, char **argv) {
   }
 
   // Parse command line options
+  mlir::registerPassManagerCLOptions();
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
 
   // Read whole input first (so we can auto-detect .ptobc by magic).
@@ -1081,16 +1087,11 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  // [Fix] ToolOutputFile Usage
-  std::error_code ec;
-  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-  if (ec) {
-    llvm::errs() << ec.message() << "\n";
-    return 1;
-  }
-
   // Main PassManager
   PassManager pm(&context);
+
+  if (failed(applyPassManagerCLOptions(pm)))
+    return 1;
   
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOAssignDefaultFrontendPipeIdPass());
@@ -1117,6 +1118,15 @@ int main(int argc, char **argv) {
   // Conditionally add Sync pass based on flag.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  
+  if (emitMlirIR) {
+    if (failed(pm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+    module->dump();
+    return 0;
+  }
 
   pm.addPass(createCSEPass());
   if (arch == "a3") {
@@ -1159,6 +1169,15 @@ int main(int argc, char **argv) {
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
+  
+  // [Fix] ToolOutputFile Usage
+  std::error_code ec;
+  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << ec.message() << "\n";
+    return 1;
+  }
+  
   outputFile.os() << cppOutput;
 
   outputFile.keep(); // Success, keep the file

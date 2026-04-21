@@ -36,6 +36,8 @@
 #include <functional>
 #include <limits>
 
+#define DEBUG_TYPE "pto-view-to-memref"
+
 using namespace mlir;
 
 namespace mlir {
@@ -3362,7 +3364,7 @@ struct PTOViewToMemrefPass
     }
     
     // Debug Output
-    dumpPretty(mod.getOperation(), llvm::errs());
+    LLVM_DEBUG(llvm::dbgs() << mod.getOperation());
   }
 };
 
