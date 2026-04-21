@@ -2813,7 +2813,14 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     } else {
         SmallVector<int64_t> strideInts;
         int64_t offset = ShapedType::kDynamic;
-        bool useTypeStrides = getStaticMemrefLayout(srcType, strideInts, offset);
+        bool useTypeStrides = succeeded(getStridesAndOffset(srcType, strideInts, offset));
+        (void)offset;
+        if (useTypeStrides) {
+          for (int64_t s : strideInts) {
+            if (s == ShapedType::kDynamic)
+              useTypeStrides = false;
+          }
+        }
         if (useTypeStrides) {
             for (int64_t s : strideInts) {
                 sourceStrides.push_back(rewriter.getIndexAttr(s));
