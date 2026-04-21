@@ -201,7 +201,15 @@ FailureOr<bool> mlir::pto::tryCloneOpLibInlineBridgeOp(OpBuilder &builder,
     if (!mappedSrc)
       return failure();
 
-    mapping.map(cast.getResult(0), mappedSrc);
+    Type dstTy = cast.getResult(0).getType();
+    if (mappedSrc.getType() == dstTy) {
+      mapping.map(cast.getResult(0), mappedSrc);
+      return true;
+    }
+
+    auto clonedCast = builder.create<UnrealizedConversionCastOp>(
+        cast.getLoc(), TypeRange{dstTy}, ValueRange{mappedSrc});
+    mapping.map(cast.getResult(0), clonedCast.getResult(0));
     return true;
   }
 
