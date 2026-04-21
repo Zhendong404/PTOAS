@@ -335,7 +335,7 @@ pto.set_mov_pad_val(pad_value: ScalarType) -> None
 **Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pad_value` | `ScalarType` | Scalar value used for padding. Supported types: `pto.i8`, `pto.i16`, `pto.i32`, `pto.f16`, `pto.bf16`, `pto.f32`. The value's bit pattern is encoded into the hardware pad register. For standard pad values, use `PadValue.eval()` to obtain the appropriate scalar: `0` or `0.0` for `PadValue.ZERO`, dtype-aware maximum for `PadValue.MAX`, dtype-aware minimum for `PadValue.MIN`. |
+| `pad_value` | `ScalarType` | Scalar value used for padding. Supported types: `pto.i8`, `pto.i16`, `pto.i32`, `pto.f16`, `pto.bf16`, `pto.f32`. The value's bit pattern is encoded into the hardware pad register. For standard pad values, use `PadValue.eval(...)` to obtain the appropriate scalar: `0` or `0.0` for `PadValue.ZERO`, dtype-aware maximum for `PadValue.MAX`, dtype-aware minimum for `PadValue.MIN`. |
 
 **Returns**: None (side-effect operation)
 
@@ -379,6 +379,12 @@ if pto.constexpr(pad_desc != pto.PadValue.NULL):
         ub_stride=256,
         enable_ub_pad=True,
     )
+```
+
+Using a standalone `PadValue` with an explicit dtype:
+```python
+pad_scalar = pto.PadValue.MAX.eval(pto.f32)
+pto.set_mov_pad_val(pto.f32(pad_scalar))
 ```
 
 **Important**: You are responsible for ensuring the pad register is properly configured before any `pto.copy_gm_to_ubuf` operation with `enable_ub_pad=True`. The pad register configuration persists until changed by another `pto.set_mov_pad_val` call.

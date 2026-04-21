@@ -287,7 +287,7 @@ class PadValue:
     def value(self) -> int:
         raise AttributeError(
             "PadValue.value is not available; use PadValue.encoded for host-side payload access "
-            "or pad.eval() for Tile-bound scalar materialization"
+            "or pad.eval(...) for scalar materialization"
         )
 
     @property
@@ -312,9 +312,9 @@ class PadValue:
     def as_float32(self) -> float:
         return _float32_from_bits(self.float32_bits)
 
-    def materialize_scalar(self, dtype: ScalarType) -> int | float | None:
+    def eval(self, dtype: ScalarType) -> int | float | None:
         if not isinstance(dtype, ScalarType):
-            raise TypeError("PadValue.materialize_scalar expects a TileLang scalar dtype")
+            raise TypeError("PadValue.eval expects a TileLang scalar dtype")
         if self == PadValue.NULL:
             return None
         if self == PadValue.ZERO:

@@ -398,10 +398,10 @@ class _KernelBodyValidator(ast.NodeVisitor):
                     node,
                     "`eval` does not support keyword arguments in TileLang DSL v1",
                 )
-            if node.args:
+            if len(node.args) > 1:
                 raise self.source_info.error(
                     node,
-                    "`eval()` does not accept positional arguments in TileLang DSL v1",
+                    "`eval()` accepts at most one positional dtype argument in TileLang DSL v1",
                 )
             return
 
