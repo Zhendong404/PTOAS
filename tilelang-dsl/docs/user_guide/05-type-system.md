@@ -1,3 +1,13 @@
+<!--
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+-->
+
 ## Type System
 
 ### Scalar Types
@@ -36,6 +46,37 @@ z = pto.ui16(7)        # Explicit unsigned 16-bit constant
 Integer sign semantics are part of the DSL type surface. `pto.si16`,
 `pto.ui16`, and `pto.i16` are distinct scalar dtypes and lower to `si16`,
 `ui16`, and `i16` respectively in VPTO IR.
+
+### Integer Literal Guidance
+
+For ordinary integer constants, prefer plain integer literals instead of
+string forms.
+
+```python
+count = pto.i32(1024)
+delta = pto.i16(-12)
+min_i32 = pto.i32(-2147483648)
+unsigned_hi = pto.ui16(32768)
+```
+
+Integer string literals are reserved for explicit bit-pattern authoring. They
+must use hex form.
+
+```python
+# Use hex strings only when you intentionally want fixed-width bit-pattern
+# interpretation at the target dtype width.
+hi_bit = pto.i32("0x80000000")   # -2147483648
+all_ones = pto.i16("0xFFFF")     # -1
+unsigned_hi = pto.ui16("0x8000") # 32768
+```
+
+Rules:
+- Prefer plain integer literals such as `pto.i32(1024)` or `pto.i16(-12)` for normal integer authoring.
+- Integer string literals must use hex bit-pattern form such as `"0xFFFF"`.
+- Ordinary integer strings such as `"1024"` or `"-12"` are rejected; write them as integer literals instead.
+- For signed and signless integer dtypes (`pto.i*`, `pto.si*`), hex strings use two's-complement interpretation at the target dtype width.
+- For unsigned integer dtypes (`pto.ui*`), hex strings keep their unsigned value.
+- Hex strings must fit within the target bit width. For example, `pto.i16("0x10000")` is rejected because the literal exceeds 16 bits.
 
 ### Floating-Point Literal Forms
 

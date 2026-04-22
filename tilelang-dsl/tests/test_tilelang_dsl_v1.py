@@ -74,6 +74,7 @@ from tilelang_dsl.semantic import (
     SemanticTileConfigType,
     SemanticTileType,
     SemanticVecscopeStmt,
+    SemanticVScatterStmt,
     SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticVRegType,
@@ -444,6 +445,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vldsx2"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vstsx2"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vscatter"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vbitsort"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vmrgsort4"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
@@ -4117,16 +4119,33 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         self.assertIn("pto.i32 value must be a scalar or index value", str(ctx.exception))
 
-    def test_scalar_constructor_accepts_integer_string_literals(self) -> None:
-        @pto.vkernel(op="scalar_constructor_integer_string_literals_unique", dtypes=[(pto.f32,)])
+    def test_scalar_constructor_accepts_integer_hex_bit_pattern_strings(self) -> None:
+        @pto.vkernel(op="scalar_constructor_integer_hex_bit_patterns_unique", dtypes=[(pto.f32,)])
         def kernel(inp: pto.TensorView):
             x = pto.i16("0x7FFF")
             y = pto.i32("0x7FFFFFFF")
+            z = pto.i16("0x8000")
+            a = pto.i32("0x80000000")
+            b = pto.ui16("0x8000")
             return None
 
         text = kernel.mlir_text()
         self.assertIn("= arith.constant 32767 : i16", text)
         self.assertIn("= arith.constant 2147483647 : i32", text)
+        self.assertIn("= arith.constant -32768 : i16", text)
+        self.assertIn("= arith.constant -2147483648 : i32", text)
+        self.assertIn("= arith.constant 32768 : i16", text)
+
+    def test_scalar_constructor_rejects_non_hex_integer_string_literals(self) -> None:
+        @pto.vkernel(op="scalar_constructor_non_hex_integer_strings_unique", dtypes=[(pto.f32,)])
+        def kernel(inp: pto.TensorView):
+            x = pto.i32("1024")
+            return None
+
+        with self.assertRaises(TypeError) as ctx:
+            kernel.mlir_text()
+
+        self.assertIn("string literals must use hex bit-pattern form", str(ctx.exception))
 
     def test_scalar_constructor_rejects_out_of_range_integer_literal(self) -> None:
         @pto.vkernel(op="scalar_constructor_oob_int_unique", dtypes=[(pto.f32,)])
@@ -4142,13 +4161,13 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
     def test_scalar_constructor_rejects_out_of_range_integer_string_literal(self) -> None:
         @pto.vkernel(op="scalar_constructor_oob_integer_string_unique", dtypes=[(pto.f32,)])
         def kernel(inp: pto.TensorView):
-            x = pto.i16("0x8000")
+            x = pto.i16("0x10000")
             return None
 
         with self.assertRaises(TypeError) as ctx:
             kernel.mlir_text()
 
-        self.assertIn("out of range for i16", str(ctx.exception))
+        self.assertIn("exceeds 16-bit width for i16", str(ctx.exception))
 
     def test_inferred_vecscope_propagates_bindings_to_constexpr_if(self) -> None:
         @pto.vkernel(
@@ -5557,6 +5576,36 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn('"DINTLV"', text)
         self.assertIn('"INTLV"', text)
+
+    def test_vscatter_lowers_from_advanced_pointer_surface(self) -> None:
+        @pto.vkernel(
+            op="vscatter_pointer_surface",
+            dtypes=[(pto.i32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(
+            offsets_src: pto.ptr(pto.i32, pto.MemorySpace.UB),
+            dst: pto.ptr(pto.f32, pto.MemorySpace.UB),
+        ):
+            vec = pto.vbr(1.0)
+            offsets = pto.vlds(offsets_src, 0)
+            pto.vscatter(vec, dst, offsets, 64)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        scatter_stmt = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticVScatterStmt))
+
+        self.assertIsInstance(scatter_stmt, SemanticVScatterStmt)
+        self.assertEqual(scatter_stmt.destination.type.memory_space, "ub")
+        self.assertEqual(scatter_stmt.value.type.element_dtype, pto.f32)
+        self.assertEqual(scatter_stmt.offsets.type.element_dtype, pto.i32)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vscatter", text)
+        self.assertIn("!pto.vreg<64xf32>", text)
+        self.assertIn("!pto.vreg<64xi32>", text)
 
     def test_align_load_and_stateful_store_ops_lower_to_current_vpto_surface(self) -> None:
         @pto.vkernel(
