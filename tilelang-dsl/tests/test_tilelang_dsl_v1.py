@@ -74,6 +74,7 @@ from tilelang_dsl.semantic import (
     SemanticTileConfigType,
     SemanticTileType,
     SemanticVecscopeStmt,
+    SemanticVScatterStmt,
     SemanticVectorPairStoreStmt,
     SemanticVectorStoreStmt,
     SemanticVRegType,
@@ -136,6 +137,15 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "si64"))
         self.assertTrue(hasattr(pto, "ui64"))
         self.assertEqual(pto.BarrierType.VST_VLD.value, "VST_VLD")
+        self.assertEqual(pto.BarrierType.VST_VST.value, "VST_VST")
+        self.assertEqual(pto.BarrierType.VS_ALL.value, "VS_ALL")
+        self.assertEqual(pto.BarrierType.VST_LD.value, "VST_LD")
+        self.assertEqual(pto.BarrierType.VLD_ST.value, "VLD_ST")
+        self.assertEqual(pto.BarrierType.VST_ST.value, "VST_ST")
+        self.assertEqual(pto.BarrierType.SV_ALL.value, "SV_ALL")
+        self.assertEqual(pto.BarrierType.ST_VLD.value, "ST_VLD")
+        self.assertEqual(pto.BarrierType.LD_VST.value, "LD_VST")
+        self.assertEqual(pto.BarrierType.ST_VST.value, "ST_VST")
         self.assertEqual(pto.PadMode.PadNull.value, "PadNull")
         self.assertEqual(pto.PadMode.PadFirstElem.value, "PadFirstElem")
         self.assertEqual(pto.PadMode.PadValue.value, "PadValue")
@@ -168,7 +178,12 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertEqual(pto.CmpMode.GE.value, "ge")
         self.assertEqual(pto.VcvtRoundMode.R.value, "R")
         self.assertEqual(pto.VcvtSatMode.SAT.value, "SAT")
+        self.assertEqual(pto.VcvtPartMode.EVEN.value, "EVEN")
         self.assertEqual(pto.VcvtPartMode.ODD.value, "ODD")
+        self.assertEqual(pto.VcvtPartMode.P0.value, "P0")
+        self.assertEqual(pto.VcvtPartMode.P1.value, "P1")
+        self.assertEqual(pto.VcvtPartMode.P2.value, "P2")
+        self.assertEqual(pto.VcvtPartMode.P3.value, "P3")
         self.assertEqual(pto.PostUpdateMode.POST_UPDATE.value, "POST_UPDATE")
         self.assertEqual(pto.PostUpdateMode.NO_POST_UPDATE.value, "NO_POST_UPDATE")
         self.assertEqual(pto.Event.ID31.value, "EVENT_ID31")
@@ -430,6 +445,7 @@ class TileLangDSLSupportMatrixTests(unittest.TestCase):
         self.assertEqual(get_feature_tier("pto.vsort32"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vldsx2"), BASIC_TIER)
         self.assertEqual(get_feature_tier("pto.vstsx2"), BASIC_TIER)
+        self.assertEqual(get_feature_tier("pto.vscatter"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vbitsort"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("pto.vmrgsort4"), ADVANCED_TIER)
         self.assertEqual(get_feature_tier("PadMode"), BASIC_TIER)
@@ -2991,6 +3007,68 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             r"= pto\.vcvt %[^,\s]+(?: \{[^}]+\})? : !pto\.vreg<[^>]+> -> !pto\.vreg<[^>]+>",
         )
 
+    def test_vcvt_supports_part_t_modes_with_enum(self) -> None:
+        @pto.vkernel(
+            op="vcvt_part_t_enum_unique",
+            dtypes=[(pto.i8, pto.f16)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vcvt(
+                vec,
+                pto.i8,
+                src_mask,
+                rnd=pto.VcvtRoundMode.R,
+                sat=pto.VcvtSatMode.SAT,
+                part=pto.VcvtPartMode.P0,
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcvt", text)
+        self.assertIn('rnd = "R"', text)
+        self.assertIn('sat = "SAT"', text)
+        self.assertIn('part = "P0"', text)
+
+    def test_vcvt_supports_part_t_modes_with_canonical_string(self) -> None:
+        @pto.vkernel(
+            op="vcvt_part_t_string_unique",
+            dtypes=[(pto.i8, pto.f16)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            src_mask = pto.make_mask(pto.f16, pto.PAT.ALL)
+            dst_mask = pto.make_mask(pto.i8, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            out = pto.vcvt(
+                vec,
+                pto.i8,
+                src_mask,
+                rnd="R",
+                sat="SAT",
+                part="P3",
+            )
+            pto.vsts(out, dst, 0, dst_mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 256), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 128), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vcvt", text)
+        self.assertIn('part = "P3"', text)
+
     def test_vcvt_i32_to_i64_reuses_b32_mask_and_emits_i64_vreg(self) -> None:
         @pto.vkernel(
             op="vcvt_i32_to_i64_unique",
@@ -5326,6 +5404,78 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("pto.wait_flag_dev %arg3, %c8_i64 : i64, i64", text)
         self.assertIn("pto.wait_intra_core %arg4, %c31_i64 : i64, i64", text)
 
+    def test_mem_bar_accepts_extended_barrier_type_enum(self) -> None:
+        BarrierType = pto.BarrierType
+
+        @pto.vkernel(
+            op="mem_bar_extended_enum_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            pto.mem_bar(BarrierType.ST_VST)
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            pto.vsts(vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIsInstance(semantic_kernel.body[0], SemanticMemBarStmt)
+
+        text = specialized.mlir_text()
+        self.assertIn('pto.mem_bar "ST_VST"', text)
+
+    def test_mem_bar_accepts_extended_barrier_type_enum_vst_st(self) -> None:
+        BarrierType = pto.BarrierType
+
+        @pto.vkernel(
+            op="mem_bar_extended_enum_vst_st_unique",
+            dtypes=[(pto.f32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(dst: pto.Tile, src: pto.Tile):
+            pto.mem_bar(BarrierType.VST_ST)
+            mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+            vec = pto.vlds(src, 0)
+            pto.vsts(vec, dst, 0, mask)
+            return None
+
+        specialized = kernel.specialize(
+            dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+
+        text = specialized.mlir_text()
+        self.assertIn('pto.mem_bar "VST_ST"', text)
+
+    def test_mem_bar_rejects_unknown_barrier_string(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            @pto.vkernel(
+                op="mem_bar_invalid_string_unique",
+                dtypes=[(pto.f32, pto.f32)],
+                advanced=True,
+            )
+            def kernel(dst: pto.Tile, src: pto.Tile):
+                pto.mem_bar("NOT_A_BARRIER")
+                mask = pto.make_mask(pto.f32, pto.PAT.ALL)
+                vec = pto.vlds(src, 0)
+                pto.vsts(vec, dst, 0, mask)
+                return None
+
+            specialized = kernel.specialize(
+                dst=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+                src=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+            )
+            specialized.mlir_text()
+
+        self.assertIn("canonical barrier string", str(ctx.exception))
+
     def test_runtime_block_queries_and_scalar_pointer_helpers_lower_to_v0_3_surface(self) -> None:
         @pto.vkernel(
             op="runtime_block_queries_and_scalar_helpers",
@@ -5400,6 +5550,36 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = specialized.mlir_text()
         self.assertIn('"DINTLV"', text)
         self.assertIn('"INTLV"', text)
+
+    def test_vscatter_lowers_from_advanced_pointer_surface(self) -> None:
+        @pto.vkernel(
+            op="vscatter_pointer_surface",
+            dtypes=[(pto.i32, pto.f32)],
+            advanced=True,
+        )
+        def kernel(
+            offsets_src: pto.ptr(pto.i32, pto.MemorySpace.UB),
+            dst: pto.ptr(pto.f32, pto.MemorySpace.UB),
+        ):
+            vec = pto.vbr(1.0)
+            offsets = pto.vlds(offsets_src, 0)
+            pto.vscatter(vec, dst, offsets, 64)
+            return None
+
+        specialized = kernel.specialize()
+        semantic_kernel = analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        vecscope = next(stmt for stmt in semantic_kernel.body if isinstance(stmt, SemanticVecscopeStmt))
+        scatter_stmt = next(stmt for stmt in vecscope.body if isinstance(stmt, SemanticVScatterStmt))
+
+        self.assertIsInstance(scatter_stmt, SemanticVScatterStmt)
+        self.assertEqual(scatter_stmt.destination.type.memory_space, "ub")
+        self.assertEqual(scatter_stmt.value.type.element_dtype, pto.f32)
+        self.assertEqual(scatter_stmt.offsets.type.element_dtype, pto.i32)
+
+        text = specialized.mlir_text()
+        self.assertIn("pto.vscatter", text)
+        self.assertIn("!pto.vreg<64xf32>", text)
+        self.assertIn("!pto.vreg<64xi32>", text)
 
     def test_align_load_and_stateful_store_ops_lower_to_current_vpto_surface(self) -> None:
         @pto.vkernel(
