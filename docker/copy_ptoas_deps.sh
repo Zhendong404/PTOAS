@@ -20,10 +20,7 @@ remove_rpath() {
   if ! has_rpath "$path"; then
     return
   fi
-  if command -v chrpath >/dev/null 2>&1; then
-    chrpath -d "$path" >/dev/null 2>&1 || true
-  fi
-  if has_rpath "$path" && command -v patchelf >/dev/null 2>&1; then
+  if command -v patchelf >/dev/null 2>&1; then
     patchelf --remove-rpath "$path"
   fi
   if has_rpath "$path" && command -v chrpath >/dev/null 2>&1; then
@@ -42,6 +39,12 @@ strip_symbols() {
 
 has_rpath() {
   local path="$1"
+  if command -v patchelf >/dev/null 2>&1; then
+    local rpath_value
+    rpath_value="$(patchelf --print-rpath "$path" 2>/dev/null || true)"
+    [[ -n "$rpath_value" ]]
+    return
+  fi
   readelf -d "$path" 2>/dev/null | grep -Eq '(RPATH|RUNPATH)'
 }
 
