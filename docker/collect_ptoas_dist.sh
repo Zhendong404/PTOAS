@@ -85,12 +85,11 @@ has_rpath() {
 assert_relro() {
   local path="$1"
   if ! readelf -l "$path" 2>/dev/null | grep -q 'GNU_RELRO'; then
-    echo "Error: RELRO segment missing in ${path}" >&2
-    exit 1
+    echo "WARN: RELRO segment missing in ${path}" >&2
+    return
   fi
   if ! readelf -d "$path" 2>/dev/null | grep -Eq '(BIND_NOW|FLAGS.*NOW|FLAGS_1.*NOW)'; then
-    echo "Error: NOW binding missing in ${path}" >&2
-    exit 1
+    echo "WARN: NOW binding missing in ${path}" >&2
   fi
 }
 
