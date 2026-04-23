@@ -790,7 +790,7 @@ class _AuthoringRenderer:
             env[high_target.name] = _RenderedValue(name=high_target.ssa_name, type=high_type)
             return lines
 
-        if stmt.value.name in {"pdintlv_b8", "pintlv_b16"}:
+        if stmt.value.name in {"pdintlv_b8", "pdintlv_b16", "pdintlv_b32", "pintlv_b8", "pintlv_b16", "pintlv_b32"}:
             lines = []
             lhs = self._lower_expr(stmt.value.args[0], env, indent=indent, into=lines)
             rhs = self._lower_expr(stmt.value.args[1], env, indent=indent, into=lines)
@@ -3053,6 +3053,15 @@ class _AuthoringRenderer:
             "vcpadd",
             "vsort32",
         }:
+            if expr.name in {"vsunpack", "vzunpack"}:
+                value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+                part = self._lower_to_index(expr.args[1], env, indent=indent, into=into)
+                into.append(
+                    self._indent(indent)
+                    + f"{result_name} = pto.{expr.name} {value.name}, {part.name} : "
+                    + f"{self._render_type(value.type)} -> {self._render_type(expr.type)}"
+                )
+                return _RenderedValue(name=result_name, type=expr.type)
             value = self._lower_expr(expr.args[0], env, indent=indent, into=into)
             mask = self._lower_expr(expr.args[1], env, indent=indent, into=into)
             into.append(
@@ -3090,7 +3099,6 @@ class _AuthoringRenderer:
             "vshl",
             "vshr",
             "vprelu",
-            "vpack",
             "vperm",
             "vmrgsort",
         }:
@@ -3102,6 +3110,16 @@ class _AuthoringRenderer:
                 + f"{result_name} = pto.{expr.name} {lhs.name}, {rhs.name}, {mask.name} : "
                 + f"{self._render_type(lhs.type)}, {self._render_type(rhs.type)}, {self._render_type(mask.type)} "
                 + f"-> {self._render_type(expr.type)}"
+            )
+            return _RenderedValue(name=result_name, type=expr.type)
+
+        if expr.name == "vpack":
+            vector = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+            part = self._render_string_literal(expr.args[1])
+            into.append(
+                self._indent(indent)
+                + f"{result_name} = pto.vpack {vector.name}, {part} : "
+                + f"{self._render_type(vector.type)} -> {self._render_type(expr.type)}"
             )
             return _RenderedValue(name=result_name, type=expr.type)
 
