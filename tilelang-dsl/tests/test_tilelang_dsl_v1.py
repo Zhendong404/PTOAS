@@ -4366,10 +4366,10 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             out = pto.vbcnt(vec0, all_mask)
             out = pto.vneg(out, all_mask)
             out = pto.vcls(out, all_mask)
-            out = pto.vsunpack(out, all_mask)
-            out = pto.vzunpack(out, all_mask)
-            out = pto.vusqz(out, all_mask)
-            out = pto.vsqz(out, all_mask)
+            pto.vsunpack(vec0, 0)
+            pto.vzunpack(vec0.astype(pto.ui32), 0)
+            pto.vusqz(vec0.astype(pto.ui32), pto.make_mask(pto.ui32, pto.PAT.ALL))
+            pto.vsqz(vec0, all_mask)
             out = pto.vshl(out, vec1, all_mask)
             out = pto.vshr(out, vec1, all_mask)
             out = pto.vshls(out, shift, all_mask)
@@ -5124,18 +5124,20 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
             all_mask = pto.make_mask(pto.i32, pto.PAT.ALL)
             vec0 = pto.vlds(src, 0)
             vec1 = pto.vlds(src, 64)
-            indices = pto.vci(shift, pto.OrderMode.ASC)
+            packed_mask = pto.make_mask(pto.ui16, pto.PAT.ALL)
 
             out = pto.vcgadd(vec0, all_mask)
             out = pto.vcgmax(out, all_mask)
             out = pto.vcgmin(out, all_mask)
             out = pto.vcpadd(out, all_mask)
-            out = pto.vpack(out, vec1, all_mask)
-            out = pto.vperm(out, indices, all_mask)
-            out = pto.vshift(out, shift, all_mask)
-            out = pto.vslide(out, shift, all_mask)
+            packed0 = pto.vpack(vec0, pto.PredicatePart.LOWER)
+            packed1 = pto.vpack(vec1, pto.PredicatePart.HIGHER)
+            indices = pto.vci(pto.i16(shift), pto.OrderMode.ASC)
+            packed0 = pto.vperm(packed0, indices, packed_mask)
+            packed0 = pto.vshift(packed0, pto.i16(shift), packed_mask)
+            packed0 = pto.vslide(packed0, pto.i16(shift), packed_mask)
+            packed0 = pto.vmrgsort(packed0, packed1, packed_mask)
             out = pto.vsort32(out, all_mask)
-            out = pto.vmrgsort(out, vec1, all_mask)
             pto.vsts(out, dst, 0, all_mask)
             return None
 
@@ -6789,19 +6791,24 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         def kernel(mask_dst: pto.ptr(pto.ui32, pto.MemorySpace.UB)):
             mask8 = pto.pset_b8(pto.PAT.ALL)
             mask16 = pto.pset_b16(pto.PAT.ALL)
+            mask32 = pto.pset_b32(pto.PAT.ALL)
             low8, high8 = pto.pdintlv_b8(mask8, mask8)
+            low8i, high8i = pto.pintlv_b8(mask8, mask8)
+            low16d, high16d = pto.pdintlv_b16(mask16, mask16)
             low16, high16 = pto.pintlv_b16(mask16, mask16)
-            _ = low8
-            _ = high8
-            _ = low16
-            _ = high16
+            low32, high32 = pto.pdintlv_b32(mask32, mask32)
+            low32i, high32i = pto.pintlv_b32(mask32, mask32)
             all32 = pto.make_mask(pto.ui32, pto.PAT.ALL)
             pto.psts(all32, mask_dst, 0)
             return None
 
         text = kernel.specialize().mlir_text()
         self.assertIn("pto.pdintlv_b8", text)
+        self.assertIn("pto.pintlv_b8", text)
+        self.assertIn("pto.pdintlv_b16", text)
         self.assertIn("pto.pintlv_b16", text)
+        self.assertIn("pto.pdintlv_b32", text)
+        self.assertIn("pto.pintlv_b32", text)
 
     def test_pdintlv_b8_rejects_wrong_mask_granularity(self) -> None:
         with self.assertRaises(TypeError) as ctx:

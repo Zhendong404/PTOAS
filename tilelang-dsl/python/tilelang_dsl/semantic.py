@@ -3970,7 +3970,7 @@ class _SemanticAnalyzer:
             return self._analyze_mask_part_op(name, args)
         if name in {"pnot", "psel", "pand", "por", "pxor"}:
             return self._analyze_mask_logic_op(name, args)
-        if name in {"pdintlv_b8", "pintlv_b16"}:
+        if name in {"pdintlv_b8", "pdintlv_b16", "pdintlv_b32", "pintlv_b8", "pintlv_b16", "pintlv_b32"}:
             return self._analyze_predicate_reorder_op(name, args)
         if name in {"vcmp", "vcmps"}:
             return self._analyze_compare_op(name, args)
@@ -3980,6 +3980,8 @@ class _SemanticAnalyzer:
             return self._analyze_carry_op(name, args)
         if name in {"vintlv", "vdintlv", "vintlvv2", "vdintlvv2"}:
             return self._analyze_rearrangement_op(name, args)
+        if name == "vpack":
+            return self._analyze_vpack_op(args)
         if name == "vcvt":
             return self._analyze_vcvt(args)
         if name == "vbitcast":
@@ -4716,6 +4718,20 @@ class _SemanticAnalyzer:
         name: str,
         args: tuple[SemanticExpr, ...],
     ) -> SemanticExpr:
+        if name in {"vsunpack", "vzunpack"}:
+            if len(args) != 2:
+                raise TypeError(f"pto.{name} expects exactly 2 positional arguments in TileLang DSL v1")
+            value, part = args
+            vreg = self._require_vreg_expr(value, f"pto.{name} value")
+            self._require_i32_like_expr(part, f"pto.{name} part")
+            self._validate_unary_dtype(name, vreg.element_dtype)
+            result_dtype = self._unpack_result_dtype(name, vreg.element_dtype)
+            return SemanticCallExpr(
+                namespace="pto",
+                name=name,
+                args=args,
+                type=SemanticVRegType(element_dtype=result_dtype, lanes=vreg.lanes // 2),
+            )
         if len(args) != 2:
             raise TypeError(f"pto.{name} expects exactly 2 positional arguments in TileLang DSL v1")
         value, mask = args
@@ -4903,7 +4919,14 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} expects exactly 2 positional arguments in TileLang DSL v1")
         lhs = self._require_mask_expr(args[0], f"pto.{name} src0")
         rhs = self._require_mask_expr(args[1], f"pto.{name} src1")
-        expected_granularity = "b8" if name == "pdintlv_b8" else "b16"
+        expected_granularity = {
+            "pdintlv_b8": "b8",
+            "pdintlv_b16": "b16",
+            "pdintlv_b32": "b32",
+            "pintlv_b8": "b8",
+            "pintlv_b16": "b16",
+            "pintlv_b32": "b32",
+        }[name]
         if lhs.granularity != expected_granularity or rhs.granularity != expected_granularity:
             raise TypeError(f"pto.{name} expects !pto.mask<{expected_granularity}> operands")
         return SemanticCallExpr(
@@ -5159,6 +5182,23 @@ class _SemanticAnalyzer:
                 part if part is not None else self._missing_optional_meta_expr(),
             ),
             type=self._vreg_type_for_dtype(target_dtype),
+        )
+
+    def _analyze_vpack_op(
+        self,
+        args: tuple[SemanticExpr, ...],
+    ) -> SemanticExpr:
+        if len(args) != 2:
+            raise TypeError("pto.vpack expects exactly 2 positional arguments in TileLang DSL")
+        vector = self._require_vreg_expr(args[0], "pto.vpack vector")
+        part = self._normalize_predicate_part(args[1], "pto.vpack part")
+        self._validate_binary_dtype("vpack", vector.element_dtype)
+        result_dtype = self._pack_result_dtype(vector.element_dtype)
+        return SemanticCallExpr(
+            namespace="pto",
+            name="vpack",
+            args=(args[0], part),
+            type=SemanticVRegType(element_dtype=result_dtype, lanes=vector.lanes * 2),
         )
 
     def _analyze_vtrc(
@@ -6015,6 +6055,54 @@ class _SemanticAnalyzer:
             raise TypeError(f"dtype `{dtype.name}` is not supported by vlds/vsts in TileLang DSL v1")
         return SemanticVRegType(element_dtype=dtype, lanes=256 // width)
 
+    def _unpack_result_dtype(self, name: str, dtype: ScalarType) -> ScalarType:
+        if not is_integer_dtype(dtype):
+            raise TypeError(f"pto.{name} only supports integer vector dtypes in TileLang DSL v1")
+        width = integer_bitwidth(dtype)
+        if width not in {8, 16, 32}:
+            raise TypeError(f"pto.{name} only supports 8/16/32-bit integer vector dtypes in TileLang DSL v1")
+
+        if name == "vzunpack":
+            mapping = {
+                "i8": ui16,
+                "si8": ui16,
+                "ui8": ui16,
+                "i16": ui32,
+                "si16": ui32,
+                "ui16": ui32,
+                "i32": ui64,
+                "si32": ui64,
+                "ui32": ui64,
+            }
+            return mapping[dtype.name]
+
+        mapping = {
+            "i8": i16,
+            "si8": si16,
+            "i16": i32,
+            "si16": si32,
+            "i32": i64,
+            "si32": si64,
+        }
+        if dtype.name not in mapping:
+            raise TypeError(f"pto.{name} requires signed/signless integer vector dtypes in TileLang DSL v1")
+        return mapping[dtype.name]
+
+    def _pack_result_dtype(self, dtype: ScalarType) -> ScalarType:
+        if not is_integer_dtype(dtype):
+            raise TypeError("pto.vpack only supports integer vector dtypes in TileLang DSL v1")
+        mapping = {
+            "i32": ui16,
+            "si32": ui16,
+            "ui32": ui16,
+            "i16": ui8,
+            "si16": ui8,
+            "ui16": ui8,
+        }
+        if dtype.name not in mapping:
+            raise TypeError("pto.vpack only supports 32->16 and 16->8 integer packing in TileLang DSL v1")
+        return mapping[dtype.name]
+
     def _validate_unary_dtype(self, name: str, dtype: ScalarType) -> None:
         if name in {"vexp", "vln", "vsqrt", "vrec", "vrsqrt"} and dtype.name not in {"f16", "f32"}:
             raise TypeError(f"pto.{name} only supports f16/f32 in TileLang DSL v1")
@@ -6033,8 +6121,10 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} does not support this dtype in TileLang DSL v1")
 
     def _validate_binary_dtype(self, name: str, dtype: ScalarType) -> None:
-        if name == "vdiv" and dtype.name not in {"f16", "f32"}:
-            raise TypeError("pto.vdiv only supports f16/f32 in TileLang DSL v1")
+        if name == "vdiv" and not (
+            dtype.name in {"f16", "f32"} or (is_integer_dtype(dtype) and integer_bitwidth(dtype) == 16)
+        ):
+            raise TypeError("pto.vdiv only supports f16/f32/i16/ui16 in TileLang DSL v1")
         if name == "vprelu" and dtype.name not in {"f16", "f32"}:
             raise TypeError("pto.vprelu only supports f16/f32 in TileLang DSL v1")
         if name in {"vaddreluconv", "vmulconv"} and dtype.name not in {"f16", "bf16", "f32"}:
