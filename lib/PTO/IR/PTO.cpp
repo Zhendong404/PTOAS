@@ -2514,7 +2514,6 @@ static LogicalResult verifyVecTileStorage(Operation *op, Type ty, StringRef name
     return op->emitOpError() << "expects " << name << " to be in the vec address space";
   return success();
 }
-
 static LogicalResult verifyVecTileCommonA2A3(Operation *op, Type ty,
                                              StringRef name) {
   if (failed(verifyTileBufCommon(op, ty, name)))
@@ -3534,9 +3533,11 @@ LogicalResult pto::TColArgMaxOp::verify() {
                                              /*requireNonZeroSrc=*/true)))
       return failure();
 
-    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
-    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
-      return emitOpError("expects src element type to be f16 or f32");
+    Type srcElemTy = getElemTy(srcTy);
+    unsigned srcElemBits = srcElemTy ? srcElemTy.getIntOrFloatBitWidth() : 0;
+    if (!(srcElemTy.isa<IntegerType, FloatType>() &&
+          (srcElemBits == 8 || srcElemBits == 16 || srcElemBits == 32)))
+      return emitOpError("expects src/tmp element type to be 1, 2, or 4 bytes wide");
 
     auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
     if (!dstInt || dstInt.getWidth() != 32 ||
@@ -3601,9 +3602,11 @@ LogicalResult pto::TColArgMinOp::verify() {
                                              /*requireNonZeroSrc=*/true)))
       return failure();
 
-    auto srcElem = getElemTy(srcTy).dyn_cast<mlir::FloatType>();
-    if (!srcElem || (!srcElem.isF16() && !srcElem.isF32()))
-      return emitOpError("expects src element type to be f16 or f32");
+    Type srcElemTy = getElemTy(srcTy);
+    unsigned srcElemBits = srcElemTy ? srcElemTy.getIntOrFloatBitWidth() : 0;
+    if (!(srcElemTy.isa<IntegerType, FloatType>() &&
+          (srcElemBits == 8 || srcElemBits == 16 || srcElemBits == 32)))
+      return emitOpError("expects src/tmp element type to be 1, 2, or 4 bytes wide");
 
     auto dstInt = dyn_cast<IntegerType>(getElemTy(dstTy));
     if (!dstInt || dstInt.getWidth() != 32 ||
