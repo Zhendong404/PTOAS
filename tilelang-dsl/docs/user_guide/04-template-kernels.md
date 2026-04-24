@@ -258,6 +258,121 @@ def unified_arithmetic(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile):
             pto.vsts(out, dst[row, col:], mask)
 ```
 
+#### Example: Indexed Concatenation Kernel (tconcatidx)
+
+`pto.tconcatidx` concatenates two source tiles along the column dimension with per-row index control. Two additional index tiles (`src0Idx`, `src1Idx`) specify the number of columns to copy from each source on a per-row basis.
+
+**Constraint function:**
+
+```python
+def _supports_tconcatidx(src0, src1, src0Idx, src1Idx, dst) -> bool:
+    if src0.rank != 2 or src1.rank != 2 or src0Idx.rank != 2 or src1Idx.rank != 2 or dst.rank != 2:
+        return False
+    if src0.config.b_layout != pto.BLayout.ROW_MAJOR:
+        return False
+    if src1.config.b_layout != pto.BLayout.ROW_MAJOR:
+        return False
+    if dst.config.b_layout != pto.BLayout.ROW_MAJOR:
+        return False
+    if src0Idx.config.b_layout != pto.BLayout.ROW_MAJOR:
+        return False
+    if src1Idx.config.b_layout != pto.BLayout.ROW_MAJOR:
+        return False
+    if src0.valid_shape[0] != dst.valid_shape[0] or src1.valid_shape[0] != dst.valid_shape[0]:
+        return False
+    if src0Idx.valid_shape[0] != dst.valid_shape[0] or src1Idx.valid_shape[0] != dst.valid_shape[0]:
+        return False
+    if src0Idx.shape[1] < 1 or src1Idx.shape[1] < 1:
+        return False
+    return True
+```
+
+**Kernel definition:**
+
+```python
+@pto.vkernel(
+    target="a5",
+    op="pto.tconcatidx",
+    advanced=True,
+    constraints=[_supports_tconcatidx],
+)
+def template_tconcatidx(
+    src0: pto.Tile,
+    src1: pto.Tile,
+    src0Idx: pto.Tile,
+    src1Idx: pto.Tile,
+    dst: pto.Tile,
+):
+    dtype = dst.element_type
+    lanes = pto.get_lanes(dtype)
+    idx_dtype = src0Idx.element_type
+    idx_elem_bytes = pto.i32(pto.bytewidth(idx_dtype))
+    src0_idx_ptr = src0Idx.as_ptr()
+    src1_idx_ptr = src1Idx.as_ptr()
+    dst_ptr = dst.as_ptr()
+
+    valid_rows, dst_valid_cols = dst.valid_shape
+    dst_valid_cols_i32 = pto.i32(dst_valid_cols)
+    lanes_i32 = pto.i32(lanes)
+
+    for row in range(0, valid_rows, 1):
+        idx0_num = pto.load_scalar(src0_idx_ptr, row * src0Idx.shape[1]) // idx_elem_bytes
+        idx1_num = pto.load_scalar(src1_idx_ptr, row * src1Idx.shape[1]) // idx_elem_bytes
+
+        src0_cols = idx0_num
+        if src0_cols > dst_valid_cols_i32:
+            src0_cols = dst_valid_cols_i32
+
+        src1_capacity = dst_valid_cols_i32 - src0_cols
+        if src1_capacity < pto.i32(0):
+            src1_capacity = pto.i32(0)
+
+        src1_cols = idx1_num
+        if src1_cols > src1_capacity:
+            src1_cols = src1_capacity
+
+        remained0 = src0_cols
+        for col in range(0, dst_valid_cols, lanes):
+            mask0, remained0 = pto.make_mask(dtype, remained0)
+            vec0 = pto.vlds(src0[row, col:])
+            pto.vsts(vec0, dst[row, col:], mask0)
+
+        pto.mem_bar(pto.BarrierType.VST_VLD)
+
+        remained1 = src1_cols
+        for col in range(0, dst_valid_cols, lanes):
+            active_lanes = remained1
+            if active_lanes > lanes_i32:
+                active_lanes = lanes_i32
+            base = pto.i32(row * dst.shape[1] + col) + src0_cols
+            vec1 = pto.vlds(src1[row, col:])
+            offsets = pto.vci(base, pto.OrderMode.ASC)
+            pto.vscatter(vec1, dst_ptr, offsets, active_lanes)
+            remained1 = remained1 - active_lanes
+```
+
+**Parameter constraints:**
+
+| Parameter | Rank | Layout | valid_row | Notes |
+|-----------|------|--------|-----------|-------|
+| `src0` | 2 | row_major | == dst.valid_row | Source data tile |
+| `src1` | 2 | row_major | == dst.valid_row | Source data tile |
+| `src0Idx` | 2 | row_major | == dst.valid_row | Index tile, cols >= 1 |
+| `src1Idx` | 2 | row_major | == dst.valid_row | Index tile, cols >= 1 |
+| `dst` | 2 | row_major | — | Destination tile |
+
+**Type constraints:**
+
+- Data types (`src0`, `src1`, `dst`): must be the same, one of `i8/i16/i32/f16/f32/bf16`
+- Index types (`src0Idx`, `src1Idx`): must be the same, one of `i8/i16/i32`
+- All tiles must use `loc=vec`
+
+**Semantics (per row):**
+
+Let `idx0_num = src0Idx[row, 0]`, `idx1_num = src1Idx[row, 0]`:
+- Copy `min(idx0_num, src0_valid_col, dst_valid_col)` columns from `src0` to `dst`
+- Copy `min(idx1_num, src1_valid_col, dst_valid_col - copied_from_src0)` columns from `src1` to `dst`
+
 #### Compile-time Specialization with `pto.constexpr`
 
 The `pto.constexpr` construct enables compile-time branching for kernel specialization, allowing different code paths to be selected based on static compile-time information. Unlike runtime conditionals that generate control flow, `pto.constexpr` branches are resolved during kernel descriptor materialization, with only the selected branch retained for lowering.
