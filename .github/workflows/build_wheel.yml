@@ -28,6 +28,9 @@ env:
 
 jobs:
   build_wheel:
+    # Disabled: the current wheel is not a valid delivery path because it does
+    # not install the ptoas CLI binary as an executable entrypoint.
+    if: false
     name: Build wheel (Python ${{ matrix.python }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     strategy:
@@ -209,8 +212,9 @@ jobs:
           path: ptoas-dist/
 
   upload_release_assets:
+    # Disabled together with build_wheel because wheel publication is paused.
+    if: false
     name: Upload release assets
-    if: github.event_name == 'release' || github.event_name == 'schedule'
     needs: build_wheel
     runs-on: ubuntu-latest
 
