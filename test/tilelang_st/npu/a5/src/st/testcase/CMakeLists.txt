@@ -139,6 +139,12 @@ set(ALL_TESTCASES
     tneg
     tnot
     trecip
+    trowargmax
+    trowargmin
+    trowsum
+    trowmax
+    trowmin
+    trowprod
     trsqrt
     tsqrt
 )
