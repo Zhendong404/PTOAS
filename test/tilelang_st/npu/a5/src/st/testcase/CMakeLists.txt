@@ -132,6 +132,10 @@ set(ALL_TESTCASES
     tadd
     tcvt
     tload
+    tlrelu
+    trelu
+    tsel
+    tsels
     tcolmax
     tcolmin
     tcolsum
