@@ -202,14 +202,24 @@ set(ALL_TESTCASES
     txors
 )
 
-if((TEST_CASE IN_LIST ALL_TESTCASES) OR (TEST_CASE STREQUAL "all"))
-    message(STATUS "run: ${TEST_CASE}")
+if(NOT DEFINED TEST_CASE OR TEST_CASE STREQUAL "" OR TEST_CASE STREQUAL "all")
+    set(SELECTED_TESTCASES ${ALL_TESTCASES})
 else()
-    message(FATAL_ERROR "not found TEST_CASE: ${TEST_CASE}, supported: ${ALL_TESTCASES}")
+    set(SELECTED_TESTCASES ${TEST_CASE})
+    foreach(SELECTED_TESTCASE ${SELECTED_TESTCASES})
+        if(NOT SELECTED_TESTCASE IN_LIST ALL_TESTCASES)
+            message(
+                FATAL_ERROR
+                "not found TEST_CASE: ${SELECTED_TESTCASE}, supported: ${ALL_TESTCASES}"
+            )
+        endif()
+    endforeach()
 endif()
 
+message(STATUS "run: ${SELECTED_TESTCASES}")
+
 foreach(TESTCASE ${ALL_TESTCASES})
-    if((DEFINED TEST_CASE AND TEST_CASE STREQUAL TESTCASE) OR (NOT DEFINED TEST_CASE) OR (TEST_CASE STREQUAL "all"))
+    if(TESTCASE IN_LIST SELECTED_TESTCASES)
         add_subdirectory(${TESTCASE})
     endif()
 endforeach()

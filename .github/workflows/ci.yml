@@ -454,9 +454,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          # SIM supports case-granularity parallel scheduling; NPU runs stay serial.
+          split_by_case_testcases=(
+            trowargmax
+            trowargmin
+            trowprod
+            trowmin
+            trowmax
+            tpartmin
+            tpartmax
+            tsels
+            tfillpad
+            trowsum
+            tcolmin
+            tcolmax
+            tcolsum
+            tcolprod
+            tpartadd
+            tpartmul
+          )
+          split_by_case_args=()
+          for testcase in "${split_by_case_testcases[@]}"; do
+            split_by_case_args+=(--split-by-case "${testcase}")
+          done
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
           bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --jobs 64 \
+            "${split_by_case_args[@]}" \
             2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
 
       - name: Upload TileLang DSL logs
