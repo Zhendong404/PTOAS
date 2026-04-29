@@ -63,6 +63,9 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024, local_slot_num 
 若同一 `id` 绑定的 pipe entry 全部是 `global` entry，则该 pipe 是 global-only GM FIFO。此时初始化只需要描述完整 GM FIFO buffer 的 `tensor_view`，不需要 consumer 侧 local FIFO buffer：
 
 ```mlir
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+  : !pto.tensor_view<8x16x16xf32>
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
   (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 ```
@@ -98,6 +101,9 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024, local_slot_num 
 global-only GM FIFO 形式同样只传 `gm_slot_tensor`：
 
 ```mlir
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+  : !pto.tensor_view<8x16x16xf32>
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
   (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 ```
@@ -230,11 +236,17 @@ pto.tfree_from_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 0}
 下面是 C2V 方向的 global-only GM FIFO 示例。两个 kernel 都只把完整 FIFO buffer 的 `gm_slot_tensor` 传给初始化 op；因为不使用 consumer 侧 local FIFO buffer，IR 中没有对应的 `pto.reserve_buffer` 或 `pto.import_reserved_buffer`。
 
 ```mlir
-func.func @cube_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
+func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
                        %src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
     attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
   %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
+  %c256 = arith.constant 256 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+    : !pto.tensor_view<8x16x16xf32>
   pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
     (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -249,11 +261,17 @@ func.func @cube_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
   func.return
 }
 
-func.func @vector_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
+func.func @vector_kernel(%gm_slot_buffer : !pto.ptr<f32>,
                          %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
     attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
+  %c256 = arith.constant 256 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+    : !pto.tensor_view<8x16x16xf32>
   pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
     (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 

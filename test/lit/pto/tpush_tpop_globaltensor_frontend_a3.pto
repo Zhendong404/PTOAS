@@ -3,11 +3,17 @@
 
 module {
   func.func @cube_kernel(
-      %gm_slots : !pto.tensor_view<8x16x16xf32>,
+      %gm_slot_buffer : !pto.ptr<f32>,
       %src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
       attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
     %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
+    %c256 = arith.constant 256 : index
+    %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+      shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+      : !pto.tensor_view<8x16x16xf32>
     pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
       (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -23,11 +29,17 @@ module {
   }
 
   func.func @vector_kernel(
-      %gm_slots : !pto.tensor_view<8x16x16xf32>,
+      %gm_slot_buffer : !pto.ptr<f32>,
       %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
+    %c256 = arith.constant 256 : index
+    %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+      shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+      : !pto.tensor_view<8x16x16xf32>
     pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
       (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -58,7 +70,8 @@ module {
 // RESOLVE-LABEL: func.func @cube_kernel
 // RESOLVE-NOT: pto.reserve_buffer
 // RESOLVE-NOT: pto.import_reserved_buffer
-// RESOLVE: pto.initialize_l2g2l_pipe{{.*}}(%{{.*}} : memref<8x16x16xf32>)
+// RESOLVE: memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [%{{.*}}, %{{.*}}, %{{.*}}], strides: [%{{.*}}, %{{.*}}, %{{.*}}]
+// RESOLVE: pto.initialize_l2g2l_pipe{{.*}}(%{{.*}} : memref<{{.*}}xf32{{.*}}>)
 // RESOLVE: pto.talloc(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
 // RESOLVE: pto.tpush(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
 // RESOLVE-LABEL: func.func @vector_kernel

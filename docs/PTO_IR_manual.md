@@ -8070,6 +8070,9 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num 
    v2c_consumer_buf = %c0_i32 : i32)
 
 // A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+  : !pto.tensor_view<8x16x16xf32>
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
   (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -8135,6 +8138,9 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num 
    v2c_consumer_buf = %c0_i32 : i32)
 
 // A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+  : !pto.tensor_view<8x16x16xf32>
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
   (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -8164,15 +8170,23 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 **Basic Example: GlobalTensor Pipe Entry Without Reserve/Import**
 
 This C2V global-only GM FIFO example intentionally has no
-`pto.reserve_buffer` and no `pto.import_reserved_buffer`. Both sides initialize
-the pipe only with a `gm_slot_tensor` that describes the full FIFO buffer.
+`pto.reserve_buffer` and no `pto.import_reserved_buffer`. Both function
+signatures keep the FIFO buffer as `!pto.ptr<f32>`, then use
+`pto.make_tensor_view` before initialize_pipe to build the `gm_slot_tensor`
+descriptor for the full FIFO buffer.
 
 ```mlir
-func.func @cube_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
+func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
                        %src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
     attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
   %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
+  %c256 = arith.constant 256 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+    : !pto.tensor_view<8x16x16xf32>
   pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
     (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
@@ -8187,11 +8201,17 @@ func.func @cube_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
   func.return
 }
 
-func.func @vector_kernel(%gm_slots : !pto.tensor_view<8x16x16xf32>,
+func.func @vector_kernel(%gm_slot_buffer : !pto.ptr<f32>,
                          %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
     attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
+  %c256 = arith.constant 256 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
+    : !pto.tensor_view<8x16x16xf32>
   pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
     (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
 
