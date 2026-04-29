@@ -31,6 +31,7 @@ from .semantic import (
     SemanticExprStmt,
     SemanticForStmt,
     SemanticGetBufStmt,
+    SemanticIndexCastExpr,
     SemanticIfStmt,
     SemanticIndexType,
     SemanticIfResult,
@@ -2520,6 +2521,11 @@ class _AuthoringRenderer:
                 desired_name=desired_name,
                 into=into,
             )
+        if isinstance(expr, SemanticIndexCastExpr):
+            if into is None:
+                into = []
+            value = self._lower_expr(expr.value, env, indent=indent, into=into)
+            return self._coerce_rendered_to_index(value, indent=indent, into=into)
         if isinstance(expr, SemanticSubscriptAccess):
             return self._lower_subscript_access(
                 expr,
@@ -3202,14 +3208,14 @@ class _AuthoringRenderer:
             isinstance(lhs.type, SemanticIndexType)
             and isinstance(rhs.type, SemanticScalarType)
             and is_integer_dtype(rhs.type.dtype)
-            and integer_bitwidth(rhs.type.dtype) in {32, 64}
+            and integer_bitwidth(rhs.type.dtype) in {8, 16, 32, 64}
         ):
             lhs = self._coerce_rendered_value(lhs, rhs.type, indent=indent, into=into)
         elif (
             isinstance(rhs.type, SemanticIndexType)
             and isinstance(lhs.type, SemanticScalarType)
             and is_integer_dtype(lhs.type.dtype)
-            and integer_bitwidth(lhs.type.dtype) in {32, 64}
+            and integer_bitwidth(lhs.type.dtype) in {8, 16, 32, 64}
         ):
             rhs = self._coerce_rendered_value(rhs, lhs.type, indent=indent, into=into)
 
@@ -3365,15 +3371,20 @@ class _AuthoringRenderer:
             return value
         if isinstance(value.type, SemanticScalarType) and is_integer_dtype(value.type.dtype):
             bits = integer_bitwidth(value.type.dtype)
-            if bits in {32, 64}:
+            if bits in {8, 16}:
+                value = self._coerce_rendered_value(value, _I32_TYPE, indent=indent, into=into)
+            elif bits in {32, 64}:
                 value = self._bridge_rendered_to_signless_integer(value, indent=indent, into=into)
+            else:
+                value = None
+            if value is not None:
                 cast_name = self._new_temp()
                 into.append(
                     self._indent(indent)
                     + f"{cast_name} = arith.index_cast {value.name} : {value.type.dtype.name} to index"
                 )
                 return _RenderedValue(name=cast_name, type=SemanticIndexType())
-        raise NotImplementedError("expected an i32/i64/index operand during TileLang DSL v1 lowering")
+        raise NotImplementedError("expected an integer scalar or index operand during TileLang DSL v1 lowering")
 
     def _coerce_rendered_to_i64(
         self,
