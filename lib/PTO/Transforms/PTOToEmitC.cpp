@@ -5865,16 +5865,6 @@ struct PTOPartitionViewToEmitC
         op.getSizes().size() != srcTy.getRank())
       return rewriter.notifyMatchFailure(op, "rank mismatch");
 
-    SmallVector<int64_t> offsets;
-    offsets.reserve(op.getOffsets().size());
-    for (Value value : op.getOffsets()) {
-      auto cst = getStaticIndexLikeValue(value);
-      if (!cst)
-        return rewriter.notifyMatchFailure(
-            op, "globaltensor partition_view requires static offsets");
-      offsets.push_back(*cst);
-    }
-
     for (auto [idx, value] : llvm::enumerate(op.getSizes())) {
       auto cst = getStaticIndexLikeValue(value);
       if (!cst)
@@ -5887,15 +5877,23 @@ struct PTOPartitionViewToEmitC
     }
 
     SmallVector<int64_t> srcStrides = buildRowMajorStrides(srcTy.getShape());
-    int64_t linearOffset = 0;
-    for (auto [idx, offset] : llvm::enumerate(offsets)) {
-      if (offset == 0)
-        continue;
+    int64_t staticLinearOffset = 0;
+    SmallVector<std::pair<Value, int64_t>> dynamicOffsetTerms;
+    for (auto [idx, values] :
+         llvm::enumerate(llvm::zip(op.getOffsets(), adaptor.getOffsets()))) {
+      Value originalOffset = std::get<0>(values);
+      Value convertedOffset = std::get<1>(values);
       int64_t stride = srcStrides[idx];
       if (stride == ShapedType::kDynamic)
         return rewriter.notifyMatchFailure(
-            op, "dynamic source stride with non-zero offset is not supported");
-      linearOffset += offset * stride;
+            op, "dynamic source stride is not supported");
+
+      if (auto cst = getStaticIndexLikeValue(originalOffset)) {
+        if (*cst != 0)
+          staticLinearOffset += (*cst) * stride;
+        continue;
+      }
+      dynamicOffsetTerms.push_back({convertedOffset, stride});
     }
 
     auto *ctx = rewriter.getContext();
@@ -5908,8 +5906,42 @@ struct PTOPartitionViewToEmitC
                         op.getLoc(), ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
                         ArrayAttr{}, ArrayAttr{}, ValueRange{src})
                     .getResult(0);
-    Value ptr = applyStaticMemrefOffset(rewriter, op.getLoc(), data,
-                                        linearOffset);
+    Value ptr = data;
+    if (!dynamicOffsetTerms.empty()) {
+      Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
+      auto makeU32 = [&](int64_t value) {
+        return makeEmitCIntConstant(rewriter, op.getLoc(), u32Ty, value);
+      };
+      auto asU32 = [&](Value value) -> Value {
+        if (value.getType() == u32Ty)
+          return value;
+        return rewriter.create<emitc::CastOp>(op.getLoc(), u32Ty, value)
+            .getResult();
+      };
+
+      Value totalOffset = makeU32(staticLinearOffset);
+      for (auto [offsetValue, stride] : dynamicOffsetTerms) {
+        Value term = asU32(offsetValue);
+        if (stride != 1) {
+          Value strideValue = makeU32(stride);
+          term = rewriter
+                     .create<emitc::MulOp>(op.getLoc(), u32Ty, term,
+                                           strideValue)
+                     .getResult();
+        }
+        totalOffset = rewriter
+                          .create<emitc::AddOp>(op.getLoc(), u32Ty,
+                                                totalOffset, term)
+                          .getResult();
+      }
+      ptr = rewriter
+                .create<emitc::AddOp>(op.getLoc(), data.getType(), data,
+                                      totalOffset)
+                .getResult();
+    } else {
+      ptr = applyStaticMemrefOffset(rewriter, op.getLoc(), data,
+                                    staticLinearOffset);
+    }
 
     auto resultOr = buildGlobalTensorViewFromPointer(
         rewriter, op.getLoc(), ptr, resTy.getElementType(), resTy.getShape());
