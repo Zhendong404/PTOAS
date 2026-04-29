@@ -499,6 +499,12 @@ class SemanticBinaryExpr(SemanticExpr):
 
 
 @dataclass(frozen=True)
+class SemanticIndexCastExpr(SemanticExpr):
+    value: SemanticExpr
+    type: SemanticIndexType
+
+
+@dataclass(frozen=True)
 class SemanticCallExpr(SemanticExpr):
     namespace: str | None
     name: str
@@ -1416,11 +1422,11 @@ class _SemanticAnalyzer:
 
         left_padding = analyzed.get("left_padding")
         if left_padding is not None:
-            self._require_index_typed_expr(left_padding)
+            left_padding = self._require_index_typed_expr(left_padding)
 
         right_padding = analyzed.get("right_padding")
         if right_padding is not None:
-            self._require_index_typed_expr(right_padding)
+            right_padding = self._require_index_typed_expr(right_padding)
 
         init_out_buffer = analyzed.get("init_out_buffer")
         if init_out_buffer is not None:
@@ -1467,11 +1473,14 @@ class _SemanticAnalyzer:
                 )
             self._require_mask_expr(value, f"pto.{expr.name} value")
             self._require_vector_pointer_expr(destination, f"pto.{expr.name} destination")
+            normalized_indices = []
             for index in indices:
                 if expr.name == "psti":
                     self._require_i32_like_expr(index, "pto.psti offset")
                 else:
-                    self._require_index_typed_expr(index)
+                    index = self._require_index_typed_expr(index)
+                normalized_indices.append(index)
+            indices = tuple(normalized_indices)
             dist = self._normalize_predicate_store_dist(dist_expr, f"pto.{expr.name} dist")
             return (
                 SemanticPredicateStoreStmt(
@@ -1545,8 +1554,7 @@ class _SemanticAnalyzer:
                     indices = ()
             self._require_align_expr(value, f"pto.{expr.name} value")
             self._require_vector_pointer_expr(destination, f"pto.{expr.name} destination")
-            for index in indices:
-                self._require_index_typed_expr(index)
+            indices = tuple(self._require_index_typed_expr(index) for index in indices)
             if offset is not None:
                 self._require_i32_like_expr(offset, f"pto.{expr.name} offset")
             return (
@@ -1610,8 +1618,7 @@ class _SemanticAnalyzer:
                 indices = (offset,)
             scalar_type = self._require_scalar_expr(scalar, "pto.vsst scalar")
             self._require_vector_pointer_expr(destination, "pto.vsst destination")
-            for index in indices:
-                self._require_index_typed_expr(index)
+            indices = tuple(self._require_index_typed_expr(index) for index in indices)
             destination_dtype = destination.type.element_dtype
             if scalar_type.dtype != destination_dtype:
                 raise TypeError("pto.vsst scalar dtype must match destination element dtype in TileLang DSL v1")
@@ -1667,8 +1674,7 @@ class _SemanticAnalyzer:
                 indices = (offset,)
             self._require_vreg_expr(value, "pto.vsts value")
             self._require_vector_pointer_expr(destination, "pto.vsts destination")
-            for index in indices:
-                self._require_index_typed_expr(index)
+            indices = tuple(self._require_index_typed_expr(index) for index in indices)
             self._require_mask_for_vsts(mask, value.type, dist, "pto.vsts")
             self._require_matching_vector_pointer(value.type, destination.type, "pto.vsts")
             return (
@@ -1707,8 +1713,7 @@ class _SemanticAnalyzer:
         if low_type != high_type:
             raise TypeError("pto.vstsx2 requires low/high vectors to use the same vector type")
         self._require_vector_pointer_expr(destination, "pto.vstsx2 destination")
-        for index in indices:
-            self._require_index_typed_expr(index)
+        indices = tuple(self._require_index_typed_expr(index) for index in indices)
         dist = self._normalize_vstsx2_dist(dist)
         self._require_mask_for_vreg(mask, low_type, "pto.vstsx2")
         self._require_matching_vector_pointer(low_type, destination.type, "pto.vstsx2")
@@ -1745,7 +1750,7 @@ class _SemanticAnalyzer:
             value = args[0]
             destination = self._require_pointer_expr(args[1], "pto.store_scalar destination")
             offset = args[2]
-        self._require_index_typed_expr(offset)
+        offset = self._require_index_typed_expr(offset)
         value_type = self._require_scalar_expr(value, "pto.store_scalar value")
         if value_type.dtype != destination.type.element_dtype:
             raise TypeError("pto.store_scalar value dtype must match destination pointer element dtype")
@@ -2703,9 +2708,12 @@ class _SemanticAnalyzer:
             start = None if expr.start is None else self._analyze_expr(expr.start, env, allow_outer_lookup=allow_outer_lookup)
             stop = None if expr.stop is None else self._analyze_expr(expr.stop, env, allow_outer_lookup=allow_outer_lookup)
             step = None if expr.step is None else self._analyze_expr(expr.step, env, allow_outer_lookup=allow_outer_lookup)
-            for item in (start, stop, step):
-                if item is not None:
-                    self._require_index_typed_expr(item)
+            if start is not None:
+                start = self._require_index_typed_expr(start)
+            if stop is not None:
+                stop = self._require_index_typed_expr(stop)
+            if step is not None:
+                step = self._require_index_typed_expr(step)
             return self._attach_expr_source_location(
                 SemanticSliceExpr(
                     start=start,
@@ -2753,6 +2761,8 @@ class _SemanticAnalyzer:
         if isinstance(expr, FrontendSubscriptExpr):
             base = self._analyze_expr(expr.base, env, allow_outer_lookup=allow_outer_lookup)
             index = self._analyze_expr(expr.index, env, allow_outer_lookup=allow_outer_lookup)
+            if isinstance(base.type, (SemanticShapeType, SemanticTupleType)):
+                index = self._require_index_typed_expr(index)
             result_type = self._subscript_type(base, index)
             if isinstance(result_type, SemanticTensorSliceType):
                 slices = self._normalize_tensor_slice(index, base.type.rank)
@@ -2767,6 +2777,7 @@ class _SemanticAnalyzer:
         if isinstance(expr, FrontendBinaryExpr):
             lhs = self._analyze_expr(expr.lhs, env, allow_outer_lookup=allow_outer_lookup)
             rhs = self._analyze_expr(expr.rhs, env, allow_outer_lookup=allow_outer_lookup)
+            lhs, rhs = self._retarget_literals_for_binary_op(lhs, rhs, expr.op)
             result_type = self._binary_type(lhs, rhs, expr.op)
             return self._attach_expr_source_location(
                 SemanticBinaryExpr(lhs=lhs, op=expr.op, rhs=rhs, type=result_type),
@@ -3496,7 +3507,7 @@ class _SemanticAnalyzer:
             if index_expr.start is None:
                 return (SemanticLiteralExpr(value=0, type=SemanticIndexType()),)
             start = self._analyze_expr(index_expr.start, env, allow_outer_lookup=allow_outer_lookup)
-            self._require_index_typed_expr(start)
+            start = self._require_index_typed_expr(start)
             return (start,)
 
         if tile_type.rank != 2 or tile_type.shape is None:
@@ -3513,12 +3524,12 @@ class _SemanticAnalyzer:
             raise TypeError(f"{context} does not support stepped Tile vector slices in TileLang DSL advanced mode")
 
         row = self._analyze_expr(row_expr, env, allow_outer_lookup=allow_outer_lookup)
-        self._require_index_typed_expr(row)
+        row = self._require_index_typed_expr(row)
         if col_expr.start is None:
             col = SemanticLiteralExpr(value=0, type=SemanticIndexType())
         else:
             col = self._analyze_expr(col_expr.start, env, allow_outer_lookup=allow_outer_lookup)
-            self._require_index_typed_expr(col)
+            col = self._require_index_typed_expr(col)
         return (row, col)
 
     def _tensor_slice_type(
@@ -3607,7 +3618,7 @@ class _SemanticAnalyzer:
                 "binary expressions currently require matching index operands, "
                 "matching scalar operands (add/sub/mul for integer/float; "
                 "mod/floordiv/bitwise/shift for integer), or index operands "
-                "mixed with 32/64-bit integer scalars for add/sub/mul/mod/floordiv"
+                "mixed with integer scalars for add/sub/mul/mod/floordiv"
             )
         if op in {"eq", "ne"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
@@ -3622,7 +3633,7 @@ class _SemanticAnalyzer:
                 return SemanticScalarType(dtype=i1)
             raise TypeError(
                 "comparison expressions currently require matching scalar/meta types, "
-                "index-typed operands, or index operands mixed with 32/64-bit integer scalars"
+                "index-typed operands, or index operands mixed with integer scalars"
             )
         if op in {"gt", "lt", "ge", "le"}:
             if isinstance(lhs.type, SemanticIndexType) and isinstance(rhs.type, SemanticIndexType):
@@ -3633,13 +3644,77 @@ class _SemanticAnalyzer:
                 return SemanticScalarType(dtype=i1)
             raise TypeError(
                 "ordered comparison expressions currently require matching scalar types, "
-                "index-typed operands, or index operands mixed with 32/64-bit integer scalars"
+                "index-typed operands, or index operands mixed with integer scalars"
             )
         if op in {"and", "or"}:
             self._require_condition_type(lhs.type)
             self._require_condition_type(rhs.type)
             return SemanticScalarType(dtype=i1)
         raise TypeError(f"unsupported binary operator '{op}' in TileLang DSL v1")
+
+    def _retarget_literals_for_binary_op(
+        self,
+        lhs: SemanticExpr,
+        rhs: SemanticExpr,
+        op: str,
+    ) -> tuple[SemanticExpr, SemanticExpr]:
+        if isinstance(lhs.type, SemanticScalarType):
+            rhs = self._retarget_literal_to_scalar_type_for_binary_op(rhs, lhs.type.dtype, op)
+        if isinstance(rhs.type, SemanticScalarType):
+            lhs = self._retarget_literal_to_scalar_type_for_binary_op(lhs, rhs.type.dtype, op)
+        return lhs, rhs
+
+    def _retarget_literal_to_scalar_type_for_binary_op(
+        self,
+        expr: SemanticExpr,
+        target_dtype: ScalarType,
+        op: str,
+    ) -> SemanticExpr:
+        if not isinstance(expr, SemanticLiteralExpr):
+            return expr
+        if not self._binary_op_supports_scalar_dtype(op, target_dtype):
+            return expr
+        if is_integer_dtype(target_dtype):
+            if not isinstance(expr.type, SemanticIndexType):
+                return expr
+            if not isinstance(expr.value, int) or isinstance(expr.value, bool):
+                return expr
+            checked = self._check_integer_literal_range(expr.value, target_dtype, f"{target_dtype!r} literal")
+            retargeted = SemanticLiteralExpr(
+                value=checked,
+                type=SemanticScalarType(dtype=target_dtype),
+            )
+            source_location = self._expr_source_location(expr)
+            if source_location is not None:
+                object.__setattr__(retargeted, "source_location", source_location)
+            return retargeted
+        if is_float_dtype(target_dtype):
+            if isinstance(expr.value, bool) or not isinstance(expr.value, (int, float)):
+                return expr
+            if isinstance(expr.type, SemanticScalarType) and not is_float_dtype(expr.type.dtype):
+                return expr
+            if not isinstance(expr.type, (SemanticIndexType, SemanticScalarType)):
+                return expr
+            retargeted = SemanticLiteralExpr(
+                value=float(expr.value),
+                type=SemanticScalarType(dtype=target_dtype),
+            )
+            source_location = self._expr_source_location(expr)
+            if source_location is not None:
+                object.__setattr__(retargeted, "source_location", source_location)
+            return retargeted
+        return expr
+
+    def _binary_op_supports_scalar_dtype(self, op: str, dtype: ScalarType) -> bool:
+        if is_integer_dtype(dtype):
+            if op in {"add", "sub", "mul", "eq", "ne", "gt", "lt", "ge", "le"}:
+                return True
+            if op in {"mod", "floordiv", "bitand", "bitor", "bitxor", "lshift", "rshift"}:
+                return True
+            return False
+        if is_float_dtype(dtype):
+            return op in {"add", "sub", "mul", "eq", "ne", "gt", "lt", "ge", "le"}
+        return False
 
     def _mixed_index_integer_scalar_type(
         self,
@@ -3653,7 +3728,7 @@ class _SemanticAnalyzer:
             scalar_type = lhs_type
         if scalar_type is None or not is_integer_dtype(scalar_type.dtype):
             return None
-        if integer_bitwidth(scalar_type.dtype) not in {32, 64}:
+        if integer_bitwidth(scalar_type.dtype) not in {8, 16, 32, 64}:
             return None
         return scalar_type
 
@@ -4129,7 +4204,7 @@ class _SemanticAnalyzer:
             raise TypeError("pto.addptr expects exactly 2 positional arguments in TileLang DSL")
         pointer, offset = args
         ptr = self._require_pointer_expr(pointer, "pto.addptr pointer")
-        self._require_index_typed_expr(offset)
+        offset = self._require_index_typed_expr(offset)
         return SemanticCallExpr(namespace="pto", name="addptr", args=(ptr, offset), type=ptr.type)
 
     def _analyze_get_lanes(
@@ -4170,8 +4245,7 @@ class _SemanticAnalyzer:
             source = self._require_tile_expr(source, "pto.vlds source")
         else:
             source = self._require_pointer_expr(source, "pto.vlds source", memory_space="ub")
-        for index in indices:
-            self._require_index_typed_expr(index)
+        indices = tuple(self._require_index_typed_expr(index) for index in indices)
         lowered_args: tuple[SemanticExpr, ...]
         if dist is not None:
             lowered_args = (source, *indices, dist)
@@ -4225,8 +4299,7 @@ class _SemanticAnalyzer:
         source_type = source.type
         if isinstance(source_type, SemanticTileType):
             source = self._require_tile_expr(source, "pto.vldas source")
-            for index in indices:
-                self._require_index_typed_expr(index)
+            indices = tuple(self._require_index_typed_expr(index) for index in indices)
         else:
             if indices:
                 raise TypeError("pto.vldas pointer syntax does not accept explicit indices in TileLang DSL v1")
@@ -4247,8 +4320,7 @@ class _SemanticAnalyzer:
         source_type = source.type
         if isinstance(source_type, SemanticTileType):
             source = self._require_tile_expr(source, "pto.vldus source")
-            for index in index_args:
-                self._require_index_typed_expr(index)
+            index_args = tuple(self._require_index_typed_expr(index) for index in index_args)
         else:
             if index_args:
                 raise TypeError("pto.vldus pointer syntax does not accept explicit indices in TileLang DSL v1")
@@ -4276,8 +4348,7 @@ class _SemanticAnalyzer:
             source = self._require_tile_expr(source, "pto.vldsx2 source")
         else:
             source = self._require_pointer_expr(source, "pto.vldsx2 source", memory_space="ub")
-        for index in index_args:
-            self._require_index_typed_expr(index)
+        index_args = tuple(self._require_index_typed_expr(index) for index in index_args)
         dist = self._normalize_vldsx2_dist(dist)
         vreg_type = self._vreg_type_for_dtype(source.type.element_dtype)
         return SemanticCallExpr(
@@ -4305,7 +4376,7 @@ class _SemanticAnalyzer:
         if expects_i32_immediate:
             self._require_i32_like_expr(offset, "pto.pldi offset")
         else:
-            self._require_index_typed_expr(offset)
+            offset = self._require_index_typed_expr(offset)
         dist = self._normalize_predicate_load_dist(
             args[2] if len(args) == 3 else None,
             f"pto.{name} dist",
@@ -4393,7 +4464,7 @@ class _SemanticAnalyzer:
         else:
             raise TypeError("pto.load_scalar expects 2 or 3 positional arguments in TileLang DSL v1")
         pointer = self._require_pointer_expr(pointer, "pto.load_scalar source")
-        self._require_index_typed_expr(offset)
+        offset = self._require_index_typed_expr(offset)
         if destination_dtype is not None and destination_dtype != pointer.type.element_dtype:
             raise TypeError("pto.load_scalar result type must match source pointer element dtype")
         return SemanticCallExpr(
@@ -5044,11 +5115,11 @@ class _SemanticAnalyzer:
         destination = self._require_pointer_expr(args[0], "pto.vbitsort destination", memory_space="ub")
         source = self._require_pointer_expr(args[1], "pto.vbitsort source", memory_space="ub")
         indices = self._require_pointer_expr(args[2], "pto.vbitsort indices", memory_space="ub")
-        self._require_index_typed_expr(args[3])
+        count = self._require_index_typed_expr(args[3])
         return SemanticCallExpr(
             namespace="pto",
             name="vbitsort",
-            args=(destination, source, indices, args[3]),
+            args=(destination, source, indices, count),
             type=None,
         )
 
@@ -6082,12 +6153,24 @@ class _SemanticAnalyzer:
             return outer_type
         return None
 
-    def _require_index_typed_expr(self, expr: SemanticExpr) -> None:
-        if not isinstance(expr.type, SemanticIndexType):
-            self._raise_expr_type_error(
-                "slice bounds and vector offsets must be index-typed in TileLang DSL v1",
-                expr,
-            )
+    def _require_index_typed_expr(self, expr: SemanticExpr) -> SemanticExpr:
+        if isinstance(expr.type, SemanticIndexType):
+            return expr
+        if isinstance(expr.type, SemanticScalarType) and is_integer_dtype(expr.type.dtype):
+            bits = integer_bitwidth(expr.type.dtype)
+            if bits in {8, 16, 32, 64}:
+                if isinstance(expr, SemanticLiteralExpr) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+                    coerced: SemanticExpr = SemanticLiteralExpr(value=expr.value, type=SemanticIndexType())
+                else:
+                    coerced = SemanticIndexCastExpr(value=expr, type=SemanticIndexType())
+                source_location = self._expr_source_location(expr)
+                if source_location is not None:
+                    object.__setattr__(coerced, "source_location", source_location)
+                return coerced
+        self._raise_expr_type_error(
+            "slice bounds and vector offsets must be index-typed in TileLang DSL v1",
+            expr,
+        )
 
     def _try_static_dtype(self, expr: SemanticExpr) -> ScalarType | None:
         if (
@@ -6139,6 +6222,11 @@ class _SemanticAnalyzer:
             return expr.value
         if isinstance(expr, SemanticLiteralExpr):
             return expr.value
+        if isinstance(expr, SemanticIndexCastExpr):
+            value = self._try_static_value(expr.value)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+            return None
         if isinstance(expr, SemanticBindingRef):
             return expr.binding.value
         if isinstance(expr, SemanticTupleExpr):
@@ -6306,10 +6394,10 @@ class _SemanticAnalyzer:
             return value
         return None
 
-    def _require_optional_index_typed_expr(self, expr: SemanticExpr | None) -> None:
+    def _require_optional_index_typed_expr(self, expr: SemanticExpr | None) -> SemanticExpr | None:
         if expr is None:
-            return
-        self._require_index_typed_expr(expr)
+            return None
+        return self._require_index_typed_expr(expr)
 
     def _static_bool_value(self, expr: SemanticExpr | None, *, default: bool | None) -> bool | None:
         if expr is None:
@@ -6411,6 +6499,7 @@ __all__ = [
     "SemanticAlignType",
     "SemanticIfResult",
     "SemanticIfStmt",
+    "SemanticIndexCastExpr",
     "SemanticIndexType",
     "SemanticKernel",
     "SemanticLiteralExpr",
