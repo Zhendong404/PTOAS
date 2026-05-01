@@ -1,0 +1,114 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-level=level3 --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s
+
+// CHECK-LABEL: func.func @native_make_tensor_view_fold
+// CHECK-NOT: pto.tensor_view_addr
+// CHECK-NOT: pto.get_tensor_view_dim
+// CHECK-NOT: pto.get_tensor_view_stride
+// CHECK: return %arg0, %arg1
+
+// CHECK-LABEL: func.func @native_partition_view_widening_cast_fold
+// CHECK-NOT: pto.tensor_view_addr
+// CHECK-NOT: pto.get_tensor_view_dim
+// CHECK-NOT: pto.get_tensor_view_stride
+// CHECK: %[[COL:.*]] = arith.muli %c8, %c1 : index
+// CHECK: %[[PTR:.*]] = pto.addptr %arg0, %[[COL]]
+// CHECK: return %[[PTR]], %arg1, %c56, %c64, %c1
+
+// CHECK-LABEL: func.func @native_partition_view_fold
+// CHECK-NOT: pto.tensor_view_addr
+// CHECK-NOT: pto.get_tensor_view_dim
+// CHECK-NOT: pto.get_tensor_view_stride
+// CHECK: %[[ROW:.*]] = arith.muli %arg1, %c64 : index
+// CHECK: %[[COL:.*]] = arith.muli %c8, %c1 : index
+// CHECK: %[[OFF:.*]] = arith.addi %[[ROW]], %[[COL]] : index
+// CHECK: %[[PTR:.*]] = pto.addptr %arg0, %[[OFF]]
+// CHECK: %[[D56:.*]] = arith.constant 56 : index
+// CHECK: return %[[PTR]], %arg2, %[[D56]], %c64, %c1
+
+module {
+  func.func @native_make_tensor_view_fold(%base: !pto.ptr<f32>, %m: index)
+      -> (!pto.ptr<f32>, index, index, index, index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %tv = pto.make_tensor_view %base, shape = [%m, %c64], strides = [%c64, %c1]
+      : !pto.tensor_view<?x64xf32>
+    %addr = pto.tensor_view_addr %tv
+      : !pto.tensor_view<?x64xf32> -> !pto.ptr<f32>
+    %dim0 = pto.get_tensor_view_dim %tv, %c0
+      : !pto.tensor_view<?x64xf32> -> index
+    %dim1 = pto.get_tensor_view_dim %tv, %c1
+      : !pto.tensor_view<?x64xf32> -> index
+    %stride0 = pto.get_tensor_view_stride %tv, %c0
+      : !pto.tensor_view<?x64xf32> -> index
+    %stride1 = pto.get_tensor_view_stride %tv, %c1
+      : !pto.tensor_view<?x64xf32> -> index
+    return %addr, %dim0, %dim1, %stride0, %stride1
+      : !pto.ptr<f32>, index, index, index, index
+  }
+
+  func.func @native_partition_view_fold(%base: !pto.ptr<f32>, %row: index,
+                                        %rows: index)
+      -> (!pto.ptr<f32>, index, index, index, index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c56 = arith.constant 56 : index
+    %c64 = arith.constant 64 : index
+    %tv = pto.make_tensor_view %base, shape = [%rows, %c64],
+        strides = [%c64, %c1] : !pto.tensor_view<?x64xf32>
+    %part = pto.partition_view %tv, offsets = [%row, %c8],
+        sizes = [%rows, %c56]
+      : !pto.tensor_view<?x64xf32> -> !pto.partition_tensor_view<?x56xf32>
+    %addr = pto.tensor_view_addr %part
+      : !pto.partition_tensor_view<?x56xf32> -> !pto.ptr<f32>
+    %dim0 = pto.get_tensor_view_dim %part, %c0
+      : !pto.partition_tensor_view<?x56xf32> -> index
+    %dim1 = pto.get_tensor_view_dim %part, %c1
+      : !pto.partition_tensor_view<?x56xf32> -> index
+    %stride0 = pto.get_tensor_view_stride %part, %c0
+      : !pto.partition_tensor_view<?x56xf32> -> index
+    %stride1 = pto.get_tensor_view_stride %part, %c1
+      : !pto.partition_tensor_view<?x56xf32> -> index
+    return %addr, %dim0, %dim1, %stride0, %stride1
+      : !pto.ptr<f32>, index, index, index, index
+  }
+
+  func.func @native_partition_view_widening_cast_fold(%base: !pto.ptr<f32>,
+                                                      %rows: index)
+      -> (!pto.ptr<f32>, index, index, index, index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c56 = arith.constant 56 : index
+    %c64 = arith.constant 64 : index
+    %tv = pto.make_tensor_view %base, shape = [%rows, %c64],
+        strides = [%c64, %c1] : !pto.tensor_view<?x64xf32>
+    %part = pto.partition_view %tv, offsets = [%c0, %c8],
+        sizes = [%rows, %c56]
+      : !pto.tensor_view<?x64xf32> -> !pto.partition_tensor_view<?x56xf32>
+    %wide = builtin.unrealized_conversion_cast %part
+      : !pto.partition_tensor_view<?x56xf32>
+       to !pto.partition_tensor_view<?x?xf32>
+    %addr = pto.tensor_view_addr %wide
+      : !pto.partition_tensor_view<?x?xf32> -> !pto.ptr<f32>
+    %dim0 = pto.get_tensor_view_dim %wide, %c0
+      : !pto.partition_tensor_view<?x?xf32> -> index
+    %dim1 = pto.get_tensor_view_dim %wide, %c1
+      : !pto.partition_tensor_view<?x?xf32> -> index
+    %stride0 = pto.get_tensor_view_stride %wide, %c0
+      : !pto.partition_tensor_view<?x?xf32> -> index
+    %stride1 = pto.get_tensor_view_stride %wide, %c1
+      : !pto.partition_tensor_view<?x?xf32> -> index
+    return %addr, %dim0, %dim1, %stride0, %stride1
+      : !pto.ptr<f32>, index, index, index, index
+  }
+}

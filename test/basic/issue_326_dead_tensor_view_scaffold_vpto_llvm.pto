@@ -1,0 +1,66 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Regression: after PTOVPTOExpandBridgeOps lowers tile view consumers to
+// pointer-form VPTO ops, dead pto.make_tensor_view / pto.partition_view
+// scaffolding must not survive into the official LLVM lowering path.
+//
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm %s -o /dev/null
+
+module {
+  func.func @TLRELU_dead_view_scaffold(%src_ptr: !pto.ptr<f32>,
+                                       %dst_ptr: !pto.ptr<f32>,
+                                       %slope: f32) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c2048 = arith.constant 2048 : index
+    %c4096 = arith.constant 4096 : index
+
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c1, %c1, %c32, %c64],
+      strides = [%c2048, %c2048, %c2048, %c64, %c1]
+      : !pto.tensor_view<1x1x1x32x64xf32>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c32, %c64],
+      strides = [%c4096, %c4096, %c4096, %c128, %c1]
+      : !pto.tensor_view<1x1x1x32x64xf32>
+
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c32, %c64]
+      : !pto.tensor_view<1x1x1x32x64xf32> -> !pto.partition_tensor_view<1x1x1x32x64xf32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c32, %c64]
+      : !pto.tensor_view<1x1x1x32x64xf32> -> !pto.partition_tensor_view<1x1x1x32x64xf32>
+
+    %src_tile = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst_tile = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x32x64xf32>)
+              outs(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    pto.tlrelu ins(%src_tile, %slope : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                                             blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32)
+               outs(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    pto.tstore ins(%dst_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64,
+                                     blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x32x64xf32>)
+    return
+  }
+}

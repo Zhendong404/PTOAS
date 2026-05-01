@@ -6,30 +6,27 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Unit test for FoldTileBufIntrinsics on the VPTO tile-op expansion path.
-//
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-before=pto-expand-tile-op --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s
-//
-// Before ExpandTileOp:
-// - the default VPTO backend keeps local tiles as native tile_buf values
-// - the old memref-to-tilebuf bridge is not required
+// RUN: ptoas --pto-level=level3 --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-before=pto-expand-tile-op --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s
+
 // CHECK: IR Dump Before ExpandTileOp
-// CHECK-LABEL: func.func @TADD
-// CHECK: pto.pointer_cast(%c4096_i64)
-// CHECK: pto.pointer_cast(%c0_i64)
-// CHECK: pto.tadd ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 16x64xf32>, !pto.tile_buf<vec, 16x64xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 16x64xf32>)
+// CHECK-LABEL: func.func @manual_addr_tadd
+// CHECK-DAG: %c1024_i64 = arith.constant 1024 : i64
+// CHECK-DAG: %c2048_i64 = arith.constant 2048 : i64
+// CHECK-DAG: %c4096_i64 = arith.constant 4096 : i64
+// CHECK: pto.alloc_tile addr = %c1024_i64
+// CHECK: pto.alloc_tile addr = %c2048_i64
+// CHECK: pto.alloc_tile addr = %c4096_i64
+// CHECK: pto.tadd ins(
 // CHECK-NOT: memref<
 // CHECK: IR Dump After FoldTileBufIntrinsics
-//
-// After FoldTileBufIntrinsics:
-// - tile_buf_addr / tile_valid_rows / tile_valid_cols should be gone
-// - the expanded body should already use concrete memrefs/constants
-// CHECK-LABEL: func.func @TADD
+
+// CHECK-LABEL: func.func @manual_addr_tadd
 // CHECK-NOT: pto.tile_buf_addr
 // CHECK-NOT: pto.tile_valid_rows
 // CHECK-NOT: pto.tile_valid_cols
-// CHECK: pto.pointer_cast(
-// CHECK: pto.castptr %c4096_i64 : i64 -> !pto.ptr<f32, ub>
+// CHECK-DAG: pto.castptr %c1024_i64 : i64 -> !pto.ptr<f32, ub>
+// CHECK-DAG: pto.castptr %c2048_i64 : i64 -> !pto.ptr<f32, ub>
+// CHECK-DAG: pto.castptr %c4096_i64 : i64 -> !pto.ptr<f32, ub>
 // CHECK: arith.constant 16 : index
 // CHECK: arith.constant 64 : index
 // CHECK: pto.vlds
@@ -37,14 +34,17 @@
 // CHECK: pto.vsts
 
 module {
-  func.func @TADD() {
-    %a = pto.alloc_tile
+  func.func @manual_addr_tadd() {
+    %a_addr = arith.constant 1024 : i64
+    %b_addr = arith.constant 2048 : i64
+    %dst_addr = arith.constant 4096 : i64
+    %a = pto.alloc_tile addr = %a_addr
       : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %b = pto.alloc_tile
+    %b = pto.alloc_tile addr = %b_addr
       : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %dst = pto.alloc_tile
+    %dst = pto.alloc_tile addr = %dst_addr
       : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
 

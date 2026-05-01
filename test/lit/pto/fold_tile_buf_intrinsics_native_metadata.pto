@@ -1,0 +1,112 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-level=level3 --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s
+
+// CHECK-LABEL: func.func @native_pointer_cast_dynamic_fold
+// CHECK: pto.pointer_cast(%c8192_i64) %arg0, %arg1
+// CHECK-NOT: pto.tile_buf_addr
+// CHECK-NOT: pto.tile_valid_rows
+// CHECK-NOT: pto.tile_valid_cols
+// CHECK: pto.castptr %c8192_i64 : i64 -> !pto.ptr<f32, ub>
+// CHECK: arith.addi %arg0, %arg1 : index
+// CHECK: pto.store_scalar
+// CHECK: return
+
+// CHECK-LABEL: func.func @native_alias_fold
+// CHECK: pto.bind_tile
+// CHECK: pto.subview
+// CHECK: pto.bitcast
+// CHECK-NOT: pto.tile_buf_addr
+// CHECK-NOT: pto.tile_valid_rows
+// CHECK-NOT: pto.tile_valid_cols
+// CHECK: arith.muli %c4
+// CHECK: %[[BYTE:.*]] = arith.index_cast {{.*}} : index to i64
+// CHECK: %[[ADDR:.*]] = arith.addi %c1024_i64, %[[BYTE]] : i64
+// CHECK: pto.castptr %[[ADDR]] : i64 -> !pto.ptr<i32, ub>
+// CHECK: arith.constant 8 : index
+// CHECK: arith.constant 32 : index
+// CHECK: pto.store_scalar
+// CHECK: pto.vadd
+
+module {
+  func.func @native_pointer_cast_dynamic_fold(%vrow: index, %vcol: index) -> index {
+    %addr = arith.constant 8192 : i64
+    %c0 = arith.constant 0 : index
+    %zero = arith.constant 0.000000e+00 : f32
+    %tile = pto.pointer_cast(%addr) %vrow, %vcol {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>}
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %ptr = pto.tile_buf_addr %tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto.ptr<f32, ub>
+    %rows = pto.tile_valid_rows %tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> index
+    %cols = pto.tile_valid_cols %tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> index
+    %sum = arith.addi %rows, %cols : index
+    pto.store_scalar %zero, %ptr[%c0] : !pto.ptr<f32, ub>, f32
+    return %sum : index
+  }
+
+  func.func @native_alias_fold(%vrow: index, %vcol: index) -> index {
+    %base_addr = arith.constant 1024 : i64
+    %other_addr = arith.constant 4096 : i64
+    %dst_addr = arith.constant 8192 : i64
+    %base = pto.alloc_tile addr = %base_addr valid_row = %vrow valid_col = %vcol
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %other = pto.alloc_tile addr = %other_addr valid_row = %vrow valid_col = %vcol
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile addr = %dst_addr valid_row = %vrow valid_col = %vcol
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c64 = arith.constant 64 : index
+    %zero_i32 = arith.constant 0 : i32
+    %bound = pto.bind_tile %base, %c16, %c64 {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>}
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+     -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %sub = pto.subview %bound[%c4, %c8] sizes [8, 32]
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+     -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %cast = pto.bitcast %sub
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+     -> !pto.tile_buf<loc=vec, dtype=i32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %ptr = pto.tile_buf_addr %cast
+      : !pto.tile_buf<loc=vec, dtype=i32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto.ptr<i32, ub>
+    %rows = pto.tile_valid_rows %cast
+      : !pto.tile_buf<loc=vec, dtype=i32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> index
+    %cols = pto.tile_valid_cols %cast
+      : !pto.tile_buf<loc=vec, dtype=i32, rows=8, cols=32, v_row=8, v_col=32,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> index
+    %sum = arith.addi %rows, %cols : index
+    pto.store_scalar %zero_i32, %ptr[%c0] : !pto.ptr<i32, ub>, i32
+    pto.tadd ins(%base, %other : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+                                  !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=?, v_col=?,
+                                      blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return %sum : index
+  }
+}

@@ -10,7 +10,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Expand tile-level ops (pto.tadd, pto.tsub, ...) by invoking the TileLang
-// Python DSL to instantiate template libraries.
+// Python DSL to instantiate template libraries.  This pass is the PTO -> VPTO
+// boundary: local tile operands must arrive as native !pto.tile_buf values.
+// Memref values must not cross into this pass; even GM tensor views should
+// still be represented as tensor_view / partition_tensor_view descriptors here.
 //
 // The generated template functions use tile_buf parameters. After this pass,
 // the Inline pass inlines the template body, and FoldTileBufIntrinsics
@@ -21,8 +24,8 @@
 //   2. Invoke Python DSL helper to generate a specialized MLIR function
 //      (with tile_buf parameters).
 //   3. Parse the generated MLIR and clone the function into the module.
-//   4. Replace the original tile op with func.call, passing tile_buf
-//      operands directly (no type bridging needed).
+//   4. Replace the original tile op with func.call, passing tile_buf operands
+//      directly; only tensor-view operands may need helper-call type bridging.
 //
 
 #include "PTO/IR/PTO.h"
@@ -80,9 +83,9 @@ namespace {
 // Three kinds of operands:
 //   Tile   — from TileBufType.  dtype + shape + memorySpace + config
 //            all participate in the specialization key (SpecKey).
-//   View   — from MemRefType (lowered PartitionTensorViewType). Only dtype
+//   View   — from TensorViewType / PartitionTensorViewType. Only dtype
 //            participates in SpecKey — the template is fully dynamic so
-//            shape/strides/memorySpace don't affect code generation. They are
+//            shape/strides don't affect code generation. They are
 //            carried here solely for JSON serialization to the Python DSL for
 //            constraint checking.
 //   Scalar — from a scalar element type.  Only dtype participates in SpecKey.
@@ -102,10 +105,8 @@ struct OperandTypeInfo {
   int32_t fractal = 0;
   uint64_t pad = 0;
 
-  // --- View-only (MemRefType) — for JSON / constraint checking only ---
+  // --- View-only (TensorViewLike) — for JSON / constraint checking only ---
   SmallVector<int64_t> viewShape;
-  SmallVector<int64_t> viewStrides;
-  std::string viewMemorySpace; // "gm" or "ub"
 
   /// Equality for SpecKey caching — only compares fields relevant to each kind.
   bool operator==(const OperandTypeInfo &rhs) const {
@@ -206,11 +207,23 @@ static std::string getMemorySpaceString(pto::TileBufType tbTy) {
   return "ub";
 }
 
-static std::string getMemorySpaceString(MemRefType mrTy) {
-  auto msAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(mrTy.getMemorySpace());
-  if (!msAttr) return "gm";
-  if (msAttr.getAddressSpace() == pto::AddressSpace::GM) return "gm";
-  return "ub";
+static LogicalResult validateBoundaryOperandTypes(Operation *op) {
+  for (auto [index, operand] : llvm::enumerate(op->getOperands())) {
+    auto memrefTy = dyn_cast<MemRefType>(operand.getType());
+    if (!memrefTy)
+      continue;
+
+    return op->emitError()
+           << "ExpandTileOp: memref operand #" << index
+           << " violates the PTO -> VPTO boundary contract; operands must "
+              "reach ExpandTileOp as native PTO descriptors such as "
+              "!pto.tile_buf, !pto.tensor_view, or "
+              "!pto.partition_tensor_view, got "
+           << memrefTy
+           << ". Memref values are only allowed after ExpandTileOp has entered "
+              "VPTO authoring IR.";
+  }
+  return success();
 }
 
 static std::string getBLayoutString(int32_t blayout) {
@@ -275,101 +288,6 @@ static void appendOpContextAttrs(
   }
 }
 
-static bool getStaticIntFromValue(Value value, int64_t &out) {
-  if (auto cOp = value.getDefiningOp<arith::ConstantIndexOp>()) {
-    out = cOp.value();
-    return true;
-  }
-  if (auto cInt = value.getDefiningOp<arith::ConstantIntOp>()) {
-    out = cInt.value();
-    return true;
-  }
-  return false;
-}
-
-static int64_t getStaticIntOrDynamic(OpFoldResult ofr) {
-  if (auto attr = ofr.dyn_cast<Attribute>()) {
-    if (auto intAttr = dyn_cast<IntegerAttr>(attr))
-      return intAttr.getInt();
-    return ShapedType::kDynamic;
-  }
-  auto value = llvm::cast<Value>(ofr);
-  int64_t result = ShapedType::kDynamic;
-  if (getStaticIntFromValue(value, result))
-    return result;
-  return ShapedType::kDynamic;
-}
-
-static void recordStaticSizes(ArrayRef<OpFoldResult> inputs,
-                              SmallVectorImpl<int64_t> &out) {
-  out.clear();
-  out.reserve(inputs.size());
-  for (OpFoldResult ofr : inputs)
-    out.push_back(getStaticIntOrDynamic(ofr));
-}
-
-static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
-                                                  ArrayRef<OpFoldResult> steps) {
-  SmallVector<int64_t> result;
-  result.reserve(baseStrides.size());
-  for (auto [baseStride, step] : llvm::zip(baseStrides, steps)) {
-    int64_t stepValue = getStaticIntOrDynamic(step);
-    if (baseStride == ShapedType::kDynamic ||
-        stepValue == ShapedType::kDynamic) {
-      result.push_back(ShapedType::kDynamic);
-      continue;
-    }
-    result.push_back(baseStride * stepValue);
-  }
-  return result;
-}
-
-static void populateViewShapeAndStrides(Value value,
-                                        SmallVectorImpl<int64_t> &shape,
-                                        SmallVectorImpl<int64_t> &strides) {
-  if (!value)
-    return;
-
-  if (auto subview = value.getDefiningOp<memref::SubViewOp>()) {
-    populateViewShapeAndStrides(subview.getSource(), shape, strides);
-    SmallVector<int64_t> subviewShape;
-    recordStaticSizes(subview.getMixedSizes(), subviewShape);
-    if (!subviewShape.empty())
-      shape = subviewShape;
-    if (!strides.empty())
-      strides = combineSubviewStrides(strides, subview.getMixedStrides());
-    return;
-  }
-
-  if (auto reinterpret = value.getDefiningOp<memref::ReinterpretCastOp>()) {
-    if (shape.empty()) {
-      SmallVector<int64_t> reinterpretShape;
-      recordStaticSizes(reinterpret.getMixedSizes(), reinterpretShape);
-      if (!reinterpretShape.empty())
-        shape = reinterpretShape;
-    }
-    if (strides.empty())
-      recordStaticSizes(reinterpret.getMixedStrides(), strides);
-    return;
-  }
-
-  if (auto cast = value.getDefiningOp<memref::CastOp>()) {
-    populateViewShapeAndStrides(cast.getSource(), shape, strides);
-    return;
-  }
-
-  if (auto memrefTy = dyn_cast<MemRefType>(value.getType())) {
-    if (shape.empty())
-      shape.assign(memrefTy.getShape().begin(), memrefTy.getShape().end());
-    if (strides.empty()) {
-      int64_t offset = ShapedType::kDynamic;
-      if (succeeded(getStridesAndOffset(memrefTy, strides, offset))) {
-        // strides populated — dynamic dims remain ShapedType::kDynamic.
-      }
-    }
-  }
-}
-
 static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   Type ty = value.getType();
   // Tile operand — from TileBufType.
@@ -397,23 +315,25 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     return info;
   }
 
-  // View operand — from MemRefType (lowered PartitionTensorViewType).
-  if (auto mrTy = dyn_cast<MemRefType>(ty)) {
+  // View operand — native tensor_view / partition_tensor_view before the
+  // PTO -> VPTO boundary.
+  if (auto tvTy = dyn_cast<pto::TensorViewType>(ty)) {
     OperandTypeInfo info;
     info.kind = OperandKind::View;
-    info.dtype = getDtypeString(mrTy.getElementType());
+    info.dtype = getDtypeString(tvTy.getElementType());
     if (info.dtype.empty())
       return std::nullopt;
-    info.viewMemorySpace = getMemorySpaceString(mrTy);
-    populateViewShapeAndStrides(value, info.viewShape, info.viewStrides);
-    if (info.viewShape.empty())
-      info.viewShape.assign(mrTy.getShape().begin(), mrTy.getShape().end());
-    if (info.viewStrides.empty()) {
-      int64_t offset = ShapedType::kDynamic;
-      if (succeeded(getStridesAndOffset(mrTy, info.viewStrides, offset))) {
-        // strides populated — dynamic dims remain ShapedType::kDynamic.
-      }
-    }
+    info.viewShape.assign(tvTy.getShape().begin(), tvTy.getShape().end());
+    return info;
+  }
+
+  if (auto partTy = dyn_cast<pto::PartitionTensorViewType>(ty)) {
+    OperandTypeInfo info;
+    info.kind = OperandKind::View;
+    info.dtype = getDtypeString(partTy.getElementType());
+    if (info.dtype.empty())
+      return std::nullopt;
+    info.viewShape.assign(partTy.getShape().begin(), partTy.getShape().end());
     return info;
   }
 
@@ -530,19 +450,7 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
     if (op.kind == OperandKind::View) {
       json += "{\"kind\":\"view\",\"dtype\":\"" + op.dtype + "\",\"shape\":";
       appendJsonDimArray(json, op.viewShape);
-      if (!op.viewStrides.empty()) {
-        json += ",\"strides\":[";
-        for (size_t dim = 0; dim < op.viewStrides.size(); ++dim) {
-          if (dim > 0)
-            json += ",";
-          if (ShapedType::isDynamic(op.viewStrides[dim]))
-            json += "null";
-          else
-            json += std::to_string(op.viewStrides[dim]);
-        }
-        json += "]";
-      }
-      json += ",\"memory_space\":\"" + op.viewMemorySpace + "\"}";
+      json += ",\"memory_space\":\"gm\"}";
       continue;
     }
 
@@ -794,6 +702,9 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   });
 
   for (auto *op : tileOps) {
+    if (failed(validateBoundaryOperandTypes(op)))
+      return failure();
+
     auto specKeyOpt = buildSpecKey(op);
     if (!specKeyOpt) {
       op->emitError(

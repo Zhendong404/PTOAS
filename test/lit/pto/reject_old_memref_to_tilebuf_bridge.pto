@@ -1,0 +1,27 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas --pto-level=level3 --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - 2>&1 | FileCheck %s
+
+// CHECK: FoldTileBufIntrinsics: memref-sourced tile_buf bridge is not supported
+// CHECK: expected native pto.pointer_cast, pto.alloc_tile, pto.bind_tile, pto.subview, pto.bitcast, or pto.treshape
+
+module {
+  func.func @old_memref_to_tilebuf_bridge(%m: memref<16x64xf32, #pto.address_space<vec>>) -> f32 {
+    %tile = builtin.unrealized_conversion_cast %m
+      : memref<16x64xf32, #pto.address_space<vec>>
+     to !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %ptr = pto.tile_buf_addr %tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto.ptr<f32, ub>
+    %c0 = arith.constant 0 : index
+    %value = pto.load_scalar %ptr[%c0] : !pto.ptr<f32, ub> -> f32
+    return %value : f32
+  }
+}

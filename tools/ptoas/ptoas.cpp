@@ -1245,15 +1245,13 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
 static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
                                            char **argv) {
   PassManager backendPM(module.getContext());
-  // TileOp Expand path:
-  //   1. MemrefToTileBuf: recover tile_buf from memref
-  //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
-  //      with func.call to template functions (tile_buf params)
-  //   3. InlineLibCall: inline template function bodies
-  //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
-  //      tile_valid_cols to concrete memref/constant values
-  backendPM.addPass(pto::createMemrefToTileBufPass());
-
+  // PTO -> VPTO boundary:
+  //   1. ExpandTileOp: consume tilebuf-native PTO IR, instantiate TileLang
+  //      DSL templates, and replace tile ops with func.call to template
+  //      functions.
+  //   2. InlineLibCall: inline template function bodies into VPTO authoring IR.
+  //   3. FoldTileBufIntrinsics: materialize tile_buf_addr / tile_valid_rows /
+  //      tile_valid_cols to VPTO-side memref/ptr/constant values.
   pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
   backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
 

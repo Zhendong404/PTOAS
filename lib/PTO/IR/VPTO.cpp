@@ -2658,15 +2658,10 @@ LogicalResult TensorViewAddrOp::verify() {
   } else if (auto partType = dyn_cast<pto::PartitionTensorViewType>(srcType)) {
     elementType = partType.getElementType();
     expectedRank = partType.getRank();
-  } else if (auto memrefType = dyn_cast<BaseMemRefType>(srcType)) {
-    elementType = memrefType.getElementType();
-    expectedRank = memrefType.getRank();
-    auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
-    if (srcSpace && srcSpace != gmSpace)
-      return emitOpError("memref source must stay in gm memory space");
   } else {
     return emitOpError(
-        "source must be a tensor_view, partition_tensor_view, or memref");
+        "source must be a !pto.tensor_view<...> or "
+        "!pto.partition_tensor_view<...>");
   }
 
   if (auto dstMemRefType = dyn_cast<BaseMemRefType>(dstType)) {
@@ -2703,20 +2698,8 @@ LogicalResult TileBufAddrOp::verify() {
     elementType = srcTileType.getElementType();
     srcMemorySpace = srcTileType.getMemorySpace();
     srcRank = static_cast<int64_t>(srcTileType.getShape().size());
-  } else if (auto srcMemRefType = dyn_cast<BaseMemRefType>(getSrc().getType())) {
-    // Compatibility for the current TileOp expansion pipeline:
-    // PTOViewToMemref lowers tile_buf producers (for example alloc_tile) to
-    // memref + pto.bind_tile before MemrefToTileBuf reconstructs tile_buf
-    // values. Hand-written pto.tile_buf_addr may therefore temporarily see a
-    // tile-bound memref operand in this intermediate stage. If the pipeline is
-    // changed to avoid that PTOViewToMemref round-trip, this memref acceptance
-    // can be removed and TileBufAddrOp can go back to requiring tile_buf-only
-    // operands.
-    elementType = srcMemRefType.getElementType();
-    srcMemorySpace = srcMemRefType.getMemorySpace();
-    srcRank = srcMemRefType.getRank();
   } else {
-    return emitOpError("source must be a !pto.tile_buf<...> or memref");
+    return emitOpError("source must be a !pto.tile_buf<...>");
   }
 
   auto srcSpace = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMemorySpace);

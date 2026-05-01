@@ -1,0 +1,53 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Regression: after PTOVPTOExpandBridgeOps lowers tile-buffer consumers to
+// pointer-form VPTO ops, dead pto.alloc_tile scaffolding must not survive into
+// the official LLVM lowering path.
+//
+// RUN: ptoas --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-insert-sync --enable-tile-op-expand --vpto-emit-hivm-llvm %s -o /dev/null
+
+module {
+  func.func @TFILLPAD_INPLACE_dead_alloc_tile(%tile_ptr: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c260 = arith.constant 260 : index
+    %c4160 = arith.constant 4160 : index
+
+    %src_view = pto.make_tensor_view %tile_ptr,
+      shape = [%c1, %c1, %c1, %c260, %c16],
+      strides = [%c4160, %c4160, %c4160, %c16, %c1]
+      : !pto.tensor_view<1x1x1x260x16xf32>
+    %dst_view = pto.make_tensor_view %tile_ptr,
+      shape = [%c1, %c1, %c1, %c260, %c16],
+      strides = [%c4160, %c4160, %c4160, %c16, %c1]
+      : !pto.tensor_view<1x1x1x260x16xf32>
+
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c260, %c16]
+      : !pto.tensor_view<1x1x1x260x16xf32> -> !pto.partition_tensor_view<1x1x1x260x16xf32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c260, %c16]
+      : !pto.tensor_view<1x1x1x260x16xf32> -> !pto.partition_tensor_view<1x1x1x260x16xf32>
+
+    %tile_buf = pto.alloc_tile addr = %c0_i64
+      : !pto.tile_buf<vec, 260x16xf32, pad=2>
+
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x260x16xf32>)
+              outs(%tile_buf : !pto.tile_buf<vec, 260x16xf32, pad=2>)
+    pto.tfillpad_inplace ins(%tile_buf : !pto.tile_buf<vec, 260x16xf32, pad=2>)
+                        outs(%tile_buf : !pto.tile_buf<vec, 260x16xf32, pad=2>)
+    pto.tstore ins(%tile_buf : !pto.tile_buf<vec, 260x16xf32, pad=2>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x260x16xf32>)
+    return
+  }
+}

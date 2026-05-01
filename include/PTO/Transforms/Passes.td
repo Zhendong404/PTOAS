@@ -123,26 +123,6 @@ def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::F
   ];
 }
 
-def MemrefToTileBuf : Pass<"pto-memref-to-tile-buf", "ModuleOp"> {
-  let summary = "Recover tile_buf types from memref + pto.bind_tile metadata";
-  let description = [{
-    After PTOViewToMemref + PlanMemory + InsertSync, the IR uses memref types
-    with pto.bind_tile ops carrying tile metadata (TileBufConfigAttr, valid
-    dims).  This pass reconstructs tile_buf types from those anchors so that
-    the subsequent Tile->Vector lowering (Expand TileOp) can operate on
-    tile_buf semantics.
-
-    The pass does NOT redo memory planning or synchronisation.
-  }];
-  let constructor = "mlir::pto::createMemrefToTileBufPass()";
-  let dependentDialects = [
-    "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
-    "mlir::arith::ArithDialect",
-    "mlir::func::FuncDialect"
-  ];
-}
-
 def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "func::FuncOp"> {
   let summary = "Lower frontend TPUSH/TPOP pipe ops to internal pipe ops";
   let description = [{
@@ -224,19 +204,24 @@ def PTOResolveReservedBuffers : Pass<"pto-resolve-reserved-buffers", "ModuleOp">
 }
 
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
-  let summary = "Expand tile ops into calls to TileLang DSL template functions";
+  let summary =
+      "Expand tilebuf-native PTO ops into VPTO TileLang helper calls";
   let description = [{
     Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    TileLang Python DSL to instantiate template libraries. The generated
-    template functions use tile_buf parameters and contain vector-level
-    implementations (pto.vecscope, pto.vlds, pto.vadd, pto.vsts, etc.).
+    TileLang Python DSL to instantiate template libraries. This pass is the
+    PTO IR -> VPTO IR boundary: local tile operands must reach the pass as
+    native !pto.tile_buf values, tensor views must remain in tensor_view /
+    partition_tensor_view form, and memref operands from the legacy bridge are
+    rejected.
 
     Each tile op is replaced by a func.call to the generated template function,
-    with tile_buf operands passed directly (no type bridging).
+    with tile_buf operands passed directly. View/tensor-view operands may still
+    use helper-call bridging after the boundary, because the generated VPTO
+    helper bodies are allowed to materialize memref/ptr/index values.
 
     After this pass, the Inline pass inlines template bodies, and
     FoldTileBufIntrinsics resolves tile_buf_addr / tile_valid_rows /
-    tile_valid_cols.
+    tile_valid_cols to VPTO-side memref/ptr/constant values.
   }];
   let constructor = "mlir::pto::createExpandTileOpPass()";
   let dependentDialects = [
@@ -267,24 +252,27 @@ def FoldTileBufIntrinsics : Pass<"pto-fold-tile-buf-intrinsics", "mlir::func::Fu
     structured-view intrinsics whose operands are now bound to concrete values.
 
     This pass resolves them:
-    - pto.tile_buf_addr → replaced by the underlying pto.bind_tile source
-      memref, or pto.castptr when the requested result type is !pto.ptr
-    - pto.tile_valid_rows → folded to arith.constant if v_row is static,
-      or replaced with the dynamic index value from bind_tile
-    - pto.tile_valid_cols → same as above for v_col
+    - pto.tile_buf_addr is resolved from native tile_buf metadata carried by
+      producers such as pto.pointer_cast, explicit-address pto.alloc_tile,
+      tilebuf-to-tilebuf pto.bind_tile, pto.subview, pto.bitcast, and
+      pto.treshape, then materialized as the requested memref or !pto.ptr.
+    - pto.tile_valid_rows is folded to arith.constant when v_row is static, or
+      replaced with the traced dynamic native valid-row SSA value.
+    - pto.tile_valid_cols is folded to arith.constant when v_col is static, or
+      replaced with the traced dynamic native valid-col SSA value.
 
     tensor_view family:
-    - pto.tensor_view_addr → traces through unrealized_conversion_cast →
-      subview → reinterpret_cast, then folds to the base memref or to
-      pto.castptr/pto.addptr on the base memref
-    - pto.get_tensor_view_dim → folded to arith.constant for static subview
-      sizes, or to the subview size SSA operand for dynamic dims
-    - pto.get_tensor_view_stride → folded to the reinterpret_cast stride
-      operand, multiplied by the subview stride when needed
+    - pto.tensor_view_addr is resolved from native pto.make_tensor_view and
+      pto.partition_view metadata, then materialized as the requested memref or
+      !pto.ptr.
+    - pto.get_tensor_view_dim is folded to arith.constant for static tensor
+      dimensions, or to the native shape/size SSA operand for dynamic dims.
+    - pto.get_tensor_view_stride is folded to the native make_tensor_view
+      stride operand, with partition views inheriting their source strides.
 
-    Dead unrealized_conversion_cast, memref.subview, and
-    memref.reinterpret_cast ops exposed by folding are cleaned up after the
-    rewrite.
+    Bridge-shaped values produced by memref-sourced
+    builtin.unrealized_conversion_cast are rejected instead of being traced
+    through.
   }];
   let constructor = "mlir::pto::createFoldTileBufIntrinsicsPass()";
   let dependentDialects = [

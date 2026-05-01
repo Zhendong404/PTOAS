@@ -10,7 +10,7 @@
 // expands pto.trem via the default TileLang Python DSL template
 // lib/TileOps/trem_template.py.
 //
-// Pipeline: MemrefToTileBuf -> ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
+// Pipeline: ExpandTileOp -> InlineLibCall -> FoldTileBufIntrinsics
 //
 // RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --enable-tile-op-expand %s -o - 2>&1 | FileCheck %s
 

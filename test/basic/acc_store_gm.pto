@@ -22,8 +22,7 @@ module attributes {"pto.target_arch" = "a5"} {
 }
 
 // ROUNDTRIP-LABEL: func.func @acc_store_gm_probe(
-// ROUNDTRIP: pto.acc_store_gm %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd
-// ROUNDTRIP-SAME: loop3(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP: pto.acc_store_gm {{[^:]*}} nz2nd loop3(%{{[^,]*}}, %{{[^,]*}}, %{{[^)]*}}) :
 
 // EXPAND-LABEL: func.func @acc_store_gm_probe(
 // EXPAND: pto.set_loop3_para

@@ -49,16 +49,13 @@ def TensorViewAddrOp : PTO_Op<"tensor_view_addr", [Pure]> {
     `partition_tensor_view` value. The result may be either a memref view or a
     typed PTO pointer, depending on the requested destination type.
 
-    In authoring-form IR this op preserves the descriptor-style surface;
-    during view-to-memref lowering it collapses to the underlying memref value
-    or to a memref-derived pointer.
-
-    This op may also accept a memref operand after earlier view lowering, in
-    which case it behaves as an identity marker and is removed by lowering.
+    The source operand stays on the descriptor-style PTO surface and must be a
+    native `!pto.tensor_view` or `!pto.partition_tensor_view`. Memref sources
+    and memref-sourced descriptor bridges are not accepted.
   }];
 
-  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
-                                "TensorViewLike or MemRef">:$src);
+  let arguments = (ins AnyTypeOf<[TensorViewType, PartitionTensorViewType],
+                                "TensorViewLike">:$src);
   let results = (outs PtrOrMemRef:$dst);
 
   let hasVerifier = 1;
@@ -77,13 +74,12 @@ def TileBufAddrOp : PTO_Op<"tile_buf_addr", [Pure]> {
     shape and address space.
 
     This op is emitted by TileLang DSL templates and resolved by the
-    FoldTileBufIntrinsics pass after inlining. Hand-written `.pto` may also
-    use it directly on the memref result of `pto.bind_tile` / lowered
-    `pto.alloc_tile`.
+    FoldTileBufIntrinsics pass after inlining. The source must remain a native
+    `!pto.tile_buf`; memref sources and memref-sourced tile bridges are not
+    accepted.
   }];
 
-  let arguments = (ins AnyTypeOf<[TileBufType, AnyMemRef],
-                                 "tile_buf or tile-bound memref">:$src);
+  let arguments = (ins TileBufType:$src);
   let results = (outs PtrOrMemRef:$dst);
 
   let hasVerifier = 1;

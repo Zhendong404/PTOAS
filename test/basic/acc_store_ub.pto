@@ -26,9 +26,8 @@ module attributes {"pto.target_arch" = "a5"} {
 }
 
 // ROUNDTRIP-LABEL: func.func @acc_store_ub_probe(
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd
-// ROUNDTRIP-SAME: loop3(%{{.*}}, %{{.*}}, %{{.*}})
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nz(%{{.*}})
+// ROUNDTRIP: pto.acc_store_ub {{[^:]*}} nz2nd loop3(%{{[^,]*}}, %{{[^,]*}}, %{{[^)]*}}) :
+// ROUNDTRIP: pto.acc_store_ub {{[^:]*}} nz2nz(%{{[^)]*}}) :
 
 // EXPAND-LABEL: func.func @acc_store_ub_probe(
 // EXPAND: pto.set_loop3_para

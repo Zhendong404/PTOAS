@@ -113,7 +113,7 @@ These instructions build the address, view, and tile-buffer metadata that later 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `%tv` | `!pto.tensor_view<...>` | Logical tensor view. |
+| `%tv` | `!pto.tensor_view<...>` or `!pto.partition_tensor_view<...>` |  Logical tensor view. |
 | `%idx` | `index` | Dimension index (0-based). |
 
 **Example:**
@@ -136,7 +136,7 @@ These instructions build the address, view, and tile-buffer metadata that later 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `%tv` | `!pto.tensor_view<...>` or memref form | Tensor view or its lowered memory-reference form. |
+| `%tv` | `!pto.tensor_view<...>` or `!pto.partition_tensor_view<...>` | Logical tensor view. |
 | `%idx` | `index` | Dimension index (0-based). |
 
 **Example:**
@@ -173,7 +173,7 @@ These instructions build the address, view, and tile-buffer metadata that later 
 %base = pto.tensor_view_addr %tv : !pto.tensor_view<?x?xf32> -> !pto.ptr<f32, gm>
 ```
 
-`pto.tensor_view_addr` exposes the underlying address represented by the view descriptor. When the result type is a memref, it exposes the lowered view directly. When the result type is `!pto.ptr<..., gm>`, it exposes the same address in pointer form. During compiler-internal lowering, the operand may already be rewritten to a memref form; in that case this op is folded away or rewritten to an equivalent memref-to-ptr cast.
+`pto.tensor_view_addr` exposes the underlying address represented by the native view descriptor. When the result type is a memref, the compiler materializes a memref view from the native descriptor metadata. When the result type is `!pto.ptr<..., gm>`, it exposes the same address in pointer form. The source operand must stay in `!pto.tensor_view` or `!pto.partition_tensor_view` form; memref inputs and memref-sourced descriptor bridges are not part of this op contract.
 
 ---
 
@@ -322,7 +322,7 @@ This op is the **boundary between tile-buffer instructions and pointer-based vec
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `%tile` | `pto.tile_buf` or tile-bound memref | Tile handle whose data-region address is taken. |
+| `%tile` | `pto.tile_buf` | Tile handle whose data-region address is taken. |
 
 **Results:** `!pto.ptr<T, space>` or `memref<...>`. Memref results use the tile's static shape and address space; pointer results use the tile's element type and memory space (e.g. `vec`).
 

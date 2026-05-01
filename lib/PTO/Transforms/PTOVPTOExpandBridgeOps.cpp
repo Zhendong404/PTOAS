@@ -181,6 +181,34 @@ static Value packCopyMatrixCcToGmXm(Location loc, Value sid, Value nSize,
   return rewriter.create<arith::OrIOp>(loc, xmLow, dstStrideBits);
 }
 
+static bool isDeadBridgeScaffoldOp(Operation *op) {
+  return isa<pto::MakeTensorViewOp, pto::PartitionViewOp, pto::AllocTileOp>(
+      op);
+}
+
+static void eraseDeadBridgeScaffolding(func::FuncOp func) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+
+    SmallVector<Operation *> deadOps;
+    func.walk([&](Operation *op) {
+      if (!isDeadBridgeScaffoldOp(op))
+        return;
+      if (llvm::all_of(op->getResults(),
+                       [](Value result) { return result.use_empty(); }))
+        deadOps.push_back(op);
+    });
+
+    if (deadOps.empty())
+      break;
+
+    for (Operation *op : llvm::reverse(deadOps))
+      op->erase();
+    changed = true;
+  }
+}
+
 static Value packCopyMatrixCcToGmXt(Location loc, Value srcStride,
                                     Value unitFlagCtrl, Value quantPre,
                                     Value reluPreMode, Value l2CacheCtrl,
@@ -1073,6 +1101,7 @@ struct PTOVPTOExpandBridgeOpsPass
                  ExpandAccStoreUbPattern>(&getContext());
     if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
       signalPassFailure();
+    eraseDeadBridgeScaffolding(func);
   }
 };
 
