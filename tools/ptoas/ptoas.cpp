@@ -549,6 +549,53 @@ static bool containsVPTOIR(llvm::StringRef input) {
   return false;
 }
 
+static void addSharedFusionCorePreExpandPasses(OpPassManager &pm) {
+  // Shared tile-fusion core on tile-native PTO IR.
+  // This contract is intentionally fixed before ExpandTileOp so later tasks can
+  // vary only the level-specific placement/adapters around this sequence.
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+}
+
+static void addLevel2FusionCoreAdapterPreExpandPasses(OpPassManager &pm) {
+  // Level2 adapter contract:
+  //   shared fusion core
+  //   -> PlanMemory
+  //   -> ResolveReservedBuffers
+  //   -> optional PTOInsertSync
+  //
+  // This keeps fusion earlier than both memory planning and automatic sync
+  // insertion while preserving the current level2 mainline behavior in PTOAS.
+  addSharedFusionCorePreExpandPasses(pm);
+}
+
+static void addLevel3FusionCoreAdapterPreExpandPasses(OpPassManager &pm) {
+  // Level3 adapter contract:
+  //   shared fusion core
+  //   -> ResolveReservedBuffers
+  //   -> ExpandTileOp
+  //
+  // Level3 is already manual-address/manual-sync tile-native IR, so this path
+  // must not re-run PlanMemory and must not implicitly add automatic sync.
+  addSharedFusionCorePreExpandPasses(pm);
+}
+
+static void addA5VPTOFusionAdapterPrePlanMemoryPasses(OpPassManager &pm,
+                                                      PTOBuildLevel level) {
+  switch (level) {
+  case PTOBuildLevel::Level2:
+    addLevel2FusionCoreAdapterPreExpandPasses(pm);
+    return;
+  case PTOBuildLevel::Level3:
+    addLevel3FusionCoreAdapterPreExpandPasses(pm);
+    return;
+  case PTOBuildLevel::Level1:
+    return;
+  }
+  llvm_unreachable("unexpected PTO build level");
+}
+
 static bool hasUnexpandedTileOps(ModuleOp module) {
   bool found = false;
   module.walk([&](Operation *op) {
@@ -1534,6 +1581,15 @@ int main(int argc, char **argv) {
                     "--pto-backend=vpto is required.\n";
   }
 
+  const bool enableA5VPTOFusionPath =
+      enableOpFusion && effectiveBackend == PTOBackend::VPTO && arch == "a5";
+  const bool enableA5VPTOLevel3FusionPath =
+      enableA5VPTOFusionPath && effectiveLevel == PTOBuildLevel::Level3;
+  const bool enableA5VPTOPrePlanMemoryFusionAdapter =
+      enableA5VPTOFusionPath &&
+      (effectiveLevel == PTOBuildLevel::Level2 ||
+       effectiveLevel == PTOBuildLevel::Level3);
+
   bool invalidAutoSyncTailHint = false;
   module->walk([&](mlir::func::FuncOp func) {
     auto hintAttr =
@@ -1639,6 +1695,12 @@ int main(int argc, char **argv) {
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   // Tile-native pipeline: keep tile_buf descriptors through PlanMemory/EmitC.
   // The legacy bridge has been removed from this pipeline.
+  //
+  // Shared fusion adapter seam: both level2 and level3 insert the adapter
+  // here, before the PlanMemory decision point. Level3 then simply skips
+  // PlanMemory because addresses are already explicit.
+  if (enableA5VPTOPrePlanMemoryFusionAdapter)
+    addA5VPTOFusionAdapterPrePlanMemoryPasses(pm, effectiveLevel);
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
     PlanMemoryOptions planMemoryOption;
@@ -1650,8 +1712,13 @@ int main(int argc, char **argv) {
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
 
   // Conditionally add Sync pass based on flag.
-  if (enableInsertSync)
+  if (enableInsertSync && enableA5VPTOLevel3FusionPath) {
+    llvm::errs() << "Warning: --enable-insert-sync is ignored because "
+                    "--enable-op-fusion with --pto-level=level3 preserves "
+                    "the manual sync contract.\n";
+  } else if (enableInsertSync) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  }
 
   if (emitMlirIR) {
     if (failed(pm.run(*module))) {

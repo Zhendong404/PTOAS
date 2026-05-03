@@ -1,0 +1,52 @@
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s -o - | FileCheck %s --check-prefixes=COMMON,LEVEL2-PLAIN
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --enable-insert-sync --emit-pto-ir %s -o - | FileCheck %s --check-prefixes=COMMON,LEVEL2-SYNC
+//
+// Pipeline preservation regression for the shared pre-ExpandTileOp fusion core:
+// on level2, the fused region must survive both PlanMemory and
+// PTOResolveReservedBuffers, so the region-local scratch tiles become
+// pointer_cast-based bindings without losing the structured
+// pto.fusion_region / pto.yield boundary. When auto sync is enabled, the same
+// region must still survive and the tail barrier must appear after the region.
+
+module {
+  func.func @fusion_region_pipeline_level2(
+      %full0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %full1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %full2: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %full3: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %row0: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>,
+      %row1: !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) {
+    %tmp0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %noise0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %noise1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp2 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.trowexpandmul ins(%full0, %row0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%full2, %full3 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%noise0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.trowexpandmul ins(%full1, %row1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=1, v_row=32, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tmul ins(%full2, %full3 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%noise1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp2 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// COMMON-LABEL: func.func @fusion_region_pipeline_level2(
+// COMMON: pto.fusion_region {
+// COMMON-NOT: pto.alloc_tile
+// COMMON: pto.pointer_cast(
+// COMMON: pto.pointer_cast(
+// COMMON: pto.pointer_cast(
+// COMMON: pto.trowexpandmul
+// COMMON-NEXT: pto.trowexpandmul
+// COMMON-NEXT: pto.tadd
+// COMMON-NEXT: pto.yield() : () -> ()
+// COMMON: } {pto.fusion.group_id = 0 : i64} :
+// COMMON: pto.tadd ins(%arg2, %arg3
+// COMMON-NEXT: pto.tmul ins(%arg2, %arg3
+//
+// LEVEL2-PLAIN-NOT: pto.barrier
+// LEVEL2-PLAIN: return
+//
+// LEVEL2-SYNC: pto.barrier <PIPE_ALL> {pto.auto_sync_tail_barrier}
+// LEVEL2-SYNC: return
