@@ -12,6 +12,17 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 add_mlir_dialect_library(PTOTransforms
+  TileFusion/FusionAnalysis.cpp
+  TileFusion/FusionOpSemantics.cpp
+  TileFusion/PTOPreFusionAnalysis.cpp
+  TileFusion/PTOPrintPreFusionAnalysis.cpp
+  TileFusion/PTOFusionPlan.cpp
+  TileFusion/PTOOpScheduling.cpp
+  TileFusion/PTOFusionRegionGen.cpp
+  TileFusion/PTOLowLevelLoopFusion.cpp
+  TileFusion/PTOFusionPredicateElision.cpp
+  TileFusion/PTOFusionLoadStoreElision.cpp
+  TileFusion/PTOFlattenFusionRegion.cpp
   VPTOLLVMEmitter.cpp
   VPTOLLVMEmitterHelper.cpp
   VPTOPtrNormalize.cpp
