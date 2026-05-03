@@ -1298,6 +1298,10 @@ static LogicalResult prepareVPTOForEmission(ModuleOp module) {
 static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
                                            char **argv) {
   PassManager backendPM(module.getContext());
+  auto moduleArchAttr =
+      module->getAttrOfType<mlir::StringAttr>("pto.target_arch");
+  const bool enableA5VPTOPostLoweringFusionLifecycle =
+      enableOpFusion && moduleArchAttr && moduleArchAttr.getValue() == "a5";
   // PTO -> VPTO boundary:
   //   1. ExpandTileOp: consume tilebuf-native PTO IR, instantiate TileLang
   //      DSL templates, and replace tile ops with func.call to template
@@ -1305,6 +1309,14 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
   //   2. InlineLibCall: inline template function bodies into VPTO authoring IR.
   //   3. FoldTileBufIntrinsics: materialize tile_buf_addr / tile_valid_rows /
   //      tile_valid_cols to VPTO-side memref/ptr/constant values.
+  //
+  // A5 VPTO fused lifecycle:
+  //   When --enable-op-fusion formed pto.fusion_region before ExpandTileOp,
+  //   keep the wrapper alive through post-lowering cleanup:
+  //     Canonicalizer -> PTOLowLevelLoopFusion -> Canonicalizer -> CSE ->
+  //     PTOFusionPredicateElision -> PTOFusionLoadStoreElision ->
+  //     PTOFlattenFusionRegion -> CSE
+  //   so final emission sees flattened backend-ready VPTO IR.
   pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
   backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
 
@@ -1317,6 +1329,18 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
   // resulting dead values later in the pipeline.
   backendPM.addPass(mlir::createSCCPPass());
   backendPM.addPass(mlir::createCanonicalizerPass());
+  if (enableA5VPTOPostLoweringFusionLifecycle) {
+    backendPM.addPass(pto::createPTOLowLevelLoopFusionPass());
+    backendPM.addPass(mlir::createCanonicalizerPass());
+    backendPM.addPass(mlir::createCSEPass());
+    backendPM.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionPredicateElisionPass());
+    backendPM.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFusionLoadStoreElisionPass());
+    backendPM.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOFlattenFusionRegionPass());
+    backendPM.addPass(mlir::createCSEPass());
+  }
   if (failed(applyConfiguredPassManagerCLOptions(backendPM,
                                                  "VPTO backend lowering")))
     return failure();
