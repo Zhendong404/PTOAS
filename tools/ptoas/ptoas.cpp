@@ -251,6 +251,12 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableOpFusion(
+    "enable-op-fusion",
+    llvm::cl::desc("Enable tile fusion on the A5 VPTO path "
+                   "(ignored outside --pto-arch=a5 --pto-backend=vpto)"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> enableTileOpExpand(
     "enable-tile-op-expand",
     llvm::cl::desc(
@@ -1516,6 +1522,16 @@ int main(int argc, char **argv) {
     llvm::errs() << "Error: invalid --pto-level='" << ptoBuildLevel
                  << "'. Expected 'level1', 'level2', or 'level3'.\n";
     return 1;
+  }
+
+  if (arch != "a5" && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                    "--pto-arch=a5 is required.\n";
+  }
+
+  if (effectiveBackend == PTOBackend::EmitC && arch == "a5" && enableOpFusion) {
+    llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                    "--pto-backend=vpto is required.\n";
   }
 
   bool invalidAutoSyncTailHint = false;

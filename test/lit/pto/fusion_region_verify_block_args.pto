@@ -1,0 +1,13 @@
+// RUN: not ptoas --pto-level=level3 --emit-pto-ir %s 2>&1 | FileCheck %s
+
+module {
+  func.func @fusion_region_block_args_invalid() {
+    %0 = pto.fusion_region {
+    ^bb0(%arg0: index):
+      pto.yield(%arg0) : (index) -> ()
+    } : index
+    return
+  }
+}
+
+// CHECK: error: 'pto.fusion_region' op expects body block to have no arguments, got 1

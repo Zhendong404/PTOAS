@@ -1,0 +1,12 @@
+// RUN: not ptoas --pto-level=level3 --emit-pto-ir %s 2>&1 | FileCheck %s
+
+module {
+  func.func @fusion_region_yield_count_mismatch_invalid() {
+    %0 = pto.fusion_region {
+      pto.yield() : () -> ()
+    } : index
+    return
+  }
+}
+
+// CHECK: error: 'pto.fusion_region' op expects pto.yield to return 1 values, got 0

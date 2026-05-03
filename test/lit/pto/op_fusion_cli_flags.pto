@@ -1,0 +1,15 @@
+// RUN: ptoas --help-hidden 2>&1 | FileCheck %s --check-prefix=HELP
+// RUN: ptoas --pto-arch=a5 --enable-op-fusion %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=EMITC
+// RUN: ptoas --pto-backend=vpto --pto-arch=a3 --enable-op-fusion --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=A3
+
+module {
+  func.func @fusion_cli_flags() {
+    return
+  }
+}
+
+// HELP: --enable-op-fusion
+
+// EMITC: Warning: --enable-op-fusion is ignored because --pto-backend=vpto is required.
+
+// A3: Warning: --enable-op-fusion is ignored because --pto-arch=a5 is required.

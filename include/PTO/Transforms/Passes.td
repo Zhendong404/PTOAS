@@ -105,6 +105,62 @@ def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
   ];
 }
 
+def PreFusionAnalysis : Pass<"pto-pre-fusion-analysis", "func::FuncOp"> {
+  let summary = "Analyze block-local tile-fusion candidates before planning";
+  let description = [{
+    Builds reusable pre-planning analysis state for tile fusion in tile-native
+    PTO IR. This pass is analysis-only and does not emit grouping or
+    scheduling decisions.
+  }];
+  let constructor = "mlir::pto::createPreFusionAnalysisPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PrintPreFusionAnalysis
+    : Pass<"pto-print-pre-fusion-analysis", "func::FuncOp"> {
+  let summary = "Print pre-fusion analysis results for testing and debugging";
+  let description = [{
+    Computes the pre-fusion analysis result and prints a stable textual dump of
+    block-local compute nodes, edges, liveness, iteration-domain classes, and
+    local boundaries.
+  }];
+  let constructor = "mlir::pto::createPrintPreFusionAnalysisPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
+  let summary = "Build conservative tile-fusion planning groups from block-local analysis";
+  let description = [{
+    Consumes PreFusionAnalysis results, forms conservative block-local fusion
+    groups for currently supported tile-native compute ops, and annotates
+    accepted group members with planning metadata for later scheduling.
+  }];
+  let constructor = "mlir::pto::createFusionPlanPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
+  let summary = "Compact planned fusion groups into block-local contiguous spans";
+  let description = [{
+    Consumes fusion planning metadata emitted by FusionPlanPass and performs
+    block-local instruction scheduling to make each accepted fusion group a
+    contiguous span without redefining group membership.
+  }];
+  let constructor = "mlir::pto::createOpSchedulingPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PTOFusionRegionGen : Pass<"pto-fusion-region-gen", "func::FuncOp"> {
+  let summary = "Wrap one scheduled fusion span into one pto.fusion_region";
+  let description = [{
+    Consumes scheduled tile-fusion metadata and encapsulates one contiguous
+    fusion group span into one pto.fusion_region without redefining group
+    membership or physical order.
+  }];
+  let constructor = "mlir::pto::createPTOFusionRegionGenPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::FuncOp"> {
   let summary = "Wrap attributed single-core functions in PTO cube/vector sections";
   let description = [{
@@ -373,6 +429,22 @@ def PTOValidateVPTOEmissionIR
                            "mlir::scf::SCFDialect"];
 }
 
+def PTOVPTOIfCanonicalize
+    : Pass<"pto-vpto-if-canonicalize", "func::FuncOp"> {
+  let summary =
+      "Canonicalize only scf.if cleanup patterns before A5 low-level fusion";
+  let description = [{
+    Applies the builtin `scf.if` canonicalization patterns to pre-existing
+    `scf.if` operations without running the global Canonicalizer. This keeps
+    the pre-loop-fusion cleanup focused on removing residual constant-control-
+    flow structure while preserving surrounding `scf.for` loop headers.
+  }];
+  let constructor = "mlir::pto::createPTOVPTOIfCanonicalizePass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOVPTOExpandBridgeOps
     : Pass<"pto-vpto-expand-bridge-ops", "func::FuncOp"> {
   let summary =
@@ -409,6 +481,68 @@ def PTOVPTOPtrBoundary
   let dependentDialects = ["mlir::func::FuncDialect",
                            "mlir::pto::PTODialect",
                            "mlir::memref::MemRefDialect"];
+}
+
+def PTOLowLevelLoopFusion : Pass<"pto-low-level-loop-fusion", "ModuleOp"> {
+  let summary =
+      "Fuse adjacent VPTO post-lowering loop nests inside pto.fusion_region";
+  let description = [{
+    Conservatively fuses adjacent post-lowering loop stages for already-planned
+    fusion groups after the tile-native frontend fusion core. The formal input
+    contract for this pass is low-level `scf.for + pto.*` structure that
+    remains inside `pto.fusion_region` until explicit flatten.
+  }];
+  let constructor = "mlir::pto::createPTOLowLevelLoopFusionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::vector::VectorDialect"];
+  let options = [Option<
+      "debug", "debug", "bool",
+      /*default=*/"false",
+      "Enable verbose debug logging for low-level loop fusion">];
+}
+
+def PTOFusionPredicateElision
+    : Pass<"pto-fusion-predicate-elision", "func::FuncOp"> {
+  let summary =
+      "Elide redundant fusion-local VPTO plt predicate materialization";
+  let description = [{
+    Scans `pto.fusion_region` bodies after VPTO post-lowering CSE and prepares
+    fusion-local redundant `pto.plt_*` predicate elimination before
+    load/store cleanup and explicit flatten.
+  }];
+  let constructor = "mlir::pto::createPTOFusionPredicateElisionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
+def PTOFusionLoadStoreElision
+    : Pass<"pto-fusion-load-store-elision", "func::FuncOp"> {
+  let summary =
+      "Elide fusion-local VPTO load/store round trips before flattening";
+  let description = [{
+    Removes local store materialization inside canonical fused loop bodies
+    before explicit flatten. It also performs conservative frontier-aware
+    cleanup for non-escaping fusion-region internal buffers.
+  }];
+  let constructor = "mlir::pto::createPTOFusionLoadStoreElisionPass()";
+  let dependentDialects = ["mlir::func::FuncDialect", "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
+def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
+  let summary = "Flatten pto.fusion_region wrappers back into the parent block";
+  let description = [{
+    Eliminates residual `pto.fusion_region` wrappers after region-local
+    lowering is complete by moving body operations back to the parent block,
+    replacing region results with `pto.yield` operands, and erasing both
+    `pto.yield` and the wrapper op.
+  }];
+  let constructor = "mlir::pto::createPTOFlattenFusionRegionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
 def VPTOPtrNormalize
