@@ -6,8 +6,11 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -26,7 +29,19 @@ struct PreFusionAnalysisPass
   using pto::impl::PreFusionAnalysisBase<
       PreFusionAnalysisPass>::PreFusionAnalysisBase;
 
-  void runOnOperation() override { markAllAnalysesPreserved(); }
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (func.isExternal())
+      return;
+
+    const auto &analysis = getAnalysis<pto::PreFusionAnalysis>();
+    if (!analysis.isValid()) {
+      signalPassFailure();
+      return;
+    }
+
+    markAllAnalysesPreserved();
+  }
 };
 
 } // namespace

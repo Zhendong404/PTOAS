@@ -133,7 +133,9 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
   let description = [{
     Consumes PreFusionAnalysis results, forms conservative block-local fusion
     groups for currently supported tile-native compute ops, and annotates
-    accepted group members with planning metadata for later scheduling.
+    accepted group members with:
+      - pto.fusion.group_id
+      - pto.fusion.order
   }];
   let constructor = "mlir::pto::createFusionPlanPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
