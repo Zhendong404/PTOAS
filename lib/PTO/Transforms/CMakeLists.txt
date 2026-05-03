@@ -19,7 +19,6 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/PTOFusionPlan.cpp
   TileFusion/PTOOpScheduling.cpp
   TileFusion/PTOFusionRegionGen.cpp
-  TileFusion/PTOVPTOIfCanonicalize.cpp
   TileFusion/PTOLowLevelLoopFusion.cpp
   TileFusion/PTOFusionPredicateElision.cpp
   TileFusion/PTOFusionLoadStoreElision.cpp

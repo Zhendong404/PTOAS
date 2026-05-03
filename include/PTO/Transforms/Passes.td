@@ -431,22 +431,6 @@ def PTOValidateVPTOEmissionIR
                            "mlir::scf::SCFDialect"];
 }
 
-def PTOVPTOIfCanonicalize
-    : Pass<"pto-vpto-if-canonicalize", "func::FuncOp"> {
-  let summary =
-      "Canonicalize only scf.if cleanup patterns before A5 low-level fusion";
-  let description = [{
-    Applies the builtin `scf.if` canonicalization patterns to pre-existing
-    `scf.if` operations without running the global Canonicalizer. This keeps
-    the pre-loop-fusion cleanup focused on removing residual constant-control-
-    flow structure while preserving surrounding `scf.for` loop headers.
-  }];
-  let constructor = "mlir::pto::createPTOVPTOIfCanonicalizePass()";
-  let dependentDialects = ["mlir::func::FuncDialect",
-                           "mlir::arith::ArithDialect",
-                           "mlir::scf::SCFDialect"];
-}
-
 def PTOVPTOExpandBridgeOps
     : Pass<"pto-vpto-expand-bridge-ops", "func::FuncOp"> {
   let summary =

@@ -62,7 +62,6 @@ std::unique_ptr<Pass> createFusionPlanPass();
 std::unique_ptr<Pass> createOpSchedulingPass();
 std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 std::unique_ptr<Pass> createPTOInferVPTOVecScopePass();
-std::unique_ptr<Pass> createPTOVPTOIfCanonicalizePass();
 std::unique_ptr<Pass> createPTOVPTOExpandBridgeOpsPass();
 std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 std::unique_ptr<Pass>
