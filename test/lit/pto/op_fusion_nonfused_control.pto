@@ -1,0 +1,43 @@
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 %S/op_fusion_adapter_placement_level2_tadd.pto --emit-pto-ir -o - | FileCheck %s --check-prefix=L2SEAM
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 %S/op_fusion_adapter_placement_level2_tadd.pto --emit-vpto --mlir-print-ir-after=pto-expand-tile-op -o /dev/null 2>&1 | FileCheck %s --check-prefix=L2EXPAND
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 %S/op_fusion_adapter_placement_level3_tadd.pto --emit-pto-ir -o - | FileCheck %s --check-prefix=L3SEAM
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 %S/op_fusion_adapter_placement_level3_tadd.pto --emit-vpto --mlir-print-ir-after=pto-expand-tile-op -o /dev/null 2>&1 | FileCheck %s --check-prefix=L3EXPAND
+//
+// Non-fused VPTO control regression:
+// without --enable-op-fusion, the ordinary VPTO path must stay unchanged for
+// both level2 and level3:
+//   - no pre-ExpandTileOp pto.fusion_region wrapper is formed
+//   - ExpandTileOp lowers plain tile ops directly to helper calls
+//   - the backend never sees fusion lifecycle markers on the non-fused path
+
+// L2SEAM-LABEL: func.func @fusion_adapter_placement_level2_tadd() {
+// L2SEAM-NOT: pto.fusion_region
+// L2SEAM: pto.tadd ins(%0, %1
+// L2SEAM-NEXT: pto.tadd ins(%2, %3
+// L2SEAM-NEXT: pto.tadd ins(%4, %5
+// L2SEAM: return
+
+// L2EXPAND: // -----// IR Dump After ExpandTileOp (pto-expand-tile-op) //----- //
+// L2EXPAND-LABEL: func.func @fusion_adapter_placement_level2_tadd() {
+// L2EXPAND-NOT: pto.fusion_region
+// L2EXPAND: call @__pto_tilelang_a5_tadd
+// L2EXPAND: call @__pto_tilelang_a5_tadd
+// L2EXPAND: call @__pto_tilelang_a5_tadd
+// L2EXPAND-NOT: pto.tadd ins(
+// L2EXPAND: return
+
+// L3SEAM-LABEL: func.func @fusion_adapter_placement_level3_tadd() {
+// L3SEAM-NOT: pto.fusion_region
+// L3SEAM: pto.tadd ins(%0, %1
+// L3SEAM-NEXT: pto.tadd ins(%2, %3
+// L3SEAM-NEXT: pto.tadd ins(%4, %5
+// L3SEAM: return
+
+// L3EXPAND: // -----// IR Dump After ExpandTileOp (pto-expand-tile-op) //----- //
+// L3EXPAND-LABEL: func.func @fusion_adapter_placement_level3_tadd() {
+// L3EXPAND-NOT: pto.fusion_region
+// L3EXPAND: call @__pto_tilelang_a5_tadd
+// L3EXPAND: call @__pto_tilelang_a5_tadd
+// L3EXPAND: call @__pto_tilelang_a5_tadd
+// L3EXPAND-NOT: pto.tadd ins(
+// L3EXPAND: return

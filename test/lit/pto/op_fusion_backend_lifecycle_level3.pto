@@ -1,0 +1,91 @@
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s --check-prefix=LLF
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-predicate-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRED
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-load-store-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=LS
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-flatten-fusion-region -o /dev/null 2>&1 | FileCheck %s --check-prefix=FLAT
+//
+// Focused backend lifecycle regression for the restored post-lowering fusion
+// passes on the current VPTO path:
+//   1. PTOLowLevelLoopFusion keeps the fused chain inside one loop-carried
+//      fusion_region cleanup scope.
+//   2. PTOFusionPredicateElision collapses duplicate predicate materialization
+//      to one reused mask.
+//   3. PTOFusionLoadStoreElision removes the intermediate store/reload
+//      round-trip before the final fused vadd.
+//   4. PTOFlattenFusionRegion removes the wrapper only after region-local
+//      cleanup has completed.
+
+module {
+  func.func @fusion_backend_lifecycle_level3() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c20480_i64 = arith.constant 20480 : i64
+    %c24576_i64 = arith.constant 24576 : i64
+
+    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %d = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp0 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp1 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %out = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%c, %d : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%out : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// LLF: // -----// IR Dump After PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
+// LLF-LABEL: func.func @fusion_backend_lifecycle_level3() {
+// LLF: pto.fusion_region {
+// LLF: scf.for %arg0 = %c0 to %c32 step %c1 {
+// LLF: %mask, %scalar_out = pto.plt_b32 %c32_i32 : i32 -> !pto.mask<b32>, i32
+// LLF: pto.vsts %27, %cast_3[%c0], %mask
+// LLF: %mask_4, %scalar_out_5 = pto.plt_b32 %c32_i32 : i32 -> !pto.mask<b32>, i32
+// LLF: pto.vsts %30, %cast_11[%c0], %mask_4
+// LLF: %mask_12, %scalar_out_13 = pto.plt_b32 %c32_i32 : i32 -> !pto.mask<b32>, i32
+// LLF: %31 = pto.vlds %cast_15[%c0]
+// LLF: %32 = pto.vlds %cast_17[%c0]
+// LLF: %33 = pto.vadd %31, %32, %mask_12
+// LLF: pto.vsts %33, %cast_19[%c0], %mask_12
+// LLF: pto.yield() : () -> ()
+
+// PRED: // -----// IR Dump After PTOFusionPredicateElision (pto-fusion-predicate-elision) //----- //
+// PRED-LABEL: func.func @fusion_backend_lifecycle_level3() {
+// PRED: pto.fusion_region {
+// PRED: %mask, %scalar_out = pto.plt_b32 %c32_i32 : i32 -> !pto.mask<b32>, i32
+// PRED: %23 = pto.vadd %21, %22, %mask
+// PRED-NOT: pto.plt_b32
+// PRED: %26 = pto.vadd %24, %25, %mask
+// PRED-NOT: pto.plt_b32
+// PRED: %29 = pto.vadd %27, %28, %mask
+// PRED-NOT: pto.plt_b32
+// PRED: pto.yield() : () -> ()
+
+// LS: // -----// IR Dump After PTOFusionLoadStoreElision (pto-fusion-load-store-elision) //----- //
+// LS-LABEL: func.func @fusion_backend_lifecycle_level3() {
+// LS: pto.fusion_region {
+// LS: %23 = pto.vadd %21, %22, %mask
+// LS-NOT: pto.vsts
+// LS: %24 = pto.vlds %cast_5[%c0]
+// LS: %25 = pto.vlds %cast_7[%c0]
+// LS: %26 = pto.vadd %24, %25, %mask
+// LS-NOT: pto.vsts
+// LS-NOT: pto.vlds %cast_3[%c0]
+// LS-NOT: pto.vlds %cast_9[%c0]
+// LS: %27 = pto.vadd %23, %26, %mask
+// LS-NOT: pto.vsts
+// LS: pto.yield() : () -> ()
+
+// FLAT: // -----// IR Dump After PTOFlattenFusionRegion (pto-flatten-fusion-region) //----- //
+// FLAT-LABEL: func.func @fusion_backend_lifecycle_level3() {
+// FLAT-NOT: pto.fusion_region
+// FLAT: %4 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+// FLAT: %5 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<vec, 32x32xf32>
+// FLAT: %6 = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<vec, 32x32xf32>
+// FLAT: scf.for %arg0 = %c0 to %c32 step %c1 {
+// FLAT: return

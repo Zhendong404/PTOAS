@@ -1,0 +1,65 @@
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-pto-ir %s -o - | FileCheck %s --check-prefix=SEAM
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --enable-insert-sync --emit-pto-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SYNCWARN
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-expand-tile-op -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXPAND
+//
+// Level3 adapter placement regression:
+//   1. The shared fusion core runs before ExpandTileOp on manual-address
+//      tile-native IR and does not re-run PlanMemory.
+//   2. Optional PTOInsertSync is intentionally ignored on the fused level3
+//      path to preserve the manual sync contract.
+//   3. ExpandTileOp still sees and preserves the fusion_region wrapper while
+//      replacing tile ops with TileLang helper calls.
+
+module {
+  func.func @fusion_adapter_placement_level3_tadd() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c20480_i64 = arith.constant 20480 : i64
+    %c24576_i64 = arith.constant 24576 : i64
+
+    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %d = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp0 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp1 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %out = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%c, %d : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%out : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// SEAM-LABEL: func.func @fusion_adapter_placement_level3_tadd() {
+// SEAM: %[[A:.*]] = pto.alloc_tile addr = %c0_i64
+// SEAM: %[[B:.*]] = pto.alloc_tile addr = %c4096_i64
+// SEAM: %[[C:.*]] = pto.alloc_tile addr = %c8192_i64
+// SEAM: %[[D:.*]] = pto.alloc_tile addr = %c12288_i64
+// SEAM: pto.fusion_region {
+// SEAM-NOT: pto.pointer_cast
+// SEAM: %[[TMP0:.*]] = pto.alloc_tile addr = %c16384_i64
+// SEAM: %[[TMP1:.*]] = pto.alloc_tile addr = %c20480_i64
+// SEAM: %[[OUT:.*]] = pto.alloc_tile addr = %c24576_i64
+// SEAM: pto.tadd ins(%[[A]], %[[B]]
+// SEAM-NEXT: pto.tadd ins(%[[C]], %[[D]]
+// SEAM-NEXT: pto.tadd ins(%[[TMP0]], %[[TMP1]]
+// SEAM-NEXT: pto.yield() : () -> ()
+
+// SYNCWARN: Warning: --enable-insert-sync is ignored because --enable-op-fusion with --pto-level=level3 preserves the manual sync contract.
+
+// EXPAND: // -----// IR Dump After ExpandTileOp (pto-expand-tile-op) //----- //
+// EXPAND-LABEL: func.func @fusion_adapter_placement_level3_tadd() {
+// EXPAND: pto.fusion_region {
+// EXPAND: %[[TMP0:.*]] = pto.alloc_tile addr = %c16384_i64
+// EXPAND: %[[TMP1:.*]] = pto.alloc_tile addr = %c20480_i64
+// EXPAND: %[[OUT:.*]] = pto.alloc_tile addr = %c24576_i64
+// EXPAND: func.call @__pto_tilelang_a5_tadd
+// EXPAND: func.call @__pto_tilelang_a5_tadd
+// EXPAND: func.call @__pto_tilelang_a5_tadd
+// EXPAND-NOT: pto.tadd ins(
+// EXPAND: pto.yield() : () -> ()
