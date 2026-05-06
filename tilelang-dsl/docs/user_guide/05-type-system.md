@@ -406,7 +406,52 @@ Tile types represent data blocks in memory with layout and configuration informa
 
 #### Tile Type Definition
 
-`pto.Tile` is the public tile type used in kernel signatures and vectorized UB compute. User code does not construct tiles with standalone helper APIs in the stable guide surface.
+`pto.Tile` is the public tile type used for hardware buffer allocation in specific
+address spaces. Tiles are constructed directly via the `pto.Tile` constructor:
+
+```python
+pto.Tile(
+    shape: tuple[int, ...],           # Buffer shape (required)
+    dtype: Type,                 # Element type (required)
+    memory_space: MemorySpace,        # Address space (required)
+    valid_shape: tuple[int, ...] | None = None,    # Valid region, defaults to shape
+    blayout: BLayout | None = None,               # B layout, auto-detected from address space
+    slayout: SLayout | None = None,               # S layout, auto-detected from address space
+    fractal_size: int | None = None,              # Fractal size, auto-detected from address space
+    pad_value: PadValue = PadValue.Null,          # Pad policy
+    compact_mode: CompactMode = CompactMode.Null, # Compact mode
+    addr: int | None = None,                      # Pre-assigned address (level3 only)
+) -> Tile
+```
+
+Layout defaults are selected automatically based on the address space:
+
+| Address Space | blayout default | slayout default | fractal_size default |
+|--------------|----------------|----------------|---------------------|
+| `MAT` | `ColMajor` | `RowMajor` | `TileConfig.fractalABSize` (512) |
+| `LEFT` | `ColMajor` | `RowMajor` | `TileConfig.fractalABSize` (512) |
+| `RIGHT` | `RowMajor` | `ColMajor` | `TileConfig.fractalABSize` (512) |
+| `ACC` | `ColMajor` | `RowMajor` | `TileConfig.fractalCSize` (1024) |
+| `BIAS` | `RowMajor` | `NoneBox` | `TileConfig.fractalABSize` (512) |
+| `UB` / `VEC` | `RowMajor` | `NoneBox` | `TileConfig.fractalABSize` (512) |
+
+Related enum types:
+
+| Enum | Values |
+|------|--------|
+| `BLayout` | `ColMajor` (0), `RowMajor` (1) |
+| `SLayout` | `NoneBox` (0), `RowMajor` (1), `ColMajor` (2) |
+| `PadValue` | `Null` (0), `Zero` (1), `Max` (2), `Min` (3) |
+| `CompactMode` | `Null` (0), `Normal` (1), `RowPlusOne` (2) |
+
+Usage:
+
+```python
+# Allocate tiles in @vkernel or @ckernel
+tile_ub = pto.Tile([256, 128], pto.f32, MemorySpace.UB)
+tile_left = pto.Tile([16, 64], pto.f16, MemorySpace.LEFT)
+tile_acc = pto.Tile([16, 16], pto.f32, MemorySpace.ACC, valid_shape=(12, 12))
+```
 
 Important notes on shape and valid shape:
 - `shape` must be a compile-time constant. Tile dimensions are fixed at compilation time and cannot change at runtime.
