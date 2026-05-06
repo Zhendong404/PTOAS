@@ -1,0 +1,58 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards level3 fusion_region formation before ExpandTileOp while preserving
+// manual alloc_tile addresses.
+//
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-pto-ir %s -o - | FileCheck %s
+
+module {
+  func.func @fusion_region_pipeline_level3(
+      %full0: !pto.tile_buf<vec, 32x32xf32>,
+      %full1: !pto.tile_buf<vec, 32x32xf32>,
+      %full2: !pto.tile_buf<vec, 32x32xf32>,
+      %full3: !pto.tile_buf<vec, 32x32xf32>,
+      %row0: !pto.tile_buf<vec, 32x1xf32, blayout=col_major>,
+      %row1: !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+
+    %tmp0 = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %noise0 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %noise1 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp2 = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.trowexpandmul ins(%full0, %row0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%full2, %full3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%noise0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.trowexpandmul ins(%full1, %row1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tmul ins(%full2, %full3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%noise1 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp2 : !pto.tile_buf<vec, 32x32xf32>)
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @fusion_region_pipeline_level3(
+// CHECK: pto.alloc_tile addr = %c12288_i64
+// CHECK: pto.alloc_tile addr = %c16384_i64
+// CHECK: pto.fusion_region {
+// CHECK-NOT: pto.pointer_cast
+// CHECK: pto.alloc_tile addr = %c0_i64
+// CHECK: pto.alloc_tile addr = %c4096_i64
+// CHECK: pto.alloc_tile addr = %c8192_i64
+// CHECK: pto.trowexpandmul
+// CHECK-NEXT: pto.trowexpandmul
+// CHECK-NEXT: pto.tadd
+// CHECK-NEXT: pto.yield() : () -> ()
+// CHECK: } {pto.fusion.group_id = 0 : i64} :
+// CHECK: pto.tadd ins(%arg2, %arg3
+// CHECK-NEXT: pto.tmul ins(%arg2, %arg3
+// CHECK: return

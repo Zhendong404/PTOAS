@@ -1,0 +1,56 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards level2 fusion_region preservation across PlanMemory,
+// ResolveReservedBuffers, and optional insert-sync.
+//
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s -o - | FileCheck %s --check-prefixes=COMMON,LEVEL2-PLAIN
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --enable-insert-sync --emit-pto-ir %s -o - | FileCheck %s --check-prefixes=COMMON,LEVEL2-SYNC
+
+module {
+  func.func @fusion_region_pipeline_level2(
+      %full0: !pto.tile_buf<vec, 32x32xf32>,
+      %full1: !pto.tile_buf<vec, 32x32xf32>,
+      %full2: !pto.tile_buf<vec, 32x32xf32>,
+      %full3: !pto.tile_buf<vec, 32x32xf32>,
+      %row0: !pto.tile_buf<vec, 32x1xf32, blayout=col_major>,
+      %row1: !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) {
+    %tmp0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %noise0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %noise1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp2 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.trowexpandmul ins(%full0, %row0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%full2, %full3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%noise0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.trowexpandmul ins(%full1, %row1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tmul ins(%full2, %full3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%noise1 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp2 : !pto.tile_buf<vec, 32x32xf32>)
+    return
+  }
+}
+
+// COMMON-LABEL: func.func @fusion_region_pipeline_level2(
+// COMMON: pto.fusion_region {
+// COMMON-NOT: pto.alloc_tile
+// COMMON: pto.pointer_cast(
+// COMMON: pto.pointer_cast(
+// COMMON: pto.pointer_cast(
+// COMMON: pto.trowexpandmul
+// COMMON-NEXT: pto.trowexpandmul
+// COMMON-NEXT: pto.tadd
+// COMMON-NEXT: pto.yield() : () -> ()
+// COMMON: } {pto.fusion.group_id = 0 : i64} :
+// COMMON: pto.tadd ins(%arg2, %arg3
+// COMMON-NEXT: pto.tmul ins(%arg2, %arg3
+//
+// LEVEL2-PLAIN-NOT: pto.barrier
+// LEVEL2-PLAIN: return
+//
+// LEVEL2-SYNC: pto.barrier <PIPE_ALL> {pto.auto_sync_tail_barrier}
+// LEVEL2-SYNC: return

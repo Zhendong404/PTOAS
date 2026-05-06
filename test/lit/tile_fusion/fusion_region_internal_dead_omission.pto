@@ -1,0 +1,48 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards fusion_region frontier analysis so overwritten region-local temporaries
+// are not added to pto.yield.
+//
+// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
+
+module {
+  func.func @fusion_region_internal_dead_omission(
+      %full0: !pto.tile_buf<vec, 32x32xf32>,
+      %full1: !pto.tile_buf<vec, 32x32xf32>,
+      %full2: !pto.tile_buf<vec, 32x32xf32>,
+      %full3: !pto.tile_buf<vec, 32x32xf32>,
+      %row0: !pto.tile_buf<vec, 32x1xf32>,
+      %scratch: !pto.tile_buf<vec, 32x32xf32>) {
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %sum = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %sink = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+
+    "pto.trowexpandmul"(%full0, %row0, %tmp) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64} : (!pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32>, !pto.tile_buf<vec, 32x32xf32>) -> ()
+    "pto.tadd"(%tmp, %full1, %sum) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64} : (!pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) -> ()
+    "pto.tmul"(%full2, %full3, %tmp) : (!pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) -> ()
+    "pto.ttrans"(%sum, %scratch, %sink) : (!pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) -> ()
+    return
+  }
+}
+
+// CHECK: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
+// CHECK-LABEL: func.func @fusion_region_internal_dead_omission(
+// CHECK: %[[SINK:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
+// CHECK: %[[TMP:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[SUM:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.trowexpandmul ins(%arg0, %arg4
+// CHECK-SAME: outs(%[[TMP]]
+// CHECK: pto.tadd ins(%[[TMP]], %arg1
+// CHECK-SAME: outs(%[[SUM]]
+// CHECK-NOT: pto.yield(%[[TMP]])
+// CHECK: pto.yield(%[[SUM]]) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: pto.ttrans ins(%[[REGION]], %arg5
+// CHECK-SAME: outs(%[[SINK]]

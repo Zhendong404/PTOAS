@@ -1,18 +1,18 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards the level3 backend fusion lifecycle through loop fusion, predicate
+// elision, load/store elision, and final region flattening.
+//
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s --check-prefix=LLF
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-predicate-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRED
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-load-store-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=LS
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-flatten-fusion-region -o /dev/null 2>&1 | FileCheck %s --check-prefix=FLAT
-//
-// Focused backend lifecycle regression for the restored post-lowering fusion
-// passes on the current VPTO path:
-//   1. PTOLowLevelLoopFusion keeps the fused chain inside one loop-carried
-//      fusion_region cleanup scope.
-//   2. PTOFusionPredicateElision collapses duplicate predicate materialization
-//      to one reused mask.
-//   3. PTOFusionLoadStoreElision removes the intermediate store/reload
-//      round-trip before the final fused vadd.
-//   4. PTOFlattenFusionRegion removes the wrapper only after region-local
-//      cleanup has completed.
 
 module {
   func.func @fusion_backend_lifecycle_level3() {
@@ -24,17 +24,17 @@ module {
     %c20480_i64 = arith.constant 20480 : i64
     %c24576_i64 = arith.constant 24576 : i64
 
-    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %d = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %tmp0 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %tmp1 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %out = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %d = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp0 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp1 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %out = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<vec, 32x32xf32>
 
-    pto.tadd ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp0 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tadd ins(%c, %d : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%out : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%c, %d : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%out : !pto.tile_buf<vec, 32x32xf32>)
     return
   }
 }
