@@ -3004,7 +3004,7 @@ static LogicalResult verifyTColArgReductionOpCommon(Operation *op, Type srcTy,
                                            /*requireNonZeroSrc=*/true)))
     return failure();
   Type srcElemTy = getElemTy(srcTy);
-  unsigned srcElemBits = srcElemTy ? srcElemTy.getIntOrFloatBitWidth() : 0;
+  unsigned srcElemBits = srcElemTy ? getPTOStorageElemBitWidth(srcElemTy) : 0;
   if (!(srcElemTy.isa<IntegerType, FloatType>() &&
         (srcElemBits == 8 || srcElemBits == 16 || srcElemBits == 32)))
     return op->emitOpError(
@@ -4934,10 +4934,11 @@ static mlir::LogicalResult verifyTFillPadLike(Operation *op, Type srcTy, Type ds
   auto dstElem = getElemTy(dstTy);
 
   auto getElemBytes = [](mlir::Type t) -> int64_t {
-    if (auto it = mlir::dyn_cast<mlir::IntegerType>(t))
-      return it.getWidth() / 8;
-    if (auto ft = mlir::dyn_cast<mlir::FloatType>(t))
-      return ft.getWidth() / 8;
+    unsigned bytes = getPTOStorageElemByteSize(t);
+    if (bytes)
+      return bytes;
+    if (getPTOStorageElemBitWidth(t))
+      return 1;
     return -1;
   };
 
@@ -5061,8 +5062,8 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     if (!srcSpace || !dstSpace || *srcSpace != pto::AddressSpace::VEC ||
         *dstSpace != pto::AddressSpace::VEC)
       return emitOpError("expects src and dst to be in the vec address space");
-    unsigned srcElemBytes = srcElem.getIntOrFloatBitWidth() / 8;
-    unsigned dstElemBytes = dstElem.getIntOrFloatBitWidth() / 8;
+    unsigned srcElemBytes = getPTOStorageElemByteSize(srcElem);
+    unsigned dstElemBytes = getPTOStorageElemByteSize(dstElem);
     if (srcElemBytes != dstElemBytes)
       return emitOpError("expects src and dst element sizes to match");
 
@@ -5255,12 +5256,9 @@ mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
   };
 
   auto getElemBytes = [](Type ty) -> std::optional<unsigned> {
-    if (ty.isBF16())
-      return 2;
-    if (auto it = mlir::dyn_cast<IntegerType>(ty))
-      return it.getWidth() / 8;
-    if (auto ft = mlir::dyn_cast<FloatType>(ty))
-      return ft.getWidth() / 8;
+    unsigned bytes = getPTOStorageElemByteSize(ty);
+    if (bytes)
+      return bytes;
     return std::nullopt;
   };
 
@@ -7526,21 +7524,10 @@ static std::optional<int64_t> getStaticNumElements(ArrayRef<int64_t> shape) {
 static std::optional<int64_t> getElemBytes(Type elemTy) {
   if (!elemTy)
     return std::nullopt;
-  if (auto ft = dyn_cast<FloatType>(elemTy)) {
-    if (ft.isF16() || ft.isBF16())
-      return 2;
-    if (ft.isF32())
-      return 4;
-    if (ft.isF64())
-      return 8;
-    return std::nullopt;
-  }
-  if (auto it = dyn_cast<IntegerType>(elemTy)) {
-    int64_t bits = it.getWidth();
-    if (bits <= 0)
-      return std::nullopt;
-    return std::max<int64_t>(1, bits / 8);
-  }
+  if (unsigned bytes = getPTOStorageElemByteSize(elemTy))
+    return bytes;
+  if (getPTOStorageElemBitWidth(elemTy))
+    return 1;
   return std::nullopt;
 }
 
@@ -8877,7 +8864,7 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
       if (srcTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor))
         return emitOpError() << "expects A2/A3 transpose src to use the row_major blayout";
     }
-    unsigned elemBytes = srcElem.getIntOrFloatBitWidth() / 8;
+    unsigned elemBytes = getPTOStorageElemByteSize(srcElem);
     if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
       return emitOpError() << "expects transpose element size to be 1, 2, or 4 bytes";
     auto isAllowedWidthType = [&](Type ty) {
@@ -8904,7 +8891,7 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
     Type dstElem = getElemTy(dstTy);
     if (!srcElem || !tmpElem || !dstElem || srcElem != dstElem || srcElem != tmpElem)
       return emitOpError() << "expects src, tmp, and dst to have the same element type";
-    unsigned elemBytes = srcElem.getIntOrFloatBitWidth() / 8;
+    unsigned elemBytes = getPTOStorageElemByteSize(srcElem);
     if (elemBytes != 1 && elemBytes != 2 && elemBytes != 4)
       return emitOpError() << "expects transpose element size to be 1, 2, or 4 bytes";
     auto isAllowedWidthType = [&](Type ty) {
@@ -9744,15 +9731,7 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
     return success();
   }
 
-  int64_t elemBytes = -1;
-  if (auto ft = elemTy.dyn_cast<FloatType>()) {
-    if (ft.isF16() || ft.isBF16()) elemBytes = 2;
-    else if (ft.isF32()) elemBytes = 4;
-    else if (ft.isF64()) elemBytes = 8;
-  } else if (auto it = elemTy.dyn_cast<IntegerType>()) {
-    int64_t bytes = it.getWidth() / 8;
-    elemBytes = bytes > 0 ? bytes : 1;
-  }
+  int64_t elemBytes = getElemBytes(elemTy).value_or(-1);
   if (elemBytes <= 0) return failure();
 
   if (fr == 1024) {

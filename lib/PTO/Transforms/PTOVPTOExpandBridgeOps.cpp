@@ -7,6 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -352,7 +353,7 @@ struct LoadCbufToCbControl {
 static FailureOr<LoadCbufToCbControl>
 deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
                           bool transpose, PatternRewriter &rewriter) {
-  unsigned elemBitWidth = elementType.getIntOrFloatBitWidth();
+  unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
   if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
     return failure();
   uint64_t elemBytes = elemBitWidth / 8;
@@ -391,7 +392,7 @@ deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
 static FailureOr<LoadCbufToCbControl>
 deriveLoadCbufToCaControl(Location loc, Value m, Value k, Type elementType,
                           bool transpose, PatternRewriter &rewriter) {
-  unsigned elemBitWidth = elementType.getIntOrFloatBitWidth();
+  unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
   if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
     return failure();
   uint64_t elemBytes = elemBitWidth / 8;
@@ -857,7 +858,8 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::RightLoadMxOp> {
     if (!sourceType)
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
 
-    unsigned elemBitWidth = sourceType.getElementType().getIntOrFloatBitWidth();
+    unsigned elemBitWidth =
+        pto::getPTOStorageElemBitWidth(sourceType.getElementType());
     if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
       return rewriter.notifyMatchFailure(op, "unsupported element type");
     uint64_t elemBytes = elemBitWidth / 8;

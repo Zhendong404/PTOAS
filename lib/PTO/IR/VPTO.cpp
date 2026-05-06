@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
@@ -1052,7 +1053,7 @@ static std::optional<int64_t> getVRegStorageBitWidth(Type type) {
   auto vecType = dyn_cast<VRegType>(type);
   if (!vecType)
     return std::nullopt;
-  unsigned elemWidth = getIntOrFloatBitWidth(vecType.getElementType());
+  unsigned elemWidth = getPTOStorageElemBitWidth(vecType.getElementType());
   if (!elemWidth)
     return std::nullopt;
   return vecType.getElementCount() * static_cast<int64_t>(elemWidth);

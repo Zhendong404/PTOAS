@@ -21,6 +21,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -66,11 +67,7 @@ static std::optional<int64_t> getConstInt(OpFoldResult ofr) {
 }
 
 static unsigned elemByteSize(Type ty) {
-  if (auto f = dyn_cast<FloatType>(ty))
-    return f.getWidth() / 8;
-  if (auto i = dyn_cast<IntegerType>(ty))
-    return i.getWidth() / 8;
-  return 0;
+  return getPTOStorageElemByteSize(ty);
 }
 
 static bool isGlobalMemRef(MemRefType ty) {

@@ -12,7 +12,27 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 
+#include "llvm/ADT/StringRef.h"
+
+#include <string>
+
 namespace mlir::pto {
+
+enum class PTOLowPrecisionKind {
+  None,
+  Float8E4M3,
+  Float8E4M3FN,
+  Float8E4M3FNUZ,
+  Float8E4M3B11FNUZ,
+  Float8E5M2,
+  Float8E5M2FNUZ,
+  HiFloat8,
+  Float4E1M2x2,
+  Float4E2M1x2,
+};
+
+PTOLowPrecisionKind classifyPTOLowPrecisionType(Type t);
+llvm::StringRef stringifyPTOLowPrecisionKind(PTOLowPrecisionKind kind);
 
 bool isPTOFloat8Type(Type t);
 bool isPTOHiFloat8Type(Type t);
@@ -20,6 +40,11 @@ bool isPTOFloat4PackedType(Type t);
 bool isPTOLowPrecisionType(Type t);
 
 unsigned getPTOStorageElemByteSize(Type t);
+unsigned getPTOStorageElemBitWidth(Type t);
+
+std::string getPTOLowPrecisionDtypeString(Type t);
+std::string getPTOCanonicalDtypeString(Type t);
+std::string getPTOLowPrecisionHIVMTypeFragment(Type t);
 
 } // namespace mlir::pto
 

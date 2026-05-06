@@ -26,6 +26,7 @@
 //
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -167,23 +168,7 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
 // Helpers
 // ============================================================================
 static std::string getDtypeString(Type elemTy) {
-  if (elemTy.isInteger(1)) return "i1";
-  if (elemTy.isF32()) return "f32";
-  if (elemTy.isF16()) return "f16";
-  if (elemTy.isBF16()) return "bf16";
-  if (elemTy.isUnsignedInteger(64)) return "ui64";
-  if (elemTy.isUnsignedInteger(32)) return "ui32";
-  if (elemTy.isUnsignedInteger(16)) return "ui16";
-  if (elemTy.isUnsignedInteger(8)) return "ui8";
-  if (elemTy.isSignedInteger(64)) return "si64";
-  if (elemTy.isSignedInteger(32)) return "si32";
-  if (elemTy.isSignedInteger(16)) return "si16";
-  if (elemTy.isSignedInteger(8)) return "si8";
-  if (elemTy.isSignlessInteger(64)) return "i64";
-  if (elemTy.isSignlessInteger(32)) return "i32";
-  if (elemTy.isSignlessInteger(16)) return "i16";
-  if (elemTy.isSignlessInteger(8)) return "i8";
-  return "";
+  return pto::getPTOCanonicalDtypeString(elemTy);
 }
 
 static StringRef getTileOpName(Operation *op) {

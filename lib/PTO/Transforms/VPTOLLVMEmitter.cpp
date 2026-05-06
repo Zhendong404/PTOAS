@@ -9,6 +9,7 @@
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
 
 #include "mlir/Conversion/Passes.h"
@@ -169,6 +170,8 @@ static Value getI1Constant(OpBuilder &builder, Location loc, bool value) {
 }
 
 static bool isMxElementType(Type ty) {
+  if (!pto::getPTOLowPrecisionHIVMTypeFragment(ty).empty())
+    return true;
   if (auto floatType = dyn_cast<FloatType>(ty))
     return floatType.getWidth() == 8;
   std::string typeText;
@@ -183,6 +186,9 @@ static std::string getMadMxElementFragment(Type type) {
     return "f16";
   if (type.isBF16())
     return "bf16";
+  std::string lowPrecision = pto::getPTOLowPrecisionHIVMTypeFragment(type);
+  if (!lowPrecision.empty())
+    return lowPrecision;
 
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
@@ -315,6 +321,9 @@ static std::string getElementTypeFragment(Type type) {
     return "bf16";
   if (type.isF32())
     return "f32";
+  std::string lowPrecision = pto::getPTOLowPrecisionHIVMTypeFragment(type);
+  if (!lowPrecision.empty())
+    return lowPrecision;
   if (auto intType = dyn_cast<IntegerType>(type))
     return (intType.isUnsigned() ? "u" : "s") + std::to_string(intType.getWidth());
   return {};
@@ -455,6 +464,9 @@ static std::string getCopyElementFragment(Type elementType) {
     return "bf16";
   if (elementType.isF32())
     return "f32";
+  std::string lowPrecision = pto::getPTOLowPrecisionHIVMTypeFragment(elementType);
+  if (!lowPrecision.empty())
+    return lowPrecision;
   // Handle FP8 family (e4m3/e5m2/e8m0/hif8) used by cube-matmul/mad_mx.
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
@@ -487,6 +499,8 @@ static std::string getCopyElementFragment(Type elementType) {
 static std::string getNd2NzCopyElementFragment(Type elementType) {
   if (!elementType)
     return {};
+  if (pto::isPTOLowPrecisionType(elementType))
+    return "U8";
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
   elementType.print(os);
@@ -2097,6 +2111,9 @@ static std::string getDn2NzCopyElementFragment(Type type) {
     return {};
 
   Type elementType = ptrType.getElementType();
+  if (pto::isPTOLowPrecisionType(elementType))
+    return "u8";
+
   std::string typeText;
   llvm::raw_string_ostream os(typeText);
   elementType.print(os);
@@ -4234,7 +4251,7 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
 
     Type sourceElemType = cast<pto::PtrType>(op.getSource().getType()).getElementType();
-    unsigned elemBitWidth = sourceElemType.getIntOrFloatBitWidth();
+    unsigned elemBitWidth = getPTOStorageElemBitWidth(sourceElemType);
     if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
       return rewriter.notifyMatchFailure(op,
                                          "unsupported load_cbuf_to_ca_mx element type");
@@ -4312,7 +4329,7 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
 
     Type sourceElemType = cast<pto::PtrType>(op.getSource().getType()).getElementType();
-    unsigned elemBitWidth = sourceElemType.getIntOrFloatBitWidth();
+    unsigned elemBitWidth = getPTOStorageElemBitWidth(sourceElemType);
     if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
       return rewriter.notifyMatchFailure(op,
                                          "unsupported load_cbuf_to_cb_mx element type");
