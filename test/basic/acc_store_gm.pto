@@ -14,18 +14,40 @@ module attributes {"pto.target_arch" = "a5"} {
     pto.acc_store_gm %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
       %c0_i64, %c0_i64, %c0_i64, %c3_i64, %c5_i64, nz2nd
       loop3(%c1_i64, %c0_i64, %c32_i64)
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>, i64, i64, i64, i64, i64, i64,
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, gm>,
+        i64, i64, i64, i64, i64, i64,
+        i64, i64, i64, nz2nd, loop3 i64, i64, i64
+
+    return
+  }
+
+  func.func @acc_store_gm_buffer_like_probe(
+      %src: memref<?xf32, #pto.address_space<acc>>,
+      %dst: memref<?xf32, #pto.address_space<gm>>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c3_i64 = arith.constant 3 : i64
+    %c5_i64 = arith.constant 5 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %c32_i64 = arith.constant 32 : i64
+
+    pto.acc_store_gm %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
+      %c0_i64, %c0_i64, %c0_i64, %c3_i64, %c5_i64, nz2nd
+      loop3(%c1_i64, %c0_i64, %c32_i64)
+      : memref<?xf32, #pto.address_space<acc>>, memref<?xf32, #pto.address_space<gm>>,
+        i64, i64, i64, i64, i64, i64,
         i64, i64, i64, nz2nd, loop3 i64, i64, i64
 
     return
   }
 }
 
-// ROUNDTRIP-LABEL: func.func @acc_store_gm_probe(
-// ROUNDTRIP: pto.acc_store_gm %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd
-// ROUNDTRIP-SAME: loop3(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP-DAG: func.func @acc_store_gm_probe(%{{.*}}: !pto.ptr<f32, acc>, %{{.*}}: !pto.ptr<f32, gm>) {
+// ROUNDTRIP-DAG: func.func @acc_store_gm_buffer_like_probe(%{{.*}}: !pto.ptr<f32, acc>, %{{.*}}: !pto.ptr<f32, gm>) {
+// ROUNDTRIP-DAG: pto.acc_store_gm %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd loop3(%{{.*}}, %{{.*}}, %{{.*}})
 
-// EXPAND-LABEL: func.func @acc_store_gm_probe(
-// EXPAND: pto.set_loop3_para
-// EXPAND: pto.set_channel_para
-// EXPAND: pto.copy_matrix_cc_to_gm
+// EXPAND-DAG: func.func @acc_store_gm_probe(
+// EXPAND-DAG: func.func @acc_store_gm_buffer_like_probe(
+// EXPAND-DAG: pto.set_loop3_para
+// EXPAND-DAG: pto.set_channel_para
+// EXPAND-DAG: pto.copy_matrix_cc_to_gm

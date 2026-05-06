@@ -1791,8 +1791,8 @@ def PTO_CubeLoadOp : PTO_Op<"cube_load", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$len_burst,
     I64:$n_burst,
     I64:$nburst_src_stride,
@@ -1831,8 +1831,8 @@ def PTO_CubeStoreOp : PTO_Op<"cube_store", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$len_burst,
     I64:$n_burst,
     I64:$nburst_src_stride,
@@ -1870,8 +1870,8 @@ def PTO_BiasLoadOp : PTO_Op<"bias_load", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$len_burst,
     I64:$n_burst,
     I64:$nburst_src_gap,
@@ -1934,14 +1934,16 @@ def PTO_LeftLoadOp : PTO_Op<"left_load", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$k,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,`
@@ -1953,14 +1955,16 @@ def PTO_RightLoadOp : PTO_Op<"right_load", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$k,
     I64:$n,
     DefaultValuedAttr<BoolAttr, "false">:$transpose
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,`
@@ -1972,13 +1976,15 @@ def PTO_LeftLoadMxOp : PTO_Op<"left_load_mx", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$k
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $m `,` $k attr-dict `:` type($source) `,`
@@ -1990,13 +1996,15 @@ def PTO_RightLoadMxOp : PTO_Op<"right_load_mx", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$k,
     I64:$n
   );
 
   let results = (outs);
+
+  let hasVerifier = 1;
 
   let assemblyFormat = [{
     $source `,` $destination `,` $k `,` $n attr-dict `:` type($source) `,`
@@ -2009,8 +2017,8 @@ def PTO_AccStoreOp : PTO_Op<"acc_store", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$n,
     I64:$src_stride,
@@ -2053,8 +2061,8 @@ def PTO_AccStoreGmOp : PTO_Op<"acc_store_gm", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$n,
     I64:$src_stride,
@@ -2083,8 +2091,8 @@ def PTO_AccStoreUbOp : PTO_Op<"acc_store_ub", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
-    PTO_BufferType:$source,
-    PTO_BufferType:$destination,
+    PTO_BufferLikeType:$source,
+    PTO_BufferLikeType:$destination,
     I64:$m,
     I64:$n,
     I64:$src_stride,

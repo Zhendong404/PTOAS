@@ -13,25 +13,52 @@ module attributes {"pto.target_arch" = "a5"} {
     pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
       %c0_i64, %c0_i64, %c0_i64, %c0_i64, %c1_i64, nz2nd
       loop3(%c1_i64, %c0_i64, %c32_i64)
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64,
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>,
+        i64, i64, i64, i64, i64, i64,
         i64, i64, i64, nz2nd, loop3 i64, i64, i64
 
     pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
       %c0_i64, %c0_i64, %c0_i64, %c2_i64, %c0_i64, nz2nz(%c1_i64)
-      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64, i64,
+      : !pto.ptr<f32, acc>, !pto.ptr<f32, ub>,
+        i64, i64, i64, i64, i64, i64,
+        i64, i64, i64, nz2nz(i64)
+
+    return
+  }
+
+  func.func @acc_store_ub_buffer_like_probe(
+      %src: memref<?xf32, #pto.address_space<acc>>,
+      %dst: memref<?xf32, #pto.address_space<vec>>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c16_i64 = arith.constant 16 : i64
+    %c32_i64 = arith.constant 32 : i64
+
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
+      %c0_i64, %c0_i64, %c0_i64, %c0_i64, %c1_i64, nz2nd
+      loop3(%c1_i64, %c0_i64, %c32_i64)
+      : memref<?xf32, #pto.address_space<acc>>, memref<?xf32, #pto.address_space<vec>>,
+        i64, i64, i64, i64, i64, i64,
+        i64, i64, i64, nz2nd, loop3 i64, i64, i64
+
+    pto.acc_store_ub %src, %dst, %c16_i64, %c16_i64, %c16_i64, %c32_i64,
+      %c0_i64, %c0_i64, %c0_i64, %c2_i64, %c0_i64, nz2nz(%c1_i64)
+      : memref<?xf32, #pto.address_space<acc>>, memref<?xf32, #pto.address_space<vec>>,
+        i64, i64, i64, i64, i64, i64,
         i64, i64, i64, nz2nz(i64)
 
     return
   }
 }
 
-// ROUNDTRIP-LABEL: func.func @acc_store_ub_probe(
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd
-// ROUNDTRIP-SAME: loop3(%{{.*}}, %{{.*}}, %{{.*}})
-// ROUNDTRIP: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nz(%{{.*}})
+// ROUNDTRIP-DAG: func.func @acc_store_ub_probe(%{{.*}}: !pto.ptr<f32, acc>, %{{.*}}: !pto.ptr<f32, ub>) {
+// ROUNDTRIP-DAG: func.func @acc_store_ub_buffer_like_probe(%{{.*}}: !pto.ptr<f32, acc>, %{{.*}}: !pto.ptr<f32, ub>) {
+// ROUNDTRIP-DAG: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nd loop3(%{{.*}}, %{{.*}}, %{{.*}})
+// ROUNDTRIP-DAG: pto.acc_store_ub %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, nz2nz(%{{.*}})
 
-// EXPAND-LABEL: func.func @acc_store_ub_probe(
-// EXPAND: pto.set_loop3_para
-// EXPAND: pto.set_channel_para
-// EXPAND: pto.copy_matrix_cc_to_ub
-// EXPAND: pto.copy_matrix_cc_to_ub
+// EXPAND-DAG: func.func @acc_store_ub_probe(
+// EXPAND-DAG: func.func @acc_store_ub_buffer_like_probe(
+// EXPAND-DAG: pto.set_loop3_para
+// EXPAND-DAG: pto.set_channel_para
+// EXPAND-DAG: pto.copy_matrix_cc_to_ub
