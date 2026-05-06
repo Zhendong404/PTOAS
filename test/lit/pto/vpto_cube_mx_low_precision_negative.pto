@@ -1,0 +1,25 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @cube_low_precision_negative() attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : i64
+    %c16 = arith.constant 16 : i64
+    %c64 = arith.constant 64 : i64
+    %src_f32 = pto.castptr %c0 : i64 -> !pto.ptr<f32, mat>
+    %dst_f32_left = pto.castptr %c0 : i64 -> !pto.ptr<f32, left>
+
+    pto.left_load_mx %src_f32, %dst_f32_left, %c16, %c64
+      : !pto.ptr<f32, mat>, !pto.ptr<f32, left>, i64, i64
+    return
+  }
+}
+
+// CHECK: error: 'pto.left_load_mx' op pto.left_load_mx expects a 1-byte storage element type (for example FP8, HiFloat8, or packed FP4)

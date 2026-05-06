@@ -1,0 +1,49 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @vpto_low_precision_storage_width_legal(
+      %src_gm_hif8: !pto.ptr<!pto.hif8, gm>,
+      %dst_ub_hif8: !pto.ptr<!pto.hif8, ub>,
+      %src_ub_hif8: !pto.ptr<!pto.hif8, ub>,
+      %dst_gm_hif8: !pto.ptr<!pto.hif8, gm>,
+      %vec_hif8: !pto.vreg<256x!pto.hif8>,
+      %lane_bits: !pto.vreg<256xi8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %false = arith.constant false
+
+    pto.copy_gm_to_ubuf %src_gm_hif8, %dst_ub_hif8, %c0_i64, %c1_i64, %c32_i64,
+                        %c0_i64, %c0_i64, %false, %c0_i64, %c0_i64, %c0_i64
+      : !pto.ptr<!pto.hif8, gm>, !pto.ptr<!pto.hif8, ub>, i64, i64, i64, i64, i64, i1, i64, i64, i64
+    pto.copy_ubuf_to_gm %src_ub_hif8, %dst_gm_hif8, %c0_i64, %c1_i64, %c32_i64,
+                        %c0_i64, %c0_i64, %c0_i64
+      : !pto.ptr<!pto.hif8, ub>, !pto.ptr<!pto.hif8, gm>, i64, i64, i64, i64, i64, i64
+
+    pto.vecscope {
+      %mask = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %cast = pto.vbitcast %vec_hif8 : !pto.vreg<256x!pto.hif8> -> !pto.vreg<256xui8>
+      %sel = pto.vselr %vec_hif8, %lane_bits : !pto.vreg<256x!pto.hif8>, !pto.vreg<256xi8> -> !pto.vreg<256x!pto.hif8>
+      pto.vsts %sel, %dst_ub_hif8[%c0], %mask : !pto.vreg<256x!pto.hif8>, !pto.ptr<!pto.hif8, ub>, !pto.mask<b8>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @vpto_low_precision_storage_width_legal(
+// CHECK-SAME: !pto.ptr<!pto.hif8, gm>
+// CHECK-SAME: !pto.ptr<!pto.hif8, ub>
+// CHECK: pto.copy_gm_to_ubuf
+// CHECK: pto.copy_ubuf_to_gm
+// CHECK: %{{.*}} = pto.vselr %{{.*}}, %{{.*}} : !pto.vreg<256x!pto.hif8>, !pto.vreg<256xi8> -> !pto.vreg<256x!pto.hif8>
+// CHECK: pto.vsts %{{.*}}, %{{.*}}[%{{.*}}], %{{.*}} : !pto.vreg<256x!pto.hif8>, !pto.ptr<!pto.hif8, ub>, !pto.mask<b8>

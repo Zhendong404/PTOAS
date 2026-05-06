@@ -146,9 +146,106 @@ static bool isSupportedMovPadScalarType(Type type) {
   return false;
 }
 
-static bool isMxElementType(Type type) { return isa<Float8E4M3FNType>(type); }
+static bool isCubeTypedLoadElementType(Type type) {
+  if (type.isF16() || type.isBF16() || type.isF32())
+    return true;
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth() == 8 || intType.getWidth() == 16 ||
+           intType.getWidth() == 32;
+  return pto::isPTOLowPrecisionType(type);
+}
+
+static bool isMxElementType(Type type) {
+  return pto::isPTOLowPrecisionType(type);
+}
+
+static bool isMxLoadElementType(Type type) {
+  unsigned storageBits = pto::getPTOStorageElemBitWidth(type);
+  return storageBits == 8;
+}
+
+static Type getLowPrecisionSemanticElementType(Type type) {
+  if (auto vregType = dyn_cast<VRegType>(type))
+    type = vregType.getElementType();
+  return pto::isPTOLowPrecisionType(type) ? type : Type();
+}
+
+static LogicalResult rejectUnsupportedLowPrecisionType(Operation *op, Type type,
+                                                       StringRef role) {
+  Type lowPrecisionType = getLowPrecisionSemanticElementType(type);
+  if (!lowPrecisionType)
+    return success();
+  return op->emitOpError()
+         << role << " low-precision element type " << lowPrecisionType
+         << " is not supported by " << op->getName().getStringRef() << " yet";
+}
+
+static LogicalResult verifyCubeLoadPointerPair(Operation *op, Type sourceTy,
+                                               Type destinationTy,
+                                               AddressSpace sourceSpace,
+                                               AddressSpace destinationSpace,
+                                               StringRef sourceRole,
+                                               StringRef destinationRole) {
+  auto sourceType = dyn_cast<pto::PtrType>(sourceTy);
+  auto destinationType = dyn_cast<pto::PtrType>(destinationTy);
+  if (!sourceType || !destinationType)
+    return op->emitOpError("requires typed !pto.ptr source and destination");
+  if (sourceType.getMemorySpace().getAddressSpace() != sourceSpace)
+    return op->emitOpError() << "requires " << sourceRole << " source";
+  if (destinationType.getMemorySpace().getAddressSpace() != destinationSpace)
+    return op->emitOpError() << "requires " << destinationRole
+                             << " destination";
+  if (sourceType.getElementType() != destinationType.getElementType())
+    return op->emitOpError(
+        "requires source and destination element types to match");
+  return success();
+}
+
+static LogicalResult verifyCubeTypedLoadOp(Operation *op, Type sourceTy,
+                                           Type destinationTy,
+                                           AddressSpace destinationSpace,
+                                           StringRef opName) {
+  if (failed(verifyCubeLoadPointerPair(op, sourceTy, destinationTy,
+                                       AddressSpace::MAT, destinationSpace,
+                                       "!pto.ptr<..., mat>",
+                                       destinationSpace == AddressSpace::LEFT
+                                           ? "!pto.ptr<..., left>"
+                                           : "!pto.ptr<..., right>")))
+    return failure();
+  Type elementType = cast<pto::PtrType>(sourceTy).getElementType();
+  if (!isCubeTypedLoadElementType(elementType)) {
+    return op->emitOpError()
+           << opName
+           << " expects i8/i16/i32/f16/bf16/f32 or supported low-precision "
+              "source/destination element type";
+  }
+  return success();
+}
+
+static LogicalResult verifyCubeMxLoadOp(Operation *op, Type sourceTy,
+                                        Type destinationTy,
+                                        AddressSpace destinationSpace,
+                                        StringRef opName) {
+  if (failed(verifyCubeLoadPointerPair(op, sourceTy, destinationTy,
+                                       AddressSpace::MAT, destinationSpace,
+                                       "!pto.ptr<..., mat>",
+                                       destinationSpace == AddressSpace::LEFT
+                                           ? "!pto.ptr<..., left>"
+                                           : "!pto.ptr<..., right>")))
+    return failure();
+  Type elementType = cast<pto::PtrType>(sourceTy).getElementType();
+  if (!isMxLoadElementType(elementType)) {
+    return op->emitOpError()
+           << opName
+           << " expects a 1-byte storage element type (for example FP8, "
+              "HiFloat8, or packed FP4)";
+  }
+  return success();
+}
 
 static std::optional<StringRef> getVdupMaskGranularity(Type elementType) {
+  if (pto::getPTOStorageElemBitWidth(elementType) == 8)
+    return StringRef("b8");
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     switch (intType.getWidth()) {
     case 8:
@@ -965,15 +1062,10 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
 } // namespace
 
 static std::optional<unsigned> getDistElementWidth(Type type) {
-  if (auto intType = dyn_cast<IntegerType>(type))
-    return intType.getWidth();
-  if (type.isF16() || type.isBF16())
-    return 16;
-  if (type.isF32())
-    return 32;
-  if (type.isF64())
-    return 64;
-  return std::nullopt;
+  unsigned width = getPTOStorageElemBitWidth(type);
+  if (!width)
+    return std::nullopt;
+  return width;
 }
 
 static bool matchesWidthFamily(StringRef dist, unsigned width,
@@ -1046,7 +1138,8 @@ static unsigned getIntOrFloatBitWidth(Type type) {
 }
 
 static bool isIntegerOrFloatLike(Type type) {
-  return isa<IntegerType>(type) || isa<FloatType>(type);
+  return isa<IntegerType>(type) || isa<FloatType>(type) ||
+         pto::isPTOLowPrecisionType(type);
 }
 
 static std::optional<int64_t> getVRegStorageBitWidth(Type type) {
@@ -1139,11 +1232,7 @@ static int64_t getBufferElementByteSize(Type type) {
     return 0;
   }
 
-  if (auto floatType = dyn_cast<FloatType>(elementType))
-    return (floatType.getWidth() + 7) / 8;
-  if (auto intType = dyn_cast<IntegerType>(elementType))
-    return (intType.getWidth() + 7) / 8;
-  return 0;
+  return getPTOStorageElemByteSize(elementType);
 }
 
 static bool hasAll(Value first, Value second, Value third) {
@@ -1658,15 +1747,11 @@ LogicalResult VRegType::verify(function_ref<InFlightDiagnostic()> emitError,
     return emitError() << "'" << formatVRegType(elementCount, elementType)
                        << "' expected a positive element count";
 
-  auto intOrFloat = mlir::dyn_cast<IntegerType>(elementType);
-  unsigned elementBitWidth = 0;
-  if (intOrFloat) {
-    elementBitWidth = intOrFloat.getWidth();
-  } else if (auto floatType = mlir::dyn_cast<FloatType>(elementType)) {
-    elementBitWidth = floatType.getWidth();
-  } else {
+  unsigned elementBitWidth = getPTOStorageElemBitWidth(elementType);
+  if (!elementBitWidth || !isIntegerOrFloatLike(elementType)) {
     return emitError() << "'" << formatVRegType(elementCount, elementType)
-                       << "' expected an integer or floating-point element type";
+                       << "' expected an integer, floating-point, or supported "
+                          "low-precision element type";
   }
 
   if (elementCount * static_cast<int64_t>(elementBitWidth) != 2048)
@@ -2183,6 +2268,9 @@ LogicalResult VbrOp::verify() {
   if (isa<ShapedType, VectorType>(elementType))
     return emitOpError("value must be a scalar matching the result element type");
   Type resultElementType = resultVecType.getElementType();
+  if (failed(rejectUnsupportedLowPrecisionType(*this, resultVecType, "result")) ||
+      failed(rejectUnsupportedLowPrecisionType(*this, elementType, "value")))
+    return failure();
   if (!isCompatibleScalarForSemanticType(resultElementType, elementType))
     return emitOpError("value type must match result element type");
   return success();
@@ -2198,6 +2286,9 @@ static LogicalResult verifyWideningReductionVecOp(ReductionOp op,
   auto inputType = dyn_cast<VRegType>(op.getInput().getType());
   auto resultType = dyn_cast<VRegType>(op.getResult().getType());
   if (!inputType || !resultType)
+    return failure();
+  if (failed(rejectUnsupportedLowPrecisionType(op, inputType, "input")) ||
+      failed(rejectUnsupportedLowPrecisionType(op, resultType, "result")))
     return failure();
 
   Type inputElemType = inputType.getElementType();
@@ -2241,6 +2332,9 @@ LogicalResult VcmaxOp::verify() {
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("input and result must have the same vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getInput().getType(),
+                                               "input")))
+    return failure();
   return success();
 }
 
@@ -2250,6 +2344,9 @@ LogicalResult VcminOp::verify() {
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("input and result must have the same vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getInput().getType(),
+                                               "input")))
+    return failure();
   return success();
 }
 
@@ -2473,6 +2570,9 @@ LogicalResult VmaxOp::verify() {
   if (getLhs().getType() != getRhs().getType() ||
       getLhs().getType() != getResult().getType())
     return emitOpError("lhs, rhs, and result must have the same vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getLhs().getType(),
+                                               "lhs")))
+    return failure();
   return success();
 }
 
@@ -2484,6 +2584,9 @@ LogicalResult VminOp::verify() {
   if (getLhs().getType() != getRhs().getType() ||
       getLhs().getType() != getResult().getType())
     return emitOpError("lhs, rhs, and result must have the same vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getLhs().getType(),
+                                               "lhs")))
+    return failure();
   return success();
 }
 
@@ -2942,6 +3045,9 @@ static LogicalResult verifyElementwiseVecScalarOpLike(OpTy op) {
 
   Type elemType = inputType.getElementType();
   Type scalarType = op.getScalar().getType();
+  if (failed(rejectUnsupportedLowPrecisionType(op, inputType, "vector")) ||
+      failed(rejectUnsupportedLowPrecisionType(op, scalarType, "scalar")))
+    return failure();
   if (scalarType == elemType)
     return success();
 
@@ -3055,6 +3161,9 @@ LogicalResult VabsOp::verify() {
     return failure();
   if (getInput().getType() != getResult().getType())
     return emitOpError("requires matching register vector shape");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getInput().getType(),
+                                               "input")))
+    return failure();
   return success();
 }
 
@@ -3068,6 +3177,9 @@ static LogicalResult verifyUnaryVecOp(UnaryOp op) {
     return failure();
   if (op.getInput().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shape");
+  if (failed(rejectUnsupportedLowPrecisionType(op, op.getInput().getType(),
+                                               "input")))
+    return failure();
   return success();
 }
 
@@ -3104,6 +3216,9 @@ static LogicalResult verifyBinaryVecOp(BinaryOp op) {
   if (op.getLhs().getType() != op.getRhs().getType() ||
       op.getLhs().getType() != op.getResult().getType())
     return op.emitOpError("requires matching register vector shapes");
+  if (failed(
+          rejectUnsupportedLowPrecisionType(op, op.getLhs().getType(), "lhs")))
+    return failure();
   return success();
 }
 
@@ -3187,7 +3302,8 @@ static LogicalResult verifyLaneSelectOp(SelectOp op) {
   auto src1ElemType = dyn_cast<IntegerType>(src1Type.getElementType());
   if (!src1ElemType)
     return op.emitOpError("requires src1 to use integer vector elements");
-  if (src1ElemType.getWidth() != getIntOrFloatBitWidth(src0Type.getElementType()))
+  if (src1ElemType.getWidth() !=
+      getPTOStorageElemBitWidth(src0Type.getElementType()))
     return op.emitOpError("requires src1 integer element width to match src0 element width");
   return success();
 }
@@ -3339,6 +3455,9 @@ LogicalResult VcmpsOp::verify() {
   auto srcType = cast<VRegType>(getSrc().getType());
   Type srcElementType = srcType.getElementType();
   Type scalarType = getScalar().getType();
+  if (failed(rejectUnsupportedLowPrecisionType(*this, srcType, "src")) ||
+      failed(rejectUnsupportedLowPrecisionType(*this, scalarType, "scalar")))
+    return failure();
   if (!isCompatibleScalarForSemanticType(srcElementType, scalarType))
     return emitOpError("requires scalar type to match source element type");
   if (!isSupportedCmpMode(getCmpMode()))
@@ -3397,6 +3516,8 @@ LogicalResult VtrcOp::verify() {
     return failure();
   if (inputType != resultType)
     return emitOpError("requires input and result to have identical vreg type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, inputType, "input")))
+    return failure();
   auto elemType = inputType.getElementType();
   if (!(elemType.isF16() || elemType.isF32() || elemType.isBF16()))
     return emitOpError("requires f16/f32/bf16 vector element type");
@@ -3481,6 +3602,9 @@ LogicalResult VcvtOp::verify() {
     return emitOpError("input and result must be !pto.vreg<...>");
   if (failed(verifyMaskTypeLike(*this, getMask().getType(), "mask type")))
     return failure();
+  if (failed(rejectUnsupportedLowPrecisionType(*this, inputType, "input")) ||
+      failed(rejectUnsupportedLowPrecisionType(*this, resultType, "result")))
+    return failure();
 
   VcvtElemKind inputElemKind = classifyVcvtElemType(inputType.getElementType());
   VcvtElemKind resultElemKind = classifyVcvtElemType(resultType.getElementType());
@@ -3560,19 +3684,18 @@ LogicalResult VbitcastOp::verify() {
     return emitOpError("input and result must be !pto.vreg<...>");
 
   auto getStorageBits = [](VRegType type) -> std::optional<int64_t> {
-    Type elementType = type.getElementType();
-    if (auto intType = dyn_cast<IntegerType>(elementType))
-      return type.getElementCount() * static_cast<int64_t>(intType.getWidth());
-    if (auto floatType = dyn_cast<FloatType>(elementType))
-      return type.getElementCount() *
-             static_cast<int64_t>(floatType.getWidth());
-    return std::nullopt;
+    unsigned storageBits = getPTOStorageElemBitWidth(type.getElementType());
+    if (!storageBits)
+      return std::nullopt;
+    return type.getElementCount() * static_cast<int64_t>(storageBits);
   };
 
   auto inputBits = getStorageBits(inputType);
   auto resultBits = getStorageBits(resultType);
   if (!inputBits || !resultBits)
-    return emitOpError("requires integer or floating-point vreg element type");
+    return emitOpError(
+        "requires integer, floating-point, or supported low-precision vreg "
+        "element type");
   if (*inputBits != *resultBits) {
     return emitOpError("requires source and result vectors to carry the same "
                        "total number of bits");
@@ -3688,6 +3811,9 @@ LogicalResult VmulaOp::verify() {
       getAcc().getType() != getRhs().getType() ||
       getAcc().getType() != getResult().getType())
     return emitOpError("requires acc, lhs, rhs, and result to share one vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, getAcc().getType(),
+                                               "acc")))
+    return failure();
   return success();
 }
 
@@ -3725,6 +3851,8 @@ static LogicalResult verifyFloatBinaryVecMaskOp(BinaryVecMaskOp op) {
       op.getLhs().getType() != op.getResult().getType())
     return op.emitOpError("requires lhs, rhs, and result to share one vector type");
   auto lhsType = cast<VRegType>(op.getLhs().getType());
+  if (failed(rejectUnsupportedLowPrecisionType(op, lhsType, "lhs")))
+    return failure();
   Type elemType = lhsType.getElementType();
   if (!elemType.isF16() && !elemType.isF32())
     return op.emitOpError("requires f16 or f32 vector element type");
@@ -3744,6 +3872,8 @@ LogicalResult VexpdifOp::verify() {
   auto resultType = cast<VRegType>(getResult().getType());
   if (inputType != maxType)
     return emitOpError("requires input and max to share one vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, inputType, "input")))
+    return failure();
 
   Type inputElemType = inputType.getElementType();
   if (!inputElemType.isF16() && !inputElemType.isF32())
@@ -3781,6 +3911,10 @@ LogicalResult VaxpyOp::verify() {
   auto resultType = cast<VRegType>(getResult().getType());
   if (src0Type != src1Type || src0Type != resultType)
     return emitOpError("requires src0, src1, and result to share one vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(*this, src0Type, "src0")) ||
+      failed(rejectUnsupportedLowPrecisionType(*this, getAlpha().getType(),
+                                               "alpha")))
+    return failure();
   Type elemType = src0Type.getElementType();
   if (!elemType.isF16() && !elemType.isF32())
     return emitOpError("requires f16 or f32 vector element type");
@@ -3807,6 +3941,9 @@ static LogicalResult verifyFusedConvVecOp(ConvOp op) {
   auto resultType = cast<VRegType>(op.getResult().getType());
   if (lhsType != rhsType)
     return op.emitOpError("requires lhs and rhs to share one vector type");
+  if (failed(rejectUnsupportedLowPrecisionType(op, lhsType, "lhs")) ||
+      failed(rejectUnsupportedLowPrecisionType(op, resultType, "result")))
+    return failure();
   if (!isIntegerOrFloatLike(lhsType.getElementType()) ||
       !isIntegerOrFloatLike(resultType.getElementType()))
     return op.emitOpError(
@@ -4835,6 +4972,30 @@ LogicalResult BiasLoadOp::verify() {
   return success();
 }
 
+LogicalResult LoadCbufToCaOp::verify() {
+  return verifyCubeTypedLoadOp(*this, getSource().getType(),
+                               getDestination().getType(),
+                               AddressSpace::LEFT, "pto.load_cbuf_to_ca");
+}
+
+LogicalResult LoadCbufToCbOp::verify() {
+  return verifyCubeTypedLoadOp(*this, getSource().getType(),
+                               getDestination().getType(),
+                               AddressSpace::RIGHT, "pto.load_cbuf_to_cb");
+}
+
+LogicalResult LoadCbufToCaMxOp::verify() {
+  return verifyCubeMxLoadOp(*this, getSource().getType(),
+                            getDestination().getType(),
+                            AddressSpace::LEFT, "pto.load_cbuf_to_ca_mx");
+}
+
+LogicalResult LoadCbufToCbMxOp::verify() {
+  return verifyCubeMxLoadOp(*this, getSource().getType(),
+                            getDestination().getType(),
+                            AddressSpace::RIGHT, "pto.load_cbuf_to_cb_mx");
+}
+
 LogicalResult CubeLoadFracOp::verify() {
   if (failed(verifyCopyGmToUbufOp(*this, true)))
     return failure();
@@ -5095,6 +5256,18 @@ void RightLoadOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
+LogicalResult LeftLoadOp::verify() {
+  return verifyCubeTypedLoadOp(*this, getSource().getType(),
+                               getDestination().getType(),
+                               AddressSpace::LEFT, "pto.left_load");
+}
+
+LogicalResult RightLoadOp::verify() {
+  return verifyCubeTypedLoadOp(*this, getSource().getType(),
+                               getDestination().getType(),
+                               AddressSpace::RIGHT, "pto.right_load");
+}
+
 void LeftLoadMxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -5102,11 +5275,23 @@ void LeftLoadMxOp::getEffects(
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
 }
 
+LogicalResult LeftLoadMxOp::verify() {
+  return verifyCubeMxLoadOp(*this, getSource().getType(),
+                            getDestination().getType(),
+                            AddressSpace::LEFT, "pto.left_load_mx");
+}
+
 void RightLoadMxOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Read::get(), &getSourceMutable());
   effects.emplace_back(MemoryEffects::Write::get(), &getDestinationMutable());
+}
+
+LogicalResult RightLoadMxOp::verify() {
+  return verifyCubeMxLoadOp(*this, getSource().getType(),
+                            getDestination().getType(),
+                            AddressSpace::RIGHT, "pto.right_load_mx");
 }
 
 void AccStoreOp::getEffects(

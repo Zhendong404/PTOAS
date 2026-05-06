@@ -1,0 +1,71 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s
+
+// CHECK: error: 'pto.vadd' op lhs low-precision element type '!pto.hif8' is not supported by pto.vadd yet
+// CHECK: error: 'pto.vmuls' op vector low-precision element type '!pto.hif8' is not supported by pto.vmuls yet
+// CHECK: error: 'pto.vcvt' op input low-precision element type 'f8E4M3FN' is not supported by pto.vcvt yet
+// CHECK: error: 'pto.vtrc' op input low-precision element type '!pto.hif8' is not supported by pto.vtrc yet
+// CHECK: error: 'pto.vaxpy' op src0 low-precision element type '!pto.f4E2M1x2' is not supported by pto.vaxpy yet
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @reject_low_precision_vadd(
+      %lhs: !pto.vreg<256x!pto.hif8>,
+      %rhs: !pto.vreg<256x!pto.hif8>,
+      %mask: !pto.mask<b8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    pto.vecscope {
+      %0 = pto.vadd %lhs, %rhs, %mask : !pto.vreg<256x!pto.hif8>, !pto.vreg<256x!pto.hif8>, !pto.mask<b8> -> !pto.vreg<256x!pto.hif8>
+    }
+    return
+  }
+
+  func.func @reject_low_precision_vmuls(
+      %vec: !pto.vreg<256x!pto.hif8>,
+      %scalar: i8,
+      %mask: !pto.mask<b8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    pto.vecscope {
+      %0 = pto.vmuls %vec, %scalar, %mask : !pto.vreg<256x!pto.hif8>, i8, !pto.mask<b8> -> !pto.vreg<256x!pto.hif8>
+    }
+    return
+  }
+
+  func.func @reject_low_precision_vcvt(
+      %src: !pto.vreg<256xf8E4M3FN>,
+      %mask: !pto.mask<b8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    pto.vecscope {
+      %0 = pto.vcvt %src, %mask : !pto.vreg<256xf8E4M3FN>, !pto.mask<b8> -> !pto.vreg<128xf16>
+    }
+    return
+  }
+
+  func.func @reject_low_precision_vtrc(
+      %src: !pto.vreg<256x!pto.hif8>,
+      %mask: !pto.mask<b8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    pto.vecscope {
+      %0 = pto.vtrc %src, %mask, "R" : !pto.vreg<256x!pto.hif8>, !pto.mask<b8> -> !pto.vreg<256x!pto.hif8>
+    }
+    return
+  }
+
+  func.func @reject_low_precision_vaxpy(
+      %src0: !pto.vreg<256x!pto.f4E2M1x2>,
+      %src1: !pto.vreg<256x!pto.f4E2M1x2>,
+      %alpha: i8,
+      %mask: !pto.mask<b8>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    pto.vecscope {
+      %0 = pto.vaxpy %src0, %src1, %alpha, %mask : !pto.vreg<256x!pto.f4E2M1x2>, !pto.vreg<256x!pto.f4E2M1x2>, i8, !pto.mask<b8> -> !pto.vreg<256x!pto.f4E2M1x2>
+    }
+    return
+  }
+}

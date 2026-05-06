@@ -1,0 +1,49 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @cube_low_precision_positive() attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : i64
+    %c16 = arith.constant 16 : i64
+    %c64 = arith.constant 64 : i64
+    %src_hif8 = pto.castptr %c0 : i64 -> !pto.ptr<!pto.hif8, mat>
+    %dst_hif8_left = pto.castptr %c0 : i64 -> !pto.ptr<!pto.hif8, left>
+    %dst_hif8_right = pto.castptr %c0 : i64 -> !pto.ptr<!pto.hif8, right>
+    %src_f4 = pto.castptr %c0 : i64 -> !pto.ptr<!pto.f4E2M1x2, mat>
+    %dst_f4_left = pto.castptr %c0 : i64 -> !pto.ptr<!pto.f4E2M1x2, left>
+    %lhs = pto.castptr %c0 : i64 -> !pto.ptr<!pto.hif8, left>
+    %rhs = pto.castptr %c0 : i64 -> !pto.ptr<!pto.f4E1M2x2, right>
+    %dst = pto.castptr %c0 : i64 -> !pto.ptr<f32, acc>
+
+    pto.load_cbuf_to_ca %src_hif8, %dst_hif8_left, %c0, %c0, %c16, %c16, %c16, %c16
+      : !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, left>, i64, i64, i64, i64, i64, i64
+    pto.load_cbuf_to_cb %src_hif8, %dst_hif8_right, %c0, %c0, %c16, %c16, %c16, %c16
+      : !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, right>, i64, i64, i64, i64, i64, i64
+    pto.left_load_mx %src_f4, %dst_f4_left, %c16, %c64
+      : !pto.ptr<!pto.f4E2M1x2, mat>, !pto.ptr<!pto.f4E2M1x2, left>, i64, i64
+    pto.right_load_mx %src_hif8, %dst_hif8_right, %c64, %c16
+      : !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, right>, i64, i64
+    pto.mad_mx %lhs, %rhs, %dst, %c16, %c16, %c64
+      : !pto.ptr<!pto.hif8, left>, !pto.ptr<!pto.f4E1M2x2, right>, !pto.ptr<f32, acc>, i64, i64, i64
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @cube_low_precision_positive
+// CHECK: pto.load_cbuf_to_ca
+// CHECK: !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, left>
+// CHECK: pto.load_cbuf_to_cb
+// CHECK: !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, right>
+// CHECK: pto.load_cbuf_to_ca_mx
+// CHECK: !pto.ptr<!pto.f4E2M1x2, mat>, !pto.ptr<!pto.f4E2M1x2, left>
+// CHECK: pto.load_cbuf_to_cb_mx
+// CHECK: !pto.ptr<!pto.hif8, mat>, !pto.ptr<!pto.hif8, right>
+// CHECK: pto.mad_mx
+// CHECK: !pto.ptr<!pto.hif8, left>, !pto.ptr<!pto.f4E1M2x2, right>, !pto.ptr<f32, acc>
