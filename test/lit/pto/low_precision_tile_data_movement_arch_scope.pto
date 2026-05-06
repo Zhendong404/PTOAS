@@ -1,0 +1,36 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --mlir-print-ir-before=pto-view-to-memref %s 2>&1 | FileCheck %s --check-prefix=A5
+// RUN: not ptoas --pto-arch=a3 --pto-backend=vpto %s 2>&1 | FileCheck %s --check-prefix=A3
+
+module {
+  func.func @low_precision_tile_data_movement(
+      %src_hif8 : !pto.partition_tensor_view<16x64x!pto.hif8>,
+      %dst_hif8 : !pto.tile_buf<loc=vec, dtype=!pto.hif8, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src_f4 : !pto.partition_tensor_view<16x64x!pto.f4E2M1x2>,
+      %dst_f4 : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %src_f8 : !pto.tile_buf<loc=vec, dtype=f8E5M2, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst_f8 : !pto.partition_tensor_view<16x64xf8E5M2>) {
+    pto.tload ins(%src_hif8 : !pto.partition_tensor_view<16x64x!pto.hif8>)
+              outs(%dst_hif8 : !pto.tile_buf<loc=vec, dtype=!pto.hif8, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tprefetch ins(%src_f4 : !pto.partition_tensor_view<16x64x!pto.f4E2M1x2>)
+                  outs(%dst_f4 : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%src_f8 : !pto.tile_buf<loc=vec, dtype=f8E5M2, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst_f8 : !pto.partition_tensor_view<16x64xf8E5M2>)
+    return
+  }
+}
+
+// A5-LABEL: func.func @low_precision_tile_data_movement(
+// A5: pto.tload ins(%{{.*}} : !pto.partition_tensor_view<16x64x!pto.hif8>)
+// A5: pto.tprefetch ins(%{{.*}} : !pto.partition_tensor_view<16x64x!pto.f4E2M1x2>)
+// A5: pto.tstore ins(%{{.*}} : !pto.tile_buf<vec, 16x64xf8E5M2>)
+// A5: error: low-precision dtype operand(s) [#0=!pto.hif8, #1=!pto.hif8] are not supported by ExpandTileOp tilelang template specialization yet for target a5
+
+// A3: error: 'pto.tload' op expects A2/A3 tload src element type to be i8/i16/i32/i64/u64/f16/bf16/f32

@@ -96,8 +96,11 @@ describe the physical packed extent, i.e. the number of packed FP4 pairs
 (equivalently the number of bytes in the packed dimension), not the logical
 number of scalar FP4 elements.
 
-Operation support is still opt-in. Defining the type in PTO IR does not by
-itself imply that any particular operation accepts it.
+On A5, tile-entry verifier support is currently opt-in per operation. At this
+stage `pto.alloc_tile`, `pto.tload`, `pto.tstore`, `pto.tprefetch`, and
+`pto.tcvt` accept
+these low-precision dtypes, while other tile ops may still reject them until
+their verifier/lowering contracts are added.
 
 ### 2.2 `!pto.ptr<elementType[, memorySpace]>`
 

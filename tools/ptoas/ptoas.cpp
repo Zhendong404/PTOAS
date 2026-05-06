@@ -7,6 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
@@ -399,6 +400,30 @@ enum class PTOBackend {
   EmitC,
   VPTO,
 };
+
+static bool
+emitUnsupportedLowPrecisionAllocTileDiagnostic(ModuleOp module,
+                                               PTOBackend effectiveBackend) {
+  bool hasUnsupportedLowPrecisionAllocTile = false;
+  module->walk([&](pto::AllocTileOp op) {
+    if (hasUnsupportedLowPrecisionAllocTile)
+      return;
+    Type elemTy = op.getResult().getType().getElementType();
+    if (!pto::isPTOLowPrecisionType(elemTy))
+      return;
+    if (!pto::isTargetArchA5(op.getOperation()))
+      return;
+    if (effectiveBackend == PTOBackend::VPTO)
+      return;
+
+    op.emitError()
+        << "result dtype " << elemTy
+        << " requires --pto-backend=vpto on A5; emitc does not support "
+           "low-precision alloc_tile yet";
+    hasUnsupportedLowPrecisionAllocTile = true;
+  });
+  return hasUnsupportedLowPrecisionAllocTile;
+}
 
 static PTOBuildLevel defaultBuildLevel() {
   return PTOBuildLevel::Level2;
@@ -1590,6 +1615,9 @@ int main(int argc, char **argv) {
     if (hasAddr)
       return 1;
   }
+
+  if (emitUnsupportedLowPrecisionAllocTileDiagnostic(*module, effectiveBackend))
+    return 1;
 
   // [Fix] ToolOutputFile Usage
   std::error_code ec;

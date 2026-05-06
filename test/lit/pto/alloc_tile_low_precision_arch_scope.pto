@@ -1,0 +1,33 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s --check-prefix=A5-VPTO
+// RUN: not ptoas --pto-arch=a5 %s -o - 2>&1 | FileCheck %s --check-prefix=A5-EMITC
+// RUN: not ptoas --pto-arch=a3 --pto-backend=vpto %s -o - 2>&1 | FileCheck %s --check-prefix=A3-VPTO
+
+module {
+  func.func @alloc_low_precision_tiles() {
+    %hif8 = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=!pto.hif8, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %fp4 = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=!pto.f4E1M2x2, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %fp8 = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=16, cols=64, v_row=16, v_col=64,
+                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    return
+  }
+}
+
+// A5-VPTO: func.func @alloc_low_precision_tiles
+// A5-VPTO-NOT: error:
+
+// A5-EMITC: error: result dtype '!pto.hif8' requires --pto-backend=vpto on A5; emitc does not support low-precision alloc_tile yet
+
+// A3-VPTO: error: 'pto.alloc_tile' op result dtype '!pto.hif8' is only supported by pto.alloc_tile on A5
