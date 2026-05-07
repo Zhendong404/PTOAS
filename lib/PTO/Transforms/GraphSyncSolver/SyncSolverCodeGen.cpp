@@ -51,7 +51,39 @@ Location CodeGenerator::resolveSyncLoc(OperationBase *opBase) {
 void CodeGenerator::setInsertionPoint(IRRewriter &rewriter,
                                       OperationBase *opBase,
                                       bool insertAfter) {
-  Operation *anchor = resolveSyncAnchor(opBase);
+  if (auto *ph = dyn_cast_or_null<PlaceHolder>(opBase)) {
+    // Block-start placeholder: insert at the very top of the block.
+    if (ph->scopeBegin && ph->block) {
+      rewriter.setInsertionPointToStart(ph->block);
+      return;
+    }
+    // Block-end placeholder: insert before the terminator if any, otherwise
+    // at the end of the block.
+    if (ph->scopeEnd && ph->block) {
+      if (!ph->block->empty() &&
+          ph->block->back().hasTrait<OpTrait::IsTerminator>())
+        rewriter.setInsertionPoint(&ph->block->back());
+      else
+        rewriter.setInsertionPointToEnd(ph->block);
+      return;
+    }
+    // Loop-boundary slot. The placeholder names the linked loop op via
+    // beforeOp/afterOp; the side is picked by the `insertAfter` flag, which
+    // by the solver's convention agrees with the field that is set.
+    OperationBase *linked = ph->beforeOp ? ph->beforeOp : ph->afterOp;
+    if (linked && linked->op) {
+      if (insertAfter)
+        rewriter.setInsertionPointAfter(linked->op);
+      else
+        rewriter.setInsertionPoint(linked->op);
+      return;
+    }
+    // Malformed placeholder: fall back to the function entry to keep the
+    // pass from crashing.
+    rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+    return;
+  }
+  Operation *anchor = opBase ? opBase->op : nullptr;
   if (!anchor) {
     rewriter.setInsertionPointToStart(&funcOp.getBody().front());
     return;
@@ -74,16 +106,20 @@ void CodeGenerator::emitSyncOp(IRRewriter &rewriter, SyncOp *syncOp) {
   if (!setWait || setWait->eventIds.empty())
     return;
 
-  int64_t eventId = setWait->eventIds.front();
+  // One set/wait op per assigned event id. The current solver only assigns
+  // a single id per node, but the codegen handles multi-id assignments so a
+  // future multi-buffer pass can plug in without re-touching this layer.
   auto srcAttr = makePipe(rewriter.getContext(), setWait->pipeSrc);
   auto dstAttr = makePipe(rewriter.getContext(), setWait->pipeDst);
-  auto eventAttr = makeEvent(rewriter.getContext(), eventId);
   Location loc = resolveSyncLoc(setWait);
-
-  if (isa<SetFlagOp>(setWait)) {
-    rewriter.create<pto::SetFlagOp>(loc, srcAttr, dstAttr, eventAttr);
-  } else if (isa<WaitFlagOp>(setWait)) {
-    rewriter.create<pto::WaitFlagOp>(loc, srcAttr, dstAttr, eventAttr);
+  bool isSet = isa<SetFlagOp>(setWait);
+  bool isWait = isa<WaitFlagOp>(setWait);
+  for (int64_t eventId : setWait->eventIds) {
+    auto eventAttr = makeEvent(rewriter.getContext(), eventId);
+    if (isSet)
+      rewriter.create<pto::SetFlagOp>(loc, srcAttr, dstAttr, eventAttr);
+    else if (isWait)
+      rewriter.create<pto::WaitFlagOp>(loc, srcAttr, dstAttr, eventAttr);
   }
 }
 
