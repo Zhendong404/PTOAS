@@ -3024,7 +3024,9 @@ def TColExpandDivOp : PTO_TOp<"tcolexpanddiv", [
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -3402,7 +3404,9 @@ def TDivOp : PTO_TOp<"tdiv", [
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -3432,7 +3436,9 @@ def TDivSOp : PTO_TOp<"tdivs", [
   let arguments = (ins
     AnyType:$src,
     AnyType:$scalar,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -3515,7 +3521,9 @@ def TExpOp : PTO_TOp<"texp", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -3953,7 +3961,9 @@ def TLogOp : PTO_TOp<"tlog", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -4634,7 +4644,9 @@ def TRecipOp: PTO_TOp<"trecip", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -4827,7 +4839,9 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
     PTODpsType:$src0,
     PTODpsType:$src1,
     Optional<PTODpsType>:$tmp,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -5218,7 +5232,9 @@ def TRsqrtOp: PTO_TOp<"trsqrt", [
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    Optional<PTODpsType>:$tmp
+    Optional<PTODpsType>:$tmp,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);
@@ -5527,7 +5543,9 @@ def TSqrtOp: PTO_TOp<"tsqrt", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_PrecisionModeAttr,
+                      "::mlir::pto::PrecisionMode::DEFAULT">:$precision_mode
   );
 
   let results = (outs);

@@ -420,6 +420,21 @@ def PTO_RoundModeAttr : EnumAttr<PTO_Dialect, PTO_RoundModeEnum, "round_mode"> {
 }
 
 //===----------------------------------------------------------------------===//
+// PrecisionMode
+//===----------------------------------------------------------------------===//
+
+def PTO_PrecisionModeEnum : PTO_I32Enum<
+  "PrecisionMode", "PTO precision mode for elementwise math ops", [
+    I32EnumAttrCase<"DEFAULT", 0>,
+    I32EnumAttrCase<"HIGH_PRECISION", 1>
+  ]>;
+
+def PTO_PrecisionModeAttr
+    : EnumAttr<PTO_Dialect, PTO_PrecisionModeEnum, "precision_mode"> {
+  let summary = "precision mode attribute for elementwise math ops";
+}
+
+//===----------------------------------------------------------------------===//
 // SaturationMode
 //===----------------------------------------------------------------------===//
 

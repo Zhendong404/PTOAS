@@ -2331,6 +2331,17 @@ static Type getElemTy(Type ty) {
   return Type();
 }
 
+static LogicalResult verifyPrecisionModeFloatOnly(Operation *op,
+                                                  pto::PrecisionMode mode,
+                                                  Type elem) {
+  if (mode != pto::PrecisionMode::HIGH_PRECISION)
+    return success();
+  if (elem.isF16() || elem.isF32())
+    return success();
+  return op->emitOpError()
+         << "precision_mode = HIGH_PRECISION requires element type to be f16 or f32";
+}
+
 static SmallVector<int64_t, 4> getShapeVec(Type ty) {
   SmallVector<int64_t, 4> s;
   if (auto mr = ty.dyn_cast<MemRefType>())
@@ -3982,10 +3993,13 @@ LogicalResult pto::TColExpandAddOp::verify() {
 LogicalResult pto::TColExpandDivOp::verify() {
   auto verifyByArch = [&](PTOArch targetArch) -> LogicalResult {
     bool allowIntegerTypes = (targetArch == PTOArch::A5);
-    return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
-                                        getSrc1().getType(), getDst().getType(),
-                                        targetArch, "tcolexpanddiv",
-                                        /*allowIntegerTypes=*/allowIntegerTypes);
+    if (failed(verifyTColExpandBinaryLikeOp(
+            getOperation(), getSrc0().getType(), getSrc1().getType(),
+            getDst().getType(), targetArch, "tcolexpanddiv",
+            /*allowIntegerTypes=*/allowIntegerTypes)))
+      return failure();
+    return verifyPrecisionModeFloatOnly(getOperation(), getPrecisionMode(),
+                                        getElemTy(getSrc0().getType()));
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
   auto verifyA5 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A5); };
@@ -4344,7 +4358,7 @@ mlir::LogicalResult mlir::pto::TDivSOp::verify() {
         !(elem.isInteger(32) || elem.isInteger(16) || elem.isInteger(8) ||
           elem.isF16() || elem.isF32()))
       return emitOpError("expects A5 tdivs element type to be i32/i16/i8/f16/f32");
-    return success();
+    return verifyPrecisionModeFloatOnly(getOperation(), getPrecisionMode(), elem);
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
   auto verifyA5 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A5); };
@@ -8048,7 +8062,7 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
             "expects A5 trowexpanddiv element type to be i8/i16/i32/f16/f32");
       return emitOpError("expects element type to be f16 or f32");
     }
-    return mlir::success();
+    return verifyPrecisionModeFloatOnly(getOperation(), getPrecisionMode(), elem);
   };
   auto verifyA2A3 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A3); };
   auto verifyA5 = [&]() -> LogicalResult { return verifyByArch(PTOArch::A5); };

@@ -1729,8 +1729,11 @@ struct PTOViewToMemrefPass
       for (auto op : exp) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TExpOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1));
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.create<pto::TExpOp>(
+            op.getLoc(), TypeRange{}, op->getOperand(0), op->getOperand(1));
+        newOp->setAttrs(attrs);
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       // --- TMulOp [Src, Scalar, Dst] ---
@@ -2537,12 +2540,11 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TDivOp>(
-            op,
-            TypeRange{},
-            src0,
-            src1,
-            dst);
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.create<pto::TDivOp>(
+            op.getLoc(), TypeRange{}, src0, src1, dst);
+        newOp->setAttrs(attrs);
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       SmallVector<mlir::pto::TDivSOp, 8> divsops;
@@ -2906,11 +2908,11 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TLogOp>(
-            op,
-            TypeRange{},
-            src,
-            dst);
+        auto attrs = op->getAttrs();
+        auto newOp = rewriter.create<pto::TLogOp>(
+            op.getLoc(), TypeRange{}, src, dst);
+        newOp->setAttrs(attrs);
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       SmallVector<mlir::pto::TLReluOp, 8> lreluops;

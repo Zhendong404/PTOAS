@@ -43,6 +43,9 @@ pto.<op> ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>)
 - The valid region must match across all three tiles.
 - Element type legality is target-defined; ops specialize over the tile dtype selected at expansion time.
 - `pto.tdiv` uses element-wise division; **undefined behavior** on divide-by-zero.
+- `pto.tdiv` additionally accepts `precision_mode = #pto<precision_mode DEFAULT|HIGH_PRECISION>`.
+  Omitted means `DEFAULT`.
+  `HIGH_PRECISION` is currently legal only when the tile element type is `f16` or `f32`.
 
 **Example:**
 
@@ -80,9 +83,11 @@ For `pto.tdivs`:
 ```mlir
 pto.tdivs ins(%src, %scalar : !pto.tile_buf<...>, <scalar_type>)
           outs(%dst : !pto.tile_buf<...>)
+          {precision_mode = #pto<precision_mode HIGH_PRECISION>}
 
 pto.tdivs ins(%scalar, %src : <scalar_type>, !pto.tile_buf<...>)
           outs(%dst : !pto.tile_buf<...>)
+          {precision_mode = #pto<precision_mode HIGH_PRECISION>}
 ```
 
 **Parameter Table:**
@@ -98,6 +103,9 @@ pto.tdivs ins(%scalar, %src : <scalar_type>, !pto.tile_buf<...>)
 - `src` and `dst` must be shape-compatible `loc=vec` tile buffers.
 - The scalar element type must be compatible with the tile element type.
 - `pto.tdivs` is the only scalar family with two public operand orders. **Undefined behavior** on divide-by-zero (either `scalar==0` or any `src[i,j]==0` in the `scalar/src` form).
+- `pto.tdivs` additionally accepts `precision_mode = #pto<precision_mode DEFAULT|HIGH_PRECISION>`.
+  Omitted means `DEFAULT`.
+  `HIGH_PRECISION` is currently legal only when the tile element type is `f16` or `f32`.
 
 **Example:**
 
@@ -137,6 +145,18 @@ pto.<op> ins(%src : !pto.tile_buf<...>)
 - `src` and `dst` must have the same valid region.
 - These ops are numeric Tile Instruction ops on `loc=vec`.
 - **Undefined behavior** on out-of-domain inputs: `tlog(<=0)`, `tsqrt(<0)`, `trsqrt(<=0)`, `trecip(0)`.
+- `pto.texp`, `pto.tlog`, `pto.tsqrt`, `pto.trsqrt`, and `pto.trecip` additionally accept
+  `precision_mode = #pto<precision_mode DEFAULT|HIGH_PRECISION>`.
+  Omitted means `DEFAULT`.
+  For these five unary ops, `HIGH_PRECISION` is currently legal on their supported floating-point element types.
+
+**Precision-Mode Form:**
+
+```mlir
+pto.<op> ins(%src : !pto.tile_buf<...>)
+         outs(%dst : !pto.tile_buf<...>)
+         {precision_mode = #pto<precision_mode HIGH_PRECISION>}
+```
 
 **Example:**
 

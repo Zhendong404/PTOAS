@@ -8,6 +8,7 @@
 
 import importlib
 import importlib.util
+import functools
 from pathlib import Path
 
 from mlir import ir as _ods_ir
@@ -76,6 +77,8 @@ ReluPreMode = _pto_mod.ReluPreMode
 ReluPreModeAttr = _pto_mod.ReluPreModeAttr
 RoundMode = _pto_mod.RoundMode
 RoundModeAttr = _pto_mod.RoundModeAttr
+PrecisionMode = _pto_mod.PrecisionMode
+PrecisionModeAttr = _pto_mod.PrecisionModeAttr
 SaturationMode = _pto_mod.SaturationMode
 SaturationModeAttr = _pto_mod.SaturationModeAttr
 CmpMode = _pto_mod.CmpMode
@@ -95,6 +98,7 @@ QuantTypeAttr = _pto_mod.QuantTypeAttr
 
 
 _ptr_type_get_impl = PtrType.get
+_ods_get_default_loc_context = getattr(_pto_ops_gen, "_ods_get_default_loc_context")
 
 
 def _ptr_type_get_compat(cls, element_type, memory_space=None, context=None):
@@ -109,6 +113,41 @@ def _ptr_type_get_compat(cls, element_type, memory_space=None, context=None):
 
 
 PtrType.get = classmethod(_ptr_type_get_compat)
+
+
+def _default_precision_mode_attr(loc=None):
+    ctx = _ods_get_default_loc_context(loc)
+    return PrecisionModeAttr.get(PrecisionMode.DEFAULT, ctx)
+
+
+def _install_default_precision_mode_compat():
+    for op_name in (
+        "TDivOp",
+        "TDivSOp",
+        "TExpOp",
+        "TLogOp",
+        "TRecipOp",
+        "TRowExpandDivOp",
+        "TRsqrtOp",
+        "TSqrtOp",
+        "TColExpandDivOp",
+    ):
+        op_cls = getattr(_pto_ops_gen, op_name, None)
+        if op_cls is None or getattr(op_cls, "_pto_default_precision_mode_compat", False):
+            continue
+        original_init = op_cls.__init__
+
+        @functools.wraps(original_init)
+        def compat_init(self, *args, __orig_init=original_init, precision_mode=None, **kwargs):
+            if precision_mode is None:
+                precision_mode = _default_precision_mode_attr(kwargs.get("loc"))
+            __orig_init(self, *args, precision_mode=precision_mode, **kwargs)
+
+        op_cls.__init__ = compat_init
+        op_cls._pto_default_precision_mode_compat = True
+
+
+_install_default_precision_mode_compat()
 
 __all__ = [
     # Dialect utilities
@@ -140,6 +179,8 @@ __all__ = [
     "ReluPreModeAttr",
     "RoundMode",
     "RoundModeAttr",
+    "PrecisionMode",
+    "PrecisionModeAttr",
     "SaturationMode",
     "SaturationModeAttr",
     "CmpMode",

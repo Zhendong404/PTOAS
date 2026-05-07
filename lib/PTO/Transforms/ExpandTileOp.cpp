@@ -45,6 +45,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
@@ -247,6 +248,45 @@ static std::optional<std::string> getTCvtRoundModeString(pto::TCvtOp op) {
   return std::nullopt;
 }
 
+static StringRef getPrecisionModeString(pto::PrecisionMode mode) {
+  switch (mode) {
+  case pto::PrecisionMode::DEFAULT:
+    return "DEFAULT";
+  case pto::PrecisionMode::HIGH_PRECISION:
+    return "HIGH_PRECISION";
+  }
+  llvm_unreachable("unknown PrecisionMode");
+}
+
+// MUST stay in sync with template behavior. Adding an op here without a real
+// HIGH_PRECISION code path would silence the warning while preserving DEFAULT
+// behavior.
+static const llvm::StringSet<> &highPrecisionImplementedOps() {
+  static const llvm::StringSet<> kImplementedOps{};
+  return kImplementedOps;
+}
+
+template <typename OpT>
+static bool tryAppendPrecisionMode(
+    Operation *op,
+    SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
+  auto typed = dyn_cast<OpT>(op);
+  if (!typed)
+    return false;
+
+  pto::PrecisionMode mode = typed.getPrecisionMode();
+  attrs.emplace_back("precision_mode", getPrecisionModeString(mode).str());
+
+  if (mode == pto::PrecisionMode::HIGH_PRECISION &&
+      !highPrecisionImplementedOps().contains(op->getName().getStringRef())) {
+    StringRef opName = op->getName().getStringRef();
+    llvm::errs() << "warning: '" << opName << "' op " << opName
+                 << ": precision_mode = HIGH_PRECISION requested but not yet "
+                    "implemented; falling back to DEFAULT behavior\n";
+  }
+  return true;
+}
+
 static std::string getTRandomRoundsString(pto::TRandomOp op) {
   return std::to_string(op.getRounds());
 }
@@ -273,6 +313,15 @@ static void appendOpContextAttrs(
                          stringifyCmpMode(cmpModeAttr.getValue()).str());
     }
   }
+  (void)(tryAppendPrecisionMode<pto::TExpOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TLogOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TSqrtOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TRecipOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TRsqrtOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TDivOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TDivSOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TRowExpandDivOp>(op, attrs) ||
+         tryAppendPrecisionMode<pto::TColExpandDivOp>(op, attrs));
 }
 
 static bool getStaticIntFromValue(Value value, int64_t &out) {

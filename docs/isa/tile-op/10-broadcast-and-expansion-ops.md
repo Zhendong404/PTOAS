@@ -103,6 +103,9 @@ pto.<op> ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>)
 - `src1` must provide one logical scalar per destination row.
 - Templates target row-major VEC layouts.
 - `pto.trowexpanddiv` and `pto.trowexpandexpdif` are floating-point-only.
+- `pto.trowexpanddiv` additionally accepts `precision_mode = #pto<precision_mode DEFAULT|HIGH_PRECISION>`.
+  Omitted means `DEFAULT`.
+  `HIGH_PRECISION` is currently legal only when the tile element type is `f16` or `f32`.
 
 **Example:**
 
@@ -110,6 +113,13 @@ pto.<op> ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>)
 pto.trowexpandadd ins(%src0, %src1 : !pto.tile_buf<vec, 16x128xf32>,
                                      !pto.tile_buf<vec, 16x1xf32, blayout=col_major>)
                   outs(%dst : !pto.tile_buf<vec, 16x128xf32>)
+```
+
+```mlir
+pto.trowexpanddiv ins(%src0, %src1 : !pto.tile_buf<vec, 16x128xf32>,
+                                     !pto.tile_buf<vec, 16x1xf32, blayout=col_major>)
+                  outs(%dst : !pto.tile_buf<vec, 16x128xf32>)
+                  {precision_mode = #pto<precision_mode HIGH_PRECISION>}
 ```
 
 ---
@@ -180,6 +190,9 @@ pto.<op> ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>)
 - `src1` must provide one logical scalar per destination column.
 - Templates target row-major VEC layouts.
 - `pto.tcolexpanddiv` and `pto.tcolexpandexpdif` are floating-point-only.
+- `pto.tcolexpanddiv` additionally accepts `precision_mode = #pto<precision_mode DEFAULT|HIGH_PRECISION>`.
+  Omitted means `DEFAULT`.
+  `HIGH_PRECISION` is currently legal only when the tile element type is `f16` or `f32`.
 
 **Example:**
 
@@ -187,4 +200,11 @@ pto.<op> ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>)
 pto.tcolexpandadd ins(%src0, %src1 : !pto.tile_buf<vec, 16x128xf32>,
                                      !pto.tile_buf<vec, 1x128xf32>)
                   outs(%dst : !pto.tile_buf<vec, 16x128xf32>)
+```
+
+```mlir
+pto.tcolexpanddiv ins(%src0, %src1 : !pto.tile_buf<vec, 16x128xf32>,
+                                     !pto.tile_buf<vec, 1x128xf32>)
+                  outs(%dst : !pto.tile_buf<vec, 16x128xf32>)
+                  {precision_mode = #pto<precision_mode HIGH_PRECISION>}
 ```
