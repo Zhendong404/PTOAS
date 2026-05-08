@@ -1359,6 +1359,12 @@ ConflictPair *Solver::getReusableConflictPair(
     if (curConflictPair->isBarrier() || curConflictPair->dontReuse) {
       continue;
     }
+    if (curConflictPair->op1 != conflictPair->op1 ||
+        curConflictPair->op2 != conflictPair->op2 ||
+        curConflictPair->setCorePipeInfo != conflictPair->setCorePipeInfo ||
+        curConflictPair->waitCorePipeInfo != conflictPair->waitCorePipeInfo) {
+      continue;
+    }
     if (!checkIntersect(conflictPair, curConflictPair)) {
       continue;
     }
@@ -2046,6 +2052,9 @@ bool Solver::checkMergeable(Scope *scopeOp, CorePipeInfo corePipeSrc,
     }
   }
   if (auto *conditionOp = llvm::dyn_cast<Condition>(scopeOp)) {
+    if (!conditionOp->hasFalseScope()) {
+      return false;
+    }
     return checkMergeable(conditionOp->getTrueScope(), corePipeSrc, corePipeDst,
                           eventId, true) &&
            checkMergeable(conditionOp->getFalseScope(), corePipeSrc,
