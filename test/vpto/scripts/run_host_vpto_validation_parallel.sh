@@ -76,7 +76,6 @@ RUNNER_LOG="${WORK_SPACE}/parallel-runner.log"
 
 discover_cases() {
   local required_files=(
-    stub.cpp
     launch.cpp
     main.cpp
     golden.py
@@ -89,9 +88,9 @@ discover_cases() {
     for f in "${required_files[@]}"; do
       [[ -f "${requested_dir}/${f}" ]] || die "case ${CASE_NAME} is missing ${f}"
     done
-    [[ -f "${requested_dir}/kernel.pto" || -f "${requested_dir}/cube.pto" ]] ||
-      die "case ${CASE_NAME} must provide kernel.pto and/or cube.pto"
-    printf "%s\n" "${CASE_NAME#/}"
+    [[ -f "${requested_dir}/kernel.pto" ]] ||
+      die "case ${CASE_NAME} must provide kernel.pto"
+    printf "%s\n" "${CASE_NAME}"
     return 0
   fi
 
@@ -104,9 +103,7 @@ discover_cases() {
       fi
     done
     [[ "${ok}" -eq 1 ]] || continue
-    if [[ ! -f "${dir}/kernel.pto" && ! -f "${dir}/cube.pto" ]]; then
-      continue
-    fi
+    [[ -f "${dir}/kernel.pto" ]] || continue
     local rel="${dir#${CASES_ROOT}/}"
     if [[ -n "${CASE_PREFIX}" && "${rel}" != "${CASE_PREFIX}"* ]]; then
       continue

@@ -23,12 +23,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
-#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/raw_ostream.h"
@@ -44,6 +44,10 @@ LogicalResult attachAIVectorScopeMetadata(llvm::Module &llvmModule,
 void attachHIVMKernelAnnotations(llvm::Module &llvmModule);
 
 namespace {
+
+constexpr llvm::StringLiteral kAICoreAttrName = "pto.aicore";
+constexpr llvm::StringLiteral kVectorSuffix = "_mix_aiv";
+constexpr llvm::StringLiteral kCubeSuffix = "_mix_aic";
 
 static std::string getElementTypeFragment(Type type);
 static Type getElementTypeFromVectorLike(Type type);
@@ -7637,37 +7641,165 @@ static void forceV300CtrlModeForVPTOFuncs(ModuleOp module) {
   }
 }
 
+static std::optional<FunctionKernelKind> getKernelKind(ModuleOp module) {
+  auto kernelKind = module->getAttrOfType<FunctionKernelKindAttr>(
+      FunctionKernelKindAttr::name);
+  if (!kernelKind)
+    return std::nullopt;
+  return kernelKind.getKernelKind();
+}
+
+static VPTOEmissionOptions
+makeDeviceEmissionOptions(const VPTOEmissionOptions &baseOptions,
+                          FunctionKernelKind kind) {
+  VPTOEmissionOptions options = baseOptions;
+  if (kind == FunctionKernelKind::Vector) {
+    options.march = "dav-c310-vec";
+    options.aicoreArch = "dav-c310-vec";
+    options.defaultTargetCPU = "dav-c310-vec";
+  } else if (kind == FunctionKernelKind::Cube) {
+    options.march = "dav-c310-cube";
+    options.aicoreArch = "dav-c310-cube";
+    options.defaultTargetCPU = "dav-c310-cube";
+  }
+  return options;
+}
+
+static FailureOr<ModuleOp>
+getUniqueDeviceModuleByKernelKind(ModuleOp module, FunctionKernelKind kind,
+                                  llvm::raw_ostream &diagOS) {
+  ModuleOp matched;
+  for (ModuleOp child : module.getOps<ModuleOp>()) {
+    auto kernelKind = getKernelKind(child);
+    if (!kernelKind)
+      continue;
+    if (*kernelKind != kind)
+      continue;
+    if (matched) {
+      diagOS << "VPTO LLVM emission failed: duplicate device module with "
+             << FunctionKernelKindAttr::name << "\n";
+      return failure();
+    }
+    matched = child;
+  }
+  return matched;
+}
+
+static LogicalResult renameAICoreFunctionsForKernelKind(ModuleOp module,
+                                                        llvm::raw_ostream &diagOS) {
+  auto kernelKind = getKernelKind(module);
+  if (!kernelKind) {
+    diagOS << "VPTO LLVM emission failed: device module missing "
+           << FunctionKernelKindAttr::name << "\n";
+    return failure();
+  }
+
+  StringRef suffix;
+  if (*kernelKind == FunctionKernelKind::Vector)
+    suffix = kVectorSuffix;
+  else if (*kernelKind == FunctionKernelKind::Cube)
+    suffix = kCubeSuffix;
+  else {
+    diagOS << "VPTO LLVM emission failed: unsupported "
+           << FunctionKernelKindAttr::name << "\n";
+    return failure();
+  }
+
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (!funcOp->hasAttr(kAICoreAttrName))
+      continue;
+    if (funcOp.getSymName().ends_with(suffix))
+      continue;
+    funcOp.setSymName((funcOp.getSymName() + suffix).str());
+  }
+  return success();
+}
+
+struct LowerVPTOOpsPass final
+    : public PassWrapper<LowerVPTOOpsPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    if (failed(lowerVPTOOps(getOperation(), llvm::errs())))
+      signalPassFailure();
+  }
+};
+
+struct LowerVPTOTypesPass final
+    : public PassWrapper<LowerVPTOTypesPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    if (failed(lowerVPTOTypes(getOperation(), llvm::errs())))
+      signalPassFailure();
+  }
+};
+
+struct NormalizeFuncSignaturesForLLVMLoweringPass final
+    : public PassWrapper<NormalizeFuncSignaturesForLLVMLoweringPass,
+                         OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    normalizeFuncSignaturesForOfficialLLVMLowering(getOperation());
+  }
+};
+
+struct PrepareVPTOLLVMLoweringPass final
+    : public PassWrapper<PrepareVPTOLLVMLoweringPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    pto::annotatePTOEntryFunctions(module);
+    materializeVecScopeCarrierLoops(module);
+    forceV300CtrlModeForVPTOFuncs(module);
+    if (failed(renameAICoreFunctionsForKernelKind(module, llvm::errs())))
+      signalPassFailure();
+  }
+};
+
+static FailureOr<EmittedLLVMModule>
+emitDeviceLLVMModule(ModuleOp deviceModule, StringRef kernelKind,
+                     const VPTOEmissionOptions &options,
+                     llvm::raw_ostream &diagOS) {
+  if (!deviceModule)
+    return EmittedLLVMModule{};
+  if (failed(applyQueriedTargetAttrs(deviceModule, options, diagOS)))
+    return failure();
+
+  auto llvmContext = std::make_unique<llvm::LLVMContext>();
+  registerBuiltinDialectTranslation(*deviceModule.getContext());
+  registerLLVMDialectTranslation(*deviceModule.getContext());
+  std::unique_ptr<llvm::Module> llvmModule =
+      translateModuleToLLVMIR(deviceModule.getOperation(), *llvmContext);
+  if (!llvmModule) {
+    diagOS << "VPTO LLVM emission failed: LLVM IR export failed for "
+           << kernelKind << " module\n";
+    return failure();
+  }
+
+  if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
+    return failure();
+  attachHIVMKernelAnnotations(*llvmModule);
+  llvmModule->setModuleIdentifier(("ptoas.hivm.official." + kernelKind).str());
+  llvmModule->setSourceFileName(("ptoas.hivm.official." + kernelKind).str());
+  return EmittedLLVMModule{std::move(llvmContext), std::move(llvmModule)};
+}
+
 template <typename EmitFn>
 static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
-                                 const VPTOEmissionOptions &options,
                                  EmitFn &&emit) {
   OwningOpRef<Operation *> clonedOp(module->clone());
   ModuleOp clonedModule = cast<ModuleOp>(*clonedOp);
 
-  pto::annotatePTOEntryFunctions(clonedModule);
-  materializeVecScopeCarrierLoops(clonedModule);
-  forceV300CtrlModeForVPTOFuncs(clonedModule);
-
-  if (failed(lowerVPTOOps(clonedModule, diagOS))) {
-    diagOS << "VPTO LLVM emission failed: lowerVPTOOps failed\n";
-    return failure();
-  }
-  if (failed(lowerVPTOTypes(clonedModule, diagOS))) {
-    diagOS << "VPTO LLVM emission failed: lowerVPTOTypes failed\n";
-    return failure();
-  }
-
-  normalizeFuncSignaturesForOfficialLLVMLowering(clonedModule);
-
   PassManager pm(clonedModule.getContext());
   pm.enableVerifier();
-  pm.addPass(createConvertSCFToCFPass());
-  pm.addPass(createArithToLLVMConversionPass());
-  pm.addPass(createConvertIndexToLLVMPass());
-  pm.addPass(createFinalizeMemRefToLLVMConversionPass());
-  pm.addPass(createConvertFuncToLLVMPass());
-  pm.addPass(createConvertControlFlowToLLVMPass());
-  pm.addPass(createReconcileUnrealizedCastsPass());
+  auto &kernelModulePM = pm.nest<ModuleOp>();
+  kernelModulePM.addPass(std::make_unique<PrepareVPTOLLVMLoweringPass>());
+  kernelModulePM.addPass(std::make_unique<LowerVPTOOpsPass>());
+  kernelModulePM.addPass(std::make_unique<LowerVPTOTypesPass>());
+  kernelModulePM.addPass(
+      std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
+  kernelModulePM.addPass(createConvertSCFToCFPass());
+  kernelModulePM.addPass(createArithToLLVMConversionPass());
+  kernelModulePM.addPass(createConvertIndexToLLVMPass());
+  kernelModulePM.addPass(createFinalizeMemRefToLLVMConversionPass());
+  kernelModulePM.addPass(createConvertFuncToLLVMPass());
+  kernelModulePM.addPass(createConvertControlFlowToLLVMPass());
+  kernelModulePM.addPass(createReconcileUnrealizedCastsPass());
   if (failed(mlir::applyPassManagerCLOptions(pm))) {
     diagOS << "VPTO LLVM emission failed: unable to apply MLIR pass manager "
               "command-line options\n";
@@ -7677,46 +7809,52 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
     diagOS << "VPTO LLVM emission failed: official lowering pipeline failed\n";
     return failure();
   }
-
-  if (failed(applyQueriedTargetAttrs(clonedModule, options, diagOS)))
-    return failure();
-
-  llvm::LLVMContext llvmContext;
-  registerBuiltinDialectTranslation(*clonedModule.getContext());
-  registerLLVMDialectTranslation(*clonedModule.getContext());
-  std::unique_ptr<llvm::Module> llvmModule =
-      translateModuleToLLVMIR(clonedModule.getOperation(), llvmContext);
-  if (!llvmModule) {
-    diagOS << "VPTO LLVM emission failed: LLVM IR export failed\n";
-    return failure();
-  }
-
-  if (failed(attachAIVectorScopeMetadata(*llvmModule, diagOS)))
-    return failure();
-  attachHIVMKernelAnnotations(*llvmModule);
-  llvmModule->setModuleIdentifier("ptoas.hivm.official");
-  llvmModule->setSourceFileName("ptoas.hivm.official");
-  return emit(*llvmModule);
+  return emit(clonedModule);
 }
 
 } // namespace
 
-LogicalResult
-translateVPTOModuleToLLVMText(ModuleOp module, llvm::raw_ostream &os,
-                              const VPTOEmissionOptions &options,
-                              llvm::raw_ostream &diagOS) {
-  return runPipeline(module, diagOS, options, [&](llvm::Module &llvmModule) {
-    llvmModule.print(os, nullptr);
-    return success();
-  });
-}
+LogicalResult lowerVPTOModuleToLLVMModules(
+    ModuleOp module, const VPTOEmissionOptions &options,
+    EmittedLLVMModule &cubeModule, EmittedLLVMModule &vectorModule,
+    llvm::raw_ostream &diagOS) {
+  cubeModule.context.reset();
+  cubeModule.module.reset();
+  vectorModule.context.reset();
+  vectorModule.module.reset();
+  return runPipeline(module, diagOS, [&](ModuleOp loweredModule) {
+    auto vectorDeviceModule =
+        getUniqueDeviceModuleByKernelKind(
+            loweredModule, FunctionKernelKind::Vector, diagOS);
+    if (failed(vectorDeviceModule))
+      return failure();
+    auto cubeDeviceModule =
+        getUniqueDeviceModuleByKernelKind(
+            loweredModule, FunctionKernelKind::Cube, diagOS);
+    if (failed(cubeDeviceModule))
+      return failure();
 
-LogicalResult
-translateVPTOModuleToLLVMBitcode(ModuleOp module, llvm::raw_ostream &os,
-                                 const VPTOEmissionOptions &options,
-                                 llvm::raw_ostream &diagOS) {
-  return runPipeline(module, diagOS, options, [&](llvm::Module &llvmModule) {
-    llvm::WriteBitcodeToFile(llvmModule, os);
+    if (*vectorDeviceModule) {
+      auto vectorOptions =
+          makeDeviceEmissionOptions(options, FunctionKernelKind::Vector);
+      auto emitted =
+          emitDeviceLLVMModule(*vectorDeviceModule, "vector", vectorOptions,
+                               diagOS);
+      if (failed(emitted))
+        return failure();
+      vectorModule.context = std::move(emitted->context);
+      vectorModule.module = std::move(emitted->module);
+    }
+    if (*cubeDeviceModule) {
+      auto cubeOptions =
+          makeDeviceEmissionOptions(options, FunctionKernelKind::Cube);
+      auto emitted =
+          emitDeviceLLVMModule(*cubeDeviceModule, "cube", cubeOptions, diagOS);
+      if (failed(emitted))
+        return failure();
+      cubeModule.context = std::move(emitted->context);
+      cubeModule.module = std::move(emitted->module);
+    }
     return success();
   });
 }

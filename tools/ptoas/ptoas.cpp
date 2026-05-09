@@ -10,6 +10,8 @@
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
+#include "VPTOFatobjEmission.h"
+#include "VPTOHostStubEmission.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -365,18 +367,6 @@ static llvm::cl::opt<std::string> ptoSeamIRFile(
     llvm::cl::value_desc("path"),
     llvm::cl::init(""));
 
-static llvm::cl::opt<bool> vptoEmitHIVMOfficialLLVM(
-    "vpto-emit-hivm-llvm",
-    llvm::cl::desc("After lowering to VPTO IR, emit textual LLVM/HIVM via "
-                   "the official LLVM dialect export path"),
-    llvm::cl::init(false));
-
-static llvm::cl::opt<bool> vptoEmitHIVMOfficialBitcode(
-    "vpto-emit-hivm-bc",
-    llvm::cl::desc("After lowering to VPTO IR, emit LLVM bitcode via the "
-                   "official LLVM dialect export path"),
-    llvm::cl::init(false));
-
 static llvm::cl::opt<std::string> vptoMarch(
     "vpto-march",
     llvm::cl::desc("Bisheng -march for VPTO HIVM LLVM emission (default: "
@@ -486,66 +476,6 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
   return success();
 }
 
-static bool containsVPTOOpPrefix(llvm::StringRef line,
-                                 llvm::StringRef opPrefix) {
-  size_t searchFrom = 0;
-  while (searchFrom < line.size()) {
-    size_t pos = line.find(opPrefix, searchFrom);
-    if (pos == llvm::StringRef::npos)
-      return false;
-
-    if (pos == 0)
-      return true;
-
-    unsigned char before = static_cast<unsigned char>(line[pos - 1]);
-    if (std::isspace(before) || before == '(' || before == '=' ||
-        before == ',')
-      return true;
-
-    searchFrom = pos + 1;
-  }
-  return false;
-}
-
-static bool containsVPTOIR(llvm::StringRef input) {
-  llvm::StringRef rest = input;
-  while (!rest.empty()) {
-    auto split = rest.split('\n');
-    llvm::StringRef line = split.first.trim();
-    if (!line.starts_with("//") &&
-        (line.contains("!pto.vec<") || line.contains("!pto.mask") ||
-         line.contains("!pto.align") ||
-         containsVPTOOpPrefix(line, "pto.copy_") ||
-         containsVPTOOpPrefix(line, "pto.dma_load") ||
-         containsVPTOOpPrefix(line, "pto.dma_store") ||
-         containsVPTOOpPrefix(line, "pto.dma_copy") ||
-         containsVPTOOpPrefix(line, "pto.cube_load") ||
-         containsVPTOOpPrefix(line, "pto.cube_load_frac") ||
-         containsVPTOOpPrefix(line, "pto.left_load") ||
-         containsVPTOOpPrefix(line, "pto.left_load_mx") ||
-         containsVPTOOpPrefix(line, "pto.right_load") ||
-         containsVPTOOpPrefix(line, "pto.right_load_mx") ||
-         containsVPTOOpPrefix(line, "pto.acc_store_fix") ||
-         containsVPTOOpPrefix(line, "pto.acc_store") ||
-         containsVPTOOpPrefix(line, "pto.set_loop") ||
-         containsVPTOOpPrefix(line, "pto.set_mov_pad_val") ||
-         containsVPTOOpPrefix(line, "pto.v") ||
-         containsVPTOOpPrefix(line, "pto.plt_") ||
-         containsVPTOOpPrefix(line, "pto.pset_") ||
-         containsVPTOOpPrefix(line, "pto.psts") ||
-         containsVPTOOpPrefix(line, "pto.pdintlv_") ||
-         containsVPTOOpPrefix(line, "pto.mem_bar") ||
-         containsVPTOOpPrefix(line, "pto.set_flag") ||
-         containsVPTOOpPrefix(line, "pto.wait_flag") ||
-         containsVPTOOpPrefix(line, "pto.pipe_barrier") ||
-         containsVPTOOpPrefix(line, "pto.get_buf") ||
-         containsVPTOOpPrefix(line, "pto.rls_buf")))
-      return true;
-    rest = split.second;
-  }
-  return false;
-}
-
 static bool hasUnexpandedTileOps(ModuleOp module) {
   bool found = false;
   module.walk([&](Operation *op) {
@@ -566,6 +496,45 @@ static bool hasTilelangInlineHelpers(ModuleOp module) {
       found = true;
   });
   return found;
+}
+
+static bool isVPTOKernelSubmodule(ModuleOp module) {
+  return module->hasAttr(pto::FunctionKernelKindAttr::name);
+}
+
+static LogicalResult verifyNormalizedVPTOContainer(ModuleOp module) {
+  bool hasChildModules = false;
+  for (Operation &op : module.getBodyRegion().front().getOperations()) {
+    auto child = dyn_cast<ModuleOp>(op);
+    if (!child) {
+      return op.emitError()
+             << "expected VPTO container top level to contain only kernel "
+                "submodules";
+    }
+    hasChildModules = true;
+    if (!isVPTOKernelSubmodule(child)) {
+      return child.emitError()
+             << "expected VPTO kernel submodule to carry 'pto.kernel_kind'";
+    }
+  }
+
+  if (hasChildModules)
+    return success();
+
+  return module.emitError()
+         << "expected VPTO input to be a kernel submodule with "
+            "'pto.kernel_kind' or a container of kernel submodules";
+}
+
+static LogicalResult normalizeVPTOContainer(OwningOpRef<ModuleOp> &module) {
+  if (!isVPTOKernelSubmodule(module.get()))
+    return success();
+
+  auto outer = ModuleOp::create(module->getLoc());
+  auto oldModule = module.release();
+  outer.getBodyRegion().front().push_back(oldModule.getOperation());
+  module = OwningOpRef<ModuleOp>(outer);
+  return success();
 }
 
 // --------------------------------------------------------------------------
@@ -1201,53 +1170,24 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
 
-static LogicalResult prepareVPTOForEmission(ModuleOp module) {
-  PassManager cleanupPM(module->getContext());
-  cleanupPM.enableVerifier();
-  cleanupPM.addPass(createCanonicalizerPass());
-  cleanupPM.addPass(createCSEPass());
-  if (failed(applyConfiguredPassManagerCLOptions(cleanupPM, "VPTO cleanup")))
-    return failure();
-  if (failed(cleanupPM.run(module))) {
-    llvm::errs() << "Error: VPTO pre-emission cleanup failed.\n";
-    return failure();
-  }
-
-  PassManager boundaryPM(module->getContext());
-  boundaryPM.enableVerifier();
-  boundaryPM.addPass(pto::createVPTOPtrNormalizePass());
-  boundaryPM.addPass(pto::createVPTOPtrCastCleanupPass());
-  boundaryPM.addPass(createReconcileUnrealizedCastsPass());
-  if (failed(applyConfiguredPassManagerCLOptions(boundaryPM,
-                                                 "VPTO ptr normalization")))
-    return failure();
-  if (failed(boundaryPM.run(module))) {
-    llvm::errs() << "Error: VPTO ptr normalization failed.\n";
-    return failure();
-  }
-
-  PassManager prepPM(module->getContext());
-  prepPM.enableVerifier();
-  prepPM.addNestedPass<func::FuncOp>(createPTOVPTOExpandBridgeOpsPass());
-  prepPM.addPass(createCSEPass());
-  prepPM.addNestedPass<func::FuncOp>(pto::createPTOInferVPTOVecScopePass());
-  prepPM.addPass(createCanonicalizerPass());
-  prepPM.addPass(createCSEPass());
-  prepPM.addPass(pto::createPTOValidateVPTOEmissionIRPass());
-  if (failed(applyConfiguredPassManagerCLOptions(prepPM,
-                                                 "VPTO emission preparation")))
-    return failure();
-  if (failed(prepPM.run(module))) {
-    llvm::errs() << "Error: VPTO emission preparation failed.\n";
-    return failure();
-  }
-
-  return success();
+static void prepareVPTOForEmission(PassManager &pm) {
+  auto &kernelModulePM = pm.nest<ModuleOp>();
+  kernelModulePM.addPass(createCanonicalizerPass());
+  kernelModulePM.addPass(createCSEPass());
+  kernelModulePM.addPass(pto::createVPTOPtrNormalizePass());
+  kernelModulePM.addPass(pto::createVPTOPtrCastCleanupPass());
+  kernelModulePM.addPass(createReconcileUnrealizedCastsPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      createPTOVPTOExpandBridgeOpsPass());
+  kernelModulePM.addPass(createCSEPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOInferVPTOVecScopePass());
+  kernelModulePM.addPass(createCanonicalizerPass());
+  kernelModulePM.addPass(createCSEPass());
+  kernelModulePM.addPass(pto::createPTOValidateVPTOEmissionIRPass());
 }
 
-static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
-                                           char **argv) {
-  PassManager backendPM(module.getContext());
+static void lowerPTOToVPTOBackend(PassManager &pm, int argc, char **argv) {
   // TileOp Expand path:
   //   1. MemrefToTileBuf: recover tile_buf from memref
   //   2. ExpandTileOp: instantiate TileLang DSL templates, replace tile ops
@@ -1255,43 +1195,28 @@ static LogicalResult lowerPTOToVPTOBackend(ModuleOp module, int argc,
   //   3. InlineLibCall: inline template function bodies
   //   4. FoldTileBufIntrinsics: fold tile_buf_addr / tile_valid_rows /
   //      tile_valid_cols to concrete memref/constant values
-  backendPM.addPass(pto::createMemrefToTileBufPass());
+  auto &kernelModulePM = pm.nest<ModuleOp>();
+  kernelModulePM.addPass(pto::createMemrefToTileBufPass());
 
   pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
-  backendPM.addPass(pto::createExpandTileOpPass(expandOpts));
+  kernelModulePM.addPass(pto::createExpandTileOpPass(expandOpts));
 
-  backendPM.addPass(pto::createPTOInlineLibCallPass());
-  backendPM.addNestedPass<mlir::func::FuncOp>(
+  kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
+  kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createFoldTileBufIntrinsicsPass());
   // FoldTileBufIntrinsics materializes many constant branch conditions.
   // Clean them up immediately on the TileOp expansion path before the
   // authoring-stage VPTO verifier and let the existing CSE passes remove the
   // resulting dead values later in the pipeline.
-  backendPM.addPass(mlir::createSCCPPass());
-  backendPM.addPass(mlir::createCanonicalizerPass());
-  if (failed(applyConfiguredPassManagerCLOptions(backendPM,
-                                                 "VPTO backend lowering")))
-    return failure();
-  if (failed(backendPM.run(module))) {
-    llvm::errs() << "Error: backend lowering pass execution failed.\n";
-    return failure();
-  }
-  return success();
+  kernelModulePM.addPass(mlir::createSCCPPass());
+  kernelModulePM.addPass(mlir::createCanonicalizerPass());
 }
 
-static LogicalResult inlineTilelangHelpersOnVPTOInput(ModuleOp module) {
-  PassManager inlinePM(module.getContext());
-  inlinePM.addPass(pto::createPTOInlineLibCallPass());
-  inlinePM.addPass(mlir::createSCCPPass());
-  inlinePM.addPass(mlir::createCanonicalizerPass());
-  if (failed(applyConfiguredPassManagerCLOptions(
-          inlinePM, "VPTO TileLang helper inlining")))
-    return failure();
-  if (failed(inlinePM.run(module))) {
-    llvm::errs() << "Error: VPTO TileLang helper inlining failed.\n";
-    return failure();
-  }
-  return success();
+static void inlineTilelangHelpersOnVPTOInput(PassManager &pm) {
+  auto &kernelModulePM = pm.nest<ModuleOp>();
+  kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
+  kernelModulePM.addPass(mlir::createSCCPPass());
+  kernelModulePM.addPass(mlir::createCanonicalizerPass());
 }
 
 static pto::VPTOEmissionOptions buildVPTOEmissionOptions() {
@@ -1327,9 +1252,9 @@ static pto::VPTOEmissionOptions buildVPTOEmissionOptions() {
   return options;
 }
 
-static int emitPreparedVPTOBackendResult(ModuleOp module,
-                                         llvm::ToolOutputFile &outputFile) {
-  if (emitVPTO || (!vptoEmitHIVMOfficialLLVM && !vptoEmitHIVMOfficialBitcode)) {
+static int emitVPTOBackendResult(ModuleOp module,
+                                 llvm::ToolOutputFile &outputFile) {
+  if (emitVPTO) {
     module.print(outputFile.os());
     outputFile.os() << "\n";
     outputFile.keep();
@@ -1337,25 +1262,54 @@ static int emitPreparedVPTOBackendResult(ModuleOp module,
   }
 
   pto::VPTOEmissionOptions options = buildVPTOEmissionOptions();
-  LogicalResult emissionStatus =
-      vptoEmitHIVMOfficialBitcode
-          ? pto::translateVPTOModuleToLLVMBitcode(module, outputFile.os(),
-                                                  options, llvm::errs())
-          : pto::translateVPTOModuleToLLVMText(module, outputFile.os(),
-                                               options, llvm::errs());
-  if (failed(emissionStatus)) {
-    llvm::errs() << "Error: Failed to emit VPTO text.\n";
+  std::string stubSource;
+  if (failed(pto::emitVPTOHostStubSource(module, stubSource, llvm::errs()))) {
+    llvm::errs() << "Error: Failed to emit VPTO host stub source.\n";
+    return 1;
+  }
+
+  pto::EmittedLLVMModule cubeModule;
+  pto::EmittedLLVMModule vectorModule;
+  if (failed(
+          pto::lowerVPTOModuleToLLVMModules(module, options, cubeModule,
+                                            vectorModule, llvm::errs()))) {
+    llvm::errs() << "Error: Failed to lower VPTO to LLVM modules.\n";
+    return 1;
+  }
+
+  if (failed(pto::emitVPTOFatobj(cubeModule.module.get(),
+                                 vectorModule.module.get(), stubSource,
+                                 outputFile, llvm::errs()))) {
+    llvm::errs() << "Error: Failed to emit VPTO fatobj.\n";
     return 1;
   }
   outputFile.keep();
   return 0;
 }
 
-static int emitVPTOBackendResult(ModuleOp module,
-                                 llvm::ToolOutputFile &outputFile) {
-  if (failed(prepareVPTOForEmission(module)))
-    return 1;
-  return emitPreparedVPTOBackendResult(module, outputFile);
+static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
+                                            int argc, char **argv,
+                                            bool hasTileOpsToExpand,
+                                            bool hasTilelangHelpers) {
+  if (failed(normalizeVPTOContainer(module)))
+    return failure();
+  if (failed(verifyNormalizedVPTOContainer(module.get())))
+    return failure();
+  PassManager pm(module->getContext());
+  pm.enableVerifier();
+  if (!hasTileOpsToExpand && hasTilelangHelpers)
+    inlineTilelangHelpersOnVPTOInput(pm);
+  if (hasTileOpsToExpand)
+    lowerPTOToVPTOBackend(pm, argc, argv);
+  prepareVPTOForEmission(pm);
+  if (failed(applyConfiguredPassManagerCLOptions(
+          pm, "VPTO unified emission pipeline")))
+    return failure();
+  if (failed(pm.run(module.get()))) {
+    llvm::errs() << "Error: VPTO emission pipeline failed.\n";
+    return failure();
+  }
+  return success();
 }
 
 int main(int argc, char **argv) {
@@ -1403,22 +1357,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (vptoEmitHIVMOfficialLLVM && vptoEmitHIVMOfficialBitcode) {
-    llvm::errs() << "Error: --vpto-emit-hivm-llvm and --vpto-emit-hivm-bc "
-                    "cannot be used together.\n";
-    return 1;
-  }
-
-  if (emitVPTO &&
-      (vptoEmitHIVMOfficialLLVM || vptoEmitHIVMOfficialBitcode)) {
-    llvm::errs() << "Error: --emit-vpto cannot be used together with HIVM "
-                    "emission flags.\n";
-    return 1;
-  }
-
   if (effectiveBackend != PTOBackend::VPTO &&
-      (vptoEmitHIVMOfficialLLVM || vptoEmitHIVMOfficialBitcode || emitVPTO ||
-       ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
+      (emitVPTO || ptoPrintSeamIR || !ptoSeamIRFile.empty())) {
     llvm::errs() << "Error: VPTO-specific flags require "
                     "--pto-backend=vpto.\n";
     return 1;
@@ -1448,7 +1388,6 @@ int main(int argc, char **argv) {
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
   const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
-  const bool inputIsVPTOIR = containsVPTOIR(buf);
 
   auto normalizeArch = [](llvm::StringRef archValue) {
     std::string normalized = archValue.str();
@@ -1596,19 +1535,16 @@ int main(int argc, char **argv) {
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
   const bool hasTilelangHelpers = hasTilelangInlineHelpers(*module);
 
-  if (effectiveBackend == PTOBackend::VPTO && inputIsVPTOIR &&
-      !hasTileOpsToExpand) {
+  if (effectiveBackend == PTOBackend::VPTO && !hasTileOpsToExpand) {
     if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
       llvm::errs() << "Error: shared pre-backend seam IR is unavailable when "
-                      "the input is already VPTO IR.\n";
+                      "skipping the shared PTO-to-VPTO lowering pipeline.\n";
       return 1;
     }
-
-    if (hasTilelangHelpers &&
-        failed(inlineTilelangHelpersOnVPTOInput(*module)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
+                                      hasTilelangHelpers)))
       return 1;
-
-    return emitVPTOBackendResult(*module, outputFile);
+    return emitVPTOBackendResult(module.get(), outputFile);
   }
 
   // Main PassManager
@@ -1672,10 +1608,10 @@ int main(int argc, char **argv) {
     if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
       return 1;
 
-    if (failed(lowerPTOToVPTOBackend(*module, argc, argv)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
+                                      hasTilelangHelpers)))
       return 1;
-
-    return emitVPTOBackendResult(*module, outputFile);
+    return emitVPTOBackendResult(module.get(), outputFile);
   }
 
   if (arch == "a3") {

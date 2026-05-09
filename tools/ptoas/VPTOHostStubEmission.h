@@ -6,46 +6,24 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-#ifndef MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTER_H
-#define MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTER_H
-
-#include <memory>
-#include <string>
+#ifndef PTOAS_VPTO_HOST_STUB_EMISSION_H
+#define PTOAS_VPTO_HOST_STUB_EMISSION_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 
-namespace mlir {
-class ModuleOp;
-}
+#include <string>
 
 namespace llvm {
-class LLVMContext;
-class Module;
 class raw_ostream;
 }
 
 namespace mlir::pto {
 
-struct VPTOEmissionOptions {
-  bool dumpVPTOIR = false;
-  std::string targetTriple;
-  std::string march;
-  std::string aicoreArch;
-  std::string defaultTargetCPU;
-  std::string defaultTargetFeatures;
-};
-
-struct EmittedLLVMModule {
-  std::unique_ptr<llvm::LLVMContext> context;
-  std::unique_ptr<llvm::Module> module;
-};
-
-LogicalResult lowerVPTOModuleToLLVMModules(
-    ModuleOp module, const VPTOEmissionOptions &options,
-    EmittedLLVMModule &cubeModule, EmittedLLVMModule &vectorModule,
-    llvm::raw_ostream &diagOS);
+LogicalResult emitVPTOHostStubSource(ModuleOp module, std::string &stubSource,
+                                     llvm::raw_ostream &diagOS);
 
 } // namespace mlir::pto
 
-#endif // MLIR_DIALECT_PTO_TRANSFORMS_VPTOLLVMEMITTER_H
+#endif

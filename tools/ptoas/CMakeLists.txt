@@ -20,6 +20,8 @@ set(LLVM_LINK_COMPONENTS
 # 原因：LLVM 构建目录里已经有一个 ptoas 了，重名会导致 CMake 报错。
 add_llvm_executable(pto-opt
   ptoas.cpp
+  VPTOHostStubEmission.cpp
+  VPTOFatobjEmission.cpp
 )
 # =========================================================
 # [新增] 魔法操作：修改最终输出的文件名为 "ptoas"
