@@ -292,7 +292,7 @@ static StringRef getPrecisionModeString(pto::PrecisionMode mode) {
 // HIGH_PRECISION code path would silence the warning while preserving DEFAULT
 // behavior.
 static const llvm::StringSet<> &highPrecisionImplementedOps() {
-  static const llvm::StringSet<> kImplementedOps{};
+  static const llvm::StringSet<> kImplementedOps{"pto.tlog"};
   return kImplementedOps;
 }
 

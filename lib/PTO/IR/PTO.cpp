@@ -5374,7 +5374,7 @@ mlir::LogicalResult mlir::pto::TLogOp::verify() {
   auto elemTy = getElemTy(srcTy);
   if (!(elemTy.isF16() || elemTy.isF32()))
     return emitOpError() << "expects element type to be f16 or f32";
-  return mlir::success();
+  return verifyPrecisionModeFloatOnly(getOperation(), getPrecisionMode(), elemTy);
 }
 
 mlir::LogicalResult mlir::pto::TLReluOp::verify() {
