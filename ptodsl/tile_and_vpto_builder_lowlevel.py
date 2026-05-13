@@ -66,15 +66,17 @@ def build():
             i32 = IntegerType.get_signless(32)
             i64 = IntegerType.get_signless(64)
             idx = IndexType.get()
+            f32 = F32Type.get()
 
-            # !pto.ptr<f32, ub>  –  pointer to f32 in the "ub" address space
-            ptr_f32_ub = Type.parse("!pto.ptr<f32, ub>")
+            # !pto.ptr<f32, ub>  –  pointer to f32 in the UB (VEC) address space
+            ptr_f32_ub = pto.PtrType.get(
+                f32, memory_space=pto.AddressSpaceAttr.get(pto.AddressSpace.VEC)
+            )
 
-            # !pto.vreg<64xf32>  –  vector register holding 64 × f32
+            # VReg and Mask types have no Python-binding constructors yet;
+            # Type.parse is the only available path for these two.
             vreg_64f32 = Type.parse("!pto.vreg<64xf32>")
-
-            # !pto.mask<b32>  –  predicate register for 32-bit element ops
-            mask_b32 = Type.parse("!pto.mask<b32>")
+            mask_b32   = Type.parse("!pto.mask<b32>")
 
             # ── Shared attributes ─────────────────────────────────────────
             target_arch_attr = StringAttr.get("a5")

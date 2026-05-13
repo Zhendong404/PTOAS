@@ -31,11 +31,21 @@ from mlir.ir import (
     Location,
     Module,
     Operation,
+    ShapedType,
     StringAttr,
     Type,
     UnitAttr,
 )
 from mlir.dialects import arith, func, pto, scf
+
+# Mapping from the textual address-space name used in !pto.ptr<elem, NAME>
+# to the AddressSpace enum value exposed by the C extension.
+_ADDR_SPACE = {
+    "ub":  pto.AddressSpace.VEC,   # "ub" (unified buffer) prints as VEC
+    "gm":  pto.AddressSpace.GM,
+    "vec": pto.AddressSpace.VEC,
+    "l1":  pto.AddressSpace.MAT,
+}
 
 
 # ─── Type constructors ────────────────────────────────────────────────────────
@@ -56,18 +66,82 @@ def idx_type():
 
 
 def ptr_type(elem_type, space="ub"):
-    """PTO pointer type: !pto.ptr<{elem_type}, {space}>."""
+    """PTO pointer type: !pto.ptr<{elem_type}, {space}>.
+
+    Uses ``pto.PtrType.get`` with an ``AddressSpaceAttr`` when the address-space
+    name is known; falls back to ``Type.parse`` for unknown spaces.
+    """
+    enum_val = _ADDR_SPACE.get(space)
+    if enum_val is not None:
+        space_attr = pto.AddressSpaceAttr.get(enum_val)
+        return pto.PtrType.get(elem_type, memory_space=space_attr)
     return Type.parse(f"!pto.ptr<{elem_type}, {space}>")
 
 
 def vreg_type(lanes, elem_type):
-    """PTO vector-register type: !pto.vreg<{lanes}x{elem_type}>."""
+    """PTO vector-register type: !pto.vreg<{lanes}x{elem_type}>.
+
+    VRegType has no Python-binding constructor; Type.parse is the only path.
+    """
     return Type.parse(f"!pto.vreg<{lanes}x{elem_type}>")
 
 
 def mask_type(bits="b32"):
-    """PTO mask/predicate type: !pto.mask<{bits}>  (b8 | b16 | b32)."""
+    """PTO mask/predicate type: !pto.mask<{bits}>  (b8 | b16 | b32).
+
+    MaskType has no Python-binding constructor; Type.parse is the only path.
+    """
     return Type.parse(f"!pto.mask<{bits}>")
+
+
+def tensor_view_type(rank, elem_type):
+    """PTO tensor-view type with all-dynamic dimensions: !pto.tensor_view<?x…xelem>.
+
+    Uses ``pto.TensorViewType.get(rank, elem_type)``.
+    """
+    return pto.TensorViewType.get(rank, elem_type)
+
+
+def part_tensor_view_type(rank, elem_type):
+    """PTO partition-tensor-view type with all-dynamic dims: !pto.partition_tensor_view<?x…xelem>.
+
+    Uses ``pto.PartitionTensorViewType.get([kDynamic]*rank, elem_type)``.
+    ``ShapedType.get_dynamic_size()`` (``INT64_MIN``) is the correct MLIR
+    sentinel; plain ``-1`` would produce a different printed form.
+    """
+    kDynamic = ShapedType.get_dynamic_size()
+    return pto.PartitionTensorViewType.get([kDynamic] * rank, elem_type)
+
+
+def tile_buf_type(shape, elem_type, valid_shape, *,
+                  blayout="RowMajor", address_space="ub",
+                  slayout="NoneBox", fractal_size=512, pad="Null"):
+    """PTO tile-buffer type via ``pto.TileBufType.get``.
+
+    ``valid_shape`` entries may be ``-1`` for dynamic (``?``) dimensions.
+    ``blayout`` selects the block layout: ``"RowMajor"`` (default, omitted in
+    the printed form) or ``"ColMajor"`` (printed as ``blayout=col_major``).
+
+    Common usage::
+
+        # !pto.tile_buf<vec, 8x128xf32, valid=?x?>
+        tile_buf_type([8, 128], f32, [-1, -1])
+
+        # !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
+        tile_buf_type([8, 1], f32, [-1, 1], blayout="ColMajor")
+    """
+    space_enum = _ADDR_SPACE.get(address_space)
+    if space_enum is None:
+        raise ValueError(f"Unknown address_space '{address_space}'; "
+                         f"known: {list(_ADDR_SPACE)}")
+    space_attr = pto.AddressSpaceAttr.get(space_enum)
+    cfg = pto.TileBufConfigAttr.get(
+        pto.BLayoutAttr.get(getattr(pto.BLayout, blayout)),
+        pto.SLayoutAttr.get(getattr(pto.SLayout, slayout)),
+        fractal_size,
+        pto.PadValueAttr.get(getattr(pto.PadValue, pad)),
+    )
+    return pto.TileBufType.get(shape, elem_type, space_attr, valid_shape, cfg)
 
 
 # ─── Constant builders ───────────────────────────────────────────────────────
@@ -391,7 +465,7 @@ def get_block_idx():
 
 def barrier_all():
     """pto.barrier #pto.pipe<PIPE_ALL>."""
-    pto.BarrierOp(Attribute.parse("#pto.pipe<PIPE_ALL>"))
+    pto.BarrierOp(pto.PipeAttr.get(pto.PIPE.PIPE_ALL))
 
 
 # ─── Tile-domain helpers ──────────────────────────────────────────────────────

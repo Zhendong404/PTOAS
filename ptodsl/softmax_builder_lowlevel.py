@@ -23,6 +23,7 @@ from mlir.ir import (
     IndexType,
     Location,
     Module,
+    ShapedType,
     StringAttr,
     Type,
     UnitAttr,
@@ -40,19 +41,47 @@ def build():
             i32 = IntegerType.get_signless(32)
             i64 = IntegerType.get_signless(64)
             idx = IndexType.get()
+            f32 = F32Type.get()
 
-            ptr_gm      = Type.parse("!pto.ptr<f32, gm>")
-            ptr_ub      = Type.parse("!pto.ptr<f32, ub>")
-            tv5d        = Type.parse("!pto.tensor_view<?x?x?x?x?xf32>")
-            ptv5d       = Type.parse("!pto.partition_tensor_view<?x?x?x?x?xf32>")
-            tile_col    = Type.parse("!pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>")
-            tile_wide   = Type.parse("!pto.tile_buf<vec, 8x128xf32, valid=?x?>")
-            vreg        = Type.parse("!pto.vreg<64xf32>")
-            mask_b32    = Type.parse("!pto.mask<b32>")
+            # Address-space attributes used in pointer and tile types
+            _gm  = pto.AddressSpaceAttr.get(pto.AddressSpace.GM)   # gm = global memory
+            _ub  = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC)  # vec = UB (unified buffer)
+            # Sentinel value for a dynamic (unknown) dimension
+            _dyn = ShapedType.get_dynamic_size()
+
+            # Pointer types built with PtrType.get
+            ptr_gm  = pto.PtrType.get(f32, memory_space=_gm)  # !pto.ptr<f32, gm>
+            ptr_ub  = pto.PtrType.get(f32, memory_space=_ub)  # !pto.ptr<f32, ub>
+
+            # Tensor-view types built with TensorViewType / PartitionTensorViewType
+            tv5d   = pto.TensorViewType.get(5, f32)                    # !pto.tensor_view<?x?x?x?x?xf32>
+            ptv5d  = pto.PartitionTensorViewType.get([_dyn] * 5, f32)  # !pto.partition_tensor_view<?x?x?x?x?xf32>
+
+            # Tile-buffer config attributes
+            _col_cfg = pto.TileBufConfigAttr.get(
+                pto.BLayoutAttr.get(pto.BLayout.ColMajor),
+                pto.SLayoutAttr.get(pto.SLayout.NoneBox),
+                512, pto.PadValueAttr.get(pto.PadValue.Null),
+            )
+            _row_cfg = pto.TileBufConfigAttr.get(
+                pto.BLayoutAttr.get(pto.BLayout.RowMajor),
+                pto.SLayoutAttr.get(pto.SLayout.NoneBox),
+                512, pto.PadValueAttr.get(pto.PadValue.Null),
+            )
+            # !pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>
+            tile_col  = pto.TileBufType.get([8, 1],   f32, _ub, [-1,  1], _col_cfg)
+            # !pto.tile_buf<vec, 8x128xf32, valid=?x?>
+            tile_wide = pto.TileBufType.get([8, 128], f32, _ub, [-1, -1], _row_cfg)
+
+            # VReg and Mask types have no Python-binding constructors yet;
+            # Type.parse is the only available path for these two.
+            vreg     = Type.parse("!pto.vreg<64xf32>")
+            mask_b32 = Type.parse("!pto.mask<b32>")
 
             # ── Flat single module ────────────────────────────────────────
             m = Module.create()
             m.operation.attributes["pto.target_arch"] = StringAttr.get("a5")
+            # FunctionKernelKindAttr has no binding; Attribute.parse is the only path.
             m.operation.attributes["pto.kernel_kind"] = Attribute.parse(
                 "#pto.kernel_kind<vector>"
             )
@@ -317,7 +346,7 @@ def build():
                     scf.YieldOp([])   # if_rows then_block
 
                 # ── Barrier and return ────────────────────────────────────
-                pto.BarrierOp(Attribute.parse("#pto.pipe<PIPE_ALL>"))
+                pto.BarrierOp(pto.PipeAttr.get(pto.PIPE.PIPE_ALL))
                 func.ReturnOp([])
 
             m.operation.verify()

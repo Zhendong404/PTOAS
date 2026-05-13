@@ -14,12 +14,14 @@ thin wrappers in ptodsl_utils.  Compare the two files side by side to see
 which boilerplate the utils eliminate.
 """
 
-from mlir.ir import F32Type, InsertionPoint, Type
+from mlir.ir import F32Type, InsertionPoint
 
 from ptodsl_utils import (
     # context / types
     pto_context, flat_pto_module, pto_aicore_func,
-    i32_type, i64_type, idx_type, ptr_type, vreg_type, mask_type,
+    i32_type, i64_type, idx_type, ptr_type,
+    tensor_view_type, part_tensor_view_type, tile_buf_type,
+    vreg_type,
     # constants
     c_idx, c_i32, c_i64,
     # arithmetic
@@ -50,10 +52,10 @@ def build():
         idx      = idx_type()
         ptr_gm   = ptr_type(f32, "gm")    # !pto.ptr<f32, gm>
         ptr_ub   = ptr_type(f32, "ub")    # !pto.ptr<f32, ub>
-        tv5d     = Type.parse("!pto.tensor_view<?x?x?x?x?xf32>")
-        ptv5d    = Type.parse("!pto.partition_tensor_view<?x?x?x?x?xf32>")
-        tile_col = Type.parse("!pto.tile_buf<vec, 8x1xf32, valid=?x1, blayout=col_major>")
-        tile_w   = Type.parse("!pto.tile_buf<vec, 8x128xf32, valid=?x?>")
+        tv5d     = tensor_view_type(5, f32)                          # !pto.tensor_view<?x?x?x?x?xf32>
+        ptv5d    = part_tensor_view_type(5, f32)                     # !pto.partition_tensor_view<?x?x?x?x?xf32>
+        tile_col = tile_buf_type([8,  1], f32, [-1,  1], blayout="ColMajor")  # valid=?x1, col_major
+        tile_w   = tile_buf_type([8, 128], f32, [-1, -1])            # valid=?x?
         vf32     = vreg_type(64, f32)     # !pto.vreg<64xf32>
 
         with flat_pto_module("a5") as mod:
