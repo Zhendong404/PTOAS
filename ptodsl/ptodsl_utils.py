@@ -33,6 +33,7 @@ from mlir.ir import (
     Operation,
     StringAttr,
     Type,
+    UnitAttr,
 )
 from mlir.dialects import arith, func, pto, scf
 
@@ -249,3 +250,251 @@ def vpto_kernel(func_name, *, arch="a5"):
             func.ReturnOp([])
 
     outer_mod.operation.verify()
+
+
+# ─── Flat single-module builders (for direct func inside module) ─────────────
+
+@contextmanager
+def flat_pto_module(arch="a5"):
+    """
+    Flat single-level module with ``pto.target_arch`` and
+    ``pto.kernel_kind = #pto.kernel_kind<vector>``.
+
+    Usage::
+
+        with flat_pto_module("a5") as mod:
+            with pto_aicore_func("MyKernel", [ptr_gm, i32]) as args:
+                ...
+        return mod
+    """
+    m = Module.create()
+    m.operation.attributes["pto.target_arch"] = StringAttr.get(arch)
+    m.operation.attributes["pto.kernel_kind"] = Attribute.parse(
+        "#pto.kernel_kind<vector>"
+    )
+    with InsertionPoint(m.body):
+        yield m
+    m.operation.verify()
+
+
+@contextmanager
+def pto_aicore_func(func_name, arg_types, *, ret_types=None):
+    """
+    Create a ``func.func`` with the ``pto.aicore`` attribute.
+    Yields the function's block arguments tuple.
+    ``func.return`` is inserted automatically on exit.
+
+    Usage::
+
+        with pto_aicore_func("f", [ptr_gm, ptr_gm, i32]) as (p0, p1, n):
+            ...
+    """
+    fn_ty = func.FunctionType.get(arg_types, ret_types or [])
+    fn = func.FuncOp(func_name, fn_ty)
+    fn.attributes["pto.aicore"] = UnitAttr.get()
+    entry = fn.add_entry_block()
+    with InsertionPoint(entry):
+        yield tuple(entry.arguments)
+        func.ReturnOp([])
+
+
+# ─── Additional control-flow helpers ─────────────────────────────────────────
+
+@contextmanager
+def if_ctx(cond):
+    """
+    Emit ``scf.if cond { ... }`` with no results and no else branch.
+    The mandatory ``scf.yield`` terminator is inserted automatically.
+
+    Usage::
+
+        with if_ctx(has_rows):
+            tload(part, tile)
+            ...
+    """
+    op = scf.IfOp(cond)
+    with InsertionPoint(op.then_block):
+        yield
+        scf.YieldOp([])
+
+
+def if_op_returning(cond, result_types):
+    """
+    Create a ``scf.if`` with results *and* an else branch.
+    Returns the raw ``IfOp`` so the caller can manage the two blocks
+    manually with ``InsertionPoint`` and close each with ``yield_vals()``.
+
+    Usage::
+
+        br = if_op_returning(has_chunk, [vreg_f32, vreg_f32])
+        with InsertionPoint(br.then_block):
+            ...
+            yield_vals(merged_max, merged_sum)
+        with InsertionPoint(br.else_block):
+            yield_vals(running_max, running_sum)
+        next_max, next_sum = br.results
+    """
+    return scf.IfOp(cond, result_types, hasElse=True)
+
+
+@contextmanager
+def for_range_iter(start, stop, step, init_vals):
+    """
+    Emit ``scf.for`` with iter_args.  Yields the raw ``ForOp`` so the
+    caller can access ``induction_variable``, ``inner_iter_args``, and
+    ``results`` (after the ``with`` block).
+
+    The caller **must** call ``yield_vals(...)`` at the end of the body.
+
+    Usage::
+
+        with for_range_iter(c0, c128, c64, [a, b]) as cf:
+            i   = cf.induction_variable
+            x, y = cf.inner_iter_args
+            ...
+            yield_vals(new_x, new_y)
+        final_x, final_y = cf.results
+    """
+    for_op = scf.ForOp(start, stop, step, init_vals)
+    with InsertionPoint(for_op.body):
+        yield for_op
+
+
+def yield_vals(*vals):
+    """Emit ``scf.yield`` with the given values (shorthand for scf.YieldOp)."""
+    scf.YieldOp(list(vals))
+
+
+# ─── Arithmetic helpers ───────────────────────────────────────────────────────
+
+def index_cast(result_type, val):
+    """arith.index_cast from/to index."""
+    return arith.IndexCastOp(result_type, val).result
+
+
+def cmpi_sgt(lhs, rhs):
+    """arith.cmpi sgt (signed greater-than)."""
+    return arith.CmpIOp(arith.CmpIPredicate.sgt, lhs, rhs).result
+
+
+def select_val(cond, true_val, false_val):
+    """arith.select."""
+    return arith.SelectOp(cond, true_val, false_val).result
+
+
+# ─── PTO hardware helpers ─────────────────────────────────────────────────────
+
+def get_block_idx():
+    """pto.get_block_idx → i64 block index."""
+    return pto.GetBlockIdxOp().result
+
+
+def barrier_all():
+    """pto.barrier #pto.pipe<PIPE_ALL>."""
+    pto.BarrierOp(Attribute.parse("#pto.pipe<PIPE_ALL>"))
+
+
+# ─── Tile-domain helpers ──────────────────────────────────────────────────────
+
+def tile_view(tv_type, ptr, shape, strides):
+    """pto.make_tensor_view → tensor_view SSA value."""
+    return pto.MakeTensorViewOp(tv_type, ptr, shape, strides).result
+
+
+def part_view(ptv_type, tv, offsets, sizes):
+    """pto.partition_view → partition_tensor_view SSA value."""
+    return pto.PartitionViewOp(ptv_type, tv, offsets, sizes).result
+
+
+def alloc_tile(tile_type, *, addr, valid_row, valid_col=None):
+    """pto.alloc_tile with optional valid_col."""
+    return pto.AllocTileOp(tile_type, addr=addr, valid_row=valid_row,
+                           valid_col=valid_col).result
+
+
+def tload(part, tile):
+    """pto.tload ins(part) outs(tile)."""
+    pto.TLoadOp(None, part, tile)
+
+
+def tstore(tile, part):
+    """pto.tstore ins(tile) outs(part)."""
+    pto.TStoreOp(None, tile, part)
+
+
+def tile_ptr(tile, result_ptr_type):
+    """pto.tile_buf_addr – materialise a UB pointer from a tile handle."""
+    return pto.TileBufAddrOp(result_ptr_type, tile).result
+
+
+# ─── Mask helpers ─────────────────────────────────────────────────────────────
+
+def pset_b32(pattern):
+    """pto.pset_b32 "PATTERN" → !pto.mask<b32> (all-true when "PAT_ALL")."""
+    return pto.PsetB32Op(mask_type("b32"), pattern).result
+
+
+# ─── Vector load / store with dist attribute ──────────────────────────────────
+
+def vbrc_load(src_ptr, offset, result_vreg_type):
+    """pto.vlds with dist="BRC_B32" – broadcast a scalar into all lanes."""
+    return pto.VldsOp(result_vreg_type, src_ptr, offset,
+                      dist="BRC_B32").result
+
+
+def vsts_1pt(val, dst_ptr, offset, mask):
+    """pto.vsts with dist="1PT_B32" – store only the lowest lane."""
+    pto.VstsOp(val, dst_ptr, offset, mask, dist="1PT_B32")
+
+
+# ─── Vector math (result type inferred from first operand) ────────────────────
+#
+# These wrappers follow the convention: if result_type is None the type is
+# taken from the first operand (all PTO binary vector ops return the same
+# type as their inputs).
+#
+
+def vcmax(v, mask):
+    """pto.vcmax – cross-lane maximum reduction."""
+    return pto.VcmaxOp(v.type, v, mask).result
+
+
+def vdup_lowest(v, mask):
+    """pto.vdup {position="LOWEST"} – broadcast lane-0 to all lanes."""
+    return pto.VdupOp(v.type, v, mask, position="LOWEST").result
+
+
+def vmax(lhs, rhs, mask):
+    """pto.vmax – element-wise maximum."""
+    return pto.VmaxOp(lhs.type, lhs, rhs, mask).result
+
+
+def vexpdif(inp, ref, mask, part="ODD"):
+    """pto.vexpdif – exp(inp − ref), selecting ODD or EVEN lanes."""
+    return pto.VexpdifOp(inp.type, inp, ref, mask, part).result
+
+
+def vmul(lhs, rhs, mask):
+    """pto.vmul – element-wise multiply."""
+    return pto.VmulOp(lhs.type, lhs, rhs, mask).result
+
+
+def vcadd(v, mask):
+    """pto.vcadd – cross-lane add (sum reduction)."""
+    return pto.VcaddOp(v.type, v, mask).result
+
+
+def vdiv(lhs, rhs, mask):
+    """pto.vdiv – element-wise divide."""
+    return pto.VdivOp(lhs.type, lhs, rhs, mask).result
+
+
+# Override vadd to make result_type optional (inferred from lhs when omitted)
+_vadd_impl = vadd
+
+
+def vadd(lhs, rhs, mask, result_type=None):  # type: ignore[misc]
+    """pto.vadd – element-wise add (result_type inferred from lhs if None)."""
+    rt = result_type if result_type is not None else lhs.type
+    return pto.VaddOp(rt, lhs, rhs, mask).result
+
