@@ -212,18 +212,17 @@ from ptodsl import vpto as pto
 def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
-    with pto.vecscope():
-        with pto.for_(0, valid_rows, step=1) as row:
-            remained0 = pto.scalar_const(64, pto.i32)
-            with pto.for_(0, valid_cols, step=pto.get_lanes(dtype), state={"remained": remained0}) as loop:
-                col = loop.iv
-                remained = loop.state.remained
-                mask, next_remained = pto.make_mask(dtype, remained)
-                lhs = pto.vlds(src0[row, col:])
-                rhs = pto.vlds(src1[row, col:])
-                out = pto.vadd(lhs, rhs, mask)
-                pto.vsts(out, dst[row, col:], mask)
-                loop.yield_state(remained=next_remained)
+    with pto.for_(0, valid_rows, step=1) as row:
+        remained0 = pto.scalar_const(64, pto.i32)
+        with pto.for_(0, valid_cols, step=pto.get_lanes(dtype), state={"remained": remained0}) as loop:
+            col = loop.iv
+            remained = loop.state.remained
+            mask, next_remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            out = pto.vadd(lhs, rhs, mask)
+            pto.vsts(out, dst[row, col:], mask)
+            loop.yield_state(remained=next_remained)
 ```
 
 Current limitations:
@@ -231,7 +230,8 @@ Current limitations:
 - pybinding-backed POC only; it still covers a narrow TileLang-shaped subset
 - supports only static 2D `Tile` parameters
 - supports only a narrow vector subset needed by `tadd_template.py`
-- requires explicit builder-style `vecscope()` / `for_()` rather than Python `for range(...)`
+- currently uses explicit structured `for_()` builders rather than Python `for range(...)`
+- `vecscope()` remains available, but it is no longer required by the POC
 
 Reference script:
 

@@ -62,10 +62,11 @@ The POC is intentionally limited to a single template shape:
 
 - Target template: `tadd_template.py`
 - Supported parameter kind: bare static 2D `Tile`
-- Supported control flow: explicit builder-style `vecscope()` and `for_()`
+- Supported control flow: explicit structured `for_()` builders, with optional
+  `vecscope()` when the author wants to spell it directly
 - Supported ops: `make_mask`, `vlds`, `vadd`, `vsts`
-- Supported lowering shape: one `pto.vecscope` containing nested `scf.for`,
-  `pto.tile_buf_addr`, and vector micro-ops
+- Supported lowering shape: nested `scf.for`, `pto.tile_buf_addr`, and vector
+  micro-ops, with optional `pto.vecscope`
 
 This means the first implementation validates the core idea:
 
@@ -118,7 +119,6 @@ traced tile-slice value.
 For the `tadd_template.py`-style kernel body, the POC emits:
 
 - tile-buffer arguments
-- one `pto.vecscope`
 - nested `scf.for` for rows and columns
 - `pto.tile_buf_addr` for each referenced tile
 - `pto.plt_b32`
@@ -148,8 +148,9 @@ keeps structured control flow instead of concretely unrolling the loops.
 - No integration with the existing `tilelang-dsl` package entrypoint.
 - Current output is deliberately narrow and only covers the pybinding-backed
   operations needed by the first POC template.
-- Control flow currently needs explicit `vecscope()` / `for_()` builders instead
-  of raw Python `for range(...)`.
+- Control flow currently needs explicit structured `for_()` builders instead of
+  raw Python `for range(...)`. `vecscope()` can still be used, but is not a
+  hard requirement in the POC.
 
 These are acceptable for the first experiment because the goal is not feature
 completeness; it is to validate the tracing execution model on a real tile
