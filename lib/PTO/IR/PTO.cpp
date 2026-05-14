@@ -3019,27 +3019,67 @@ static LogicalResult verifyMGatherMScatterMemOperand(Operation *op,
       "expects mem to be !pto.partition_tensor_view or a GM/ZERO memref");
 }
 
+static bool hasCompatibleKnownExtent(int64_t lhs, int64_t rhs);
+static bool isKnownUnitExtent(int64_t value);
+
 static LogicalResult verifyMGatherMScatterTileShape(Operation *op, Type dataTy,
                                                     Type idxTy,
                                                     StringRef dataName) {
-  auto dataShape = getShapeVec(dataTy);
-  auto idxShape = getShapeVec(idxTy);
-  if (dataShape.size() != 2 || idxShape.size() != 2)
+  auto dataValid = getValidShapeVec(dataTy);
+  auto idxValid = getValidShapeVec(idxTy);
+  if (dataValid.size() != 2 || idxValid.size() != 2)
     return op->emitOpError() << "expects " << dataName
-                             << " and idx to be rank-2";
+                             << " and idx to have rank-2 valid_shape";
 
-  if (dataShape[0] != ShapedType::kDynamic &&
-      idxShape[0] != ShapedType::kDynamic && dataShape[0] != idxShape[0])
-    return op->emitOpError() << "expects " << dataName
-                             << " and idx static row dimensions to match";
+  auto idxTile = dyn_cast<pto::TileBufType>(idxTy);
+  if (!idxTile)
+    return op->emitOpError("expects idx to be a tile_buf type");
 
-  int64_t dataCols = dataShape[1];
-  int64_t idxCols = idxShape[1];
-  if (idxCols != ShapedType::kDynamic && dataCols != ShapedType::kDynamic &&
-      idxCols != 1 && idxCols != dataCols)
-    return op->emitOpError() << "expects idx cols to be 1 or equal to "
-                             << dataName << " cols";
+  const bool idxRowMajor =
+      idxTile.getBLayoutValueI32() ==
+      static_cast<int32_t>(pto::BLayout::RowMajor);
+  const bool idxColMajor =
+      idxTile.getBLayoutValueI32() ==
+      static_cast<int32_t>(pto::BLayout::ColMajor);
 
+  const bool rowCoalesce1xR =
+      idxRowMajor && isKnownUnitExtent(idxValid[0]) &&
+      hasCompatibleKnownExtent(idxValid[1], dataValid[0]);
+  const bool rowCoalesceRx1 =
+      idxColMajor && hasCompatibleKnownExtent(idxValid[0], dataValid[0]) &&
+      isKnownUnitExtent(idxValid[1]);
+  const bool elemCoalesce =
+      hasCompatibleKnownExtent(idxValid[0], dataValid[0]) &&
+      hasCompatibleKnownExtent(idxValid[1], dataValid[1]);
+
+  if (!(rowCoalesce1xR || rowCoalesceRx1 || elemCoalesce))
+    return op->emitOpError()
+           << "expects idx valid_shape to be [1, " << dataName
+           << ".valid_row], [" << dataName
+           << ".valid_row, 1], or match " << dataName << " valid_shape";
+
+  return success();
+}
+
+static LogicalResult verifyMGatherMScatterIdxTile(Operation *op, Type ty,
+                                                  StringRef name) {
+  if (failed(verifyTileBufCommon(op, ty, name)))
+    return failure();
+  auto as = getPTOMemorySpaceEnum(ty);
+  if (!as || *as != pto::AddressSpace::VEC)
+    return op->emitOpError() << "expects " << name
+                             << " to be in the vec address space";
+  auto tb = dyn_cast<pto::TileBufType>(ty);
+  if (!tb)
+    return op->emitOpError() << "expects " << name << " to be a tile_buf type";
+  int32_t blayout = tb.getBLayoutValueI32();
+  if (blayout != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+      blayout != static_cast<int32_t>(pto::BLayout::ColMajor))
+    return op->emitOpError() << "expects " << name
+                             << " to use row_major or col_major blayout";
+  if (tb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::NoneBox))
+    return op->emitOpError() << "expects " << name
+                             << " to use the none_box slayout";
   return success();
 }
 
@@ -6428,7 +6468,7 @@ LogicalResult MScatterOp::verify() {
     return emitOpError("expects src, idx, and mem to use supported PTO shapes");
 
   if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
-      failed(verifyNDStyleVecTile(*this, idxTy, "idx")))
+      failed(verifyMGatherMScatterIdxTile(getOperation(), idxTy, "idx")))
     return failure();
 
   Type srcElem = getElemTy(srcTy);
@@ -6483,7 +6523,7 @@ LogicalResult MGatherOp::verify() {
     return emitOpError("expects mem, idx, and dst to use supported PTO shapes");
 
   if (failed(verifyNDStyleVecTile(*this, dstTy, "dst")) ||
-      failed(verifyNDStyleVecTile(*this, idxTy, "idx")))
+      failed(verifyMGatherMScatterIdxTile(getOperation(), idxTy, "idx")))
     return failure();
 
   Type dstElem = getElemTy(dstTy);

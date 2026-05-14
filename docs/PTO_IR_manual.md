@@ -6846,7 +6846,8 @@ pto.tscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
 **Semantics:**
 
 ```
-dst[i, j] = mem[idx[i, j]]
+row mode (default): dst[r, j] = mem[idx[r], j]
+elem mode:          dst[i, j] = mem[idx[i, j]]
 ```
 
 **Arguments:**
@@ -6867,13 +6868,15 @@ dst[i, j] = mem[idx[i, j]]
   - `idx` element type must be signless `i32`.
 
 - **Tile / memory roles**  
-  - `dst` and `idx` must be `loc=vec`, `blayout=row_major`, `slayout=none_box`.
+  - `dst` must be `loc=vec`, `blayout=row_major`, `slayout=none_box`.
+  - `idx` must be `loc=vec`, `slayout=none_box`. `row_major` and `col_major` are both accepted for row mode.
   - `mem` must denote a GlobalTensor in GM memory.
   - `mem` must use `ND` layout when layout can be inferred.
 
 - **Shape**  
-  - `dst row == idx row`.
-  - `idx column == 1` or `idx column == dst column`.
+  - Element mode: `idx valid_shape == dst valid_shape`.
+  - Row mode: `idx valid_shape` may be `[1, dst.valid_row]` or `[dst.valid_row, 1]`.
+  - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
   - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Out-of-bounds mode**
@@ -6904,7 +6907,8 @@ pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
 **Semantics:**
 
 ```
-mem[idx[i, j]] = src[i, j]
+row mode (default): mem[idx[r], j] = src[r, j]
+elem mode:          mem[idx[i, j]] = src[i, j]
 ```
 
 **Arguments:**
@@ -6926,13 +6930,15 @@ mem[idx[i, j]] = src[i, j]
   - `idx` element type must be signless `i32`.
 
 - **Tile / memory roles**  
-  - `src` and `idx` must be `loc=vec`, `blayout=row_major`, `slayout=none_box`.
+  - `src` must be `loc=vec`, `blayout=row_major`, `slayout=none_box`.
+  - `idx` must be `loc=vec`, `slayout=none_box`. `row_major` and `col_major` are both accepted for row mode.
   - `mem` must denote a GlobalTensor in GM memory.
   - `mem` must use `ND` layout when layout can be inferred.
 
 - **Shape**  
-  - `src row == idx row`.
-  - `idx column == 1` or `idx column == src column`.
+  - Element mode: `idx valid_shape == src valid_shape`.
+  - Row mode: `idx valid_shape` may be `[1, src.valid_row]` or `[src.valid_row, 1]`.
+  - The `[1, R]` row-mode variant uses `row_major`; the `[R, 1]` row-mode variant uses `col_major`.
   - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Atomic modes**  
