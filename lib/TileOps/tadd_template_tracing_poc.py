@@ -36,18 +36,17 @@ def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     valid_rows, valid_cols = dst.valid_shape
     mask_scalar_ty = pto.i32
 
-    with pto.vecscope():
-        with pto.for_(0, valid_rows, step=1) as row:
-            remained0 = pto.scalar_const(64, mask_scalar_ty)
-            with pto.for_(0, valid_cols, step=pto.get_lanes(dtype), state={"remained": remained0}) as loop:
-                col = loop.iv
-                remained = loop.state.remained
-                mask, next_remained = pto.make_mask(dtype, remained)
-                lhs = pto.vlds(src0[row, col:])
-                rhs = pto.vlds(src1[row, col:])
-                summed = pto.vadd(lhs, rhs, mask)
-                pto.vsts(summed, dst[row, col:], mask)
-                loop.yield_state(remained=next_remained)
+    with pto.for_(0, valid_rows, step=1) as row:
+        remained0 = pto.scalar_const(64, mask_scalar_ty)
+        with pto.for_(0, valid_cols, step=pto.get_lanes(dtype), state={"remained": remained0}) as loop:
+            col = loop.iv
+            remained = loop.state.remained
+            mask, next_remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            summed = pto.vadd(lhs, rhs, mask)
+            pto.vsts(summed, dst[row, col:], mask)
+            loop.yield_state(remained=next_remained)
 
 
 def build_specialized_kernel():

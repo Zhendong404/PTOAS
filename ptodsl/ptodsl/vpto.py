@@ -15,7 +15,7 @@ an AST-capture frontend.
 Current scope:
 - bare ``Tile`` parameters with static 2D specializations
 - ``dst.element_type`` / ``dst.valid_shape``
-- explicit `with pto.vecscope():`
+- optional `with pto.vecscope():`
 - explicit structured `with pto.for_(...) as ...:`
 - optional named loop-carried state via ``state={...}``
 - ``get_lanes(dtype)``
@@ -451,8 +451,6 @@ class _TraceBuilder:
         self._inside_vecscope = False
 
     def _enter_for(self, start, stop, step, iter_args, state_items) -> _LoopHandle:
-        if not self._inside_vecscope:
-            raise RuntimeError("vpto POC currently only supports for_ inside vecscope")
         start_val = self._coerce_index(start)
         stop_val = self._coerce_index(stop)
         step_val = self._coerce_index(step)
