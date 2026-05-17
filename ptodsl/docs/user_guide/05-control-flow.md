@@ -67,7 +67,7 @@ with pto.for_(0, num_blocks, step=1) as i:
 ```python
 with pto.for_(0, rows, step=1) as r:
     with pto.for_(0, cols, step=1) as c:
-        val = pto.lds(tile[r, c])
+        val = pto.load(tile[r, c])
         ...
 ```
 
@@ -166,7 +166,7 @@ def conditional_scale(
 ):
     with pto.for_(0, rows, step=1) as r:
         with pto.for_(0, cols, step=1) as c:
-            val = pto.lds(tile[r, c])
+            val = pto.load(tile[r, c])
             big = pto.gt(val, threshold)
 
             with pto.if_(big):
@@ -179,7 +179,7 @@ def conditional_scale(
             # val is usable here — it is the merged result from both branches.
             # If big was true,  val = original * scale.
             # If big was false, val = original (passed through unchanged).
-            pto.sts(tile[r, c], val)
+            pto.store(val, tile[r, c])
 ```
 
 In this example, `val` is reassigned in the `if_` branch but left untouched in the `else_` branch. After the conditional block, `val` correctly represents the merged result and is stored back to the tile. You can reassign the same variable in both branches as well — the downstream code always sees the correct value.

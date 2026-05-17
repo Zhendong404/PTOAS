@@ -247,13 +247,13 @@ def blend_output_rows(
     row_start: pto.i32, row_stop: pto.i32, valid_dim: pto.i32,
 ):
     with pto.for_(row_start, row_stop, step=1) as row:
-        alpha = pto.lds(alpha_tile[row, 0])
-        beta = pto.lds(beta_tile[row, 0])
+        alpha = pto.load(alpha_tile[row, 0])
+        beta = pto.load(beta_tile[row, 0])
         with pto.for_(0, valid_dim, step=1) as col:
-            o_prev = pto.lds(o_prev_tile[row, col])
-            pv_val = pto.lds(pv_tile[row, col])
+            o_prev = pto.load(o_prev_tile[row, col])
+            pv_val = pto.load(pv_tile[row, col])
             o_next = alpha * o_prev + beta * pv_val
-            pto.sts(o_next_tile[row, col], o_next)
+            pto.store(o_next, o_next_tile[row, col])
 ```
 
 SIMT kernels read and write individual scalar elements from tiles. The unit executes the same scalar instruction across many work-items in parallel, making it efficient for per-element operations.

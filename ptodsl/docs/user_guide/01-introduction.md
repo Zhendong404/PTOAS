@@ -139,7 +139,7 @@ This has one critical implication for how you write control flow and scalar logi
 
 - **Python scalar expressions** (`alpha * x`, `1.0 / sqrt(d)`) are evaluated at trace time and their results are baked into the IR as constants — the compiler never sees the original expression.
 
-- **PTO scalar instructions** (`pto.lds(...)`, `pto.max(...)`, `pto.exp(...)`) are recorded as scalar IR and enter the compiler pipeline, where they may be constant-folded or lowered to runtime scalar operations depending on whether their inputs are compile-time known.
+- **PTO scalar instructions** (`pto.load(...)`, `pto.max(...)`, `pto.exp(...)`) are recorded as scalar IR and enter the compiler pipeline, where they may be constant-folded or lowered to runtime scalar operations depending on whether their inputs are compile-time known.
 
 A simple rule of thumb: **Python constructs are resolved before the compiler sees them. PTO constructs are recorded into IR and the compiler decides.**
 
