@@ -34,43 +34,69 @@ When in doubt, ask: *can this value change between launches of the same compiled
 
 ## 6.2 Scalar access: load and store
 
-`pto.load` reads a single scalar element from a typed pointer or tile location. `pto.store` writes a scalar back. These are the canonical scalar memory ops for SIMT authoring.
+`pto.load` reads a single scalar element from a typed pointer or tile location. `pto.store` writes a scalar back. These are the canonical scalar memory ops for SIMT authoring. The offset is counted in elements, not bytes.
 
-### load — load scalar
+#### `pto.load(ptr: PtrType, offset: Index) -> ScalarType`
+
+**Description**: Loads one scalar element from a typed pointer at the given element offset.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ptr` | `PtrType` | Typed pointer (`pto.ptr<T, space>`) or the result of `tile.as_ptr()` |
+| `offset` | `Index` | Element displacement from `ptr` |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `value` | `ScalarType` | The loaded scalar, matching the pointer's element type |
+
+**Tile-index form** — the preferred syntax when loading from a tile:
 
 ```python
 val = pto.load(tile[row, col])
 ```
 
-`tile[row, col]` is index syntax — it selects one element at the given row and column. The result is a PTO scalar whose type matches the tile's element type. Row and column indices are PTO scalars (or Python integers that the tracer promotes).
+`tile[row, col]` selects one element. Row and column indices are PTO scalars (or Python integers that the tracer promotes). This form is equivalent to computing the pointer and offset from the tile's base address and layout.
 
-`pto.load` also accepts a typed pointer with an element offset:
-
-```python
-val = pto.load(ptr, offset)
-```
-
-Or with pointer arithmetic:
+**Pointer forms**:
 
 ```python
-val = pto.load(ptr + offset)
+val = pto.load(ptr, offset)       # explicit offset
+val = pto.load(ptr + offset)      # pointer arithmetic shorthand
 ```
 
-The offset is counted in elements, not bytes.
+---
 
-### store — store scalar
+#### `pto.store(value: ScalarType, ptr: PtrType, offset: Index) -> None`
+
+**Description**: Stores one scalar element to a typed pointer at the given element offset.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `value` | `ScalarType` | Scalar value to write |
+| `ptr` | `PtrType` | Typed destination pointer |
+| `offset` | `Index` | Element displacement from `ptr` |
+
+**Returns**: None (side-effect operation).
+
+**Tile-index form**:
 
 ```python
 pto.store(value, tile[row, col])
 ```
 
-Writes `value` into the tile at `[row, col]`. This is the scalar counterpart of `vsts` — it moves one element, not a vector register.
-
-With a pointer and offset:
+**Pointer forms**:
 
 ```python
 pto.store(value, ptr, offset)
 ```
+
+---
 
 ### Typical SIMT usage
 
@@ -104,37 +130,52 @@ row_start = pto.load(meta_ptr, 0)
 row_stop  = pto.load(meta_ptr, 4)
 ```
 
-## 6.3 Scalar arithmetic and math
+## 6.3 Scalar arithmetic and comparisons
 
-PTO scalar values support standard arithmetic operators. These are recorded as device-side instructions:
+PTO scalar values support standard arithmetic operators (`+`, `-`, `*`, `/`), which are recorded as device-side instructions.
 
-```python
-# Arithmetic operators
-sum_val = a + b
-diff = a - b
-prod = a * b
-quot = a / b
+#### `pto.max(a: ScalarType, b: ScalarType) -> ScalarType`
 
-# Comparisons (produce pto.i1)
-big = pto.gt(val, threshold)
-small = pto.lt(val, threshold)
-equal = pto.eq(a, b)
-```
+**Description**: Returns the maximum of two scalars.
 
-Built-in math functions for PTO scalars:
+#### `pto.min(a: ScalarType, b: ScalarType) -> ScalarType`
 
-| Function | Description |
-|----------|-------------|
-| `pto.max(a, b)` | Maximum of two scalars |
-| `pto.min(a, b)` | Minimum of two scalars |
-| `pto.exp(x)` | Exponential, e^x |
-| `pto.log(x)` | Natural logarithm |
-| `pto.sqrt(x)` | Square root |
-| `pto.abs(x)` | Absolute value |
+**Description**: Returns the minimum of two scalars.
+
+#### `pto.exp(x: ScalarType) -> ScalarType`
+
+**Description**: Exponential, e^x.
+
+#### `pto.log(x: ScalarType) -> ScalarType`
+
+**Description**: Natural logarithm.
+
+#### `pto.sqrt(x: ScalarType) -> ScalarType`
+
+**Description**: Square root.
+
+#### `pto.abs(x: ScalarType) -> ScalarType`
+
+**Description**: Absolute value.
+
+#### `pto.gt(a: ScalarType, b: ScalarType) -> pto.i1`
+
+**Description**: Greater-than comparison. Returns `pto.i1`.
+
+#### `pto.lt(a: ScalarType, b: ScalarType) -> pto.i1`
+
+**Description**: Less-than comparison. Returns `pto.i1`.
+
+#### `pto.eq(a: ScalarType, b: ScalarType) -> pto.i1`
+
+**Description**: Equality comparison. Returns `pto.i1`.
+
+**Example**:
 
 ```python
 m_next = pto.max(m_prev, row_max)
 l_scaled = l_prev * pto.exp(m_prev - m_next)
+need_scale = pto.gt(val, threshold)
 ```
 
 These are the scalar-path counterparts of the vector math operations covered in Chapter 8. Use them inside `@pto.simt` kernels and in `@pto.ukernel` orchestration code where you need to compute a loop bound or a scalar coefficient from runtime data.
@@ -154,44 +195,75 @@ ub_ptr = tile.as_ptr()         # UB pointer from a Tile
 
 `as_ptr()` is the preferred way to get a typed pointer from a high-level descriptor. The result carries the correct element type and memory space from the source.
 
-### addptr — pointer arithmetic
+---
 
-`pto.addptr` advances a pointer by a number of elements (not bytes):
+#### `pto.addptr(ptr: PtrType, offset: Index) -> PtrType`
+
+**Description**: Advances a pointer by a number of elements (not bytes).
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ptr` | `PtrType` | Source pointer |
+| `offset` | `Index` | Number of elements to advance |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `new_ptr` | `PtrType` | Pointer advanced by `offset` elements |
+
+**Example**:
 
 ```python
-next = pto.addptr(ptr, offset)
-# offset is in elements, not bytes
+ptr = pto.addptr(base_ptr, 1024)  # advances by 1024 * sizeof(T) bytes
 ```
 
-For example, to advance past 1024 `f32` elements:
+The `+` shorthand on pointers also counts in elements, not bytes.
 
-```python
-ptr = pto.addptr(base_ptr, 1024)  # advances by 1024 * sizeof(f32) bytes
-```
+---
 
-Both `addptr` and the `+` shorthand on pointers count in elements, not bytes.
+#### `pto.castptr(address: Index, ptr_type: Type) -> PtrType`
 
-### castptr — reinterpret pointer type
+**Description**: Creates a typed pointer from an integer address or reinterprets a pointer as a different type.
 
-`pto.castptr` reinterprets an address as a different pointer type:
+**Parameters**:
 
-```python
-ptr = pto.castptr(address, pto.ptr(pto.f32, pto.MemorySpace.UB))
-```
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `address` | `Index` | Integer address or existing pointer value |
+| `ptr_type` | `Type` | Target pointer type, e.g. `pto.ptr(pto.f32, pto.MemorySpace.UB)` |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `ptr` | `PtrType` | Typed pointer value |
 
 This is an advanced operation. Prefer `as_ptr()` when the source already carries type information.
 
 ## 6.5 Compile-time queries
 
-These functions return values that are known at trace time from type information or hardware constants:
+These functions return values that are known at trace time from type information or hardware constants.
 
-### bytewidth
+#### `pto.bytewidth(dtype: Type) -> int`
 
-```python
-pto.bytewidth(dtype)  # → Python int (trace-time)
-```
+**Description**: Returns the size in bytes of a single element of the given data type. The result is a Python `int` evaluated at trace time.
 
-Returns the size in bytes of a single element of `dtype`:
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | `Type` | Data type, e.g. `pto.f32`, `pto.f16`, `pto.i8` |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `size` | `int` | Element size in bytes |
+
+**Example**:
 
 ```python
 bw = pto.bytewidth(pto.f32)   # 4
@@ -199,15 +271,25 @@ bw = pto.bytewidth(pto.f16)   # 2
 bw = pto.bytewidth(pto.i8)    # 1
 ```
 
-Since the result is a Python integer, it can be used in Python arithmetic that runs at trace time — for example, computing byte offsets inside a constexpr loop.
+---
 
-### elements_per_vreg
+#### `pto.elements_per_vreg(dtype: Type) -> int`
 
-```python
-pto.elements_per_vreg(dtype)  # → Python int (trace-time)
-```
+**Description**: Returns how many elements of `dtype` fit in one 256-byte vector register. The result is a Python `int` evaluated at trace time.
 
-Returns how many elements of `dtype` fit in one 256-byte vector register:
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `dtype` | `Type` | Data type, e.g. `pto.f32`, `pto.f16`, `pto.i8` |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `elems` | `int` | Number of elements per vector register |
+
+**Example**:
 
 ```python
 vec = pto.elements_per_vreg(pto.f32)   # 64
