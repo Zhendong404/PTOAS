@@ -26,6 +26,9 @@ Memory barrier types used with `pto.mem_bar`. Each value specifies which categor
 | `ST_VLD` | Scalar stores before → vector loads after |
 | `LD_VST` | Scalar loads before → vector stores after |
 | `ST_VST` | Scalar stores before → vector stores after |
+| `SYNC` | Full ordering — all prior memory operations (all pipes) complete before any subsequent operation |
+
+`SYNC` is a convenience value equivalent to a full pipeline barrier. It is the idiomatic choice for separating compute phases inside a ukernel when fine-grained barrier types are not needed.
 
 The naming convention: `V` = vector, `S` = scalar, `ST` = store, `LD` = load. `VST_VLD` reads "Vector STore before Vector LoaD."
 

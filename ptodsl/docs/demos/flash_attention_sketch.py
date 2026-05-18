@@ -14,6 +14,7 @@ contracts clean:
 
     flash_attention(...)           user-facing wrapper
       └─ @pto.jit flash_attention_kernel
+           ├─ Tile Ops                 tload / tstore at the GM↔UB boundary
            └─ @pto.ukernel  one KV-block worth of MTE/sync orchestration
                 ├─ @pto.cube   matrix products (QK^T and P@V)
                 ├─ @pto.simd   row-wise online softmax
