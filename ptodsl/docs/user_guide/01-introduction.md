@@ -57,7 +57,7 @@ PTODSL organizes kernel code into three layers, each building on the one below i
 Python Wrapper              L0  user-facing wrapper (NumPy, torch-npu, pure Python)
   └─ @pto.jit                     L1  tile-level: compile + cache + launch + Tile Ops
        └─ @pto.ukernel                 L2  micro-instruction orchestration
-            ├─ MTE Ops                 dma_load / dma_store / copy_gm_to_ubuf / ...
+            ├─ MTE Ops                 mte_load / mte_store / copy_gm_to_ubuf / ...
             ├─ @pto.cube               matrix products (mad, left_load, acc_store_ub, ...)
             ├─ @pto.simd               row-wise vector math (vlds, vadd, vexp, vsts, ...)
             └─ @pto.simt               scalar-like compute (lds, sts, pointwise blends, ...)
@@ -110,7 +110,7 @@ The SPMD launch contract is also owned here: the runtime grid (e.g., `batch * he
 
 Inside a ukernel, you write instructions targeting the three hardware units, and orchestrate data movement between them via **MTE Ops**:
 
-- **MTE Ops** (`dma_load`, `dma_store`, `copy_gm_to_ubuf`, etc.) move data between GM and UB, or between UB regions, at the DMA engine level.
+- **MTE Ops** (`mte_load`, `mte_store`, `copy_gm_to_ubuf`, etc.) move data between GM and UB, or between UB regions, at the DMA engine level.
 - **`@pto.cube`**, **`@pto.simd`**, and **`@pto.simt`** sub-kernels execute the actual compute on their respective hardware units.
 
 The ukernel manages the execution sandwich for one block: staging data with MTE Ops, issuing synchronization barriers, dispatching sub-kernels, and managing loop-carried state between invocations.
@@ -151,7 +151,7 @@ The flash attention kernel from Section 1.2 is not just an architectural diagram
 
 **L1 (`@pto.jit`)** allocates tiles for the Q block, KV block, online-softmax state (m/l/o ping-pong tiles), and cube-local scratch. It loops over Q blocks (outer `pto.for_`) and KV blocks (inner `pto.for_` with carry state), calling `kv_block_process` for each KV block and using `tload`/`tstore` at the GM boundary.
 
-**L2 (`@pto.ukernel`)** stages the current K and V blocks with `dma_load`, issues `mem_bar` for synchronization, then sequences four sub-kernel calls: `qk_matmul` (cube), `online_softmax_rows` (simd), `pv_matmul` (cube), `blend_output_rows` (simt).
+**L2 (`@pto.ukernel`)** stages the current K and V blocks with `mte_load`, issues `mem_bar` for synchronization, then sequences four sub-kernel calls: `qk_matmul` (cube), `online_softmax_rows` (simd), `pv_matmul` (cube), `blend_output_rows` (simt).
 
 **L3a (`@pto.cube`)** performs `left_load` / `right_load` / `mad` / `acc_store_ub` for both QK^T and P@V products.
 

@@ -91,7 +91,7 @@ def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
 
 ### Role
 
-`@pto.ukernel` (short for *micro-instruction kernel*) is the entry point for writing PTO micro-instructions directly. Unlike `@pto.jit` where you work with tile-level ops (`tload`, `tadd`, etc.), a ukernel lets you write explicit MTE, SIMD, SIMT, and Cube instructions — staging data with `dma_load`, synchronizing with `mem_bar`, and dispatching L3 sub-kernels. This is an advanced programming mode for expert users who need precise control over instruction ordering and hardware-level data movement.
+`@pto.ukernel` (short for *micro-instruction kernel*) is the entry point for writing PTO micro-instructions directly. Unlike `@pto.jit` where you work with tile-level ops (`tload`, `tadd`, etc.), a ukernel lets you write explicit MTE, SIMD, SIMT, and Cube instructions — staging data with `mte_load`, synchronizing with `mem_bar`, and dispatching L3 sub-kernels. This is an advanced programming mode for expert users who need precise control over instruction ordering and hardware-level data movement.
 
 ### Signature
 
@@ -115,8 +115,8 @@ Parameters are PTO-specific types — `Tile`, `PartitionTensorView`, `pto.ptr`, 
 def process_block(k_part, v_part, k_tile, v_tile,
                   s_tile, o_tile, rows: pto.i32, cols: pto.i32):
     # Stage current block from GM to UB
-    pto.dma_load(k_part.as_ptr(), k_tile.as_ptr())
-    pto.dma_load(v_part.as_ptr(), v_tile.as_ptr())
+    pto.mte_load(k_part, k_tile)
+    pto.mte_load(v_part, v_tile)
     pto.mem_bar(pto.BarrierType.SYNC)
 
     # Dispatch sub-kernels
@@ -127,10 +127,10 @@ def process_block(k_part, v_part, k_tile, v_tile,
     pto.mem_bar(pto.BarrierType.SYNC)
 
     # Write result back
-    pto.dma_store(o_tile.as_ptr(), o_part.as_ptr())
+    pto.mte_store(o_tile, o_part)
 ```
 
-A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with `dma_load`/`dma_store` (MTE Ops) rather than `tload`/`tstore`.
+A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with `mte_load`/`mte_store` (MTE Ops) rather than `tload`/`tstore`.
 
 ## 3.4 `@pto.cube` — Cube unit sub-kernel
 

@@ -137,7 +137,7 @@ with pto.for_(0, N, step=1) as i:
 - `tstore(tile, partition)`：UB → GM
 
 **DMA 搬运与控制**（ukernel 内）：
-- 执行操作：`dma_load(src_ptr, dst_ptr)`、`dma_store` 等
+- 执行操作：`mte_load(src, dst)`、`mte_store(src, dst)` 等
 - DMA 配置 [Advanced]：pad fill（`set_mov_pad_val`）、stride/loop 配置（`set_loop2_stride_outtoub` 等）、执行操作（`copy_gm_to_ubuf`、`copy_ubuf_to_ubuf`、`copy_ubuf_to_gm`）
 
 **Vector 加载/存储**（simd 内）：

@@ -35,9 +35,9 @@ Design rules illustrated here:
 5. ``@pto.jit`` may use tile ops such as ``tload`` / ``tstore`` at the logical
    scheduling boundary, but ``ukernel`` stays below that abstraction level.
    Once execution enters ``ukernel``, GM<->UB movement is expressed with
-   ptr-based micro-instructions such as ``dma_load`` instead of tile ops.
-   The DSL may make pointer materialization ergonomic, but the micro-instruction
-   boundary itself stays explicit in authored code via ``as_ptr()``.
+   MTE micro-instructions such as ``mte_load`` instead of tile ops.
+   ``mte_load`` / ``mte_store`` accept partitions and tiles directly,
+   deriving strides and burst sizes from the type metadata.
 6. ``simd`` / ``simt`` / ``cube`` are hardware boundaries. They do not expose
    vreg values across the function boundary. Data crosses the boundary through
    UB-backed tiles or typed UB pointers only.
@@ -505,10 +505,9 @@ def kv_block_process(
     - wiring together the explicit state transition
       (prev -> next for m/l/o).
     """
-    # ukernel deliberately stays below the tile-op abstraction boundary.
-    # Current-block GM->UB staging is expressed as ptr-based DMA instructions.
-    pto.dma_load(k_part.as_ptr(), k_tile.as_ptr())
-    pto.dma_load(v_part.as_ptr(), v_tile.as_ptr())
+    # Current-block GM->UB staging via MTE micro-instructions.
+    pto.mte_load(k_part, k_tile)
+    pto.mte_load(v_part, v_tile)
     pto.mem_bar(pto.BarrierType.SYNC)
 
     materialize_tile_bounds(
@@ -580,7 +579,7 @@ def kv_block_process(
 # ├──────────────────────────────────────────────────────────────────────────┤
 # │ L2  @pto.ukernel     Per-block execution sandwich                         │
 # │                                                                            │
-# │   explicit dma_load(ptr, ptr) staging for current K/V block, mem_bar,     │
+# │   explicit mte_load(part, tile) staging for current K/V block, mem_bar,   │
 # │   call cube/simd/simt sub-kernels,                                        │
 # │   manage scratch/state hand-off                                            │
 # │                                                                            │

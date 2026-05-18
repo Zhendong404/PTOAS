@@ -193,14 +193,14 @@ def add_block(a_part: pto.PartitionTensorView,
               o_part: pto.PartitionTensorView,
               a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
               rows: pto.i32, cols: pto.i32):
-    pto.dma_load(a_part.as_ptr(), a_tile.as_ptr())
-    pto.dma_load(b_part.as_ptr(), b_tile.as_ptr())
+    pto.mte_load(a_part, a_tile)
+    pto.mte_load(b_part, b_tile)
     pto.mem_bar(pto.BarrierType.SYNC)
 
     add_rows(a_tile, b_tile, o_tile, rows, cols)
     pto.mem_bar(pto.BarrierType.SYNC)
 
-    pto.dma_store(o_tile.as_ptr(), o_part.as_ptr())
+    pto.mte_store(o_tile, o_part)
 
 
 # L1: JIT entry — tile allocation, partitioning, launch.
@@ -226,7 +226,7 @@ def vec_add_micro(A, B, O, *, BLOCK: pto.constexpr):
 
 - **L1 `@pto.jit`**: allocates tiles, partitions the GM views, and loops over blocks — the same tile-level orchestration as Section 2.2, but now calling a ukernel instead of Tile Ops.
 
-- **L2 `@pto.ukernel`**: stages data with `dma_load`, synchronizes with `mem_bar`, dispatches the SIMD kernel, synchronizes again, then writes back with `dma_store`. The ukernel owns the hardware-level sequencing.
+- **L2 `@pto.ukernel`**: stages data with `mte_load`, synchronizes with `mem_bar`, dispatches the SIMD kernel, synchronizes again, then writes back with `mte_store`. The ukernel owns the hardware-level sequencing.
 
 - **L3 `@pto.simd`**: the outer `pto.for_` iterates over rows, the inner `pto.for_` iterates over column chunks of the hardware vector width (`elements_per_vreg`). Each iteration loads a vector-width slice into a `vreg`, does the addition under a mask (for tail elements), and stores the result back. Both loops are recorded as structured control flow IR — the compiler decides whether to keep them or unroll them.
 
