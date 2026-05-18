@@ -42,7 +42,12 @@ Design rules illustrated here:
 6. ``simd`` / ``simt`` / ``cube`` are hardware boundaries. They do not expose
    vreg values across the function boundary. Data crosses the boundary through
    UB-backed tiles or typed UB pointers only.
-7. Online-softmax state is made explicit with ping-pong tiles
+7. L3 sub-kernels can also be called directly from ``@pto.jit`` (compiler
+   handles MTE + sync) or written inline as context managers
+   (``with pto.simd():`` etc.). This sketch uses the explicit
+   ``@pto.ukernel`` → L3 path for full micro-instruction control, but
+   simpler kernels can skip the ukernel layer.
+8. Online-softmax state is made explicit with ping-pong tiles
    (``m_prev``/``m_next``, ``l_prev``/``l_next``, ``o_prev``/``o_next``).
    Hiding these dependencies with in-place aliases makes the algorithm harder
    to read and obscures what the DSL needs to express.

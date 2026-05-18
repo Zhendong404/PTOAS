@@ -126,6 +126,8 @@ These are hardware-bound compute sub-kernels, each mapped to a specific NPU comp
 
 - **`@pto.simt`** is a scalar-programmable processor group that executes scalar instructions across many work-items in parallel. Typical operations: `lds`, `sts`, scalar arithmetic and comparison. Well-suited for per-element tile walks, boundary metadata, and pointwise blends.
 
+L3 sub-kernels can be invoked in two ways: as named decorated functions (`@pto.cube` / `@pto.simd` / `@pto.simt`) — reusable and callable from `@pto.ukernel` or directly from `@pto.jit` — or inline as context managers (`with pto.cube():` / `with pto.simd():` / `with pto.simt():`) for quick prototyping. When called directly from `@pto.jit`, you stage data with `tload`/`tstore` instead of `mte_load`/`mte_store`; PTOAS handles the synchronization between Tile Ops and L3 compute automatically.
+
 The boundary contract is strict: vreg values do not escape a simd kernel, cube-local state does not leak into UB, and data crosses layer boundaries only through UB-backed tiles or typed UB pointers.
 
 ## 1.3 Tracing execution model

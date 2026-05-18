@@ -467,6 +467,31 @@ The SIMT kernel walks the tile element by element with nested `pto.for_` loops. 
 
 **Why SIMT instead of SIMD?** The intent is to contrast with `online_softmax_rows`: softmax is dominated by row-wise vector reductions and exponentials — natural SIMD work. The final blend is a simple linear combination with per-row coefficients — expressing it as explicit scalar work-items makes the per-element access pattern explicit and leaves the compiler free to vectorize or fuse as it sees fit.
 
+### Context manager alternative
+
+For trivial sub-kernels like `materialize_tile_bounds`, a named function is overkill — the context manager form keeps the logic inline where it's used. Here is how the ukernel body would look with `materialize_tile_bounds` inlined:
+
+```python
+@pto.ukernel
+def kv_block_process(...):
+    pto.mte_load(k_part, k_tile)
+    pto.mte_load(v_part, v_tile)
+    pto.mem_bar(pto.BarrierType.SYNC)
+
+    # Inline SIMT: materialize loop bounds (replaces the named @pto.simt function)
+    with pto.simt():
+        pto.sts(meta_ptr + 0, 0)
+        pto.sts(meta_ptr + 4, valid_rows)
+        pto.sts(meta_ptr + 8, valid_cols)
+
+    pto.mem_bar(pto.BarrierType.SYNC)
+
+    qk_matmul(q_tile, k_tile, ...)
+    ...
+```
+
+The `with pto.simt():` block is semantically identical to calling a `@pto.simt` function — the compiler treats it as an anonymous sub-kernel. For 3-line helpers that have no reuse, the context manager avoids the indirection of a separate function. For complex, reusable logic like `online_softmax_rows` or `qk_matmul`, the named decorator form remains the better fit.
+
 ## 11.8 Putting it all together: one KV block execution
 
 For one KV block, the full execution sequence is:
@@ -498,3 +523,5 @@ After all KV blocks: L1 issues `tstore(o_final_tile, o_part)` to write the resul
 **Tile-level boundary vs micro-instruction boundary**: `tload`/`tstore` appear only in `@pto.jit`. `mte_load`/`mte_store` appear only in `@pto.ukernel`. This is the key abstraction split: L1 operates on tiles, L2 operates on micro-instructions.
 
 **No vreg across sub-kernel boundaries**: vector registers are local to each `@pto.simd` kernel. Data crosses sub-kernel boundaries through UB tiles — the boundary contract is enforced by the type system.
+
+**L3 invocation flexibility**: This sketch uses the explicit `@pto.ukernel` → L3 path for full control over MTE and sync. For simpler kernels that don't need that control, L3 sub-kernels can be called directly from `@pto.jit` (the compiler handles MTE + sync) or written inline as context managers (`with pto.simd():`, etc.). See Chapter 3 for details.

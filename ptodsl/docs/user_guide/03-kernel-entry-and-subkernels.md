@@ -1,16 +1,23 @@
 # 3. Kernel Entry Points and Sub-Kernels
 
-PTODSL provides five decorators that mark functions as PTO kernels. This chapter is a reference for each decorator — its role, parameter contract, and boundary constraints.
+PTODSL provides five decorators that mark functions as PTO kernels, plus three context managers for inline use. This chapter is a reference for each entry point — its role, parameter contract, and boundary constraints.
 
 ## 3.1 Decorator family overview
 
 ```
 @pto.jit          L1   Top-level JIT entry — compile, cache, launch
-@pto.ukernel      L2   Micro-instruction orchestration
+@pto.ukernel      L2   Micro-instruction orchestration (MTE + sync)
 @pto.cube         L3   Matrix multiplication on the Cube unit
 @pto.simd         L3   Vector math on the SIMD unit
 @pto.simt         L3   Scalar compute on the SIMT unit
 ```
+
+L3 sub-kernels can be invoked in two ways:
+
+1. **As decorated functions** (`@pto.cube` / `@pto.simd` / `@pto.simt`) — reusable, named sub-kernels that can be called from `@pto.ukernel` or directly from `@pto.jit`.
+2. **As context managers** (`with pto.cube():` / `with pto.simd():` / `with pto.simt():`) — inline L3 blocks for quick prototyping or one-off compute snippets inside any kernel.
+
+Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you stage data with `tload`/`tstore` instead of `mte_load`/`mte_store`, and PTOAS handles the synchronization between Tile Ops and L3 compute automatically. This is the recommended path for most users — drop down to `@pto.ukernel` only when you need explicit control over micro-instruction ordering and synchronization.
 
 ## 3.2 `@pto.jit` — top-level JIT entry
 
@@ -86,6 +93,54 @@ def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
         pto.tadd(a_tile, b_tile, o_tile)
         pto.tstore(o_tile, o_part)
 ```
+
+### Calling L3 sub-kernels directly
+
+When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handled by Tile Ops (`tload`/`tstore`) instead of MTE micro-instructions. PTOAS handles the synchronization between Tile Ops and L3 compute — the sub-kernel itself is unchanged:
+
+```python
+@pto.cube
+def my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile):
+    m = pto.tile_valid_rows(a_tile)
+    k = pto.tile_valid_cols(a_tile)
+    n = pto.tile_valid_rows(b_tile)
+    pto.left_load(a_tile, l0a, m, k)
+    pto.right_load(b_tile, l0b, k, n, transpose=True)
+    pto.mad(l0a, l0b, acc)
+    pto.acc_store_ub(acc, o_tile, m, n)
+
+@pto.jit(target="a5")
+def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
+    N = A.shape[0]
+    a_view = pto.make_tensor_view(A, shape=[N], strides=A.strides)
+    b_view = pto.make_tensor_view(B, shape=[N], strides=B.strides)
+    o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
+
+    a_tile = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32)
+    b_tile = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32)
+    l0a = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT)
+    l0b = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32, memory_space=pto.MemorySpace.RIGHT)
+    acc = pto.alloc_tile(shape=[BLOCK, BLOCK], dtype=pto.f32, memory_space=pto.MemorySpace.ACC)
+
+    num_blocks = (N + BLOCK - 1) // BLOCK
+    with pto.for_(0, num_blocks, step=1) as i:
+        offset = i * BLOCK
+        a_part = pto.partition_view(a_view, offsets=[offset, 0], sizes=[BLOCK, BLOCK])
+        b_part = pto.partition_view(b_view, offsets=[offset, 0], sizes=[BLOCK, BLOCK])
+        o_part = pto.partition_view(o_view, offsets=[offset, 0], sizes=[BLOCK, BLOCK])
+
+        # Tile Ops stage data from GM to UB (replaces mte_load at L1)
+        pto.tload(a_part, a_tile)
+        pto.tload(b_part, b_tile)
+
+        # Direct L3 call — PTOAS handles sync between tload and compute
+        my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile)
+
+        pto.tstore(o_tile, o_part)
+```
+
+This is the recommended path for users who want hardware-unit compute without writing explicit MTE Ops and manual sync. Mixing direct L3 calls with Tile Ops and ukernel calls in the same `@pto.jit` body is supported — the compiler unifies the lowering.
 
 ## 3.3 `@pto.ukernel` — micro-instruction orchestration
 
@@ -177,6 +232,11 @@ def qk_matmul(
 
 Cube-local state (LEFT, RIGHT, ACC, BIAS) never leaks into UB — it is the caller's responsibility to allocate scratch buffers and pass them in explicitly.
 
+**Invocation modes**: `@pto.cube` functions can be:
+- Called from `@pto.ukernel` (manual MTE + sync in the ukernel's hands).
+- Called directly from `@pto.jit` (compiler infers MTE + sync).
+- Used inline as a context manager: `with pto.cube():` (see Section 3.7).
+
 ## 3.5 `@pto.simd` — SIMD unit sub-kernel
 
 ### Role
@@ -219,6 +279,11 @@ def add_rows(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
 
 The boundary contract: `vreg` values (`a_vec`, `b_vec`, `o_vec`) are local to the function. The only way to persist data across a `@pto.simd` call is to write it back to a UB tile via `vsts` (or `psts`, etc.).
 
+**Invocation modes**: `@pto.simd` functions can be:
+- Called from `@pto.ukernel` (manual MTE + sync in the ukernel's hands).
+- Called directly from `@pto.jit` (compiler infers MTE + sync).
+- Used inline as a context manager: `with pto.simd():` (see Section 3.7).
+
 ## 3.6 `@pto.simt` — SIMT unit sub-kernel
 
 ### Role
@@ -258,7 +323,61 @@ def blend_output_rows(
 
 SIMT kernels read and write individual scalar elements from tiles. The unit executes the same scalar instruction across many work-items in parallel, making it efficient for per-element operations.
 
-## 3.7 Boundary contracts
+**Invocation modes**: `@pto.simt` functions can be:
+- Called from `@pto.ukernel` (manual MTE + sync in the ukernel's hands).
+- Called directly from `@pto.jit` (compiler infers MTE + sync).
+- Used inline as a context manager: `with pto.simt():` (see Section 3.7).
+
+## 3.7 Context manager syntax for L3 sub-kernels
+
+In addition to the decorator form, each L3 sub-kernel unit provides a context manager: `with pto.cube():`, `with pto.simd():`, and `with pto.simt():`. These open an inline L3 block without requiring a separate named function — useful for quick prototyping, one-off compute snippets, or when the logic is too trivial to extract.
+
+### Syntax
+
+```python
+with pto.simd():
+    # Direct L3 instructions — vreg ops, scalar loads/stores
+    a_vec = pto.vlds(a_tile[r, c:])
+    b_vec = pto.vlds(b_tile[r, c:])
+    o_vec = pto.vadd(a_vec, b_vec, mask)
+    pto.vsts(o_vec, o_tile[r, c:], mask)
+```
+
+```python
+with pto.simt():
+    alpha = pto.load(alpha_tile[row, 0])
+    beta = pto.load(beta_tile[row, 0])
+    o_next = alpha * o_prev + beta * pv_val
+    pto.store(o_next, o_next_tile[row, col])
+```
+
+```python
+with pto.cube():
+    pto.left_load(q_tile, q_l0a, m, k)
+    pto.right_load(k_tile, k_l0b, k, n, transpose=True)
+    pto.mad(q_l0a, k_l0b, s_acc)
+    pto.acc_store_ub(s_acc, s_tile, m, n)
+```
+
+### Semantics
+
+- Inside the `with` block, instructions execute on the corresponding hardware unit.
+- `vreg` values created inside `with pto.simd():` are scoped to the block — they do not escape.
+- Cube-local scratch (`l0a`, `l0b`, `acc`) must be allocated by the caller before entering the block.
+- The context manager form is equivalent to defining an inline anonymous sub-kernel. The compiler treats it identically to a named `@pto.simd` / `@pto.cube` / `@pto.simt` function.
+
+### Comparison
+
+| | Decorator form | Context manager form |
+|---|---|---|
+| Reuse | Named, callable from multiple call sites | Inline, single-use |
+| Readability | Good for complex, multi-step logic | Good for short (3-10 line) snippets |
+| Testing | Can be unit-tested independently | Tested only through the enclosing kernel |
+| Cube-local args | Explicit parameters | Captured from enclosing scope |
+
+The two forms can be freely mixed in the same `@pto.jit` or `@pto.ukernel` body.
+
+## 3.8 Boundary contracts
 
 Data crosses decorator boundaries only through UB-backed tiles or typed UB pointers:
 
@@ -266,12 +385,14 @@ Data crosses decorator boundaries only through UB-backed tiles or typed UB point
 |----------|---------|
 | Host → `@pto.jit` | Python-native tensors |
 | `@pto.jit` → `@pto.ukernel` | `Tile`, `PartitionTensorView`, `pto.ptr`, PTO scalars |
+| `@pto.jit` → L3 sub-kernel (direct call) | `Tile`, PTO scalars (compiler handles MTE + sync) |
+| `@pto.jit` → `with pto.{cube,sid,sitm}:` | `Tile` captured from enclosing scope |
 | `@pto.ukernel` → L3 sub-kernel | `Tile`, PTO scalars |
-| L3 sub-kernel → L3 sub-kernel | Not allowed (go through UB tiles via the ukernel) |
+| L3 sub-kernel → L3 sub-kernel | Not allowed (go through UB tiles via the caller) |
 | `@pto.simd` → caller | Only via `vsts`/`psts` to UB tiles; `vreg` cannot escape |
 | Cube-local → UB | Only via `acc_store_ub`; LEFT/RIGHT/ACC/BIAS are private |
 
-## 3.8 `pto.constexpr`
+## 3.9 `pto.constexpr`
 
 `pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time constant. The compiler specializes the kernel for each combination of constexpr values, and the compiled artifact is cached by those values.
 

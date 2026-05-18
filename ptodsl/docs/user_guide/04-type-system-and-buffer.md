@@ -41,7 +41,7 @@ The following types are available for storage and data movement, but **not** for
 
 | DSL Type | Description |
 |----------|-------------|
-| `pto.hif8` | 8-bit hybrid integer-float |
+| `pto.hif8` | HiFloat8 format |
 | `pto.f4e1m2x2` | 4-bit float (E1M2, 2-wide packed) |
 | `pto.f4e2m1x2` | 4-bit float (E2M1, 2-wide packed) |
 | `pto.f8e4m3` | 8-bit float (E4M3) |
