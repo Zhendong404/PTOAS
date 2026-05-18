@@ -1,12 +1,12 @@
 # 6. Scalar and Pointer Operations
 
-Chapter 5 established the rule: Python constructs are resolved at trace time, PTO constructs produce device-side behavior. This chapter applies that distinction to scalars and pointers — when to use a plain Python number, when to use a `pto.*` scalar operation, and how to work with typed pointers.
+Chapter 5 established the rule: Python constructs are resolved at trace time, PTO constructs produce device-side behavior. This chapter applies that distinction to scalars and pointers — when to use a plain Python number, when to use a `scalar.*` operation, and how to work with typed pointers.
 
 ## 6.1 Python scalars vs PTO scalars
 
 A **Python scalar** is any value computed by Python during tracing: a literal (`3.14159`), a shape dimension (`A.shape[0]`), a constexpr parameter (`BLOCK`), or an arithmetic expression built from these (`1.0 / sqrt(dim)`). These are evaluated at trace time and their results are baked into the device code as constants.
 
-A **PTO scalar** is a value that lives on the device at runtime. It comes from a `pto.load` read, a device-side computation (`pto.max`, `pto.exp`), or a runtime query (`pto.get_block_idx()`). PTO scalars flow through the recorded program and are not resolved until the kernel executes.
+A **PTO scalar** is a value that lives on the device at runtime. It comes from a `scalar.load` read, a device-side computation (`scalar.max`, `scalar.exp`), or a runtime query (`pto.get_block_idx()`). PTO scalars flow through the recorded program and are not resolved until the kernel executes.
 
 ### The mixed expression
 
@@ -26,17 +26,17 @@ alpha * o_prev + beta * pv_val
 | If the value... | Use... | Example |
 |-----------------|--------|---------|
 | Is known at compile time | Python scalar | `BLOCK`, `1.0 / sqrt(dim)`, `A.shape[0]` |
-| Comes from device memory | PTO scalar | `pto.load(tile[r, c])` |
-| Depends on a runtime value | PTO scalar | `pto.max(m_prev, row_max)` |
+| Comes from device memory | PTO scalar | `scalar.load(tile[r, c])` |
+| Depends on a runtime value | PTO scalar | `scalar.max(m_prev, row_max)` |
 | Is a block/subblock index | PTO scalar | `pto.get_block_idx()` |
 
 When in doubt, ask: *can this value change between launches of the same compiled kernel?* If yes, it must be a PTO scalar.
 
 ## 6.2 Scalar access: load and store
 
-`pto.load` reads a single scalar element from a typed pointer or tile location. `pto.store` writes a scalar back. These are the canonical scalar memory ops for SIMT authoring. The offset is counted in elements, not bytes.
+`scalar.load` reads a single scalar element from a typed pointer or tile location. `scalar.store` writes a scalar back. These are the canonical scalar memory ops for SIMT authoring. The offset is counted in elements, not bytes.
 
-#### `pto.load(ptr: PtrType, offset: Index) -> ScalarType`
+#### `scalar.load(ptr: PtrType, offset: Index) -> ScalarType`
 
 **Description**: Loads one scalar element from a typed pointer at the given element offset.
 
@@ -56,7 +56,7 @@ When in doubt, ask: *can this value change between launches of the same compiled
 **Tile-index form** — the preferred syntax when loading from a tile:
 
 ```python
-val = pto.load(tile[row, col])
+val = scalar.load(tile[row, col])
 ```
 
 `tile[row, col]` selects one element. Row and column indices are PTO scalars (or Python integers that the tracer promotes). This form is equivalent to computing the pointer and offset from the tile's base address and layout.
@@ -64,13 +64,13 @@ val = pto.load(tile[row, col])
 **Pointer forms**:
 
 ```python
-val = pto.load(ptr, offset)       # explicit offset
-val = pto.load(ptr + offset)      # pointer arithmetic shorthand
+val = scalar.load(ptr, offset)       # explicit offset
+val = scalar.load(ptr + offset)      # pointer arithmetic shorthand
 ```
 
 ---
 
-#### `pto.store(value: ScalarType, ptr: PtrType, offset: Index) -> None`
+#### `scalar.store(value: ScalarType, ptr: PtrType, offset: Index) -> None`
 
 **Description**: Stores one scalar element to a typed pointer at the given element offset.
 
@@ -87,20 +87,20 @@ val = pto.load(ptr + offset)      # pointer arithmetic shorthand
 **Tile-index form**:
 
 ```python
-pto.store(value, tile[row, col])
+scalar.store(value, tile[row, col])
 ```
 
 **Pointer forms**:
 
 ```python
-pto.store(value, ptr, offset)
+scalar.store(value, ptr, offset)
 ```
 
 ---
 
 ### Typical SIMT usage
 
-`pto.load` and `pto.store` are the primary data access pattern inside `@pto.simt` kernels. Each `load`/`store` operates on one element per work-item, but the SIMT unit executes the same instruction across many work-items in parallel:
+`scalar.load` and `scalar.store` are the primary data access pattern inside `@pto.simt` kernels. Each `load`/`store` operates on one element per work-item, but the SIMT unit executes the same instruction across many work-items in parallel:
 
 ```python
 @pto.simt
@@ -111,71 +111,94 @@ def blend_output_rows(
     row_start: pto.i32, row_stop: pto.i32, valid_dim: pto.i32,
 ):
     with pto.for_(row_start, row_stop, step=1) as row:
-        alpha = pto.load(alpha_tile[row, 0])
-        beta = pto.load(beta_tile[row, 0])
+        alpha = scalar.load(alpha_tile[row, 0])
+        beta = scalar.load(beta_tile[row, 0])
         with pto.for_(0, valid_dim, step=1) as col:
-            o_prev = pto.load(o_prev_tile[row, col])
-            pv_val = pto.load(pv_tile[row, col])
+            o_prev = scalar.load(o_prev_tile[row, col])
+            pv_val = scalar.load(pv_tile[row, col])
             o_next = alpha * o_prev + beta * pv_val
-            pto.store(o_next, o_next_tile[row, col])
+            scalar.store(o_next, o_next_tile[row, col])
 ```
 
 When writing to a raw pointer (e.g., a small metadata buffer obtained via `as_ptr()`), use the pointer-plus-offset form:
 
 ```python
 meta_ptr = meta_tile.as_ptr()
-pto.store(0, meta_ptr, 0)                    # store at element offset 0
-pto.store(valid_rows, meta_ptr, 4)           # store at element offset 4
-row_start = pto.load(meta_ptr, 0)
-row_stop  = pto.load(meta_ptr, 4)
+scalar.store(0, meta_ptr, 0)                    # store at element offset 0
+scalar.store(valid_rows, meta_ptr, 4)           # store at element offset 4
+row_start = scalar.load(meta_ptr, 0)
+row_stop  = scalar.load(meta_ptr, 4)
 ```
 
 ## 6.3 Scalar arithmetic and comparisons
 
-PTO scalar values support standard arithmetic operators (`+`, `-`, `*`, `/`), which are recorded as device-side instructions.
+### Python operators for basic arithmetic
 
-#### `pto.max(a: ScalarType, b: ScalarType) -> ScalarType`
+Addition, subtraction, multiplication, and division of PTO scalars use standard Python syntax. The tracer records the corresponding device-side instructions automatically:
+
+```python
+o_next = alpha * o_prev + beta * pv_val      # multiply-add
+l_scaled = l_prev * scalar.exp(m_prev - m_next)  # subtraction inside exp
+step = (N + BLOCK - 1) // BLOCK               # Python int arithmetic (trace-time)
+```
+
+When both operands are PTO scalars (loaded from device memory or produced by another device-side op), `+`, `-`, `*`, `/` produce device-side arithmetic instructions. When one operand is a Python scalar (trace-time constant), the tracer embeds it as an immediate.
+
+### Math functions: `scalar.*`
+
+Non-trivial scalar math functions live under the `scalar` namespace (imported as `from pto import scalar` or accessed as `pto.scalar`):
+
+#### `scalar.max(a: ScalarType, b: ScalarType) -> ScalarType`
 
 **Description**: Returns the maximum of two scalars.
 
-#### `pto.min(a: ScalarType, b: ScalarType) -> ScalarType`
+#### `scalar.min(a: ScalarType, b: ScalarType) -> ScalarType`
 
 **Description**: Returns the minimum of two scalars.
 
-#### `pto.exp(x: ScalarType) -> ScalarType`
+#### `scalar.exp(x: ScalarType) -> ScalarType`
 
 **Description**: Exponential, e^x.
 
-#### `pto.log(x: ScalarType) -> ScalarType`
+#### `scalar.log(x: ScalarType) -> ScalarType`
 
 **Description**: Natural logarithm.
 
-#### `pto.sqrt(x: ScalarType) -> ScalarType`
+#### `scalar.sqrt(x: ScalarType) -> ScalarType`
 
 **Description**: Square root.
 
-#### `pto.abs(x: ScalarType) -> ScalarType`
+#### `scalar.abs(x: ScalarType) -> ScalarType`
 
 **Description**: Absolute value.
 
-#### `pto.gt(a: ScalarType, b: ScalarType) -> pto.i1`
+#### `scalar.gt(a: ScalarType, b: ScalarType) -> pto.i1`
 
 **Description**: Greater-than comparison. Returns `pto.i1`.
 
-#### `pto.lt(a: ScalarType, b: ScalarType) -> pto.i1`
+#### `scalar.lt(a: ScalarType, b: ScalarType) -> pto.i1`
 
 **Description**: Less-than comparison. Returns `pto.i1`.
 
-#### `pto.eq(a: ScalarType, b: ScalarType) -> pto.i1`
+#### `scalar.eq(a: ScalarType, b: ScalarType) -> pto.i1`
 
 **Description**: Equality comparison. Returns `pto.i1`.
 
 **Example**:
 
 ```python
-m_next = pto.max(m_prev, row_max)
-l_scaled = l_prev * pto.exp(m_prev - m_next)
-need_scale = pto.gt(val, threshold)
+m_next = scalar.max(m_prev, row_max)
+l_scaled = l_prev * scalar.exp(m_prev - m_next)
+need_scale = scalar.gt(val, threshold)
+```
+
+For readability in files with many scalar operations, assign `pto.scalar` to a short local name:
+
+```python
+scalar = pto.scalar
+
+m_next = scalar.max(m_prev, row_max)
+l_scaled = l_prev * scalar.exp(m_prev - m_next)
 ```
 
 These are the scalar-path counterparts of the vector math operations covered in Chapter 8. Use them inside `@pto.simt` kernels and in `@pto.ukernel` orchestration code where you need to compute a loop bound or a scalar coefficient from runtime data.
@@ -320,9 +343,9 @@ def elementwise_scale(
 ):
     with pto.for_(0, rows, step=1) as r:
         with pto.for_(0, cols, step=1) as c:
-            val = pto.load(src_tile[r, c])
+            val = scalar.load(src_tile[r, c])
             scaled = val * scale
-            pto.store(scaled, dst_tile[r, c])
+            scalar.store(scaled, dst_tile[r, c])
 ```
 
 This reads each element from `src_tile`, multiplies by `scale`, and writes to `dst_tile`. The SIMT unit executes the body in parallel across work-items, so this scalar-looking code achieves high throughput — each work-item handles a different `(r, c)` pair.
@@ -341,13 +364,13 @@ def blend_with_per_row_coeffs(
     cols: pto.i32,
 ):
     with pto.for_(0, rows, step=1) as r:
-        alpha = pto.load(alpha_tile[r, 0])   # read once per row
-        beta = pto.load(beta_tile[r, 0])     # read once per row
+        alpha = scalar.load(alpha_tile[r, 0])   # read once per row
+        beta = scalar.load(beta_tile[r, 0])     # read once per row
         with pto.for_(0, cols, step=1) as c:
-            o_prev = pto.load(o_prev_tile[r, c])
-            pv_val = pto.load(pv_tile[r, c])
+            o_prev = scalar.load(o_prev_tile[r, c])
+            pv_val = scalar.load(pv_tile[r, c])
             o_next = alpha * o_prev + beta * pv_val
-            pto.store(o_next, o_next_tile[r, c])
+            scalar.store(o_next, o_next_tile[r, c])
 ```
 
 This hoists `alpha` and `beta` out of the inner loop — the row coefficients are loaded once and broadcast across all columns in that row.

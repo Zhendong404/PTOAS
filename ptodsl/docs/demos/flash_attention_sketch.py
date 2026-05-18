@@ -398,27 +398,27 @@ def online_softmax_rows(
         col_mask = pto.make_mask(pto.f32, valid_cols)
 
         s_row = pto.vlds(s_tile[row, 0:])
-        m_prev = pto.lds(m_prev_tile[row, 0])
-        l_prev = pto.lds(l_prev_tile[row, 0])
+        m_prev = scalar.load(m_prev_tile[row, 0])
+        l_prev = scalar.load(l_prev_tile[row, 0])
 
         row_max = pto.vcgmax(s_row, col_mask)
-        m_next = pto.max(m_prev, row_max)
+        m_next = scalar.max(m_prev, row_max)
 
         s_shifted = pto.vsubs(s_row, m_next, col_mask)
         p_row = pto.vexp(s_shifted, col_mask)
 
         row_sum = pto.vcgadd(p_row, col_mask)
-        l_scaled = l_prev * pto.exp(m_prev - m_next)
+        l_scaled = l_prev * scalar.exp(m_prev - m_next)
         l_next = l_scaled + row_sum
 
         alpha = l_scaled / l_next
         beta = 1.0 / l_next
 
         pto.vsts(p_row, p_tile[row, 0:], col_mask)
-        pto.sts(m_next_tile[row, 0], m_next)
-        pto.sts(l_next_tile[row, 0], l_next)
-        pto.sts(alpha_tile[row, 0], alpha)
-        pto.sts(beta_tile[row, 0], beta)
+        scalar.sts(m_next_tile[row, 0], m_next)
+        scalar.sts(l_next_tile[row, 0], l_next)
+        scalar.sts(alpha_tile[row, 0], alpha)
+        scalar.sts(beta_tile[row, 0], beta)
 
 
 @pto.simt
@@ -443,15 +443,15 @@ def blend_output_rows(
     the tile domain.
     """
     with pto.for_(row_start, row_stop, step=1) as row:
-        alpha = pto.lds(alpha_tile[row, 0])
-        beta = pto.lds(beta_tile[row, 0])
+        alpha = scalar.load(alpha_tile[row, 0])
+        beta = scalar.load(beta_tile[row, 0])
 
         with pto.for_(0, valid_dim, step=1) as col:
-            o_prev = pto.lds(o_prev_tile[row, col])
-            pv_val = pto.lds(pv_tile[row, col])
+            o_prev = scalar.load(o_prev_tile[row, col])
+            pv_val = scalar.load(pv_tile[row, col])
 
             o_next = alpha * o_prev + beta * pv_val
-            pto.sts(o_next_tile[row, col], o_next)
+            scalar.sts(o_next_tile[row, col], o_next)
 
 
 @pto.simt
@@ -466,9 +466,9 @@ def materialize_tile_bounds(
     The SIMT kernel stays intentionally small here: it is responsible for
     scalar control metadata, not for rewriting the vector or cube logic.
     """
-    pto.sts(meta_ptr + 0, 0)
-    pto.sts(meta_ptr + 4, valid_rows)
-    pto.sts(meta_ptr + 8, valid_cols)
+    scalar.sts(meta_ptr + 0, 0)
+    scalar.sts(meta_ptr + 4, valid_rows)
+    scalar.sts(meta_ptr + 8, valid_cols)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -521,9 +521,9 @@ def kv_block_process(
         pto.tile_valid_rows(q_tile),
         pto.tile_valid_rows(k_tile),
     )
-    row_start = pto.lds(meta_ptr + 0)
-    row_stop = pto.lds(meta_ptr + 4)
-    valid_cols = pto.lds(meta_ptr + 8)
+    row_start = scalar.load(meta_ptr + 0)
+    row_stop = scalar.load(meta_ptr + 4)
+    valid_cols = scalar.load(meta_ptr + 8)
 
     # 1. S = Q @ K^T
     qk_matmul(q_tile, k_tile, q_l0a, rhs_l0b, qk_acc_tile, s_tile)

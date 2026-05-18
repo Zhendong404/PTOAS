@@ -112,7 +112,7 @@ with pto.for_(0, N, step=1) as i:
   → trace 时求值，结果烘焙进设备代码。适用于编译期确定的量：
   循环边界、tile 尺寸、常量系数（如 `1.0 / sqrt(dim)`）
 
-- **PTO 标量操作**（`pto.lds(...)`、`pto.max(...)`、`pto.exp(...)`）
+- **PTO 标量操作**（`scalar.load(...)`、`scalar.max(...)`、`scalar.exp(...)`）
   → 产生设备端运行时标量值。适用于来自设备内存或依赖运行时输入的量：
   从 tile 读取元素、运行时依赖的数学计算
 
@@ -125,7 +125,7 @@ with pto.for_(0, N, step=1) as i:
 - 简单规则：**trace 时能确定的 → Python 原生；来自设备/依赖运行时的 → `pto.*`**
 
 **6.2 标量存取**：`pto.lds`、`pto.sts`、`load_scalar`、`store_scalar`
-**6.3 标量算术**：`pto.max`、`pto.exp` 及其他标量数学操作
+**6.3 标量算术**：`scalar.max`、`scalar.exp` 及其它标量数学操作
 **6.4 指针操作**：`castptr`、`addptr`、`as_ptr()`
 **6.5 编译期查询**：`bytewidth`、`elements_per_vreg`
 **6.6 tile 索引下的标量读写**：`@pto.simt` 中的典型用法，嵌套 `pto.for_` 逐元素遍历 tile

@@ -256,9 +256,9 @@ pto.mem_bar(pto.BarrierType.SYNC)
 materialize_tile_bounds(meta_ptr,
     pto.tile_valid_rows(q_tile),
     pto.tile_valid_rows(k_tile))
-row_start = pto.lds(meta_ptr + 0)
-row_stop  = pto.lds(meta_ptr + 4)
-valid_cols = pto.lds(meta_ptr + 8)
+row_start = scalar.load(meta_ptr + 0)
+row_stop  = scalar.load(meta_ptr + 4)
+valid_cols = scalar.load(meta_ptr + 8)
 ```
 
 The SIMT sub-kernel `materialize_tile_bounds` writes `{0, valid_rows, valid_cols}` into the metadata buffer. The ukernel then loads these scalars. They control the row iteration range in subsequent sub-kernels, handling partial tail blocks.
@@ -376,8 +376,8 @@ with pto.for_(row_start, row_stop, step=1) as row:
     col_mask = pto.make_mask(pto.f32, valid_cols)
 
     s_row   = pto.vlds(s_tile[row, 0:])
-    m_prev  = pto.lds(m_prev_tile[row, 0])
-    l_prev  = pto.lds(l_prev_tile[row, 0])
+    m_prev  = scalar.load(m_prev_tile[row, 0])
+    l_prev  = scalar.load(l_prev_tile[row, 0])
 ```
 
 - **Mask creation**: `make_mask(pto.f32, valid_cols)` generates a tail mask for the column dimension. On the last KV block, `valid_cols` may be less than the full block width.
@@ -388,13 +388,13 @@ with pto.for_(row_start, row_stop, step=1) as row:
 
 ```python
     row_max   = pto.vcgmax(s_row, col_mask)
-    m_next    = pto.max(m_prev, row_max)
+    m_next    = scalar.max(m_prev, row_max)
 
     s_shifted = pto.vsubs(s_row, m_next, col_mask)
     p_row     = pto.vexp(s_shifted, col_mask)
 
     row_sum   = pto.vcgadd(p_row, col_mask)
-    l_scaled  = l_prev * pto.exp(m_prev - m_next)
+    l_scaled  = l_prev * scalar.exp(m_prev - m_next)
     l_next    = l_scaled + row_sum
 
     alpha = l_scaled / l_next
@@ -415,10 +415,10 @@ This implements the online-softmax update from the Flash Attention paper:
 
 ```python
     pto.vsts(p_row, p_tile[row, 0:], col_mask)
-    pto.sts(m_next_tile[row, 0], m_next)
-    pto.sts(l_next_tile[row, 0], l_next)
-    pto.sts(alpha_tile[row, 0], alpha)
-    pto.sts(beta_tile[row, 0], beta)
+    scalar.sts(m_next_tile[row, 0], m_next)
+    scalar.sts(l_next_tile[row, 0], l_next)
+    scalar.sts(alpha_tile[row, 0], alpha)
+    scalar.sts(beta_tile[row, 0], beta)
 ```
 
 - `vsts` stores the vector `p_row` back to UB under the column mask.
@@ -433,9 +433,9 @@ This implements the online-softmax update from the Flash Attention paper:
 ```python
 @pto.simt
 def materialize_tile_bounds(meta_ptr, valid_rows, valid_cols):
-    pto.sts(meta_ptr + 0, 0)
-    pto.sts(meta_ptr + 4, valid_rows)
-    pto.sts(meta_ptr + 8, valid_cols)
+    scalar.sts(meta_ptr + 0, 0)
+    scalar.sts(meta_ptr + 4, valid_rows)
+    scalar.sts(meta_ptr + 8, valid_cols)
 ```
 
 Three scalar stores write the loop bounds into the metadata buffer. `meta_ptr` is a typed UB pointer; `+ 0`, `+ 4`, `+ 8` are byte offsets (three `i32` values). This is the simplest sub-kernel in the sketch — it handles scalar control metadata, not vector math.
@@ -447,14 +447,14 @@ Three scalar stores write the loop bounds into the metadata buffer. `meta_ptr` i
 def blend_output_rows(o_prev_tile, pv_tile, alpha_tile, beta_tile,
                       o_next_tile, row_start, row_stop, valid_dim):
     with pto.for_(row_start, row_stop, step=1) as row:
-        alpha = pto.lds(alpha_tile[row, 0])
-        beta  = pto.lds(beta_tile[row, 0])
+        alpha = scalar.load(alpha_tile[row, 0])
+        beta  = scalar.load(beta_tile[row, 0])
 
         with pto.for_(0, valid_dim, step=1) as col:
-            o_prev = pto.lds(o_prev_tile[row, col])
-            pv_val = pto.lds(pv_tile[row, col])
+            o_prev = scalar.load(o_prev_tile[row, col])
+            pv_val = scalar.load(pv_tile[row, col])
             o_next = alpha * o_prev + beta * pv_val
-            pto.sts(o_next_tile[row, col], o_next)
+            scalar.sts(o_next_tile[row, col], o_next)
 ```
 
 This is a scalar element-wise blend over the tile domain:
@@ -480,9 +480,9 @@ def kv_block_process(...):
 
     # Inline SIMT: materialize loop bounds (replaces the named @pto.simt function)
     with pto.simt():
-        pto.sts(meta_ptr + 0, 0)
-        pto.sts(meta_ptr + 4, valid_rows)
-        pto.sts(meta_ptr + 8, valid_cols)
+        scalar.sts(meta_ptr + 0, 0)
+        scalar.sts(meta_ptr + 4, valid_rows)
+        scalar.sts(meta_ptr + 8, valid_cols)
 
     pto.mem_bar(pto.BarrierType.SYNC)
 
