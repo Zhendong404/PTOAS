@@ -55,7 +55,8 @@ PTODSL organizes kernel code into three layers, each building on the one below i
 
 ```
 Python Wrapper              L0  user-facing wrapper (NumPy, torch-npu, pure Python)
-  └─ @pto.jit                     L1  tile-level: compile + cache + launch + Tile Ops
+  └─ @pto.jit                     L1  compile + cache + launch
+       ├─ Tile Ops                     tile-level: tload, tstore, tadd, ...
        └─ @pto.ukernel                 L2  micro-instruction orchestration
             ├─ MTE Ops                 mte_load / mte_store / copy_gm_to_ubuf / ...
             ├─ @pto.cube               matrix products (mad, left_load, acc_store_ub, ...)
