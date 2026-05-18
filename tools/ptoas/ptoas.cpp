@@ -9,6 +9,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
+#include "PTO/Transforms/CppPostprocess.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/InitAllDialects.h"
@@ -204,6 +205,12 @@ static llvm::cl::opt<int> graphSyncSolverEventIdMax(
         "Maximum EVENT_ID slots for the graph sync solver (default 8). "
         "Lower values exercise the PIPE_ALL coloring fallback sooner."),
     llvm::cl::init(8));
+
+static llvm::cl::opt<bool> enableOpFusion(
+    "enable-op-fusion",
+    llvm::cl::desc("Enable frontend tile fusion on the A5 EmitC mainline "
+                   "(requires --pto-arch=a5 and --pto-level=level2|level3)"),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
@@ -1054,6 +1061,20 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (enableOpFusion) {
+    if (arch != "a5") {
+      llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                      "--pto-arch=a5 is required.\n";
+    } else if (effectiveLevel == PTOBuildLevel::Level1) {
+      llvm::errs() << "Warning: --enable-op-fusion is ignored because "
+                      "--pto-level=level2 or level3 is required.\n";
+    }
+  }
+
+  const bool enableA5FrontendFusionPath =
+      enableOpFusion && arch == "a5" &&
+      effectiveLevel != PTOBuildLevel::Level1;
+
   bool invalidAutoSyncTailHint = false;
   module->walk([&](mlir::func::FuncOp func) {
     auto hintAttr =
@@ -1151,6 +1172,15 @@ int main(int argc, char **argv) {
   if (!disableInferLayout)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
+
+  // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
+  // on scheduled block-local spans before the shared mainline lowers tiles.
+  if (enableA5FrontendFusionPath) {
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
+  }
+
   pm.addPass(pto::createPTOViewToMemrefPass());
 
   if (effectiveLevel != PTOBuildLevel::Level3) {
@@ -1242,6 +1272,7 @@ int main(int argc, char **argv) {
   rewriteAsyncEventMarkers(cppOutput);
   rewritePtrScalarMarkers(cppOutput);
   rewriteEventIdArrayMarkers(cppOutput);
+  pto::rewriteLastUseMarkersInCpp(cppOutput);
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);

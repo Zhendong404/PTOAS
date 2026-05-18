@@ -70,6 +70,9 @@ std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<Pass> createPTOMaterializeTileHandlesPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
 std::unique_ptr<Pass> createPTOA5NormalizeTMovPass();
+std::unique_ptr<Pass> createFusionPlanPass();
+std::unique_ptr<Pass> createOpSchedulingPass();
+std::unique_ptr<Pass> createPTOMarkLastUsePass();
 
 //===----------------------------------------------------------------------===//
 // Registration

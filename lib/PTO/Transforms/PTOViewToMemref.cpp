@@ -126,6 +126,16 @@ static void lookupValidDims(Value v, Value &vRow, Value &vCol) {
   vCol = Value();
 }
 
+template <typename OpTy, typename... Args>
+static OpTy replaceOpWithClonedAttrs(IRRewriter &rewriter, Operation *op,
+                                     Args &&...args) {
+  auto newOp =
+      rewriter.create<OpTy>(op->getLoc(), std::forward<Args>(args)...);
+  newOp->setAttrs(op->getAttrs());
+  rewriter.replaceOp(op, newOp->getResults());
+  return newOp;
+}
+
 // =============================================================================
 // Helper Functions for Layout Normalization
 // =============================================================================
@@ -1686,8 +1696,9 @@ struct PTOViewToMemrefPass
       for (auto op : trans) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TTransOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1), op->getOperand(2));
+        replaceOpWithClonedAttrs<pto::TTransOp>(
+            rewriter, op, TypeRange{}, op->getOperand(0), op->getOperand(1),
+            op->getOperand(2));
       }
 
       // --- TExpOp [Src, Dst] ---
@@ -1696,8 +1707,9 @@ struct PTOViewToMemrefPass
       for (auto op : exp) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TExpOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1));
+        replaceOpWithClonedAttrs<pto::TExpOp>(rewriter, op, TypeRange{},
+                                              op->getOperand(0),
+                                              op->getOperand(1));
       }
 
       // --- TMulOp [Src, Scalar, Dst] ---
@@ -1706,8 +1718,9 @@ struct PTOViewToMemrefPass
       for (auto op : mul) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TMulOp>(
-            op, op->getOperand(0), op.getOperand(1), op->getOperand(2));
+        replaceOpWithClonedAttrs<pto::TMulOp>(
+            rewriter, op, op->getOperand(0), op.getOperand(1),
+            op->getOperand(2));
       }
 
       // --- TMulSOp [Src, Scalar, Dst] ---
@@ -1716,8 +1729,9 @@ struct PTOViewToMemrefPass
       for (auto op : muls) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TMulSOp>(
-            op, op->getOperand(0), op.getScalar(), op->getOperand(2));
+        replaceOpWithClonedAttrs<pto::TMulSOp>(
+            rewriter, op, op->getOperand(0), op.getScalar(),
+            op->getOperand(2));
       }
 
       // --- TAddOp [Src0, Src1, Dst] ---
@@ -1727,9 +1741,9 @@ struct PTOViewToMemrefPass
           IRRewriter rewriter(ctx);
           rewriter.setInsertionPoint(op);
           
-          rewriter.replaceOpWithNewOp<pto::TAddOp>(
-              op, TypeRange{}, 
-              op->getOperand(0), op->getOperand(1), op->getOperand(2));
+          replaceOpWithClonedAttrs<pto::TAddOp>(
+              rewriter, op, TypeRange{}, op->getOperand(0), op->getOperand(1),
+              op->getOperand(2));
       }
 
       // --- TMatmulOp [Lhs, Rhs, Dst] (no optional bias in ODS) ---
@@ -1961,12 +1975,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TAddSOp>(
-            op,
-            TypeRange{},
-            src,
-            scalar,
-            dst);
+        replaceOpWithClonedAttrs<pto::TAddSOp>(rewriter, op, TypeRange{}, src,
+                                               scalar, dst);
       }
 
       SmallVector<mlir::pto::TAddSCOp, 8> addscops;
@@ -2572,11 +2582,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TExpandsOp>(
-            op,
-            TypeRange{},
-            scalar,
-            dst);
+        replaceOpWithClonedAttrs<pto::TExpandsOp>(rewriter, op, TypeRange{},
+                                                  scalar, dst);
       }
 
       SmallVector<mlir::pto::TExtractOp, 8> extractops;
