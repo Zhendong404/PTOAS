@@ -34,6 +34,7 @@ After each KV block:
 
 ## 11.2 L0 — Python wrapper
 
+<!-- ptodsl-doc-pending: host-side wrapper includes runtime allocation and launch behavior that is outside the current compile-only docs contract -->
 ```python
 def flash_attention(Q, K, V, *, O=None, causal=False,
                     block_q=128, block_kv=128, stream=None):
@@ -60,21 +61,29 @@ L0 knows nothing about tiles, UB, or pipelines. It is the boundary between the u
 
 ## 11.3 L1 — `@pto.jit` kernel entry
 
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"flash_attention_kernel","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false,"NUM_STAGES":2}} -->
 ```python
 @pto.jit(target="a5")
 def flash_attention_kernel(
-    Q, K, V, O, *,
+    Q: pto.tensor_spec(rank=4, dtype=pto.f32),
+    K: pto.tensor_spec(rank=4, dtype=pto.f32),
+    V: pto.tensor_spec(rank=4, dtype=pto.f32),
+    O: pto.tensor_spec(rank=4, dtype=pto.f32),
+    *,
     BLOCK_Q: pto.constexpr = 128,
     BLOCK_KV: pto.constexpr = 128,
     CAUSAL: pto.constexpr = False,
     NUM_STAGES: pto.constexpr = 2,
 ):
+    # Walkthrough body omitted in this signature overview.
+    return
 ```
 
 The `@pto.jit` decorator marks the compile + launch boundary. Inputs are Python-native tensors; outputs are written in-place to `O`. Keyword-only `constexpr` parameters (`BLOCK_Q`, `BLOCK_KV`, `CAUSAL`) are baked at compile time.
 
 ### 11.3.1 TensorView construction
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_tensor_views","symbol":"flash_attention_l1_tensor_views_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false,"NUM_STAGES":2}} -->
 ```python
 q_view = pto.make_tensor_view(Q, shape=[batch, seq_q, heads, dim],
                               strides=Q.strides)
@@ -90,6 +99,7 @@ o_view = pto.make_tensor_view(O, shape=[batch, seq_q, heads, dim],
 
 ### 11.3.2 SPMD launch contract
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_tensor_views","symbol":"flash_attention_l1_tensor_views_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false,"NUM_STAGES":2}} -->
 ```python
 block_idx = pto.get_block_idx()
 block_num = pto.get_block_num()
@@ -104,6 +114,7 @@ The launch grid is `[batch * heads]`. Each block computes one `(batch, head)` sl
 
 ### 11.3.3 Per-head view partitioning
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_partitions","symbol":"flash_attention_l1_partitions_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false,"NUM_STAGES":2}} -->
 ```python
 q_head = pto.partition_view(
     q_view,
@@ -135,6 +146,7 @@ Two categories of tiles are allocated:
 
 **UB-resident tiles** — data tiles that live in the Unified Buffer:
 
+<!-- ptodsl-doc-pending: tile shapes still use runtime dim as a physical extent, but alloc_tile(shape=...) currently requires static physical shapes -->
 ```python
 q_tile  = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
 k_tile  = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[full_bc, dim])
@@ -158,6 +170,7 @@ The online-softmax algorithm requires **ping-pong state tiles**: `m_prev`/`m_nex
 
 **Cube-local scratch tiles** — allocated in specific memory spaces:
 
+<!-- ptodsl-doc-pending: cube scratch allocation still uses runtime dim as a physical extent, but alloc_tile(shape=...) currently requires static physical shapes -->
 ```python
 q_l0a  = pto.alloc_tile(shape=[Br, D], dtype=pto.f16,
                         memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, dim])
@@ -175,6 +188,7 @@ Cube scratch tiles are NOT UB buffers. `LEFT`, `RIGHT`, and `ACC` are distinct h
 
 ### 11.3.5 SIMT metadata buffer
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_tiles","symbol":"flash_attention_l1_tiles_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128}} -->
 ```python
 meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
 meta_ptr = meta_tile.as_ptr()
@@ -189,6 +203,7 @@ row-major padded physical width just to satisfy row-byte alignment.
 
 ### 11.3.6 Outer Q loop + inner KV loop
 
+<!-- ptodsl-doc-pending: loop body depends on the full flash-attention helper stack and still needs dedicated end-to-end compile coverage -->
 ```python
 with pto.for_(0, q_blocks, step=1) as qi:
     q_part = pto.partition_view(q_head, offsets=[0, qi * Br, 0, 0],
@@ -241,6 +256,7 @@ Key points:
 
 ## 11.4 L2 — `@pto.ukernel`
 
+<!-- ptodsl-doc-pending: signature overview only; the complete ukernel body is covered by the phase snippets below -->
 ```python
 @pto.ukernel
 def kv_block_process(
@@ -259,6 +275,7 @@ The ukernel processes one KV block against an already-loaded Q tile. It owns the
 
 ### Phase 0 — Stage K/V data
 
+<!-- ptodsl-doc-pending: mte_load phase wiring in this walkthrough still lacks stable compile coverage under the current ukernel fixture -->
 ```python
 pto.mte_load(k_part, k_tile)
 pto.mte_load(v_part, v_tile)
@@ -269,6 +286,7 @@ pto.pipe_barrier(pto.Pipe.ALL)
 
 ### Phase 0b — Materialize loop bounds
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.ukernel_phase","symbol":"flash_attention_ukernel_phase_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
 materialize_tile_bounds(meta_ptr,
     q_tile.valid_shape[0],
@@ -282,6 +300,7 @@ The SIMT sub-kernel `materialize_tile_bounds` writes `{0, valid_rows, valid_cols
 
 ### Phase 1 — `S = Q @ K^T`
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.ukernel_phase","symbol":"flash_attention_ukernel_phase_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
 qk_matmul(q_tile, k_tile, q_l0a, rhs_l0b, qk_acc_tile, s_tile)
 pto.pipe_barrier(pto.Pipe.ALL)
@@ -291,6 +310,7 @@ Dispatches the cube sub-kernel. `pipe_barrier(Pipe.ALL)` separates the matrix mu
 
 ### Phase 2 — Online softmax
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.ukernel_phase","symbol":"flash_attention_ukernel_phase_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
 online_softmax_rows(
     s_tile, p_tile,
@@ -306,6 +326,7 @@ The simd sub-kernel computes per-row softmax on `S`, updates the running `m`/`l`
 
 ### Phase 3 — `PV = P @ V`
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.ukernel_phase","symbol":"flash_attention_ukernel_phase_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
 pv_matmul(p_tile, v_tile, p_l0a, rhs_l0b, pv_acc_tile, pv_tile)
 pto.pipe_barrier(pto.Pipe.ALL)
@@ -315,6 +336,7 @@ Second cube dispatch. `rhs_l0b` is reused for `V` (it previously held `K`). `pv_
 
 ### Phase 4 — Blend output
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.ukernel_phase","symbol":"flash_attention_ukernel_phase_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
 blend_output_rows(
     o_prev_tile, pv_tile, alpha_tile, beta_tile,
@@ -334,6 +356,7 @@ Each `pipe_barrier(Pipe.ALL)` between phases is explicit in the ukernel body. Th
 
 ### `qk_matmul` — `S = Q @ K^T`
 
+<!-- ptodsl-doc-pending: standalone @pto.cube helper definitions still need dedicated compile coverage with real cube subkernel bodies -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
@@ -358,6 +381,7 @@ The cube kernel does not allocate scratch — the caller (L1) owns scratch lifet
 
 ### `pv_matmul` — `PV = P @ V`
 
+<!-- ptodsl-doc-pending: standalone @pto.cube helper definitions still need dedicated compile coverage with real cube subkernel bodies -->
 ```python
 @pto.cube
 def pv_matmul(p_tile, v_tile, p_l0a, v_l0b, pv_acc, pv_tile):
@@ -375,6 +399,7 @@ Structurally identical to `qk_matmul`, but without transposition and with differ
 
 ## 11.6 L3b — `@pto.simd` online softmax
 
+<!-- ptodsl-doc-pending: signature overview only; detailed behavior is covered by the tested loop/body fragments below -->
 ```python
 @pto.simd
 def online_softmax_rows(
@@ -388,6 +413,7 @@ def online_softmax_rows(
 
 The simd kernel iterates over rows with `pto.for_`, processing one row per iteration:
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.online_softmax_loop","symbol":"flash_attention_online_softmax_loop_probe","compile":{"BLOCK":16}} -->
 ```python
 with pto.for_(row_start, row_stop, step=1) as row:
     col_mask = pto.make_mask(pto.f32, valid_cols)
@@ -403,6 +429,7 @@ with pto.for_(row_start, row_stop, step=1) as row:
 
 ### Softmax computation
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.online_softmax_compute","symbol":"flash_attention_online_softmax_compute_probe","compile":{"BLOCK":16}} -->
 ```python
     row_max   = pto.vcgmax(s_row, col_mask)
     m_next    = scalar.max(m_prev, row_max)
@@ -430,6 +457,7 @@ This implements the online-softmax update from the Flash Attention paper:
 
 ### Store results
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.online_softmax_store","symbol":"flash_attention_online_softmax_store_probe","compile":{"BLOCK":16}} -->
 ```python
     pto.vsts(p_row, p_tile[row, 0:], col_mask)
     scalar.store(m_next, m_next_tile[row, 0])
@@ -447,6 +475,7 @@ This implements the online-softmax update from the Flash Attention paper:
 
 ### `materialize_tile_bounds` — scalar metadata
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.simt_materialize","symbol":"flash_attention_simt_materialize_probe","compile":{}} -->
 ```python
 @pto.simt
 def materialize_tile_bounds(meta_ptr, valid_rows, valid_cols):
@@ -459,6 +488,7 @@ Three scalar stores write the loop bounds into the metadata buffer. `meta_ptr` i
 
 ### `blend_output_rows` — output accumulation
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.simt_blend","symbol":"flash_attention_simt_blend_probe","compile":{"BLOCK":8}} -->
 ```python
 @pto.simt
 def blend_output_rows(o_prev_tile, pv_tile, alpha_tile, beta_tile,

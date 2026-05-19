@@ -42,6 +42,7 @@ The recommended front door for creating masks is `pto.make_mask`. It dispatches 
 
 **Example** — chunked SIMD loop with tail handling:
 
+<!-- ptodsl-doc-pending: documented tail-handling example depends on pto.elements_per_vreg(...), which is not exposed on the current public pto surface -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
@@ -61,6 +62,7 @@ with col_loop:
 
 When the mask pattern is known at compile time, pass a `MaskPattern` instead:
 
+<!-- ptodsl-doc-pending: documented MaskPattern enum form is not exposed on the current public pto surface; today the stable public entry point is pset_b32(\"PAT_ALL\") -->
 ```python
 full_mask = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
 ```
@@ -76,6 +78,17 @@ When you need explicit control over the mask granularity, use these ops directly
 ### 9.3.1 Pattern-based: `pset_b*` and `pge_b*`
 
 `pset` generates a mask from a named pattern. `pge` generates a tail mask where the first N lanes are active (N encoded in the pattern).
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.creation","symbol":"mask_ops_creation_probe","compile":{}} -->
+```python
+full_mask = pto.pset_b32("PAT_ALL")
+```
+
+<!-- ptodsl-doc-pending: documented b8/b16 pattern constructors are not exposed on the current public pto surface -->
+```python
+mask8 = pto.pset_b8(pto.MaskPattern.ALL)
+mask16 = pto.pset_b16(pto.MaskPattern.ALL)
+```
 
 #### `pto.pset_b8(pattern: MaskPattern) -> pto.mask_b8`
 #### `pto.pset_b16(pattern: MaskPattern) -> pto.mask_b16`
@@ -109,6 +122,11 @@ When you need explicit control over the mask granularity, use these ops directly
 
 `plt` generates a tail mask from a live `i32` scalar — the idiomatic choice for dynamic tail handling when not using `make_mask`.
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.creation","symbol":"mask_ops_creation_probe","compile":{}} -->
+```python
+mask, remained = pto.plt_b32(remained)
+```
+
 #### `pto.plt_b8(scalar: pto.i32) -> (pto.mask_b8, pto.i32)`
 #### `pto.plt_b16(scalar: pto.i32) -> (pto.mask_b16, pto.i32)`
 #### `pto.plt_b32(scalar: pto.i32) -> (pto.mask_b32, pto.i32)`
@@ -133,6 +151,11 @@ When you need explicit control over the mask granularity, use these ops directly
 ---
 
 ## 9.4 Mask logical operations
+
+<!-- ptodsl-doc-pending: documented mask logical ops (pand/por/pxor/pnot/psel) are not exposed on the current public pto surface -->
+```python
+merged = pto.pand(src0, src1, gate)
+```
 
 Once created, masks can be combined with bitwise logical ops. All take a gating mask that selects which lanes participate; inactive lanes are zeroed in the result.
 
@@ -180,6 +203,7 @@ These ops reshape masks between granularities and layouts without changing the u
 
 **Example**:
 
+<!-- ptodsl-doc-pending: documented pbitcast mask reorganization surface is not exposed on the current public pto surface -->
 ```python
 # Reinterpret a b16 mask as b32
 mask32 = pto.pbitcast(mask16, pto.mask_b32)
@@ -242,6 +266,7 @@ Vector comparisons produce predicate masks from vector data. The result can feed
 
 **Example** — threshold a vector:
 
+<!-- ptodsl-doc-pending: documented vcmps/vcmp compare-to-mask surfaces are not exposed on the current public pto surface -->
 ```python
 big = pto.vcmps(scores, threshold, seed, pto.CmpMode.GT)
 # big[i] = 1 where scores[i] > threshold
@@ -333,6 +358,7 @@ The mask granularity must match the vector element type. Using a `mask_b16` with
 
 **Typical pattern** — tail-safe vector processing:
 
+<!-- ptodsl-doc-pending: documented tail-safe pattern depends on pto.elements_per_vreg(...), which is not exposed on the current public pto surface -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 with pto.for_(0, rows, step=1) as r:

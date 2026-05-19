@@ -362,4 +362,473 @@ FRAGMENT_FIXTURES = {
                 compute_ops_vector_helper(inp_tile, out_tile, row)
         """
     ),
+    "mask_ops.creation": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def mask_ops_creation_probe():
+            remained = pto.const(16, dtype=pto.i32)
+            seed = pto.pset_b32("PAT_ALL")
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "sync_ops.basic": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def sync_ops_basic_probe():
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "flash_attention.l1_tensor_views": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def flash_attention_l1_tensor_views_probe(
+            Q: pto.tensor_spec(rank=4, dtype=pto.f32),
+            K: pto.tensor_spec(rank=4, dtype=pto.f32),
+            V: pto.tensor_spec(rank=4, dtype=pto.f32),
+            O: pto.tensor_spec(rank=4, dtype=pto.f32),
+            *,
+            BLOCK_Q: pto.constexpr = 128,
+            BLOCK_KV: pto.constexpr = 128,
+            CAUSAL: pto.constexpr = False,
+            NUM_STAGES: pto.constexpr = 2,
+        ):
+            batch = Q.shape[0]
+            seq_q = Q.shape[1]
+            seq_k = K.shape[1]
+            heads = Q.shape[2]
+            dim = Q.shape[3]
+            Br = BLOCK_Q
+            Bc = BLOCK_KV
+            D = dim
+            full_br = Br
+            full_bc = Bc
+            one = 1
+            scalar = pto.scalar
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "flash_attention.l1_partitions": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def flash_attention_l1_partitions_probe(
+            Q: pto.tensor_spec(rank=4, dtype=pto.f32),
+            K: pto.tensor_spec(rank=4, dtype=pto.f32),
+            V: pto.tensor_spec(rank=4, dtype=pto.f32),
+            O: pto.tensor_spec(rank=4, dtype=pto.f32),
+            *,
+            BLOCK_Q: pto.constexpr = 128,
+            BLOCK_KV: pto.constexpr = 128,
+            CAUSAL: pto.constexpr = False,
+            NUM_STAGES: pto.constexpr = 2,
+        ):
+            batch = Q.shape[0]
+            seq_q = Q.shape[1]
+            seq_k = K.shape[1]
+            heads = Q.shape[2]
+            dim = Q.shape[3]
+            q_view = pto.make_tensor_view(Q, shape=[batch, seq_q, heads, dim], strides=Q.strides)
+            k_view = pto.make_tensor_view(K, shape=[batch, seq_k, heads, dim], strides=K.strides)
+            v_view = pto.make_tensor_view(V, shape=[batch, seq_k, heads, dim], strides=V.strides)
+            o_view = pto.make_tensor_view(O, shape=[batch, seq_q, heads, dim], strides=O.strides)
+            block_idx = pto.get_block_idx()
+            batch_idx = block_idx // heads
+            head_idx = block_idx % heads
+            scalar = pto.scalar
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "flash_attention.l1_tiles": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def flash_attention_l1_tiles_probe(
+            Q: pto.tensor_spec(rank=4, dtype=pto.f32),
+            K: pto.tensor_spec(rank=4, dtype=pto.f32),
+            V: pto.tensor_spec(rank=4, dtype=pto.f32),
+            O: pto.tensor_spec(rank=4, dtype=pto.f32),
+            *,
+            BLOCK_Q: pto.constexpr = 128,
+            BLOCK_KV: pto.constexpr = 128,
+        ):
+            batch = Q.shape[0]
+            seq_q = Q.shape[1]
+            seq_k = K.shape[1]
+            heads = Q.shape[2]
+            dim = Q.shape[3]
+            Br = BLOCK_Q
+            Bc = BLOCK_KV
+            D = dim
+            full_br = Br
+            full_bc = Bc
+            one = 1
+            scalar = pto.scalar
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "flash_attention.ukernel_phase": _fixture(
+        f"""
+        @pto.cube
+        def qk_matmul(
+            q_tile: pto.Tile,
+            k_tile: pto.Tile,
+            q_l0a: pto.Tile,
+            rhs_l0b: pto.Tile,
+            qk_acc_tile: pto.Tile,
+            s_tile: pto.Tile,
+        ):
+            return
+
+
+        @pto.simd
+        def online_softmax_rows(
+            s_tile: pto.Tile,
+            p_tile: pto.Tile,
+            m_prev_tile: pto.Tile,
+            l_prev_tile: pto.Tile,
+            m_next_tile: pto.Tile,
+            l_next_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            row_start: pto.i32,
+            row_stop: pto.i32,
+            valid_cols: pto.i32,
+        ):
+            return
+
+
+        @pto.cube
+        def pv_matmul(
+            p_tile: pto.Tile,
+            v_tile: pto.Tile,
+            p_l0a: pto.Tile,
+            rhs_l0b: pto.Tile,
+            pv_acc_tile: pto.Tile,
+            pv_tile: pto.Tile,
+        ):
+            return
+
+
+        @pto.simt
+        def blend_output_rows(
+            o_prev_tile: pto.Tile,
+            pv_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            o_next_tile: pto.Tile,
+            row_start: pto.i32,
+            row_stop: pto.i32,
+            valid_dim: pto.i32,
+        ):
+            return
+
+
+        @pto.simt
+        def materialize_tile_bounds(meta_ptr, valid_rows: pto.i32, valid_cols: pto.i32):
+            scalar = pto.scalar
+            scalar.store(0, meta_ptr + 0)
+            scalar.store(valid_rows, meta_ptr + 1)
+            scalar.store(valid_cols, meta_ptr + 2)
+
+
+        @pto.ukernel
+        def flash_attention_ukernel_phase(
+            q_tile: pto.Tile,
+            k_part: pto.PartitionTensorView,
+            v_part: pto.PartitionTensorView,
+            k_tile: pto.Tile,
+            v_tile: pto.Tile,
+            o_prev_tile: pto.Tile,
+            o_next_tile: pto.Tile,
+            m_prev_tile: pto.Tile,
+            l_prev_tile: pto.Tile,
+            m_next_tile: pto.Tile,
+            l_next_tile: pto.Tile,
+            s_tile: pto.Tile,
+            p_tile: pto.Tile,
+            pv_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            q_l0a: pto.Tile,
+            p_l0a: pto.Tile,
+            rhs_l0b: pto.Tile,
+            qk_acc_tile: pto.Tile,
+            pv_acc_tile: pto.Tile,
+            meta_ptr,
+        ):
+            scalar = pto.scalar
+            row_start = pto.const(0, dtype=pto.i32)
+            row_stop = pto.const(16, dtype=pto.i32)
+            valid_cols = pto.const(16, dtype=pto.i32)
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_ukernel_phase_probe(
+            K: pto.tensor_spec(rank=4, dtype=pto.f32),
+            V: pto.tensor_spec(rank=4, dtype=pto.f32),
+            *,
+            BLOCK_Q: pto.constexpr = 16,
+            BLOCK_KV: pto.constexpr = 16,
+        ):
+            Br = BLOCK_Q
+            Bc = BLOCK_KV
+            D = 16
+            one = 1
+            k_view = pto.make_tensor_view(K, shape=K.shape, strides=K.strides)
+            v_view = pto.make_tensor_view(V, shape=V.shape, strides=V.strides)
+            k_part = pto.partition_view(k_view, offsets=[0, 0, 0, 0], sizes=[1, Bc, 1, D])
+            v_part = pto.partition_view(v_view, offsets=[0, 0, 0, 0], sizes=[1, Bc, 1, D])
+            q_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[Br, D])
+            k_tile = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[Bc, D])
+            v_tile = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[Bc, D])
+            o_prev_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[Br, D])
+            o_next_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[Br, D])
+            m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            m_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            l_next_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            alpha_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, valid_shape=[Br, one], blayout="ColMajor")
+            s_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[Br, Bc])
+            p_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, valid_shape=[Br, Bc])
+            pv_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[Br, D])
+            q_l0a = pto.alloc_tile(shape=[Br, D], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[Br, D])
+            p_l0a = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[Br, Bc])
+            rhs_l0b = pto.alloc_tile(shape=[Bc, D], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT, valid_shape=[Bc, D])
+            qk_acc_tile = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[Br, Bc])
+            pv_acc_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[Br, D])
+            meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+            meta_ptr = meta_tile.as_ptr()
+            flash_attention_ukernel_phase(
+                q_tile, k_part, v_part, k_tile, v_tile,
+                o_prev_tile, o_next_tile,
+                m_prev_tile, l_prev_tile, m_next_tile, l_next_tile,
+                s_tile, p_tile, pv_tile,
+                alpha_tile, beta_tile,
+                q_l0a, p_l0a, rhs_l0b,
+                qk_acc_tile, pv_acc_tile,
+                meta_ptr,
+            )
+        """
+    ),
+    "flash_attention.online_softmax_loop": _fixture(
+        f"""
+        @pto.simd
+        def flash_attention_online_softmax_loop_helper(
+            s_tile: pto.Tile,
+            p_tile: pto.Tile,
+            m_prev_tile: pto.Tile,
+            l_prev_tile: pto.Tile,
+            m_next_tile: pto.Tile,
+            l_next_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            row_start: pto.i32,
+            row_stop: pto.i32,
+            valid_cols: pto.i32,
+        ):
+            scalar = pto.scalar
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_online_softmax_loop_probe(*, BLOCK: pto.constexpr = 16):
+            one = 1
+            s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            m_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            m_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            alpha_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            flash_attention_online_softmax_loop_helper(
+                s_tile, p_tile,
+                m_prev_tile, l_prev_tile,
+                m_next_tile, l_next_tile,
+                alpha_tile, beta_tile,
+                0, 2, BLOCK,
+            )
+        """
+    ),
+    "flash_attention.online_softmax_compute": _fixture(
+        f"""
+        @pto.simd
+        def flash_attention_online_softmax_compute_helper(
+            s_tile: pto.Tile,
+            p_tile: pto.Tile,
+            m_prev_tile: pto.Tile,
+            l_prev_tile: pto.Tile,
+            m_next_tile: pto.Tile,
+            l_next_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            row_start: pto.i32,
+            row_stop: pto.i32,
+            valid_cols: pto.i32,
+        ):
+            scalar = pto.scalar
+            with pto.for_(row_start, row_stop, step=1) as row:
+                col_mask = pto.make_mask(pto.f32, valid_cols)
+                s_row = pto.vlds(s_tile[row, 0:])
+                m_prev = scalar.load(m_prev_tile[row, 0])
+                l_prev = scalar.load(l_prev_tile[row, 0])
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_online_softmax_compute_probe(*, BLOCK: pto.constexpr = 16):
+            one = 1
+            s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            m_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            m_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            alpha_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            flash_attention_online_softmax_compute_helper(
+                s_tile, p_tile,
+                m_prev_tile, l_prev_tile,
+                m_next_tile, l_next_tile,
+                alpha_tile, beta_tile,
+                0, 2, BLOCK,
+            )
+        """
+    ),
+    "flash_attention.online_softmax_store": _fixture(
+        f"""
+        @pto.simd
+        def flash_attention_online_softmax_store_helper(
+            s_tile: pto.Tile,
+            p_tile: pto.Tile,
+            m_prev_tile: pto.Tile,
+            l_prev_tile: pto.Tile,
+            m_next_tile: pto.Tile,
+            l_next_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            row_start: pto.i32,
+            row_stop: pto.i32,
+            valid_cols: pto.i32,
+        ):
+            scalar = pto.scalar
+            with pto.for_(row_start, row_stop, step=1) as row:
+                col_mask = pto.make_mask(pto.f32, valid_cols)
+                p_row = pto.vexp(pto.vlds(s_tile[row, 0:]), col_mask)
+                m_next = pto.scalar.load(m_prev_tile[row, 0])
+                l_next = pto.scalar.load(l_prev_tile[row, 0])
+                alpha = pto.scalar.load(alpha_tile[row, 0])
+                beta = pto.scalar.load(beta_tile[row, 0])
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_online_softmax_store_probe(*, BLOCK: pto.constexpr = 16):
+            one = 1
+            s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            m_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_prev_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            m_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            l_next_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            alpha_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            flash_attention_online_softmax_store_helper(
+                s_tile, p_tile,
+                m_prev_tile, l_prev_tile,
+                m_next_tile, l_next_tile,
+                alpha_tile, beta_tile,
+                0, 2, BLOCK,
+            )
+        """
+    ),
+    "flash_attention.simt_materialize": _fixture(
+        f"""
+        scalar = pto.scalar
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_simt_materialize_probe():
+            meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+            meta_ptr = meta_tile.as_ptr()
+            valid_rows = pto.const(1, dtype=pto.i32)
+            valid_cols = pto.const(2, dtype=pto.i32)
+            materialize_tile_bounds(meta_ptr, valid_rows, valid_cols)
+        """
+    ),
+    "flash_attention.simt_blend": _fixture(
+        f"""
+        scalar = pto.scalar
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_simt_blend_probe(*, BLOCK: pto.constexpr = 8):
+            one = 1
+            o_prev_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            pv_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            alpha_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            o_next_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            blend_output_rows(
+                o_prev_tile,
+                pv_tile,
+                alpha_tile,
+                beta_tile,
+                o_next_tile,
+                pto.const(0, dtype=pto.i32),
+                pto.const(2, dtype=pto.i32),
+                pto.const(BLOCK, dtype=pto.i32),
+            )
+        """
+    ),
+    "gemm.cube_helper": _fixture(
+        f"""
+        @pto.cube
+        def gemm_tile(
+            a_tile: pto.Tile,
+            b_tile: pto.Tile,
+            o_tile: pto.Tile,
+            a_l0a: pto.Tile,
+            b_l0b: pto.Tile,
+            o_acc: pto.Tile,
+        ):
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def gemm_tile_probe(*, BLOCK_M: pto.constexpr = 64, BLOCK_K: pto.constexpr = 64, BLOCK_N: pto.constexpr = 64):
+            a_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_K])
+            b_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_K, BLOCK_N])
+            o_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
+            a_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
+            b_l0b = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
+            o_acc = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[BLOCK_M, BLOCK_N])
+            gemm_tile(a_tile, b_tile, o_tile, a_l0a, b_l0b, o_acc)
+        """
+    ),
+    "gemm.jit_kernel": _fixture(
+        f"""
+        @pto.cube
+        def gemm_tile(
+            a_tile: pto.Tile,
+            b_tile: pto.Tile,
+            o_tile: pto.Tile,
+            a_l0a: pto.Tile,
+            b_l0b: pto.Tile,
+            o_acc: pto.Tile,
+        ):
+            m = a_tile.valid_shape[0]
+            k = a_tile.valid_shape[1]
+            n = b_tile.valid_shape[0]
+            pto.mte_l1_l0a(a_tile.as_ptr(), a_l0a.as_ptr(), m, k)
+            pto.mte_l1_l0b(b_tile.as_ptr(), b_l0b.as_ptr(), k, n, transpose=True)
+            pto.mad(a_l0a.as_ptr(), b_l0b.as_ptr(), o_acc.as_ptr(), m, n, k)
+            pto.mte_l0c_ub(o_acc.as_ptr(), o_tile.as_ptr(), m, n, n, n, 0)
+
+
+        {SNIPPET_PLACEHOLDER}
+        """
+    ),
 }

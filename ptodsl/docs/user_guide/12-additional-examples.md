@@ -6,6 +6,7 @@ This chapter presents four self-contained examples that build on the concepts in
 
 Chapter 2 showed a 1D vector add with a single blocking dimension. Real workloads often involve 2D tensors — matrices — where blocking happens along both rows and columns.
 
+<!-- ptodsl-doc-pending: tadd is not exposed on the current PTODSL public surface -->
 ```python
 @pto.jit(target="a5")
 def mat_add(A, B, O, *, BLOCK_M: pto.constexpr = 64, BLOCK_N: pto.constexpr = 128):
@@ -46,6 +47,7 @@ def mat_add(A, B, O, *, BLOCK_M: pto.constexpr = 64, BLOCK_N: pto.constexpr = 12
 
 The L0 wrapper follows the same pattern as Chapter 2:
 
+<!-- ptodsl-doc-pending: host-side wrapper behavior is outside the current compile-only docs contract -->
 ```python
 def mat_add_wrapper(A, B, O=None, stream=None):
     if O is None:
@@ -66,6 +68,7 @@ When a data dimension is not evenly divisible by the tile size or the hardware v
 
 Below is a self-contained `@pto.simd` kernel that adds two tiles row by row, handling column tails with `make_mask`:
 
+<!-- ptodsl-doc-pending: elements_per_vreg is not exposed on the current PTODSL public surface -->
 ```python
 @pto.simd
 def add_rows_with_tail(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
@@ -98,6 +101,7 @@ The pattern:
 
 At the Tile Op level, tail handling is built into `tload` and `tstore`. When a partition size along a dimension is smaller than the tile size, the tile's `valid_shape` tracks the actual data extent:
 
+<!-- ptodsl-doc-pending: tadd is not exposed, and this example also relies on mutating tile.valid_shape directly -->
 ```python
 @pto.jit(target="a5")
 def vec_add_with_tail(A, B, O, *, BLOCK: pto.constexpr):
@@ -149,6 +153,7 @@ This example demonstrates a complete GEMM kernel: `C = A @ B` where A is `[M, K]
 
 ### 12.3.1 L3: Cube sub-kernel
 
+<!-- ptodsl-doc-pending: current cube staging verifier rejects this authored mte_l1_l0a/mte_l1_l0b usage, so the example is not yet compile-valid as written -->
 ```python
 @pto.cube
 def gemm_tile(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
@@ -167,10 +172,18 @@ The cube sub-kernel consumes UB tiles and cube-local scratch buffers. The four-s
 
 ### 12.3.2 L1: Tile orchestration
 
+<!-- ptodsl-doc-pending: depends on the pending gemm_tile cube path, which is not yet compile-valid under the current verifier -->
 ```python
 @pto.jit(target="a5")
-def gemm(A, B, O, *, BLOCK_M: pto.constexpr = 64,
-         BLOCK_K: pto.constexpr = 64, BLOCK_N: pto.constexpr = 64):
+def gemm(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    B: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+    *,
+    BLOCK_M: pto.constexpr = 64,
+    BLOCK_K: pto.constexpr = 64,
+    BLOCK_N: pto.constexpr = 64,
+):
     M, K_ = A.shape
     _, N_ = B.shape
 
@@ -228,6 +241,7 @@ def gemm(A, B, O, *, BLOCK_M: pto.constexpr = 64,
 
 ### 12.3.3 L0 wrapper
 
+<!-- ptodsl-doc-pending: host-side wrapper uses pto.empty(...) allocation behavior that is outside the current compile-only docs contract -->
 ```python
 def gemm_wrapper(A, B, O=None, stream=None):
     if O is None:
@@ -260,6 +274,7 @@ The example below applies this pattern block by block, using a ukernel for the p
 
 ### 12.4.1 L3: SIMD block statistics
 
+<!-- ptodsl-doc-pending: elements_per_vreg, pto.cvt, and scalar-store orchestration here still need dedicated implementation-aligned coverage -->
 ```python
 @pto.simd
 def block_mean_var(x_tile: pto.Tile, block_size: pto.i32,
@@ -300,6 +315,7 @@ def block_mean_var(x_tile: pto.Tile, block_size: pto.i32,
 
 ### 12.4.2 L2: Ukernel with carry orchestration
 
+<!-- ptodsl-doc-pending: mte_load-based ukernel orchestration in this example still lacks stable compile coverage -->
 ```python
 @pto.ukernel
 def norm_block(x_part: pto.PartitionTensorView, x_tile: pto.Tile,
@@ -318,6 +334,7 @@ def norm_block(x_part: pto.PartitionTensorView, x_tile: pto.Tile,
 
 ### 12.4.3 L1: JIT entry with carry state
 
+<!-- ptodsl-doc-pending: this example depends on unsupported tnormalize and several not-yet-stable scalar-carry idioms -->
 ```python
 @pto.jit(target="a5")
 def online_layernorm(X, O, *, BLOCK: pto.constexpr):
