@@ -85,6 +85,9 @@ and requires each one to be explicitly classified with either
 
 - `mode="compile"` blocks are executed as-authored and must pass the PTODSL
   compile-only path, MLIR verify, and shared PTOAS frontend validation.
+- `mode="compile_fragment"` blocks are embedded into explicit test fixtures so
+  representative partial snippets can be compiled under a declared outer
+  kernel context instead of relying on hidden heuristic context synthesis.
 - `mode="excerpt"` blocks are checked against canonical excerpt sources so
   partial tutorial fragments do not need to be rewritten as standalone
   programs.
@@ -112,8 +115,9 @@ These PTODSL regressions are intentionally complementary:
 - `ptodsl_ptoas_frontend_verify.py` protects the handoff from PTODSL-emitted
   MLIR into standalone `ptoas` frontend verification.
 - `ptodsl_docs_as_test.py` protects the user manual itself: documented
-  self-contained examples must still compile, and partial tutorial fragments
-  must stay aligned with their canonical sources.
+  self-contained examples must still compile, fixture-backed partial fragments
+  must still compile inside their declared context, and purely explanatory
+  excerpts must stay aligned with their canonical sources.
 
 `ptodsl_docs_as_test.py` is not a replacement for the authored compile/demo
 regressions above. It reuses the same compile-only and frontend-validation

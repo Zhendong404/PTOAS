@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 from ptodsl._bootstrap import make_context
 from mlir.ir import Module
 from ptodsl_docs_excerpt_sources import EXCERPT_SOURCES
+from ptodsl_docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
 META_RE = re.compile(r"^\s*<!--\s*ptodsl-doc-(?P<kind>test|ignore)\s*:\s*(?P<body>.*?)\s*-->\s*$")
@@ -65,6 +66,7 @@ class DocTestDirective:
     symbol: str | None = None
     compile_kwargs: dict[str, object] | None = None
     source: str | None = None
+    fixture: str | None = None
 
 
 def expect(condition: bool, message: str) -> None:
@@ -194,12 +196,13 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     symbol = payload.get("symbol")
     compile_kwargs = payload.get("compile")
     source = payload.get("source")
+    fixture = payload.get("fixture")
 
     expect(
         isinstance(mode, str) and mode,
         f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'mode'",
     )
-    if mode == "compile":
+    if mode in ("compile", "compile_fragment"):
         expect(
             isinstance(symbol, str) and symbol,
             f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'symbol'",
@@ -209,6 +212,17 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
             f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
             "ptodsl-doc-test metadata must define an object 'compile'",
         )
+        if mode == "compile_fragment":
+            expect(
+                isinstance(fixture, str) and fixture,
+                f"{block_label(block, symbol)}: ptodsl-doc-test compile_fragment metadata must define a non-empty string 'fixture'",
+            )
+            return DocTestDirective(
+                mode=mode,
+                symbol=symbol,
+                compile_kwargs=compile_kwargs,
+                fixture=fixture,
+            )
         return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs)
 
     if mode == "excerpt":
@@ -221,19 +235,19 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     expect(
         False,
         f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
-        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile' and 'excerpt' are supported",
+        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile', 'compile_fragment', and 'excerpt' are supported",
     )
     return DocTestDirective(mode=mode)
 
 
-def execute_snippet(block: MarkdownCodeBlock, symbol: str | None = None) -> dict[str, object]:
+def execute_source(source: str, block: MarkdownCodeBlock, symbol: str | None = None) -> dict[str, object]:
     namespace: dict[str, object] = {
         "__builtins__": __builtins__,
         "__name__": "__ptodsl_doc_snippet__",
         "__file__": str(block.path),
     }
     try:
-        exec(compile(block.text, str(block.path), "exec"), namespace, namespace)
+        exec(compile(source, str(block.path), "exec"), namespace, namespace)
     except Exception as exc:
         raise AssertionError(
             f"{block_label(block, symbol)}: snippet execution failed: {exc.__class__.__name__}: {exc}"
@@ -241,12 +255,14 @@ def execute_snippet(block: MarkdownCodeBlock, symbol: str | None = None) -> dict
     return namespace
 
 
-def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
-    directive = parse_test_directive(block)
+def verify_compiled_target(
+    block: MarkdownCodeBlock,
+    directive: DocTestDirective,
+    namespace: dict[str, object],
+    ptoas_bin: Path,
+) -> None:
     expect(directive.symbol is not None, f"{block_label(block)}: compile mode requires a symbol")
     expect(directive.compile_kwargs is not None, f"{block_label(block, directive.symbol)}: compile mode requires compile kwargs")
-    namespace = execute_snippet(block, directive.symbol)
-
     expect(
         directive.symbol in namespace,
         f"{block_label(block, directive.symbol)}: declared symbol is missing from snippet namespace",
@@ -282,6 +298,32 @@ def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
     label = block_label(block, directive.symbol)
     expect_parse_roundtrip_and_verify(mlir_text, label)
     run_ptoas_frontend_verify(ptoas_bin, mlir_text, label)
+
+
+def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
+    directive = parse_test_directive(block)
+    namespace = execute_source(block.text, block, directive.symbol)
+    verify_compiled_target(block, directive, namespace, ptoas_bin)
+
+
+def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
+    directive = parse_test_directive(block)
+    expect(
+        directive.fixture is not None,
+        f"{block_label(block, directive.symbol)}: compile_fragment mode requires a fixture id",
+    )
+    expect(
+        directive.fixture in FRAGMENT_FIXTURES,
+        f"{block_label(block, directive.symbol)}: unknown fragment fixture {directive.fixture!r}",
+    )
+    try:
+        rendered_source = render_fragment_fixture(FRAGMENT_FIXTURES[directive.fixture], block.text)
+    except ValueError as exc:
+        raise AssertionError(
+            f"{block_label(block, directive.symbol)}: fragment fixture {directive.fixture!r} is invalid: {exc}"
+        ) from exc
+    namespace = execute_source(rendered_source, block, directive.symbol)
+    verify_compiled_target(block, directive, namespace, ptoas_bin)
 
 
 def run_excerpt_block(block: MarkdownCodeBlock) -> None:
@@ -395,18 +437,21 @@ def collect_test_blocks(blocks: Iterable[MarkdownCodeBlock]) -> tuple[MarkdownCo
     )
 
 
-def summarize_test_modes(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int]:
+def summarize_test_modes(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int, int]:
     compile_count = 0
+    compile_fragment_count = 0
     excerpt_count = 0
     for block in blocks:
         directive = parse_test_directive(block)
         if directive.mode == "compile":
             compile_count += 1
+        elif directive.mode == "compile_fragment":
+            compile_fragment_count += 1
         elif directive.mode == "excerpt":
             excerpt_count += 1
         else:
             raise AssertionError(f"{block_label(block)}: unsupported docs-as-test mode {directive.mode!r}")
-    return compile_count, excerpt_count
+    return compile_count, compile_fragment_count, excerpt_count
 
 
 def main() -> None:
@@ -416,16 +461,20 @@ def main() -> None:
     python_blocks = collect_python_blocks(results)
     test_count, ignore_count = summarize_metadata(python_blocks)
     test_blocks = collect_test_blocks(python_blocks)
-    compile_test_count, excerpt_test_count = summarize_test_modes(test_blocks)
+    compile_test_count, compile_fragment_test_count, excerpt_test_count = summarize_test_modes(test_blocks)
 
     expect(bool(results), f"no markdown files found under {USER_GUIDE_ROOT}")
     expect(bool(python_blocks), f"no Python fenced code blocks found under {USER_GUIDE_ROOT}")
 
-    if compile_test_count:
+    if compile_test_count or compile_fragment_test_count:
         try:
             ptoas_bin = resolve_ptoas_binary()
         except FileNotFoundError as exc:
-            compile_blocks = [block for block in test_blocks if parse_test_directive(block).mode == "compile"]
+            compile_blocks = [
+                block
+                for block in test_blocks
+                if parse_test_directive(block).mode in ("compile", "compile_fragment")
+            ]
             fail_doc(compile_blocks[0].path, compile_blocks[0].start_line, str(exc))
     else:
         ptoas_bin = None
@@ -434,6 +483,12 @@ def main() -> None:
         if directive.mode == "compile":
             expect(ptoas_bin is not None, f"{block_label(block, directive.symbol)}: missing ptoas binary for compile-mode docs test")
             run_compile_block(block, ptoas_bin)
+        elif directive.mode == "compile_fragment":
+            expect(
+                ptoas_bin is not None,
+                f"{block_label(block, directive.symbol)}: missing ptoas binary for compile_fragment-mode docs test",
+            )
+            run_compile_fragment_block(block, ptoas_bin)
         elif directive.mode == "excerpt":
             run_excerpt_block(block)
         else:
@@ -445,7 +500,8 @@ def main() -> None:
     print(
         "ptodsl_docs_as_test: scanned "
         f"{markdown_count} markdown files, {block_count} fenced blocks, {python_count} python blocks "
-        f"({test_count} test = {compile_test_count} compile + {excerpt_test_count} excerpt, {ignore_count} ignore)"
+        f"({test_count} test = {compile_test_count} compile + "
+        f"{compile_fragment_test_count} compile_fragment + {excerpt_test_count} excerpt, {ignore_count} ignore)"
     )
 
 

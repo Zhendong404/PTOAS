@@ -52,7 +52,7 @@ def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
 
 ### Describing GM tensors
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.make_tensor_view"} -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.make_tensor_view","symbol":"quick_start_make_tensor_view_probe","compile":{}} -->
 ```python
 a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 ```
@@ -61,7 +61,7 @@ a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 
 ### Allocating on-chip buffers
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.alloc_tile"} -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.alloc_tile","symbol":"quick_start_alloc_tile_probe","compile":{"BLOCK":128}} -->
 ```python
 a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 ```
@@ -70,7 +70,7 @@ a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
 ### Partitioning GM views
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.partition_view"} -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.partition_view","symbol":"quick_start_partition_view_probe","compile":{}} -->
 ```python
 a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 ```
@@ -79,7 +79,7 @@ a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 
 ### Moving data: tload and tstore
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.tile_io"} -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tload(a_part, a_tile)   # GM → UB
 pto.tstore(o_tile, o_part)  # UB → GM
@@ -89,7 +89,7 @@ pto.tstore(o_tile, o_part)  # UB → GM
 
 ### Why start with copy
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.tile_io_plain"} -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tload(a_part, a_tile)
 pto.tstore(o_tile, o_part)

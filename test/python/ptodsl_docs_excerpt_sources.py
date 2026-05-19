@@ -665,23 +665,6 @@ QUICK_START = _group(
             @pto.jit(target="a5")
             def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
         """,
-        "tile_copy.make_tensor_view": """
-            a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
-        """,
-        "tile_copy.alloc_tile": """
-            a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
-        """,
-        "tile_copy.partition_view": """
-            a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
-        """,
-        "tile_copy.tile_io": """
-            pto.tload(a_part, a_tile)   # GM → UB
-            pto.tstore(o_tile, o_part)  # UB → GM
-        """,
-        "tile_copy.tile_io_plain": """
-            pto.tload(a_part, a_tile)
-            pto.tstore(o_tile, o_part)
-        """,
         "compile_and_launch": """
             # Compile once, cache the result.
             compiled = blocked_copy.compile(BLOCK=128)
