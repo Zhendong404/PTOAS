@@ -21,9 +21,10 @@ Tile ops move entire blocks between Global Memory and the Unified Buffer in a si
 
 **Example**:
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.tload","symbol":"data_movement_tload_probe","compile":{"BLOCK":128}} -->
 ```python
-a_part = pto.partition_view(a_view, offsets=[offset], sizes=[BLOCK])
-a_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+a_part = pto.partition_view(a_view, offsets=[offset, 0], sizes=[1, cols])
+a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 pto.tload(a_part, a_tile)
 ```
 
@@ -44,6 +45,7 @@ pto.tload(a_part, a_tile)
 
 **Example**:
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tstore(o_tile, o_part)
 ```
@@ -94,6 +96,7 @@ All four share a common structure: a required innermost `nburst(...)` group that
 
 **Example** — load a 32×32 f32 tile from contiguous GM into contiguous UB:
 
+<!-- ptodsl-doc-pending: documented grouped mte_gm_ub surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 128,
               nburst=(32, 128, 128))
@@ -102,6 +105,7 @@ pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 128,
 
 **Example** — load a 64×128 f16 tile from a larger GM matrix (1024×512) into UB:
 
+<!-- ptodsl-doc-pending: documented grouped mte_gm_ub surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 256,
               nburst=(64, 1024, 256))
@@ -112,6 +116,7 @@ pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 256,
 
 **Example** — load with padding (100 valid f16 columns into a 128-wide UB tile):
 
+<!-- ptodsl-doc-pending: documented grouped mte_gm_ub pad surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 200,
               nburst=(64, 200, 256),
@@ -122,6 +127,7 @@ pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 200,
 
 **Example** — multi-level loop: load 4 batches of 8×128 f16 tiles:
 
+<!-- ptodsl-doc-pending: documented grouped mte_gm_ub loop surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 256,
               nburst=(8, 256, 256),
@@ -152,6 +158,7 @@ pto.mte_gm_ub(gm_ptr, ub_ptr, 0, 256,
 
 **Example** — store a 32×32 f32 tile from UB to GM:
 
+<!-- ptodsl-doc-pending: documented grouped mte_ub_gm surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_ub_gm(ub_ptr, gm_ptr, 128,
               nburst=(32, 128, 128))
@@ -159,6 +166,7 @@ pto.mte_ub_gm(ub_ptr, gm_ptr, 128,
 
 **Example** — store a 64×128 f16 tile back to a larger GM matrix:
 
+<!-- ptodsl-doc-pending: documented grouped mte_ub_gm surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_ub_gm(ub_ptr, gm_ptr, 256,
               nburst=(64, 256, 1024))
@@ -189,6 +197,7 @@ Each burst copies `len_burst * 32` bytes. The next burst starts at `src + (len_b
 
 **Example**:
 
+<!-- ptodsl-doc-pending: documented grouped mte_ub_ub surface is not exposed on the current public pto namespace -->
 ```python
 pto.mte_ub_ub(ub_src, ub_dst, 8,
               nburst=(16, 0, 4))
@@ -245,6 +254,7 @@ For `mte_ub_ub` and `mte_ub_l1`, the parameters are in **32-byte units**. Each b
 
 ### 7.2.6 Typical ukernel DMA pattern
 
+<!-- ptodsl-doc-pending: ukernel DMA example relies on grouped mte_gm_ub/mte_ub_gm plus pto.bytewidth(...), which are not stable public docs-as-test surfaces yet -->
 ```python
 @pto.ukernel
 def process_block(k_part, v_part, k_tile, v_tile, o_tile, o_part,
@@ -277,6 +287,7 @@ Inside `@pto.simd`, data moves between UB tiles and vector registers (`vreg`). V
 
 All vector load and store operations support the element-indexing syntax, which eliminates manual byte-offset calculation:
 
+<!-- ptodsl-doc-pending: documented vlds tile-index block includes a 1D tile form that is not supported by the current tile-slice tracing surface -->
 ```python
 vec = pto.vlds(tile[row, col:])       # load from row, starting at column col
 vec = pto.vlds(tile[start:])          # 1D tile, starting at element start
@@ -383,6 +394,7 @@ The compiler automatically computes the byte offset from the tile's shape, eleme
 
 **Example**:
 
+<!-- ptodsl-doc-pending: documented vldas/vldus alignment-state surfaces are not exposed on the current public pto namespace -->
 ```python
 align = pto.vldas(tile[row, col:])
 vec, align, base = pto.vldus(tile[row, col:], align)
@@ -769,6 +781,7 @@ For streaming unaligned stores with explicit alignment threading:
 
 **Unaligned store stream pattern** — prime, thread, flush:
 
+<!-- ptodsl-doc-pending: documented vstu/vsta alignment-threading surfaces are not exposed on the current public pto namespace -->
 ```python
 align, base = pto.vstu(align0, base0, vec0, ub_ptr, mode)
 align, base = pto.vstu(align, base, vec1, ub_ptr, mode)
@@ -999,6 +1012,7 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 
 A full cube matmul (`@pto.cube`) follows this dataflow pattern:
 
+<!-- ptodsl-doc-pending: standalone @pto.cube data-movement example is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):

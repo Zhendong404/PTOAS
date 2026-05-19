@@ -30,6 +30,7 @@ Element-wise operations between two tiles of the same shape.
 
 **Example**:
 
+<!-- ptodsl-doc-pending: documented tile compute example uses tadd/tmul surfaces that are not exposed on the current public pto namespace -->
 ```python
 pto.tadd(a_tile, b_tile, o_tile)
 pto.tmul(scale_tile, data_tile, scaled_tile)
@@ -237,6 +238,7 @@ These combine broadcasting with an arithmetic operation: `src1` is a per-row coe
 
 **Example** — apply per-row scale and bias:
 
+<!-- ptodsl-doc-pending: documented row-expand tile compute surfaces are not exposed on the current public pto namespace -->
 ```python
 # alpha_tile: [rows, 1], beta_tile: [rows, 1], data_tile: [rows, cols]
 pto.trowexpandmul(data_tile, alpha_tile, scaled_tile)
@@ -347,6 +349,7 @@ All vector ops in this section follow the pattern established in Section 7.3 for
 
 **Example**:
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
 ```python
 exp_vec = pto.vexp(s_row, col_mask)
 ```
@@ -418,6 +421,7 @@ exp_vec = pto.vexp(s_row, col_mask)
 
 **Example** — subtract row max from score row (online softmax):
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
 ```python
 s_shifted = pto.vsubs(s_row, m_next, col_mask)
 ```
@@ -473,6 +477,7 @@ These reduce within each hardware vector lane group (typically 8 groups per vect
 
 **Example** — row max and row sum from online softmax:
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"compute_ops.vector_compute","symbol":"compute_ops_vector_probe","compile":{"BLOCK":128}} -->
 ```python
 row_max = pto.vcgmax(s_row, col_mask)   # per-group max → first lane of each group
 row_sum = pto.vcgadd(p_row, col_mask)   # per-group sum → first lane of each group
@@ -623,6 +628,7 @@ The Cube unit performs matrix multiplication. Its operands are typed pointers in
 
 A full cube matmul follows a three-stage pattern: stage operands into L0A/L0B, compute, write back to UB.
 
+<!-- ptodsl-doc-pending: standalone @pto.cube matmul pattern is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):

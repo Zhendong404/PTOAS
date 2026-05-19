@@ -137,6 +137,7 @@ Here `rows` and `cols` are dynamic — they come from `A.shape` and can differ a
 
 Once the kernel is defined, you compile it and then launch it:
 
+<!-- ptodsl-doc-pending: host-side compile-and-launch flow is documented but not covered by compile-only docs contract -->
 ```python
 # Compile once, cache the result.
 compiled = blocked_copy.compile(BLOCK=128)
@@ -175,6 +176,7 @@ This lets you map different data slices to different blocks — for example, one
 
 The examples above used Tile Ops (`tload` / `tstore` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
 
+<!-- ptodsl-doc-pending: layered micro-instruction vec_add example is documented but not supported by the current compile-only docs contract -->
 ```python
 # L3: hardware-bound SIMD kernel — vector instructions on individual rows.
 @pto.simd

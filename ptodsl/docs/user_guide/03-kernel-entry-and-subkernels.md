@@ -27,16 +27,18 @@ Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you s
 
 ### Signature
 
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel_name","compile":{"CONST_A":128,"CONST_B":64}} -->
 ```python
 @pto.jit(target="a5")
 def kernel_name(
-    tensor_arg_1,           # Python-native tensor (positional)
-    tensor_arg_2,           # Python-native tensor (positional)
-    ...,
+    tensor_arg_1: pto.tensor_spec(rank=1, dtype=pto.f32),  # Python-native tensor (positional)
+    tensor_arg_2: pto.tensor_spec(rank=1, dtype=pto.f32),  # Python-native tensor (positional)
     *,
-    CONST_A: pto.constexpr = default,  # compile-time constant (keyword-only)
-    CONST_B: pto.constexpr = default,  # compile-time constant (keyword-only)
+    CONST_A: pto.constexpr = 128,  # compile-time constant (keyword-only)
+    CONST_B: pto.constexpr = 64,   # compile-time constant (keyword-only)
 ):
+    # ... tensor views, tile allocation, and kernel logic ...
+    return
 ```
 
 **Positional parameters** are Python-native tensors — they arrive from NumPy, torch-npu, or any framework with `.shape` and `.strides`. Inside the body, wrap them with `make_tensor_view` to create GM descriptors.
@@ -45,6 +47,7 @@ def kernel_name(
 
 ### Compilation and launch
 
+<!-- ptodsl-doc-pending: host-side compile-and-launch flow is documented but not covered by compile-only docs contract -->
 ```python
 # Compile (traces the body, lowers through PTOAS, caches the result)
 compiled = kernel_name.compile(CONST_A=128, CONST_B=64)
@@ -69,24 +72,30 @@ Available inside a `@pto.jit` body:
 
 ### Typical body
 
+<!-- ptodsl-doc-pending: tile-level arithmetic example uses documented pto.tadd API, but the current implementation does not provide it -->
 ```python
 @pto.jit(target="a5")
-def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
-    N = A.shape[0]
-    a_view = pto.make_tensor_view(A, shape=[N], strides=A.strides)
-    b_view = pto.make_tensor_view(B, shape=[N], strides=B.strides)
-    o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
+def my_kernel(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    B: pto.tensor_spec(rank=2, dtype=pto.f32),
+    O: pto.tensor_spec(rank=2, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    rows = A.shape[0]
+    cols = A.shape[1]
+    a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
+    b_view = pto.make_tensor_view(B, shape=B.shape, strides=B.strides)
+    o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
 
-    a_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    b_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+    a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
-    num_blocks = (N + BLOCK - 1) // BLOCK
-    with pto.for_(0, num_blocks, step=1) as i:
-        offset = i * BLOCK
-        a_part = pto.partition_view(a_view, offsets=[offset], sizes=[BLOCK])
-        b_part = pto.partition_view(b_view, offsets=[offset], sizes=[BLOCK])
-        o_part = pto.partition_view(o_view, offsets=[offset], sizes=[BLOCK])
+    with pto.for_(0, rows, step=1) as row:
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, cols])
+        b_part = pto.partition_view(b_view, offsets=[row, 0], sizes=[1, cols])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, cols])
 
         pto.tload(a_part, a_tile)
         pto.tload(b_part, b_tile)
@@ -98,6 +107,7 @@ def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
 
 When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handled by Tile Ops (`tload`/`tstore`) instead of MTE micro-instructions. PTOAS handles the synchronization between Tile Ops and L3 compute — the sub-kernel itself is unchanged:
 
+<!-- ptodsl-doc-pending: direct L3 sub-kernel invocation from @pto.jit is documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.cube
 def my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile):
@@ -150,6 +160,7 @@ This is the recommended path for users who want hardware-unit compute without wr
 
 ### Signature
 
+<!-- ptodsl-doc-pending: standalone @pto.ukernel signature syntax is documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.ukernel
 def my_ukernel(
@@ -165,6 +176,7 @@ Parameters are PTO-specific types — `Tile`, `PartitionTensorView`, `pto.ptr`, 
 
 ### Typical body
 
+<!-- ptodsl-doc-pending: ukernel micro-instruction orchestration examples are documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.ukernel
 def process_block(k_part, v_part, k_tile, v_tile,
@@ -195,6 +207,7 @@ A ukernel stays below the tile-op boundary — GM↔UB movement is expressed wit
 
 ### Signature
 
+<!-- ptodsl-doc-pending: standalone @pto.cube signature syntax is documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.cube
 def my_cube_kernel(
@@ -210,6 +223,7 @@ All parameters are `Tile` references. Tiles marked as cube-local must be allocat
 
 ### Typical body
 
+<!-- ptodsl-doc-pending: cube sub-kernel examples are documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.cube
 def qk_matmul(
@@ -245,6 +259,7 @@ Cube-local state (LEFT, RIGHT, ACC, BIAS) never leaks into UB — it is the call
 
 ### Signature
 
+<!-- ptodsl-doc-pending: standalone @pto.simd signature syntax is documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.simd
 def my_simd_kernel(
@@ -259,6 +274,7 @@ Parameters are UB `Tile` references and PTO scalar values (`pto.i32`, `pto.f32`,
 
 ### Typical body
 
+<!-- ptodsl-doc-pending: simd sub-kernel examples are documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.simd
 def add_rows(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
@@ -292,6 +308,7 @@ The boundary contract: `vreg` values (`a_vec`, `b_vec`, `o_vec`) are local to th
 
 ### Signature
 
+<!-- ptodsl-doc-pending: standalone @pto.simt signature syntax is documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.simt
 def my_simt_kernel(
@@ -303,6 +320,7 @@ def my_simt_kernel(
 
 ### Typical body
 
+<!-- ptodsl-doc-pending: simt sub-kernel examples are documented but not covered by the current compile-only docs contract -->
 ```python
 @pto.simt
 def blend_output_rows(
@@ -399,10 +417,17 @@ Data crosses decorator boundaries only through UB-backed tiles or typed UB point
 
 `pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time constant. The compiler specializes the kernel for each combination of constexpr values, and the compiled artifact is cached by specialization key together with the kernel's tensor ABI contract.
 
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel","compile":{}} -->
 ```python
 @pto.jit(target="a5")
-def kernel(A, *, BLOCK: pto.constexpr = 128, DTYPE: pto.constexpr = pto.f32):
-    ...
+def kernel(
+    A: pto.tensor_spec(rank=2, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+    DTYPE: pto.constexpr = pto.f32,
+):
+    # ... use BLOCK / DTYPE in tile shapes, loop bounds, or dtype-specialized paths ...
+    return
 ```
 
 - Must appear as a keyword-only argument (after `*`).

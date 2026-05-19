@@ -68,6 +68,7 @@ Python Wrapper              L0  user-facing wrapper (NumPy, torch-npu, pure Pyth
 
 The outermost layer is plain Python. It handles ergonomic runtime concerns: allocating output tensors, extracting shapes and strides from framework tensors, compiling the JIT kernel, and launching it. Because L0 is just Python, you can freely mix in NumPy, torch-npu, or any other Python framework for pre- and post-processing, data preparation, or composing multiple kernel launches. This layer knows nothing about NPU internals — it is just a convenience function that most end users will call.
 
+<!-- ptodsl-doc-pending: host-side compile-and-launch wrapper is documented but not covered by compile-only docs contract -->
 ```python
 def flash_attention(Q, K, V, *, O=None, causal=False):
     if O is None:
