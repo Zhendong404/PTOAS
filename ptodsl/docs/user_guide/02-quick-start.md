@@ -42,7 +42,7 @@ Let us step through each piece.
 
 ### The entry point
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.entry_point"} -->
 ```python
 @pto.jit(target="a5")
 def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
@@ -52,7 +52,7 @@ def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
 
 ### Describing GM tensors
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.make_tensor_view"} -->
 ```python
 a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 ```
@@ -61,7 +61,7 @@ a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 
 ### Allocating on-chip buffers
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.alloc_tile"} -->
 ```python
 a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 ```
@@ -70,7 +70,7 @@ a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
 ### Partitioning GM views
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.partition_view"} -->
 ```python
 a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 ```
@@ -79,7 +79,7 @@ a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 
 ### Moving data: tload and tstore
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.tile_io"} -->
 ```python
 pto.tload(a_part, a_tile)   # GM → UB
 pto.tstore(o_tile, o_part)  # UB → GM
@@ -89,7 +89,7 @@ pto.tstore(o_tile, o_part)  # UB → GM
 
 ### Why start with copy
 
-<!-- ptodsl-doc-ignore: illustrative fragment for tile-op progression -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.tile_io_plain"} -->
 ```python
 pto.tload(a_part, a_tile)
 pto.tstore(o_tile, o_part)
@@ -143,19 +143,18 @@ Here `rows` and `cols` are dynamic — they come from `A.shape` and can differ a
 
 Once the kernel is defined, you compile it and then launch it:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.compile_and_launch"} -->
 ```python
 # Compile once, cache the result.
-compiled = vec_add.compile(N=1024)
+compiled = blocked_copy.compile(BLOCK=128)
 
 # Allocate or obtain input/output tensors (NumPy, torch-npu, ...).
 import numpy as np
-A = np.random.randn(1024).astype(np.float32)
-B = np.random.randn(1024).astype(np.float32)
+A = np.random.randn(4, 128).astype(np.float32)
 O = np.empty_like(A)
 
 # Launch on the NPU.
-compiled[1, None](A, B, O)
+compiled[1, None](A, O)
 ```
 
 - `.compile(**constexprs)` traces the kernel body, lowers it through the PTOAS pipeline, and returns a compiled handle. Repeated calls with the same tensor ABI contract and constexpr configuration hit the cache.
@@ -165,7 +164,7 @@ compiled[1, None](A, B, O)
 
 For workloads that can be parallelized across multiple blocks, specify a grid:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.spmd_launch"} -->
 ```python
 # Process batch * heads slices in parallel.
 compiled[batch * heads, stream](Q, K, V, O)
@@ -173,7 +172,7 @@ compiled[batch * heads, stream](Q, K, V, O)
 
 Inside the kernel, each block queries its index:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.spmd_builtins"} -->
 ```python
 block_idx = pto.get_block_idx()
 block_num = pto.get_block_num()
@@ -183,9 +182,9 @@ This lets you map different data slices to different blocks — for example, one
 
 ## 2.5 Dropping down to micro-instructions
 
-The examples above used Tile Ops (`tload`, `tadd`, `tstore`), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
+The examples above used Tile Ops (`tload` / `tstore` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-ignore: illustrative layered example with omitted surrounding module context -->
 ```python
 # L3: hardware-bound SIMD kernel — vector instructions on individual rows.
 @pto.simd

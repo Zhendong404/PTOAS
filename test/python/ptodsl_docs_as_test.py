@@ -10,6 +10,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+import difflib
 import json
 import re
 import shutil
@@ -24,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
 from ptodsl._bootstrap import make_context
 from mlir.ir import Module
+from ptodsl_docs_excerpt_sources import EXCERPT_SOURCES
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
 META_RE = re.compile(r"^\s*<!--\s*ptodsl-doc-(?P<kind>test|ignore)\s*:\s*(?P<body>.*?)\s*-->\s*$")
@@ -60,8 +62,9 @@ class DocBlockMetadata:
 @dataclass(frozen=True)
 class DocTestDirective:
     mode: str
-    symbol: str
-    compile_kwargs: dict[str, object]
+    symbol: str | None = None
+    compile_kwargs: dict[str, object] | None = None
+    source: str | None = None
 
 
 def expect(condition: bool, message: str) -> None:
@@ -76,6 +79,12 @@ def format_doc_context(path: Path, start_line: int, symbol: str | None = None) -
 
 def fail_doc(path: Path, start_line: int, message: str, symbol: str | None = None) -> None:
     raise AssertionError(f"{format_doc_context(path, start_line, symbol)}: {message}")
+
+
+def normalize_excerpt_text(text: str) -> str:
+    stripped = text.strip("\n")
+    lines = [line.rstrip() for line in stripped.splitlines()]
+    return "\n".join(lines)
 
 
 def iter_markdown_files(root: Path) -> Iterable[Path]:
@@ -184,26 +193,37 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     mode = payload.get("mode")
     symbol = payload.get("symbol")
     compile_kwargs = payload.get("compile")
+    source = payload.get("source")
 
     expect(
         isinstance(mode, str) and mode,
         f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'mode'",
     )
+    if mode == "compile":
+        expect(
+            isinstance(symbol, str) and symbol,
+            f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'symbol'",
+        )
+        expect(
+            isinstance(compile_kwargs, dict),
+            f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
+            "ptodsl-doc-test metadata must define an object 'compile'",
+        )
+        return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs)
+
+    if mode == "excerpt":
+        expect(
+            isinstance(source, str) and source,
+            f"{block_label(block)}: ptodsl-doc-test excerpt metadata must define a non-empty string 'source'",
+        )
+        return DocTestDirective(mode=mode, source=source)
+
     expect(
-        isinstance(symbol, str) and symbol,
-        f"{block_label(block)}: ptodsl-doc-test metadata must define a non-empty string 'symbol'",
-    )
-    expect(
-        isinstance(compile_kwargs, dict),
+        False,
         f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
-        "ptodsl-doc-test metadata must define an object 'compile'",
+        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile' and 'excerpt' are supported",
     )
-    expect(
-        mode == "compile",
-        f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
-        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile' is supported",
-    )
-    return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs)
+    return DocTestDirective(mode=mode)
 
 
 def execute_snippet(block: MarkdownCodeBlock, symbol: str | None = None) -> dict[str, object]:
@@ -223,6 +243,8 @@ def execute_snippet(block: MarkdownCodeBlock, symbol: str | None = None) -> dict
 
 def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
     directive = parse_test_directive(block)
+    expect(directive.symbol is not None, f"{block_label(block)}: compile mode requires a symbol")
+    expect(directive.compile_kwargs is not None, f"{block_label(block, directive.symbol)}: compile mode requires compile kwargs")
     namespace = execute_snippet(block, directive.symbol)
 
     expect(
@@ -260,6 +282,31 @@ def run_compile_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> None:
     label = block_label(block, directive.symbol)
     expect_parse_roundtrip_and_verify(mlir_text, label)
     run_ptoas_frontend_verify(ptoas_bin, mlir_text, label)
+
+
+def run_excerpt_block(block: MarkdownCodeBlock) -> None:
+    directive = parse_test_directive(block)
+    expect(directive.source is not None, f"{block_label(block)}: excerpt mode requires a source id")
+    expect(
+        directive.source in EXCERPT_SOURCES,
+        f"{block_label(block)}: unknown excerpt source {directive.source!r}",
+    )
+
+    actual = normalize_excerpt_text(block.text)
+    expected = normalize_excerpt_text(EXCERPT_SOURCES[directive.source])
+    if actual != expected:
+        diff = "\n".join(
+            difflib.unified_diff(
+                expected.splitlines(),
+                actual.splitlines(),
+                fromfile=f"excerpt:{directive.source}",
+                tofile=str(block.path),
+                lineterm="",
+            )
+        )
+        raise AssertionError(
+            f"{block_label(block)}: excerpt does not match canonical source {directive.source!r}\n{diff}"
+        )
 
 
 def scan_markdown_file(path: Path) -> MarkdownScanResult:
@@ -348,6 +395,20 @@ def collect_test_blocks(blocks: Iterable[MarkdownCodeBlock]) -> tuple[MarkdownCo
     )
 
 
+def summarize_test_modes(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int]:
+    compile_count = 0
+    excerpt_count = 0
+    for block in blocks:
+        directive = parse_test_directive(block)
+        if directive.mode == "compile":
+            compile_count += 1
+        elif directive.mode == "excerpt":
+            excerpt_count += 1
+        else:
+            raise AssertionError(f"{block_label(block)}: unsupported docs-as-test mode {directive.mode!r}")
+    return compile_count, excerpt_count
+
+
 def main() -> None:
     expect(USER_GUIDE_ROOT.is_dir(), f"missing PTODSL user guide directory: {USER_GUIDE_ROOT}")
 
@@ -355,20 +416,28 @@ def main() -> None:
     python_blocks = collect_python_blocks(results)
     test_count, ignore_count = summarize_metadata(python_blocks)
     test_blocks = collect_test_blocks(python_blocks)
+    compile_test_count, excerpt_test_count = summarize_test_modes(test_blocks)
 
     expect(bool(results), f"no markdown files found under {USER_GUIDE_ROOT}")
     expect(bool(python_blocks), f"no Python fenced code blocks found under {USER_GUIDE_ROOT}")
 
-    if test_blocks:
+    if compile_test_count:
         try:
             ptoas_bin = resolve_ptoas_binary()
         except FileNotFoundError as exc:
-            fail_doc(test_blocks[0].path, test_blocks[0].start_line, str(exc))
+            compile_blocks = [block for block in test_blocks if parse_test_directive(block).mode == "compile"]
+            fail_doc(compile_blocks[0].path, compile_blocks[0].start_line, str(exc))
     else:
         ptoas_bin = None
     for block in test_blocks:
-        expect(ptoas_bin is not None, f"{block_label(block)}: missing ptoas binary for compile-mode docs test")
-        run_compile_block(block, ptoas_bin)
+        directive = parse_test_directive(block)
+        if directive.mode == "compile":
+            expect(ptoas_bin is not None, f"{block_label(block, directive.symbol)}: missing ptoas binary for compile-mode docs test")
+            run_compile_block(block, ptoas_bin)
+        elif directive.mode == "excerpt":
+            run_excerpt_block(block)
+        else:
+            raise AssertionError(f"{block_label(block)}: unsupported docs-as-test mode {directive.mode!r}")
 
     markdown_count = len(results)
     python_count = len(python_blocks)
@@ -376,7 +445,7 @@ def main() -> None:
     print(
         "ptodsl_docs_as_test: scanned "
         f"{markdown_count} markdown files, {block_count} fenced blocks, {python_count} python blocks "
-        f"({test_count} test, {ignore_count} ignore)"
+        f"({test_count} test = {compile_test_count} compile + {excerpt_test_count} excerpt, {ignore_count} ignore)"
     )
 
 

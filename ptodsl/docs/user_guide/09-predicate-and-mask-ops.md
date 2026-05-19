@@ -42,7 +42,7 @@ The recommended front door for creating masks is `pto.make_mask`. It dispatches 
 
 **Example** — chunked SIMD loop with tail handling:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"masks.make_mask.chunked_loop"} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
@@ -62,7 +62,7 @@ with col_loop:
 
 When the mask pattern is known at compile time, pass a `MaskPattern` instead:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"masks.make_mask.full_pattern"} -->
 ```python
 full_mask = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
 ```
@@ -182,7 +182,7 @@ These ops reshape masks between granularities and layouts without changing the u
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"masks.pbitcast"} -->
 ```python
 # Reinterpret a b16 mask as b32
 mask32 = pto.pbitcast(mask16, pto.mask_b32)
@@ -245,7 +245,7 @@ Vector comparisons produce predicate masks from vector data. The result can feed
 
 **Example** — threshold a vector:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"masks.vcmps.threshold"} -->
 ```python
 big = pto.vcmps(scores, threshold, seed, pto.CmpMode.GT)
 # big[i] = 1 where scores[i] > threshold
@@ -337,7 +337,7 @@ The mask granularity must match the vector element type. Using a `mask_b16` with
 
 **Typical pattern** — tail-safe vector processing:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"masks.tail_safe_vector_pattern"} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 with pto.for_(0, rows, step=1) as r:

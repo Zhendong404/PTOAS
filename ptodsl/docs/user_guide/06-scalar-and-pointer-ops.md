@@ -12,7 +12,7 @@ A **PTO scalar** is a value that lives on the device at runtime. It comes from a
 
 In practice, a single expression can mix both kinds:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.mixed_expression"} -->
 ```python
 alpha * o_prev + beta * pv_val
 # ^ Python float (trace-time constant, e.g. 1.0 / sqrt(dim))
@@ -57,7 +57,7 @@ When in doubt, ask: *can this value change between launches of the same compiled
 
 **Tile-index form** — the preferred syntax when loading from a tile:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.load.tile_form"} -->
 ```python
 val = scalar.load(tile[row, col])
 ```
@@ -66,7 +66,7 @@ val = scalar.load(tile[row, col])
 
 **Pointer forms**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.load.pointer_forms"} -->
 ```python
 val = scalar.load(ptr, offset)       # explicit offset
 val = scalar.load(ptr + offset)      # pointer arithmetic shorthand
@@ -90,14 +90,14 @@ val = scalar.load(ptr + offset)      # pointer arithmetic shorthand
 
 **Tile-index form**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.store.tile_form"} -->
 ```python
 scalar.store(value, tile[row, col])
 ```
 
 **Pointer forms**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.store.pointer_form"} -->
 ```python
 scalar.store(value, ptr, offset)
 ```
@@ -108,7 +108,7 @@ scalar.store(value, ptr, offset)
 
 `scalar.load` and `scalar.store` are the primary data access pattern inside `@pto.simt` kernels. Each `load`/`store` operates on one element per work-item, but the SIMT unit executes the same instruction across many work-items in parallel:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.simt_blend_usage"} -->
 ```python
 @pto.simt
 def blend_output_rows(
@@ -159,7 +159,7 @@ def scalar_pointer_offset_probe():
 
 Addition, subtraction, multiplication, and division of PTO scalars use standard Python syntax. The tracer records the corresponding device-side instructions automatically:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.arith.example"} -->
 ```python
 o_next = alpha * o_prev + beta * pv_val      # multiply-add
 l_scaled = l_prev * scalar.exp(m_prev - m_next)  # subtraction inside exp
@@ -210,7 +210,7 @@ Non-trivial scalar math functions live under the `scalar` namespace (imported as
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.math.example"} -->
 ```python
 m_next = scalar.max(m_prev, row_max)
 l_scaled = l_prev * scalar.exp(m_prev - m_next)
@@ -219,7 +219,7 @@ need_scale = scalar.gt(val, threshold)
 
 For readability in files with many scalar operations, assign `pto.scalar` to a short local name:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.alias.example"} -->
 ```python
 scalar = pto.scalar
 
@@ -237,7 +237,7 @@ Typed pointers (Section 4.4) carry both an element type and a memory space. This
 
 Tiles and tensor views expose their base address via `as_ptr()`:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.as_ptr"} -->
 ```python
 gm_ptr = partition.as_ptr()    # GM pointer from a PartitionTensorView
 ub_ptr = tile.as_ptr()         # UB pointer from a Tile
@@ -266,7 +266,7 @@ ub_ptr = tile.as_ptr()         # UB pointer from a Tile
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.addptr"} -->
 ```python
 ptr = pto.addptr(base_ptr, 1024)  # advances by 1024 * sizeof(T) bytes
 ```
@@ -316,7 +316,7 @@ These functions return values that are known at trace time from type information
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.bytewidth"} -->
 ```python
 bw = pto.bytewidth(pto.f32)   # 4
 bw = pto.bytewidth(pto.f16)   # 2
@@ -343,7 +343,7 @@ bw = pto.bytewidth(pto.i8)    # 1
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.elements_per_vreg"} -->
 ```python
 vec = pto.elements_per_vreg(pto.f32)   # 64
 vec = pto.elements_per_vreg(pto.f16)   # 128
@@ -352,7 +352,7 @@ vec = pto.elements_per_vreg(pto.i8)    # 256
 
 This is the standard stride for chunking column loops in SIMD kernels:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.chunk_stride"} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 with pto.for_(0, cols, step=VEC) as c:
@@ -363,7 +363,7 @@ with pto.for_(0, cols, step=VEC) as c:
 
 `@pto.simt` kernels are the natural home for per-element scalar work. A typical pattern uses nested `pto.for_` loops to walk over a tile row by row, column by column:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.elementwise_scale"} -->
 ```python
 @pto.simt
 def elementwise_scale(
@@ -384,7 +384,7 @@ This reads each element from `src_tile`, multiplies by `scale`, and writes to `d
 
 For operations that need per-row metadata alongside per-element computation, lift the row-level scalar out of the inner loop:
 
-<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
+<!-- ptodsl-doc-test: {"mode":"excerpt","source":"scalar_pointer.per_row_coeffs"} -->
 ```python
 @pto.simt
 def blend_with_per_row_coeffs(
