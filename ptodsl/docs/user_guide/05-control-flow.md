@@ -13,6 +13,7 @@ This has one critical implication for how you write loops and branches:
 
 When you write a plain Python `for` loop inside a kernel body, Python executes it immediately during tracing. Each iteration records its instructions separately, so the device code gets a linear sequence with the body repeated:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 @pto.jit(target="a5")
 def unrolled_kernel(A, O, *, N: pto.constexpr):
@@ -39,6 +40,7 @@ This works when the loop bound is a compile-time constant (like a `constexpr` pa
 
 ### Basic form
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 with pto.for_(start, stop, step) as iv:
     # iv is the loop index (0-based relative to start)
@@ -51,6 +53,7 @@ with pto.for_(start, stop, step) as iv:
 
 Compare the two approaches:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 # Trace-time unrolling — BLOCK must be constexpr
 for i in range(BLOCK):
@@ -64,6 +67,7 @@ with pto.for_(0, num_blocks, step=1) as i:
 
 ### Nested loops
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 with pto.for_(0, rows, step=1) as r:
     with pto.for_(0, cols, step=1) as c:
@@ -75,36 +79,42 @@ Both loops execute on the device. The outer loop bound `rows` and inner loop bou
 
 ### Loop with carry state
 
-When a loop needs to propagate state from one iteration to the next, use the `.carry(...)` method. This is the PTODSL equivalent of a loop that accumulates or updates variables across iterations:
+When a loop needs to propagate state from one iteration to the next, use the `.carry(...)` method. This is the PTODSL equivalent of a loop that accumulates or updates variables across iterations. The following self-contained kernel is the smallest compileable carry example used by the docs-as-test harness:
 
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"carry_loop_probe","compile":{"BLOCK":128}} -->
 ```python
-kv_loop = pto.for_(0, num_blocks, step=1).carry(
-    m=m_prev_tile,
-    l=l_prev_tile,
-    o=o_prev_tile,
-)
-with kv_loop:
-    i = kv_loop.iv         # current iteration index
-    m_cur = kv_loop.m      # value carried in from previous iteration
-    l_cur = kv_loop.l
-    o_cur = kv_loop.o
+from ptodsl import pto
 
-    # ... compute m_next, l_next, o_next from m_cur, l_cur, o_cur ...
 
-    kv_loop.update(
-        m=m_next_tile,
-        l=l_next_tile,
-        o=o_next_tile,
-    )
+@pto.jit(target="a5")
+def carry_loop_probe(*, BLOCK: pto.constexpr = 128):
+    m_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    l_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    o_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    m_next = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    l_next = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    o_next = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
-# After the loop, retrieve the final carried values
-final_o = kv_loop.final("o")
+    m_prev.fill(0.0)
+    l_prev.fill(0.0)
+    o_prev.fill(0.0)
+
+    kv_loop = pto.for_(0, 4, step=1).carry(m=m_prev, l=l_prev, o=o_prev)
+    with kv_loop:
+        kv_loop.m.fill(1.0)
+        kv_loop.l.fill(2.0)
+        kv_loop.o.fill(3.0)
+        kv_loop.update(m=m_next, l=l_next, o=o_next)
+
+    final_o = kv_loop.final("o")
+    final_o.fill(4.0)
 ```
 
 `.carry(name=initial_value)` declares named state variables that are passed from one iteration to the next. Inside the loop body, access the current value with `loop.name`. At the end of the body, call `loop.update(name=new_value)` to set what the next iteration receives. After the loop exits, `loop.final("name")` retrieves the value from the last iteration.
 
 This pattern is central to algorithms like online softmax, where each KV block updates running statistics (row max, sum, output accumulator). The ping-pong tile pattern — allocating two tiles and swapping them each iteration — is the idiomatic way to manage this state:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 # Allocate ping-pong state tiles
 m_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
@@ -130,6 +140,7 @@ with loop:
 
 For SIMD kernels that process data in vector-width chunks, use a carry loop to track the remaining element count across column iterations:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
@@ -155,6 +166,7 @@ The condition must be a PTO scalar value (e.g., the result of a comparison like 
 
 When a variable is assigned inside both branches of `pto.if_`/`pto.else_`, the assignments are recorded and the variable holds the merged value after the conditional block. This is the standard SSA-style merge — the downstream code sees whichever value was produced by the taken branch:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 @pto.simt
 def conditional_scale(
@@ -188,6 +200,7 @@ In this example, `val` is reassigned in the `if_` branch but left untouched in t
 
 For simple either-or selection, `pto.if_` also works as an expression that directly returns the merged value:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 result = pto.if_(cond, then_value, else_value)
 ```
@@ -198,6 +211,7 @@ This is equivalent to the block form above and is convenient when each branch si
 
 `pto.constexpr` parameters (Section 3.8) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 @pto.jit(target="a5")
 def kernel(A, *, BLOCK: pto.constexpr = 128, UNROLL: pto.constexpr = False):

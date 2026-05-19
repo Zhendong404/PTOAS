@@ -68,6 +68,7 @@ Python Wrapper              L0  user-facing wrapper (NumPy, torch-npu, pure Pyth
 
 The outermost layer is plain Python. It handles ergonomic runtime concerns: allocating output tensors, extracting shapes and strides from framework tensors, compiling the JIT kernel, and launching it. Because L0 is just Python, you can freely mix in NumPy, torch-npu, or any other Python framework for pre- and post-processing, data preparation, or composing multiple kernel launches. This layer knows nothing about NPU internals — it is just a convenience function that most end users will call.
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 def flash_attention(Q, K, V, *, O=None, causal=False):
     if O is None:
@@ -89,6 +90,7 @@ Decorating a function with `@pto.jit` marks it as a launchable PTO kernel. This 
 
 The parameters of a `@pto.jit` function are Python-native tensors (not PTODSL-specific descriptors). In PTODSL v1, their ABI contract is declared with `pto.tensor_spec(...)` in the function signature; this is a compile-time annotation, not a runtime object the Python wrapper must construct. The kernel body materializes `TensorView` descriptors from the runtime tensors via `make_tensor_view`, then partitions the problem with `partition_view`. Compile-time constants are declared as keyword-only arguments with `pto.constexpr`:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 @pto.jit(target="a5")
 def flash_attention_kernel(

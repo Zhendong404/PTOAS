@@ -29,6 +29,7 @@ Python literals are automatically typed by the tracer: `bool` → `pto.i1`, `int
 
 For explicit typing, use type constructors:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 x = pto.i32(1024)
 y = pto.ui16(7)
@@ -51,6 +52,7 @@ The following types are available for storage and data movement, but **not** for
 
 Prefer plain integer literals. Hex string literals are reserved for explicit bit-pattern authoring:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 count = pto.i32(1024)
 delta = pto.i16(-12)
@@ -59,6 +61,7 @@ hi_bit = pto.i32("0x80000000")   # bit-pattern: -2147483648
 
 ### Floating-point literal forms
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 a = pto.f16(-1.5)
 b = pto.f32("inf")
@@ -82,6 +85,7 @@ Constraint: `element_count × bitwidth(dtype) = 2048`.
 
 Use `pto.elements_per_vreg(dtype)` to query the element count:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 lanes = pto.elements_per_vreg(pto.f32)  # 64
 ```
@@ -90,6 +94,7 @@ lanes = pto.elements_per_vreg(pto.f32)  # 64
 
 Reinterpret the bits of a vector register as a different element type:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 fvec = pto.vlds(ptr, offset)            # !pto.vreg<64xf32>
 ivec = pto.vbitcast(fvec, pto.i32)      # !pto.vreg<64xi32>
@@ -110,6 +115,7 @@ Masks are typed by bit granularity and must match the vector element width:
 
 Bitcast between mask types with `pto.pbitcast`:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 mask_b16 = pto.pbitcast(mask_b8, pto.mask_b16)
 ```
@@ -118,6 +124,7 @@ mask_b16 = pto.pbitcast(mask_b8, pto.mask_b16)
 
 Pointers combine an element type and a memory space:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 ptr_gm  = pto.ptr(pto.f32, pto.MemorySpace.GM)
 ptr_ub  = pto.ptr(pto.f16, pto.MemorySpace.UB)
@@ -139,6 +146,7 @@ ptr_ub  = pto.ptr(pto.f16, pto.MemorySpace.UB)
 
 `TensorView` is a descriptor for a tensor in Global Memory. Create one inside a `@pto.jit` body with `make_tensor_view`:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 @pto.jit(target="a5")
 def kernel(A, *, BLOCK: pto.constexpr):
@@ -161,6 +169,7 @@ Strides support non-contiguous tensors. Pass `strides=A.strides` from the source
 
 `partition_view` creates a sub-view of a TensorView at a given offset and size. It describes *which part* of the GM tensor a `tload` or `tstore` should operate on:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 part = pto.partition_view(tv, offsets=[row_offset, 0], sizes=[BLOCK, dim])
 ```
@@ -171,6 +180,7 @@ The result is a `PartitionTensorView` — a lightweight descriptor, not a data b
 
 A `Tile` is an on-chip buffer allocated in UB or cube-local memory. Allocate tiles with `alloc_tile`:
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 # UB tile
 a_tile = pto.alloc_tile(shape=[BLOCK, dim], dtype=pto.f32)
@@ -204,6 +214,7 @@ physical row-alignment rule.
 | `tile.fill(value)` | Fill the entire tile with a scalar value |
 | `tile.as_ptr()` | Obtain a typed pointer to the tile's base address |
 
+<!-- ptodsl-doc-ignore: pending docs-as-test classification -->
 ```python
 m_prev_tile.fill(float("-inf"))
 l_prev_tile.fill(0.0)
