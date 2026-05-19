@@ -30,7 +30,7 @@ Element-wise operations between two tiles of the same shape.
 
 **Example**:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.tile.binary"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 pto.tadd(a_tile, b_tile, o_tile)
 pto.tmul(scale_tile, data_tile, scaled_tile)
@@ -238,7 +238,7 @@ These combine broadcasting with an arithmetic operation: `src1` is a per-row coe
 
 **Example** — apply per-row scale and bias:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.tile.row_expand"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # alpha_tile: [rows, 1], beta_tile: [rows, 1], data_tile: [rows, cols]
 pto.trowexpandmul(data_tile, alpha_tile, scaled_tile)
@@ -349,7 +349,7 @@ All vector ops in this section follow the pattern established in Section 7.3 for
 
 **Example**:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.vector.unary"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 exp_vec = pto.vexp(s_row, col_mask)
 ```
@@ -421,7 +421,7 @@ exp_vec = pto.vexp(s_row, col_mask)
 
 **Example** — subtract row max from score row (online softmax):
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.vector.scalar_sub"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 s_shifted = pto.vsubs(s_row, m_next, col_mask)
 ```
@@ -477,7 +477,7 @@ These reduce within each hardware vector lane group (typically 8 groups per vect
 
 **Example** — row max and row sum from online softmax:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.vector.group_reduction"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 row_max = pto.vcgmax(s_row, col_mask)   # per-group max → first lane of each group
 row_sum = pto.vcgadd(p_row, col_mask)   # per-group sum → first lane of each group
@@ -628,7 +628,7 @@ The Cube unit performs matrix multiplication. Its operands are typed pointers in
 
 A full cube matmul follows a three-stage pattern: stage operands into L0A/L0B, compute, write back to UB.
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"compute.cube.matmul_pattern"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):

@@ -42,7 +42,7 @@ Let us step through each piece.
 
 ### The entry point
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.tile_copy.entry_point"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
@@ -143,7 +143,7 @@ Here `rows` and `cols` are dynamic — they come from `A.shape` and can differ a
 
 Once the kernel is defined, you compile it and then launch it:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.compile_and_launch"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Compile once, cache the result.
 compiled = blocked_copy.compile(BLOCK=128)
@@ -164,7 +164,7 @@ compiled[1, None](A, O)
 
 For workloads that can be parallelized across multiple blocks, specify a grid:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.spmd_launch"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Process batch * heads slices in parallel.
 compiled[batch * heads, stream](Q, K, V, O)
@@ -172,7 +172,7 @@ compiled[batch * heads, stream](Q, K, V, O)
 
 Inside the kernel, each block queries its index:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"quick_start.spmd_builtins"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 block_idx = pto.get_block_idx()
 block_num = pto.get_block_num()

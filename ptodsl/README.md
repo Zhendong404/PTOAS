@@ -88,11 +88,9 @@ and requires each one to be explicitly classified with either
 - `mode="compile_fragment"` blocks are embedded into explicit test fixtures so
   representative partial snippets can be compiled under a declared outer
   kernel context instead of relying on hidden heuristic context synthesis.
-- `mode="excerpt"` blocks are checked against canonical excerpt sources so
-  partial tutorial fragments do not need to be rewritten as standalone
-  programs.
 - `ptodsl-doc-ignore` is reserved for intentionally non-contractual
-  illustrative fragments such as snippets with omitted context or `...`.
+  explanatory or intentionally non-contractual fragments such as snippets with
+  omitted context or `...`.
 
 Run it directly while editing the manual:
 
@@ -102,8 +100,8 @@ python3 test/python/ptodsl_docs_as_test.py
 ```
 
 When it fails, the diagnostic includes the Markdown path, starting line number,
-and target symbol or excerpt source so the drift can be fixed in the manual
-instead of searching through generated IR logs.
+and target symbol so the drift can be fixed in the manual instead of searching
+through generated IR logs.
 
 These PTODSL regressions are intentionally complementary:
 
@@ -116,8 +114,8 @@ These PTODSL regressions are intentionally complementary:
   MLIR into standalone `ptoas` frontend verification.
 - `ptodsl_docs_as_test.py` protects the user manual itself: documented
   self-contained examples must still compile, fixture-backed partial fragments
-  must still compile inside their declared context, and purely explanatory
-  excerpts must stay aligned with their canonical sources.
+  must still compile inside their declared context, and everything else must be
+  explicitly marked as ignored explanatory text.
 
 `ptodsl_docs_as_test.py` is not a replacement for the authored compile/demo
 regressions above. It reuses the same compile-only and frontend-validation

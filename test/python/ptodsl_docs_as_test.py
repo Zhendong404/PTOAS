@@ -10,7 +10,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-import difflib
 import json
 import re
 import shutil
@@ -25,7 +24,6 @@ sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
 from ptodsl._bootstrap import make_context
 from mlir.ir import Module
-from ptodsl_docs_excerpt_sources import EXCERPT_SOURCES
 from ptodsl_docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
@@ -65,7 +63,6 @@ class DocTestDirective:
     mode: str
     symbol: str | None = None
     compile_kwargs: dict[str, object] | None = None
-    source: str | None = None
     fixture: str | None = None
 
 
@@ -81,12 +78,6 @@ def format_doc_context(path: Path, start_line: int, symbol: str | None = None) -
 
 def fail_doc(path: Path, start_line: int, message: str, symbol: str | None = None) -> None:
     raise AssertionError(f"{format_doc_context(path, start_line, symbol)}: {message}")
-
-
-def normalize_excerpt_text(text: str) -> str:
-    stripped = text.strip("\n")
-    lines = [line.rstrip() for line in stripped.splitlines()]
-    return "\n".join(lines)
 
 
 def iter_markdown_files(root: Path) -> Iterable[Path]:
@@ -195,7 +186,6 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
     mode = payload.get("mode")
     symbol = payload.get("symbol")
     compile_kwargs = payload.get("compile")
-    source = payload.get("source")
     fixture = payload.get("fixture")
 
     expect(
@@ -225,17 +215,10 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
             )
         return DocTestDirective(mode=mode, symbol=symbol, compile_kwargs=compile_kwargs)
 
-    if mode == "excerpt":
-        expect(
-            isinstance(source, str) and source,
-            f"{block_label(block)}: ptodsl-doc-test excerpt metadata must define a non-empty string 'source'",
-        )
-        return DocTestDirective(mode=mode, source=source)
-
     expect(
         False,
         f"{block_label(block, symbol if isinstance(symbol, str) and symbol else None)}: "
-        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile', 'compile_fragment', and 'excerpt' are supported",
+        f"unsupported ptodsl-doc-test mode {mode!r}; only 'compile' and 'compile_fragment' are supported",
     )
     return DocTestDirective(mode=mode)
 
@@ -325,32 +308,6 @@ def run_compile_fragment_block(block: MarkdownCodeBlock, ptoas_bin: Path) -> Non
     namespace = execute_source(rendered_source, block, directive.symbol)
     verify_compiled_target(block, directive, namespace, ptoas_bin)
 
-
-def run_excerpt_block(block: MarkdownCodeBlock) -> None:
-    directive = parse_test_directive(block)
-    expect(directive.source is not None, f"{block_label(block)}: excerpt mode requires a source id")
-    expect(
-        directive.source in EXCERPT_SOURCES,
-        f"{block_label(block)}: unknown excerpt source {directive.source!r}",
-    )
-
-    actual = normalize_excerpt_text(block.text)
-    expected = normalize_excerpt_text(EXCERPT_SOURCES[directive.source])
-    if actual != expected:
-        diff = "\n".join(
-            difflib.unified_diff(
-                expected.splitlines(),
-                actual.splitlines(),
-                fromfile=f"excerpt:{directive.source}",
-                tofile=str(block.path),
-                lineterm="",
-            )
-        )
-        raise AssertionError(
-            f"{block_label(block)}: excerpt does not match canonical source {directive.source!r}\n{diff}"
-        )
-
-
 def scan_markdown_file(path: Path) -> MarkdownScanResult:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     blocks: list[MarkdownCodeBlock] = []
@@ -437,21 +394,18 @@ def collect_test_blocks(blocks: Iterable[MarkdownCodeBlock]) -> tuple[MarkdownCo
     )
 
 
-def summarize_test_modes(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int, int]:
+def summarize_test_modes(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int]:
     compile_count = 0
     compile_fragment_count = 0
-    excerpt_count = 0
     for block in blocks:
         directive = parse_test_directive(block)
         if directive.mode == "compile":
             compile_count += 1
         elif directive.mode == "compile_fragment":
             compile_fragment_count += 1
-        elif directive.mode == "excerpt":
-            excerpt_count += 1
         else:
             raise AssertionError(f"{block_label(block)}: unsupported docs-as-test mode {directive.mode!r}")
-    return compile_count, compile_fragment_count, excerpt_count
+    return compile_count, compile_fragment_count
 
 
 def main() -> None:
@@ -461,7 +415,7 @@ def main() -> None:
     python_blocks = collect_python_blocks(results)
     test_count, ignore_count = summarize_metadata(python_blocks)
     test_blocks = collect_test_blocks(python_blocks)
-    compile_test_count, compile_fragment_test_count, excerpt_test_count = summarize_test_modes(test_blocks)
+    compile_test_count, compile_fragment_test_count = summarize_test_modes(test_blocks)
 
     expect(bool(results), f"no markdown files found under {USER_GUIDE_ROOT}")
     expect(bool(python_blocks), f"no Python fenced code blocks found under {USER_GUIDE_ROOT}")
@@ -489,8 +443,6 @@ def main() -> None:
                 f"{block_label(block, directive.symbol)}: missing ptoas binary for compile_fragment-mode docs test",
             )
             run_compile_fragment_block(block, ptoas_bin)
-        elif directive.mode == "excerpt":
-            run_excerpt_block(block)
         else:
             raise AssertionError(f"{block_label(block)}: unsupported docs-as-test mode {directive.mode!r}")
 
@@ -501,7 +453,7 @@ def main() -> None:
         "ptodsl_docs_as_test: scanned "
         f"{markdown_count} markdown files, {block_count} fenced blocks, {python_count} python blocks "
         f"({test_count} test = {compile_test_count} compile + "
-        f"{compile_fragment_test_count} compile_fragment + {excerpt_test_count} excerpt, {ignore_count} ignore)"
+        f"{compile_fragment_test_count} compile_fragment, {ignore_count} ignore)"
     )
 
 

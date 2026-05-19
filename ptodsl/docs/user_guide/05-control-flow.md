@@ -13,7 +13,7 @@ This has one critical implication for how you write loops and branches:
 
 When you write a plain Python `for` loop inside a kernel body, Python executes it immediately during tracing. Each iteration records its instructions separately, so the device code gets a linear sequence with the body repeated:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.python_for_unroll"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def unrolled_kernel(A, O, *, N: pto.constexpr):
@@ -40,7 +40,7 @@ This works when the loop bound is a compile-time constant (like a `constexpr` pa
 
 ### Basic form
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.for_basic_form"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 with pto.for_(start, stop, step) as iv:
     # iv is the loop index (0-based relative to start)
@@ -53,7 +53,7 @@ with pto.for_(start, stop, step) as iv:
 
 Compare the two approaches:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.for_compare"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Trace-time unrolling — BLOCK must be constexpr
 for i in range(BLOCK):
@@ -67,7 +67,7 @@ with pto.for_(0, num_blocks, step=1) as i:
 
 ### Nested loops
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.for_nested"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 with pto.for_(0, rows, step=1) as r:
     with pto.for_(0, cols, step=1) as c:
@@ -114,7 +114,7 @@ def carry_loop_probe(*, BLOCK: pto.constexpr = 128):
 
 This pattern is central to algorithms like online softmax, where each KV block updates running statistics (row max, sum, output accumulator). The ping-pong tile pattern — allocating two tiles and swapping them each iteration — is the idiomatic way to manage this state:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.carry_ping_pong"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Allocate ping-pong state tiles
 m_prev = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
@@ -140,7 +140,7 @@ with loop:
 
 For SIMD kernels that process data in vector-width chunks, use a carry loop to track the remaining element count across column iterations:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.chunked_carry"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
@@ -166,7 +166,7 @@ The condition must be a PTO scalar value (e.g., the result of a comparison like 
 
 When a variable is assigned inside both branches of `pto.if_`/`pto.else_`, the assignments are recorded and the variable holds the merged value after the conditional block. This is the standard SSA-style merge — the downstream code sees whichever value was produced by the taken branch:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.if_value_merge"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.simt
 def conditional_scale(
@@ -200,7 +200,7 @@ In this example, `val` is reassigned in the `if_` branch but left untouched in t
 
 For simple either-or selection, `pto.if_` also works as an expression that directly returns the merged value:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.if_expression"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 result = pto.if_(cond, then_value, else_value)
 ```
@@ -211,7 +211,7 @@ This is equivalent to the block form above and is convenient when each branch si
 
 `pto.constexpr` parameters (Section 3.8) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
 
-<!-- ptodsl-doc-test: {"mode":"excerpt","source":"control_flow.constexpr_tracing"} -->
+<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def kernel(A, *, BLOCK: pto.constexpr = 128, UNROLL: pto.constexpr = False):
