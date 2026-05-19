@@ -63,6 +63,7 @@ python3 test/python/ptodsl_jit_compile.py
 python3 test/python/ptodsl_jit_diagnostics.py
 python3 test/python/ptodsl_subkernel_diagnostics.py
 python3 test/python/ptodsl_flash_attention_demo_compile.py
+python3 test/python/ptodsl_ptoas_frontend_verify.py
 ```
 
 Expected output:
@@ -72,6 +73,7 @@ ptodsl_jit_compile: PASS
 ptodsl_jit_diagnostics: PASS
 ptodsl_subkernel_diagnostics: PASS
 ptodsl_flash_attention_demo_compile: PASS
+ptodsl_ptoas_frontend_verify: PASS
 ```
 
 The legacy `ptodsl/check_ir.py` script has been retired. PTODSL validation now

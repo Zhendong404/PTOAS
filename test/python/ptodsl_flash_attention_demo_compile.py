@@ -11,14 +11,27 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
+
+from ptodsl._bootstrap import make_context
+from mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:
+    with make_context() as ctx:
+        parsed = Module.parse(text, ctx)
+        parsed.operation.verify()
+        roundtrip_text = str(parsed)
+    expect(
+        roundtrip_text == text,
+        f"{label} should survive Module.parse(...) round-trip without textual drift",
+    )
 
 
 def load_flash_attention_demo():
@@ -39,6 +52,7 @@ def main() -> None:
     expect(hasattr(demo, "flash_attention_kernel"), "flash attention demo should export flash_attention_kernel")
 
     wrapper_text = demo.emit_flash_attention_mlir(head_dim=128, causal=False, block_q=128, block_kv=128)
+    expect_parse_roundtrip_and_verify(wrapper_text, "flash attention wrapper-emitted MLIR")
     expect("func.func @flash_attention_kernel" in wrapper_text, "wrapper compile should emit the flash_attention_kernel entry")
     expect("func.func @materialize_tile_bounds" in wrapper_text, "wrapper compile should emit the SIMT helper function")
     expect("pto.store_vfsimt_info" in wrapper_text, "wrapper compile should materialize SIMT caller metadata setup")
@@ -64,6 +78,7 @@ def main() -> None:
     )
 
     specialized_text = compiled.mlir_text()
+    expect_parse_roundtrip_and_verify(specialized_text, "flash attention specialized MLIR")
     expect("func.func @flash_attention_kernel" in specialized_text, "direct compile should emit the flash_attention_kernel entry")
     expect("!pto.tile_buf<mat, 64x128xf32" in specialized_text, "BLOCK_Q=64 specialization should change the physical Q tile shape")
     expect("func.call @materialize_tile_bounds" in specialized_text, "direct compile should still route SIMT helpers through func.call")

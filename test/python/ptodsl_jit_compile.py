@@ -17,12 +17,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 from ptodsl import pto
 from ptodsl._bootstrap import make_context
 from ptodsl._tracing import current_session
-from mlir.ir import Location
+from mlir.ir import Location, Module
 
 
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:
+    with make_context() as ctx:
+        parsed = Module.parse(text, ctx)
+        parsed.operation.verify()
+        roundtrip_text = str(parsed)
+    expect(
+        roundtrip_text == text,
+        f"{label} should survive Module.parse(...) round-trip without textual drift",
+    )
 
 
 @pto.jit(target="a5")
@@ -440,11 +451,14 @@ def main() -> None:
 
     default_text = default_compiled.mlir_text()
     block64_text = block64.mlir_text()
+    expect_parse_roundtrip_and_verify(default_text, "default host_vec_copy specialization")
+    expect_parse_roundtrip_and_verify(block64_text, "BLOCK=64 host_vec_copy specialization")
     expect("!pto.tile_buf<vec, 1x128xf32>" in default_text, "default specialization MLIR missing BLOCK=128 tile")
     expect("!pto.tile_buf<vec, 1x64xf32>" in block64_text, "BLOCK=64 specialization MLIR missing specialized tile")
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
 
     runtime_metadata_text = runtime_metadata_kernel.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(runtime_metadata_text, "runtime metadata specialization")
     expect(
         "pto.make_tensor_view %arg0, shape = [%arg1, %arg2], strides = [%arg3, %arg4]" in runtime_metadata_text,
         "make_tensor_view(A) should materialize runtime shape/stride metadata from the tensor proxy",
@@ -459,6 +473,7 @@ def main() -> None:
     )
 
     tile_valid_shape_text = tile_valid_shape_update_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_valid_shape_text, "tile valid-shape update specialization")
     expect(
         re.search(
             r"pto\.set_validshape %[0-9]+, %arg1, %arg2 : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",
@@ -480,6 +495,7 @@ def main() -> None:
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_text, "simt helper lowering specialization")
     expect(
         simt_text.count("pto.store_vfsimt_info") == 2,
         "each @pto.simt callsite should materialize a caller-side store_vfsimt_info",
@@ -497,6 +513,7 @@ def main() -> None:
     expect("pto.get_tid_z" in simt_text, "SIMT helper body should contain pto.get_tid_z")
 
     carry_text = carry_loop_lowering_probe.compile(BLOCK=32).mlir_text()
+    expect_parse_roundtrip_and_verify(carry_text, "carry loop specialization")
     expect("scf.for" in carry_text, "carry loop should lower to scf.for")
     expect("iter_args(" in carry_text, "carry loop should lower named state through scf.for iter_args")
     expect("scf.yield" in carry_text, "carry loop should lower loop.update(...) to scf.yield")
@@ -510,6 +527,7 @@ def main() -> None:
     )
 
     runtime_scalar_text = runtime_scalar_operator_probe.compile(BLOCK=8).mlir_text()
+    expect_parse_roundtrip_and_verify(runtime_scalar_text, "runtime scalar operator specialization")
     expect("arith.index_cast" in runtime_scalar_text, "mixed i64/index runtime arithmetic should materialize index_cast")
     expect("arith.floordivsi" in runtime_scalar_text, "runtime // should lower to arith.floordivsi")
     expect("arith.remsi" in runtime_scalar_text, "runtime % should lower to arith.remsi")
@@ -522,6 +540,7 @@ def main() -> None:
     expect("pto.store" in runtime_scalar_text, "scalar.store(...) should lower to pto.store")
 
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
+    expect_parse_roundtrip_and_verify(tile_slice_text, "tile slice surface specialization")
     expect("memref.subview" in tile_slice_text, "tile[row, col:] should lower through memref.subview")
     expect("memref.collapse_shape" in tile_slice_text, "2D tile[row, col:] should flatten through memref.collapse_shape")
     expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a memref tile address view")
@@ -535,6 +554,7 @@ def main() -> None:
     )
 
     integer_loop_text = integer_loop_bound_probe.compile(BLOCK=8).mlir_text()
+    expect_parse_roundtrip_and_verify(integer_loop_text, "integer loop bound specialization")
     expect(
         integer_loop_text.count("arith.index_cast") >= 2,
         "integer runtime loop bounds should be normalized to index with arith.index_cast",
@@ -545,6 +565,7 @@ def main() -> None:
     )
 
     scalar_pointer_offset_text = scalar_pointer_offset_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(scalar_pointer_offset_text, "scalar pointer offset specialization")
     expect(
         re.search(r"pto\.store %c1_i32, %\d+\[%c1\]", scalar_pointer_offset_text) is not None,
         "scalar.store(ptr, 1) should lower as element offset 1",
@@ -563,6 +584,7 @@ def main() -> None:
     )
 
     simt_pointer_offset_text = simt_pointer_offset_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(simt_pointer_offset_text, "simt pointer offset specialization")
     expect(
         "call @simt_pointer_offset_helper" in simt_pointer_offset_text,
         "@pto.simt pointer helper should lower to a helper func.call",
@@ -577,6 +599,7 @@ def main() -> None:
     )
 
     scalar_store_coercion_text = scalar_store_element_coercion_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(scalar_store_coercion_text, "scalar store coercion specialization")
     expect(
         scalar_store_coercion_text.count("arith.index_cast") >= 2,
         "scalar.store(...) should coerce index runtime values to the destination integer element type",
@@ -591,6 +614,7 @@ def main() -> None:
     )
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
