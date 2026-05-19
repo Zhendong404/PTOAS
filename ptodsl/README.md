@@ -28,7 +28,6 @@ ptodsl/
 │   ├── softmax_lowlevel.py # Softmax – raw MLIR Python binding calls
 │   └── softmax_dsl.py      # Softmax – @pto.jit DSL style
 ├── pyproject.toml       # pip install -e .
-├── check_ir.py          # IR correctness test runner
 └── README.md
 ```
 
@@ -56,31 +55,29 @@ pip install -e .
 
 ---
 
-## Running the IR check
+## Running regression checks
 
 ```bash
-# From $PTOAS_REPO_ROOT/ptodsl/
-python3 check_ir.py
-
-# From the repository root ($PTOAS_REPO_ROOT)
-python3 ptodsl/check_ir.py
+cd $PTOAS_REPO_ROOT
+python3 test/python/ptodsl_jit_compile.py
+python3 test/python/ptodsl_jit_diagnostics.py
+python3 test/python/ptodsl_subkernel_diagnostics.py
+python3 test/python/ptodsl_flash_attention_demo_compile.py
 ```
 
 Expected output:
 
 ```
-ptodsl IR check
-==================================================
-  PASS  TADD  low-level
-  PASS  TADD  dsl-style
-  PASS  softmax low-level
-  PASS  softmax dsl-style
-==================================================
-Result: ALL PASS
+ptodsl_jit_compile: PASS
+ptodsl_jit_diagnostics: PASS
+ptodsl_subkernel_diagnostics: PASS
+ptodsl_flash_attention_demo_compile: PASS
 ```
 
-Exit code is `0` on full pass, `1` on any failure.  A unified diff of up to
-60 diverging lines is printed for each failing case.
+The legacy `ptodsl/check_ir.py` script has been retired. PTODSL validation now
+lives under `test/python/` so every regression shares the same bootstrap,
+public surface, and canonical authored targets as the tracing/JIT
+implementation.
 
 ---
 
