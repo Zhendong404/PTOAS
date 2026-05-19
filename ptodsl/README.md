@@ -64,6 +64,7 @@ python3 test/python/ptodsl_jit_diagnostics.py
 python3 test/python/ptodsl_subkernel_diagnostics.py
 python3 test/python/ptodsl_flash_attention_demo_compile.py
 python3 test/python/ptodsl_ptoas_frontend_verify.py
+python3 test/python/ptodsl_docs_as_test.py
 ```
 
 Expected output:
@@ -74,7 +75,50 @@ ptodsl_jit_diagnostics: PASS
 ptodsl_subkernel_diagnostics: PASS
 ptodsl_flash_attention_demo_compile: PASS
 ptodsl_ptoas_frontend_verify: PASS
+ptodsl_docs_as_test: PASS
 ```
+
+`ptodsl_docs_as_test.py` is the docs-as-test regression for the PTODSL user
+guide under `ptodsl/docs/user_guide/`. It scans every Python fenced code block
+and requires each one to be explicitly classified with either
+`ptodsl-doc-test` or `ptodsl-doc-ignore` metadata.
+
+- `mode="compile"` blocks are executed as-authored and must pass the PTODSL
+  compile-only path, MLIR verify, and shared PTOAS frontend validation.
+- `mode="excerpt"` blocks are checked against canonical excerpt sources so
+  partial tutorial fragments do not need to be rewritten as standalone
+  programs.
+- `ptodsl-doc-ignore` is reserved for intentionally non-contractual
+  illustrative fragments such as snippets with omitted context or `...`.
+
+Run it directly while editing the manual:
+
+```bash
+cd $PTOAS_REPO_ROOT
+python3 test/python/ptodsl_docs_as_test.py
+```
+
+When it fails, the diagnostic includes the Markdown path, starting line number,
+and target symbol or excerpt source so the drift can be fixed in the manual
+instead of searching through generated IR logs.
+
+These PTODSL regressions are intentionally complementary:
+
+- `ptodsl_jit_compile.py` protects canonical authored compile probes and
+  lowering contracts for the public PTODSL surface.
+- `ptodsl_flash_attention_demo_compile.py` protects the bundled
+  `ptodsl/demos/flash_attention_sketch.py` authored demo as a stable end-to-end
+  contract.
+- `ptodsl_ptoas_frontend_verify.py` protects the handoff from PTODSL-emitted
+  MLIR into standalone `ptoas` frontend verification.
+- `ptodsl_docs_as_test.py` protects the user manual itself: documented
+  self-contained examples must still compile, and partial tutorial fragments
+  must stay aligned with their canonical sources.
+
+`ptodsl_docs_as_test.py` is not a replacement for the authored compile/demo
+regressions above. It reuses the same compile-only and frontend-validation
+boundaries, but its job is to keep `ptodsl/docs/user_guide/` honest rather than
+to redefine the canonical demo contracts.
 
 The legacy `ptodsl/check_ir.py` script has been retired. PTODSL validation now
 lives under `test/python/` so every regression shares the same bootstrap,
