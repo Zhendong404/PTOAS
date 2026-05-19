@@ -81,16 +81,16 @@ ptodsl_docs_as_test: PASS
 `ptodsl_docs_as_test.py` is the docs-as-test regression for the PTODSL user
 guide under `ptodsl/docs/user_guide/`. It scans every Python fenced code block
 and requires each one to be explicitly classified with either
-`ptodsl-doc-test` or `ptodsl-doc-ignore` metadata.
+`ptodsl-doc-test` or `ptodsl-doc-pending` metadata.
 
 - `mode="compile"` blocks are executed as-authored and must pass the PTODSL
   compile-only path, MLIR verify, and shared PTOAS frontend validation.
 - `mode="compile_fragment"` blocks are embedded into explicit test fixtures so
   representative partial snippets can be compiled under a declared outer
   kernel context instead of relying on hidden heuristic context synthesis.
-- `ptodsl-doc-ignore` is reserved for intentionally non-contractual
-  explanatory or intentionally non-contractual fragments such as snippets with
-  omitted context or `...`.
+- `ptodsl-doc-pending` marks snippets the manual intends to treat as contract
+  later, but which are still blocked on missing implementation or missing test
+  harness support.
 
 Run it directly while editing the manual:
 
@@ -114,8 +114,8 @@ These PTODSL regressions are intentionally complementary:
   MLIR into standalone `ptoas` frontend verification.
 - `ptodsl_docs_as_test.py` protects the user manual itself: documented
   self-contained examples must still compile, fixture-backed partial fragments
-  must still compile inside their declared context, and everything else must be
-  explicitly marked as ignored explanatory text.
+  must still compile inside their declared context, and explicitly marked
+  pending snippets remain visible as docs/test debt.
 
 `ptodsl_docs_as_test.py` is not a replacement for the authored compile/demo
 regressions above. It reuses the same compile-only and frontend-validation

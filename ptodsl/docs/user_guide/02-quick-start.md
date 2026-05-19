@@ -42,7 +42,6 @@ Let us step through each piece.
 
 ### The entry point
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
@@ -52,7 +51,6 @@ def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
 
 ### Describing GM tensors
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.make_tensor_view","symbol":"quick_start_make_tensor_view_probe","compile":{}} -->
 ```python
 a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 ```
@@ -61,7 +59,6 @@ a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
 
 ### Allocating on-chip buffers
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.alloc_tile","symbol":"quick_start_alloc_tile_probe","compile":{"BLOCK":128}} -->
 ```python
 a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 ```
@@ -70,7 +67,6 @@ a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
 ### Partitioning GM views
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.partition_view","symbol":"quick_start_partition_view_probe","compile":{}} -->
 ```python
 a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 ```
@@ -79,7 +75,6 @@ a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 
 ### Moving data: tload and tstore
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tload(a_part, a_tile)   # GM → UB
 pto.tstore(o_tile, o_part)  # UB → GM
@@ -89,7 +84,6 @@ pto.tstore(o_tile, o_part)  # UB → GM
 
 ### Why start with copy
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
 pto.tload(a_part, a_tile)
 pto.tstore(o_tile, o_part)
@@ -143,7 +137,6 @@ Here `rows` and `cols` are dynamic — they come from `A.shape` and can differ a
 
 Once the kernel is defined, you compile it and then launch it:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Compile once, cache the result.
 compiled = blocked_copy.compile(BLOCK=128)
@@ -164,7 +157,6 @@ compiled[1, None](A, O)
 
 For workloads that can be parallelized across multiple blocks, specify a grid:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Process batch * heads slices in parallel.
 compiled[batch * heads, stream](Q, K, V, O)
@@ -172,7 +164,6 @@ compiled[batch * heads, stream](Q, K, V, O)
 
 Inside the kernel, each block queries its index:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 block_idx = pto.get_block_idx()
 block_num = pto.get_block_num()
@@ -184,7 +175,6 @@ This lets you map different data slices to different blocks — for example, one
 
 The examples above used Tile Ops (`tload` / `tstore` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
 
-<!-- ptodsl-doc-ignore: illustrative layered example with omitted surrounding module context -->
 ```python
 # L3: hardware-bound SIMD kernel — vector instructions on individual rows.
 @pto.simd

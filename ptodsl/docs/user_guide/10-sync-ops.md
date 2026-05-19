@@ -85,7 +85,6 @@ Pipeline synchronization is the primary mechanism for ordering work across pipel
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Pipe, Event
 
@@ -109,7 +108,6 @@ pto.set_flag(Pipe.MTE2, Pipe.V, Event.ID0)
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Pipe, Event
 
@@ -131,7 +129,6 @@ pto.wait_flag(Pipe.MTE2, Pipe.V, Event.ID0)
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Pipe
 
@@ -143,7 +140,6 @@ pto.pipe_barrier(Pipe.ALL)
 
 A common ukernel pattern interleaves DMA and compute with `set_flag` / `wait_flag` pairs:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.ukernel
 def gemm_block(q_tile, k_tile, v_tile, o_tile, ...):
@@ -206,7 +202,6 @@ Double-buffering is a common optimization in NPU kernels: while one buffer is be
 
 ### Double-buffering example
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Pipe
 
@@ -246,7 +241,6 @@ Within a single pipeline, load and store instructions may be reordered by the ha
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import BarrierType
 
@@ -268,7 +262,6 @@ The most commonly used barrier types in practice:
 In flash attention, phase boundaries use `pipe_barrier(Pipe.ALL)`, while
 `mem_bar` remains the tool for narrower intra-pipeline ordering:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.ukernel
 def flash_attention_block(q_tile, k_tile, v_tile, ...):
@@ -321,7 +314,6 @@ These are core-level (SU) operations — `wait_flag_dev` stalls the entire core,
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Event
 
@@ -344,7 +336,6 @@ pto.set_cross_core(0, Event.ID0)
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Event
 
@@ -373,7 +364,6 @@ Unlike `wait_flag_dev`, `wait_intra_core` only stalls the specified pipeline —
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Event
 
@@ -396,7 +386,6 @@ pto.set_intra_block(0, Event.ID0)
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 from pto import Event
 
@@ -420,7 +409,6 @@ pto.wait_intra_core(1, Event.ID0)
 
 **Example**:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 pto.set_intra_core(3)
 ```

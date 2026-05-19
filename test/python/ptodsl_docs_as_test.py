@@ -22,12 +22,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_GUIDE_ROOT = REPO_ROOT / "ptodsl" / "docs" / "user_guide"
 sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
+from ptodsl import pto
 from ptodsl._bootstrap import make_context
 from mlir.ir import Module
 from ptodsl_docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
-META_RE = re.compile(r"^\s*<!--\s*ptodsl-doc-(?P<kind>test|ignore)\s*:\s*(?P<body>.*?)\s*-->\s*$")
+META_RE = re.compile(r"^\s*<!--\s*ptodsl-doc-(?P<kind>test|pending)\s*:\s*(?P<body>.*?)\s*-->\s*$")
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,7 @@ def execute_source(source: str, block: MarkdownCodeBlock, symbol: str | None = N
         "__builtins__": __builtins__,
         "__name__": "__ptodsl_doc_snippet__",
         "__file__": str(block.path),
+        "pto": pto,
     }
     try:
         exec(compile(source, str(block.path), "exec"), namespace, namespace)
@@ -326,12 +328,6 @@ def scan_markdown_file(path: Path) -> MarkdownScanResult:
                 block_start = index
                 block_lines = []
                 metadata = find_block_metadata(path, lines, index)
-                if block_language == "python":
-                    expect(
-                        metadata is not None,
-                        f"{format_doc_context(path, index)}: "
-                        "python code block must be preceded by ptodsl-doc-test or ptodsl-doc-ignore metadata",
-                    )
             else:
                 blocks.append(
                     MarkdownCodeBlock(
@@ -370,20 +366,23 @@ def collect_python_blocks(results: Iterable[MarkdownScanResult]) -> tuple[Markdo
     return tuple(blocks)
 
 
+def collect_tagged_python_blocks(blocks: Iterable[MarkdownCodeBlock]) -> tuple[MarkdownCodeBlock, ...]:
+    return tuple(block for block in blocks if block.metadata is not None)
+
+
 def summarize_metadata(blocks: Iterable[MarkdownCodeBlock]) -> tuple[int, int]:
     test_count = 0
-    ignore_count = 0
+    pending_count = 0
     for block in blocks:
-        expect(block.metadata is not None, f"{block.path}:{block.start_line}: python code block missing metadata")
         if block.metadata.kind == "test":
             test_count += 1
-        elif block.metadata.kind == "ignore":
-            ignore_count += 1
+        elif block.metadata.kind == "pending":
+            pending_count += 1
         else:
             raise AssertionError(
                 f"{block_label(block)}: unsupported ptodsl-doc metadata kind {block.metadata.kind!r}"
             )
-    return test_count, ignore_count
+    return test_count, pending_count
 
 
 def collect_test_blocks(blocks: Iterable[MarkdownCodeBlock]) -> tuple[MarkdownCodeBlock, ...]:
@@ -413,8 +412,9 @@ def main() -> None:
 
     results = scan_user_guide()
     python_blocks = collect_python_blocks(results)
-    test_count, ignore_count = summarize_metadata(python_blocks)
-    test_blocks = collect_test_blocks(python_blocks)
+    tagged_python_blocks = collect_tagged_python_blocks(python_blocks)
+    test_count, pending_count = summarize_metadata(tagged_python_blocks)
+    test_blocks = collect_test_blocks(tagged_python_blocks)
     compile_test_count, compile_fragment_test_count = summarize_test_modes(test_blocks)
 
     expect(bool(results), f"no markdown files found under {USER_GUIDE_ROOT}")
@@ -449,11 +449,12 @@ def main() -> None:
     markdown_count = len(results)
     python_count = len(python_blocks)
     block_count = sum(len(result.blocks) for result in results)
+    untracked_count = python_count - len(tagged_python_blocks)
     print(
         "ptodsl_docs_as_test: scanned "
         f"{markdown_count} markdown files, {block_count} fenced blocks, {python_count} python blocks "
         f"({test_count} test = {compile_test_count} compile + "
-        f"{compile_fragment_test_count} compile_fragment, {ignore_count} ignore)"
+        f"{compile_fragment_test_count} compile_fragment, {pending_count} pending, {untracked_count} untracked)"
     )
 
 

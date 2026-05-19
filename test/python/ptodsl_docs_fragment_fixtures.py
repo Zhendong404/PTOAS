@@ -56,9 +56,6 @@ def render_fragment_fixture(fixture: FragmentFixture, snippet: str) -> str:
 FRAGMENT_FIXTURES = {
     "quick_start.make_tensor_view": _fixture(
         f"""
-        from ptodsl import pto
-
-
         @pto.jit(target="a5")
         def quick_start_make_tensor_view_probe(
             A: pto.tensor_spec(rank=2, dtype=pto.f32),
@@ -68,9 +65,6 @@ FRAGMENT_FIXTURES = {
     ),
     "quick_start.alloc_tile": _fixture(
         f"""
-        from ptodsl import pto
-
-
         @pto.jit(target="a5")
         def quick_start_alloc_tile_probe(
             *,
@@ -81,9 +75,6 @@ FRAGMENT_FIXTURES = {
     ),
     "quick_start.partition_view": _fixture(
         f"""
-        from ptodsl import pto
-
-
         @pto.jit(target="a5")
         def quick_start_partition_view_probe(
             A: pto.tensor_spec(rank=2, dtype=pto.f32),
@@ -96,9 +87,6 @@ FRAGMENT_FIXTURES = {
     ),
     "quick_start.tile_io": _fixture(
         f"""
-        from ptodsl import pto
-
-
         @pto.jit(target="a5")
         def quick_start_tile_io_probe(
             A: pto.tensor_spec(rank=2, dtype=pto.f32),

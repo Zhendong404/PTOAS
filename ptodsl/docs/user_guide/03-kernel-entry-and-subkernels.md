@@ -27,7 +27,6 @@ Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you s
 
 ### Signature
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def kernel_name(
@@ -46,7 +45,6 @@ def kernel_name(
 
 ### Compilation and launch
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 # Compile (traces the body, lowers through PTOAS, caches the result)
 compiled = kernel_name.compile(CONST_A=128, CONST_B=64)
@@ -71,7 +69,6 @@ Available inside a `@pto.jit` body:
 
 ### Typical body
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
@@ -101,7 +98,6 @@ def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
 
 When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handled by Tile Ops (`tload`/`tstore`) instead of MTE micro-instructions. PTOAS handles the synchronization between Tile Ops and L3 compute — the sub-kernel itself is unchanged:
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.cube
 def my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile):
@@ -154,7 +150,6 @@ This is the recommended path for users who want hardware-unit compute without wr
 
 ### Signature
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.ukernel
 def my_ukernel(
@@ -170,7 +165,6 @@ Parameters are PTO-specific types — `Tile`, `PartitionTensorView`, `pto.ptr`, 
 
 ### Typical body
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.ukernel
 def process_block(k_part, v_part, k_tile, v_tile,
@@ -201,7 +195,6 @@ A ukernel stays below the tile-op boundary — GM↔UB movement is expressed wit
 
 ### Signature
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.cube
 def my_cube_kernel(
@@ -217,7 +210,6 @@ All parameters are `Tile` references. Tiles marked as cube-local must be allocat
 
 ### Typical body
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.cube
 def qk_matmul(
@@ -253,7 +245,6 @@ Cube-local state (LEFT, RIGHT, ACC, BIAS) never leaks into UB — it is the call
 
 ### Signature
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.simd
 def my_simd_kernel(
@@ -268,7 +259,6 @@ Parameters are UB `Tile` references and PTO scalar values (`pto.i32`, `pto.f32`,
 
 ### Typical body
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.simd
 def add_rows(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
@@ -302,7 +292,6 @@ The boundary contract: `vreg` values (`a_vec`, `b_vec`, `o_vec`) are local to th
 
 ### Signature
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.simt
 def my_simt_kernel(
@@ -314,7 +303,6 @@ def my_simt_kernel(
 
 ### Typical body
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.simt
 def blend_output_rows(
@@ -346,7 +334,7 @@ In addition to the decorator form, each L3 sub-kernel unit provides a context ma
 
 ### Syntax
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
+<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
 ```python
 with pto.simd():
     # Direct L3 instructions — vreg ops, scalar loads/stores
@@ -356,7 +344,7 @@ with pto.simd():
     pto.vsts(o_vec, o_tile[r, c:], mask)
 ```
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
+<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
 ```python
 with pto.simt():
     alpha = scalar.load(alpha_tile[row, 0])
@@ -365,7 +353,7 @@ with pto.simt():
     scalar.store(o_next, o_next_tile[row, col])
 ```
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
+<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
 ```python
 with pto.cube():
     pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
@@ -411,7 +399,6 @@ Data crosses decorator boundaries only through UB-backed tiles or typed UB point
 
 `pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time constant. The compiler specializes the kernel for each combination of constexpr values, and the compiled artifact is cached by specialization key together with the kernel's tensor ABI contract.
 
-<!-- ptodsl-doc-ignore: explanatory fragment; not covered by compile-only docs contract -->
 ```python
 @pto.jit(target="a5")
 def kernel(A, *, BLOCK: pto.constexpr = 128, DTYPE: pto.constexpr = pto.f32):
