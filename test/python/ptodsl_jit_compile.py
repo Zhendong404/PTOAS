@@ -185,6 +185,9 @@ def runtime_scalar_operator_probe(
     w = 1.0 / z
     m = pto.scalar.max(w, x)
     e = pto.scalar.exp(m)
+    gt_zero = m > x
+    eq_self = x == x
+    in_range = (m >= x) & (m <= e)
     pto.scalar.store(e, o_ptr + 0)
 
     _ = batch_idx
@@ -194,6 +197,9 @@ def runtime_scalar_operator_probe(
     _ = w
     _ = m
     _ = e
+    _ = gt_zero
+    _ = eq_self
+    _ = in_range
 
 
 @pto.simd
@@ -445,8 +451,8 @@ def signed_integer_scalar_probe():
     u_add = u1 + 2
     s_max = pto.scalar.max(s0, s1)
     u_max = pto.scalar.max(u0, u1)
-    s_cmp = pto.scalar.cmpi("sgt", s1, s0)
-    u_cmp = pto.scalar.cmpi("ugt", u0, u1)
+    s_cmp = s1 > s0
+    u_cmp = u0 > u1
 
     pto.scalar.store(s_add, signed_ptr + 2)
     pto.scalar.store(u_add, unsigned_ptr + 2)
@@ -653,6 +659,8 @@ def main() -> None:
     expect(isinstance(fake_empty, _FakeTensor), "pto.empty_like(...) should preserve host tensor factory type")
     expect(fake_empty.shape == fake_tensor.shape, "pto.empty_like(...) should preserve the logical tensor shape")
     expect(not hasattr(pto.scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
+    expect(not hasattr(pto.scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
+    expect(not hasattr(pto.scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
 
     with make_context() as ctx, Location.unknown(ctx):
         tile_buf_ty = pto.tile_buf_type(
@@ -928,6 +936,11 @@ def main() -> None:
     expect("arith.divf" in runtime_scalar_text, "runtime float / should lower to arith.divf")
     expect("arith.maximumf" in runtime_scalar_text, "scalar.max(float, float) should lower to arith.maximumf")
     expect("math.exp" in runtime_scalar_text, "scalar.exp(...) should lower to math.exp")
+    expect("arith.cmpf ogt" in runtime_scalar_text, "float runtime '>' should lower to arith.cmpf ogt")
+    expect("arith.cmpf oeq" in runtime_scalar_text, "float runtime '==' should lower to arith.cmpf oeq")
+    expect("arith.cmpf oge" in runtime_scalar_text, "float runtime '>=' should lower to arith.cmpf oge")
+    expect("arith.cmpf ole" in runtime_scalar_text, "float runtime '<=' should lower to arith.cmpf ole")
+    expect("arith.andi" in runtime_scalar_text, "i1 conjunction from native '&' should lower to arith.andi")
 
     signed_integer_scalar_text = signed_integer_scalar_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(signed_integer_scalar_text, "signed integer scalar specialization")

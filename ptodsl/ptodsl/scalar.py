@@ -19,7 +19,6 @@ from ._scalar_coercion import coerce_scalar_to_type
 from ._runtime_scalar_ops import (
     classify_runtime_scalar_type,
     emit_runtime_binary_op,
-    emit_runtime_cmpi,
     emit_runtime_max,
 )
 from ._surface_values import resolve_address_access, unwrap_surface_value, wrap_surface_value
@@ -27,21 +26,8 @@ from ._types import _resolve
 
 from mlir.dialects import arith
 from mlir.dialects import math
-from mlir.dialects import pto as _pto
 from mlir.ir import IndexType, MemRefType, Operation
-
-_CMPI_PREDICATES = {
-    "eq":  arith.CmpIPredicate.eq,
-    "ne":  arith.CmpIPredicate.ne,
-    "slt": arith.CmpIPredicate.slt,
-    "sle": arith.CmpIPredicate.sle,
-    "sgt": arith.CmpIPredicate.sgt,
-    "sge": arith.CmpIPredicate.sge,
-    "ult": arith.CmpIPredicate.ult,
-    "ule": arith.CmpIPredicate.ule,
-    "ugt": arith.CmpIPredicate.ugt,
-    "uge": arith.CmpIPredicate.uge,
-}
+from mlir.dialects import pto as _pto
 
 
 def muli(lhs, rhs):
@@ -72,30 +58,6 @@ def index_cast(type_or_val, val=None):
         # 1-arg form: cast to index
         return wrap_surface_value(arith.IndexCastOp(IndexType.get(), unwrap_surface_value(type_or_val)).result)
     return wrap_surface_value(arith.IndexCastOp(_resolve(type_or_val), unwrap_surface_value(val)).result)
-
-
-def cmpi(pred: str, lhs, rhs):
-    """
-    arith.cmpi with a named predicate string.
-
-    ``pred`` is one of: ``"eq"``, ``"ne"``, ``"slt"``, ``"sle"``,
-    ``"sgt"``, ``"sge"``, ``"ult"``, ``"ule"``, ``"ugt"``, ``"uge"``.
-    """
-    predicate = _CMPI_PREDICATES.get(pred)
-    if predicate is None:
-        raise ValueError(
-            f"Unknown cmpi predicate '{pred}'; known: {list(_CMPI_PREDICATES)}"
-        )
-    return wrap_surface_value(emit_runtime_cmpi(predicate, unwrap_surface_value(lhs), unwrap_surface_value(rhs)))
-
-
-def cmpi_sgt(lhs, rhs):
-    """arith.cmpi sgt (signed greater-than)."""
-    return wrap_surface_value(emit_runtime_cmpi(
-        arith.CmpIPredicate.sgt,
-        unwrap_surface_value(lhs),
-        unwrap_surface_value(rhs),
-    ))
 
 
 def select(cond, true_val, false_val):
@@ -155,7 +117,6 @@ def _infer_buffer_element_type(buffer_type):
 __all__ = [
     "muli", "addi", "subi",
     "index_cast",
-    "cmpi", "cmpi_sgt",
     "select",
     "max", "exp",
     "load", "store",

@@ -220,8 +220,8 @@ s.addi(a, b)                 # arith.addi
 s.subi(a, b)                 # arith.subi
 s.index_cast(val)            # arith.index_cast → index
 s.index_cast(pto.int32, val) # arith.index_cast → i32
-s.cmpi_sgt(a, b)             # arith.cmpi sgt
-s.cmpi("slt", a, b)          # arith.cmpi with named predicate
+(a > b)                      # scalar compare → pto.i1
+(a <= b)                     # scalar compare → pto.i1
 s.select(cond, t, f)         # arith.select
 ```
 
@@ -237,6 +237,7 @@ pto.vsts_1pt(v, ptr, offset, mask)       # pto.vsts {dist="1PT_B32"}
 pto.plt_b32(scalar)                      # → (mask, scalar_out)
 pto.pset_b32("PAT_ALL")                  # pto.pset_b32 → mask
 pto.vbitcast(v, dtype)                   # pto.vbitcast
+pto.pbitcast(mask, mask_type)            # pto.pbitcast
 pto.vadd(a, b, mask)   # infers result type from a.type
 pto.vmul / vmax / vdiv / vcmax / vcadd / vdup / vexpdif  # similarly
 pto.make_tensor_view(ptr, shape=…, strides=…)    # type inferred

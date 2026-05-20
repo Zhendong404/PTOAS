@@ -195,25 +195,28 @@ Non-trivial scalar math functions live under the `scalar` namespace (imported as
 
 **Description**: Absolute value.
 
-#### `scalar.gt(a: ScalarType, b: ScalarType) -> pto.i1`
+### Comparisons
 
-**Description**: Greater-than comparison. Returns `pto.i1`.
+**Description**: PTO scalars use Python's native comparison operators. The tracer records the corresponding device-side comparison instruction and returns a `pto.i1` result.
 
-#### `scalar.lt(a: ScalarType, b: ScalarType) -> pto.i1`
-
-**Description**: Less-than comparison. Returns `pto.i1`.
-
-#### `scalar.eq(a: ScalarType, b: ScalarType) -> pto.i1`
-
-**Description**: Equality comparison. Returns `pto.i1`.
+| Operator | Predicate (signed) | Predicate (unsigned) | Predicate (float) |
+|----------|---------------------|-----------------------|--------------------|
+| `>` | `sgt` | `ugt` | `ogt` |
+| `<` | `slt` | `ult` | `olt` |
+| `==` | `eq` | `eq` | `oeq` |
+| `!=` | `ne` | `ne` | `one` |
+| `>=` | `sge` | `uge` | `oge` |
+| `<=` | `sle` | `ule` | `ole` |
 
 **Example**:
 
-<!-- ptodsl-doc-pending: documented scalar.gt(...) comparison helper is not exposed on the current scalar surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.math","symbol":"scalar_ops_math_probe","compile":{}} -->
 ```python
 m_next = scalar.max(m_prev, row_max)
 l_scaled = l_prev * scalar.exp(m_prev - m_next)
-need_scale = scalar.gt(val, threshold)
+need_scale = val > threshold       # pto.i1 result
+is_zero_mask = val == threshold
+in_range = (val >= threshold) & (val <= row_max)
 ```
 
 For readability in files with many scalar operations, assign `pto.scalar` to a short local name:

@@ -321,6 +321,7 @@ FRAGMENT_FIXTURES = {
             m_next = pto.scalar.load(tile[0, 3])
             val = pto.scalar.load(tile[0, 0])
             threshold = pto.const(0.0, dtype=pto.f32)
+            tail_count = pto.scalar.load(tile[0, 1])
             N = pto.const(16, dtype=pto.i32)
             BLOCK = 8
             {SNIPPET_PLACEHOLDER}

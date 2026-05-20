@@ -94,8 +94,8 @@ def online_softmax_update_kernel_2d(
     _             = s.index_cast(pto.int32, c8)                     # block_rows_i32
     row_base_i32  = s.index_cast(pto.int32, row_base)
     remaining_rows= s.subi(arg8, row_base_i32)
-    has_rows      = s.cmpi_sgt(remaining_rows, c0_i32)
-    too_many_rows = s.cmpi_sgt(remaining_rows, c8_i32)
+    has_rows      = remaining_rows > c0_i32
+    too_many_rows = remaining_rows > c8_i32
     row_count_i32 = s.select(too_many_rows, c8_i32, remaining_rows)
     row_count     = s.index_cast(row_count_i32)                     # → index
     seq           = s.index_cast(arg7)                              # → index
@@ -178,7 +178,7 @@ def online_softmax_update_kernel_2d(
 
                     chunk_i32      = s.index_cast(pto.int32, chunk)
                     remaining_cols = s.subi(arg7, chunk_i32)
-                    has_chunk      = s.cmpi_sgt(remaining_cols, c0_i32)
+                    has_chunk      = remaining_cols > c0_i32
 
                     # scf.if with results – produce (next_max, next_sum)
                     with pto.if_(has_chunk, results=(vf32, vf32)) as br:
@@ -216,7 +216,7 @@ def online_softmax_update_kernel_2d(
                 # Output normalisation loop
                 with pto.for_(c0, c128, step=c64) as chunk2:
                     rem2      = s.subi(arg7, s.index_cast(pto.int32, chunk2))
-                    has_chunk2= s.cmpi_sgt(rem2, c0_i32)
+                    has_chunk2= rem2 > c0_i32
                     with pto.if_(has_chunk2):
                         cmask2, _ = pto.plt_b32(rem2)
                         cbase2    = s.addi(row_qk, chunk2)

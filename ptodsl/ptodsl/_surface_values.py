@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 
 from ._diagnostics import native_python_control_flow_error
-from ._runtime_scalar_ops import emit_runtime_binary_op
+from ._runtime_scalar_ops import emit_runtime_binary_op, emit_runtime_bitwise_op, emit_runtime_compare
 from ._surface_types import PartitionTensorView, TensorView, Tile
 from ._types import _normalize_address_space, _resolve, ptr
 
@@ -183,6 +183,42 @@ class RuntimeValue(_SurfaceValue):
 
     def __rmod__(self, other):
         return wrap_surface_value(emit_runtime_binary_op("mod", unwrap_surface_value(other), self.value))
+
+    def __lt__(self, other):
+        return wrap_surface_value(emit_runtime_compare("lt", self.value, unwrap_surface_value(other)))
+
+    def __le__(self, other):
+        return wrap_surface_value(emit_runtime_compare("le", self.value, unwrap_surface_value(other)))
+
+    def __gt__(self, other):
+        return wrap_surface_value(emit_runtime_compare("gt", self.value, unwrap_surface_value(other)))
+
+    def __ge__(self, other):
+        return wrap_surface_value(emit_runtime_compare("ge", self.value, unwrap_surface_value(other)))
+
+    def __eq__(self, other):
+        return wrap_surface_value(emit_runtime_compare("eq", self.value, unwrap_surface_value(other)))
+
+    def __ne__(self, other):
+        return wrap_surface_value(emit_runtime_compare("ne", self.value, unwrap_surface_value(other)))
+
+    def __and__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("and", self.value, unwrap_surface_value(other)))
+
+    def __rand__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("and", unwrap_surface_value(other), self.value))
+
+    def __or__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("or", self.value, unwrap_surface_value(other)))
+
+    def __ror__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("or", unwrap_surface_value(other), self.value))
+
+    def __xor__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("xor", self.value, unwrap_surface_value(other)))
+
+    def __rxor__(self, other):
+        return wrap_surface_value(emit_runtime_bitwise_op("xor", unwrap_surface_value(other), self.value))
 
 
 class MaskResultValue(_SurfaceValue):

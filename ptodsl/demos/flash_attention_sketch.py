@@ -83,7 +83,7 @@ scalar = pto.scalar
 
 def _min_index(lhs, rhs):
     return pto.scalar.select(
-        pto.scalar.cmpi("slt", lhs, rhs),
+        lhs < rhs,
         lhs,
         rhs,
     )

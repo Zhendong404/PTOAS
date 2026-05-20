@@ -149,15 +149,81 @@ def _restore_runtime_integer_result(result, authored_type):
     return _restore_integer_signedness(result, authored_type)
 
 
-def emit_runtime_cmpi(predicate, lhs, rhs):
-    """Lower one authored runtime scalar integer/index comparison."""
+def emit_runtime_compare(op_name: str, lhs, rhs):
+    """Lower one authored runtime scalar comparison operator."""
     lhs, rhs, kind = normalize_runtime_binary_operands(lhs, rhs)
-    if kind not in {"index", "integer"}:
-        raise TypeError(f"runtime scalar comparison expects integer/index operands, got {lhs.type} and {rhs.type}")
+
+    if kind == "float":
+        predicate = {
+            "lt": arith.CmpFPredicate.OLT,
+            "le": arith.CmpFPredicate.OLE,
+            "gt": arith.CmpFPredicate.OGT,
+            "ge": arith.CmpFPredicate.OGE,
+            "eq": arith.CmpFPredicate.OEQ,
+            "ne": arith.CmpFPredicate.ONE,
+        }.get(op_name)
+        if predicate is None:
+            raise TypeError(f"runtime scalar comparison '{op_name}' is not supported for floating-point values")
+        return arith.CmpFOp(predicate, lhs, rhs).result
+
+    if kind == "index":
+        predicate = {
+            "lt": arith.CmpIPredicate.slt,
+            "le": arith.CmpIPredicate.sle,
+            "gt": arith.CmpIPredicate.sgt,
+            "ge": arith.CmpIPredicate.sge,
+            "eq": arith.CmpIPredicate.eq,
+            "ne": arith.CmpIPredicate.ne,
+        }.get(op_name)
+        if predicate is None:
+            raise TypeError(f"runtime scalar comparison '{op_name}' is not supported for index values")
+        return arith.CmpIOp(predicate, lhs, rhs).result
+
     if kind == "integer":
-        lhs = _strip_integer_signedness(lhs)
-        rhs = _strip_integer_signedness(rhs)
-    return arith.CmpIOp(predicate, lhs, rhs).result
+        signedness = _integer_signedness(lhs.type)
+        signed_predicates = {
+            "lt": arith.CmpIPredicate.slt,
+            "le": arith.CmpIPredicate.sle,
+            "gt": arith.CmpIPredicate.sgt,
+            "ge": arith.CmpIPredicate.sge,
+            "eq": arith.CmpIPredicate.eq,
+            "ne": arith.CmpIPredicate.ne,
+        }
+        unsigned_predicates = {
+            "lt": arith.CmpIPredicate.ult,
+            "le": arith.CmpIPredicate.ule,
+            "gt": arith.CmpIPredicate.ugt,
+            "ge": arith.CmpIPredicate.uge,
+            "eq": arith.CmpIPredicate.eq,
+            "ne": arith.CmpIPredicate.ne,
+        }
+        predicate = (unsigned_predicates if signedness == "unsigned" else signed_predicates).get(op_name)
+        if predicate is None:
+            raise TypeError(f"runtime scalar comparison '{op_name}' is not supported for integer values")
+        return arith.CmpIOp(predicate, _strip_integer_signedness(lhs), _strip_integer_signedness(rhs)).result
+
+    raise TypeError(f"unsupported runtime scalar operand category '{kind}'")
+
+
+def emit_runtime_bitwise_op(op_name: str, lhs, rhs):
+    """Lower one authored runtime scalar bitwise operator."""
+    lhs, rhs, kind = normalize_runtime_binary_operands(lhs, rhs)
+    if kind != "integer":
+        raise TypeError(
+            f"runtime scalar bitwise operator '{op_name}' expects integer-like operands, got {lhs.type} and {rhs.type}"
+        )
+
+    op_cls = {
+        "and": arith.AndIOp,
+        "or": arith.OrIOp,
+        "xor": arith.XOrIOp,
+    }.get(op_name)
+    if op_cls is None:
+        raise TypeError(f"unsupported runtime scalar bitwise operator '{op_name}'")
+
+    authored_type = lhs.type
+    result = op_cls(_strip_integer_signedness(lhs), _strip_integer_signedness(rhs)).result
+    return _restore_integer_signedness(result, authored_type)
 
 
 def _integer_binary_op(op_name: str, authored_type):
@@ -191,6 +257,8 @@ def _integer_binary_op(op_name: str, authored_type):
 __all__ = [
     "classify_runtime_scalar_type",
     "emit_runtime_binary_op",
+    "emit_runtime_compare",
+    "emit_runtime_bitwise_op",
     "emit_runtime_max",
     "normalize_runtime_binary_operands",
 ]

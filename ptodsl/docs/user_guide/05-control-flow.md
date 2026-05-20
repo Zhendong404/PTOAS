@@ -155,7 +155,7 @@ with col_loop:
 
 `pto.if_` records a device-side conditional branch. Unlike a Python `if`, the condition can be a runtime PTO scalar, and both branches are recorded into the program so the hardware can choose at runtime.
 
-The condition must be a PTO scalar value (e.g., the result of a comparison like `scalar.gt(a, b)` or a value loaded from a tile). Python booleans evaluated at trace time should use a plain `if` instead.
+The condition must be a PTO scalar value (e.g., the result of a comparison like `a > b` or a value loaded from a tile). Python booleans evaluated at trace time should use a plain `if` instead.
 
 ### Value merge across branches
 
@@ -174,7 +174,7 @@ def conditional_scale(
     with pto.for_(0, rows, step=1) as r:
         with pto.for_(0, cols, step=1) as c:
             val = scalar.load(tile[r, c])
-            big = scalar.gt(val, threshold)
+            big = val > threshold
 
             with pto.if_(big):
                 # Branch A: scale the value up
