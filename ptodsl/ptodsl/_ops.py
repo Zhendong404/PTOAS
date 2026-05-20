@@ -33,6 +33,7 @@ from ._surface_values import (
     TensorViewValue,
     TileSliceValue,
     TileValue,
+    _coerce_index_value,
     _unwrap_sequence,
     compose_partition_spec,
     emit_as_ptr,
@@ -1220,7 +1221,7 @@ def _split_valid_shape(shape, valid_shape):
             raise TypeError("alloc_tile(valid_shape=...) does not accept bool dimensions")
         if isinstance(dim, int):
             return (1, dim), None, None, tuple(surface_valid_shape)
-        return (1, -1), None, dim, tuple(surface_valid_shape)
+        return (-1, -1), 1, dim, tuple(surface_valid_shape)
 
     type_valid_shape = []
     valid_row = None
@@ -1361,8 +1362,8 @@ def alloc_tile(
     value = _pto.AllocTileOp(
         _resolve(tile_type),
         addr=unwrap_surface_value(addr) if addr is not None else None,
-        valid_row=unwrap_surface_value(valid_row) if valid_row is not None else None,
-        valid_col=unwrap_surface_value(valid_col) if valid_col is not None else None,
+        valid_row=_coerce_index(valid_row, context="alloc_tile(valid_row)") if valid_row is not None else None,
+        valid_col=_coerce_index(valid_col, context="alloc_tile(valid_col)") if valid_col is not None else None,
     ).result
     if tile_type is not None and (valid_row is not None or valid_col is not None):
         parsed_tile_type = parse_tile_type_metadata(_resolve(tile_type))
@@ -1396,10 +1397,10 @@ def set_tile_valid_shape(tile, valid_shape):
     if logical_rank == 1:
         if len(valid_shape) != 1:
             raise TypeError("rank-1 tile.valid_shape assignment expects exactly one dimension")
-        if parsed_tile_type["valid_dims"] != (1, None):
+        if parsed_tile_type["valid_dims"] != (None, None):
             raise TypeError(
                 "rank-1 tile.valid_shape assignment requires a tile allocated with "
-                "valid_shape=[...] so the physical valid cols remain dynamic"
+                "valid_shape=[...] so the physical valid row/col metadata remain dynamic"
             )
         valid_row = _coerce_index_value(1)
         valid_col, = _unwrap_sequence(valid_shape)

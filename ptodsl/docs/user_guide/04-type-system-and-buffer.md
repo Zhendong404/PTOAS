@@ -257,6 +257,8 @@ l_prev_tile.fill(0.0)
 
 rows = q_tile.valid_shape[0]
 cols = k_tile.valid_shape[1]
+meta_tile.valid_shape = [pto.const(1), pto.const(2)]
+tail_tile.valid_shape = [rows]
 
 meta_ptr = meta_tile.as_ptr()
 ```

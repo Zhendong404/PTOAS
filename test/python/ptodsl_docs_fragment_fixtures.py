@@ -127,7 +127,8 @@ FRAGMENT_FIXTURES = {
             l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
             q_tile = pto.alloc_tile(shape=[Br, dim], dtype=pto.f32)
             k_tile = pto.alloc_tile(shape=[Bc, dim], dtype=pto.f32)
-            meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+            meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[pto.const(1), pto.const(3)])
+            tail_tile = pto.alloc_tile(shape=[dim], dtype=pto.f32, valid_shape=[pto.const(dim)])
             {SNIPPET_PLACEHOLDER}
         """
     ),

@@ -100,25 +100,31 @@ The pattern:
 
 At the Tile Op level, tail handling is built into `tile.load` and `tile.store`. When a partition size along a dimension is smaller than the tile size, the tile's `valid_shape` tracks the actual data extent:
 
-<!-- ptodsl-doc-pending: this example still relies on mutating tile.valid_shape directly -->
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"vec_add_with_tail","compile":{"BLOCK":128}} -->
 ```python
 @pto.jit(target="a5")
-def vec_add_with_tail(A, B, O, *, BLOCK: pto.constexpr):
+def vec_add_with_tail(
+    A: pto.tensor_spec(rank=1, dtype=pto.f32),
+    B: pto.tensor_spec(rank=1, dtype=pto.f32),
+    O: pto.tensor_spec(rank=1, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
     N = A.shape[0]
 
     a_view = pto.make_tensor_view(A, shape=[N], strides=A.strides)
     b_view = pto.make_tensor_view(B, shape=[N], strides=B.strides)
     o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
 
-    a_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    b_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+    a_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32, valid_shape=[pto.const(BLOCK)])
+    b_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32, valid_shape=[pto.const(BLOCK)])
+    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32, valid_shape=[pto.const(BLOCK)])
 
     num_blocks = (N + BLOCK - 1) // BLOCK
 
     with pto.for_(0, num_blocks, step=1) as i:
         offset = i * BLOCK
-        this_block = min(BLOCK, N - offset)
+        this_block = scalar.min(BLOCK, N - offset)
 
         a_part = pto.partition_view(a_view, offsets=[offset], sizes=[this_block])
         b_part = pto.partition_view(b_view, offsets=[offset], sizes=[this_block])
@@ -135,8 +141,8 @@ def vec_add_with_tail(A, B, O, *, BLOCK: pto.constexpr):
         pto.tile.store(o_tile, o_part)
 ```
 
-- `this_block = min(BLOCK, N - offset)` computes the actual block size for the tail iteration.
-- `sizes=[this_block]` on the partition and `valid_shape` on the tile tell `tile.load`/`tile.add`/`tile.store` how many elements are live.
+- `this_block = scalar.min(BLOCK, N - offset)` computes the actual block size for the tail iteration on the device side.
+- `sizes=[this_block]` on the partition and `tile.valid_shape = [...]` on the tile tell `tile.load`/`tile.add`/`tile.store` how many elements are live.
 
 ### 12.2.3 The general rule
 

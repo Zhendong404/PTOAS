@@ -268,6 +268,21 @@ def tile_valid_shape_update_probe(
 
 
 @pto.jit(target="a5")
+def tile_valid_shape_update_1d_probe(
+    A: pto.tensor_spec(rank=1, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    length = A.shape[0]
+    tile = pto.alloc_tile(
+        shape=[BLOCK],
+        dtype=pto.f32,
+        valid_shape=[pto.const(BLOCK)],
+    )
+    tile.valid_shape = [length]
+
+
+@pto.jit(target="a5")
 def integer_loop_bound_probe(*, BLOCK: pto.constexpr = 8):
     row_start = pto.const(0, dtype=pto.i32)
     row_stop = pto.const(BLOCK, dtype=pto.i32)
@@ -837,6 +852,7 @@ def main() -> None:
     tile_slice_surface_probe.verify()
     tile_slice_1d_surface_probe.verify()
     tile_valid_shape_update_probe.verify()
+    tile_valid_shape_update_1d_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
     simt_pointer_offset_probe.verify()
@@ -1037,6 +1053,16 @@ def main() -> None:
             tile_valid_shape_text,
         ) is not None,
         "tile.valid_shape = [rows, cols] should lower to pto.set_validshape on a dynamic-valid tile",
+    )
+
+    tile_valid_shape_1d_text = tile_valid_shape_update_1d_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_valid_shape_1d_text, "1D tile valid-shape update specialization")
+    expect(
+        re.search(
+            r"pto\.set_validshape %[0-9]+, %[a-zA-Z0-9_]+, %arg1 : !pto\.tile_buf<vec, 1x128xf32, valid=\?x\?>",
+            tile_valid_shape_1d_text,
+        ) is not None,
+        "tile.valid_shape = [length] should lower to pto.set_validshape on a rank-1 dynamic-valid tile",
     )
 
     SUBKERNEL_OBSERVATIONS.clear()
