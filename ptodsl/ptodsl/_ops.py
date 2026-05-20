@@ -154,6 +154,8 @@ def vlds(src_ptr, offset=None, result_vreg_type=None):
 
 def vldas(source):
     """``pto.vldas`` – prime alignment state for a following unaligned load stream."""
+    if isinstance(source, TileSliceValue):
+        source = _tile_slice_ptr(source)
     return wrap_surface_value(
         _pto.VldasOp(
             _pto.AlignType.get(),
@@ -169,6 +171,8 @@ def vldus(source, align):
         if isinstance(source, TileSliceValue)
         else _infer_vreg_type_from_address_source(source)
     )
+    if isinstance(source, TileSliceValue):
+        source = _tile_slice_ptr(source)
     op = _pto.VldusOp(
         result_type,
         _pto.AlignType.get(),
@@ -1192,18 +1196,33 @@ def _normalize_static_tile_shape(shape):
     return tuple(static_shape)
 
 
-def _split_valid_shape(shape, valid_shape):
-    rank = len(shape)
-    if valid_shape is None:
-        return tuple(shape), None, None, tuple(shape)
+def _authored_tile_physical_shape(shape):
+    if len(shape) == 1:
+        return (1, shape[0])
+    return tuple(shape)
 
-    if len(valid_shape) != rank:
+
+def _split_valid_shape(shape, valid_shape):
+    logical_rank = len(shape)
+    if valid_shape is None:
+        return _authored_tile_physical_shape(shape), None, None, tuple(shape)
+
+    if len(valid_shape) != logical_rank:
         raise TypeError(
-            f"alloc_tile(valid_shape=...) rank mismatch: expected {rank} dims, got {len(valid_shape)}"
+            f"alloc_tile(valid_shape=...) rank mismatch: expected {logical_rank} dims, got {len(valid_shape)}"
         )
 
-    type_valid_shape = []
     surface_valid_shape = []
+    if logical_rank == 1:
+        dim = valid_shape[0]
+        surface_valid_shape.append(dim)
+        if isinstance(dim, bool):
+            raise TypeError("alloc_tile(valid_shape=...) does not accept bool dimensions")
+        if isinstance(dim, int):
+            return (1, dim), None, None, tuple(surface_valid_shape)
+        return (1, -1), None, dim, tuple(surface_valid_shape)
+
+    type_valid_shape = []
     valid_row = None
     valid_col = None
     for index, dim in enumerate(valid_shape):
@@ -1319,12 +1338,13 @@ def alloc_tile(
                 "alloc_tile(shape=..., dtype=...) uses the authored surface form; "
                 "addr=/valid_row=/valid_col= are only supported with an explicit tile_type"
             )
-        shape = _normalize_static_tile_shape(shape)
-        _validate_authored_tile_row_alignment(shape, dtype, blayout=blayout, slayout=slayout)
-        type_valid_shape, valid_row, valid_col, surface_valid_shape = _split_valid_shape(shape, valid_shape)
+        logical_shape = _normalize_static_tile_shape(shape)
+        physical_shape = _authored_tile_physical_shape(logical_shape)
+        _validate_authored_tile_row_alignment(physical_shape, dtype, blayout=blayout, slayout=slayout)
+        type_valid_shape, valid_row, valid_col, surface_valid_shape = _split_valid_shape(logical_shape, valid_shape)
         from ._types import tile_buf_type
         tile_type = tile_buf_type(
-            shape,
+            physical_shape,
             dtype,
             type_valid_shape,
             blayout=blayout,
@@ -1333,7 +1353,9 @@ def alloc_tile(
             fractal_size=fractal_size,
             pad=pad,
         )
+        shape = logical_shape
     else:
+        physical_shape = None
         surface_valid_shape = None
 
     value = _pto.AllocTileOp(
@@ -1355,6 +1377,7 @@ def alloc_tile(
         value,
         tile_metadata={
             "shape": shape,
+            "physical_shape": physical_shape,
             "dtype": dtype,
             "memory_space": memory_space,
             "valid_shape": surface_valid_shape,
@@ -1363,24 +1386,32 @@ def alloc_tile(
 
 
 def set_tile_valid_shape(tile, valid_shape):
-    """Update the runtime valid-shape metadata of a rank-2 dynamic tile."""
-    if len(valid_shape) != 2:
-        raise TypeError(
-            "tile.valid_shape assignment currently expects exactly two dimensions"
-        )
-
+    """Update the runtime valid-shape metadata of an authored dynamic tile."""
     parsed_tile_type = parse_tile_type_metadata(unwrap_surface_value(tile).type)
     if parsed_tile_type is None:
         raise TypeError("tile.valid_shape assignment expects a tile_buf-backed value")
     if len(parsed_tile_type["shape_dims"]) != 2:
         raise TypeError("tile.valid_shape assignment currently only supports rank-2 tiles")
-    if parsed_tile_type["valid_dims"] != (None, None):
-        raise TypeError(
-            "tile.valid_shape assignment requires a tile allocated with fully dynamic "
-            "valid_shape=[..., ...]"
-        )
-
-    valid_row, valid_col = _unwrap_sequence(valid_shape)
+    logical_rank = len(tile.shape) if getattr(tile, "shape", None) is not None else 2
+    if logical_rank == 1:
+        if len(valid_shape) != 1:
+            raise TypeError("rank-1 tile.valid_shape assignment expects exactly one dimension")
+        if parsed_tile_type["valid_dims"] != (1, None):
+            raise TypeError(
+                "rank-1 tile.valid_shape assignment requires a tile allocated with "
+                "valid_shape=[...] so the physical valid cols remain dynamic"
+            )
+        valid_row = _coerce_index_value(1)
+        valid_col, = _unwrap_sequence(valid_shape)
+    else:
+        if len(valid_shape) != 2:
+            raise TypeError("tile.valid_shape assignment currently expects exactly two dimensions")
+        if parsed_tile_type["valid_dims"] != (None, None):
+            raise TypeError(
+                "tile.valid_shape assignment requires a tile allocated with fully dynamic "
+                "valid_shape=[..., ...]"
+            )
+        valid_row, valid_col = _unwrap_sequence(valid_shape)
     _pto.SetValidShapeOp(
         unwrap_surface_value(tile),
         valid_row,
@@ -2092,6 +2123,36 @@ def _constant_like(value, mlir_type):
 
 def _index_zero():
     return arith.ConstantOp(IndexType.get(), 0).result
+
+
+def _tile_slice_linear_offset(tile_slice: TileSliceValue):
+    offsets = tile_slice.offsets
+    if len(offsets) == 1:
+        return offsets[0]
+    if len(offsets) != 2:
+        raise RuntimeError("tile slice pointer lowering only supports rank-1 or rank-2 offsets")
+
+    physical_shape = getattr(tile_slice.tile, "physical_shape", None)
+    if physical_shape is None or len(physical_shape) != 2 or physical_shape[1] is None:
+        raise RuntimeError("tile slice pointer lowering requires static physical column shape metadata")
+
+    row, col = offsets
+    stride = physical_shape[1]
+    if isinstance(row, int) and isinstance(col, int):
+        return row * stride + col
+
+    row_value = _coerce_index(row, context="tile slice pointer lowering")
+    row_stride = arith.MulIOp(row_value, arith.ConstantOp(IndexType.get(), stride).result).result
+    col_value = _coerce_index(col, context="tile slice pointer lowering")
+    return arith.AddIOp(row_stride, col_value).result
+
+
+def _tile_slice_ptr(tile_slice: TileSliceValue):
+    base_ptr = emit_as_ptr(tile_slice.tile)
+    linear_offset = _tile_slice_linear_offset(tile_slice)
+    if isinstance(linear_offset, int) and linear_offset == 0:
+        return base_ptr
+    return addptr(base_ptr, _coerce_index(linear_offset, context="tile slice pointer lowering"))
 
 
 def _infer_vreg_type_from_tile_slice(tile_slice: TileSliceValue):

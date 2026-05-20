@@ -418,6 +418,31 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "data_movement.tile_slice_2d": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def data_movement_tile_slice_2d_probe(
+            *,
+            BLOCK: pto.constexpr = 128,
+        ):
+            tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
+            col = 0
+            with pto.for_(0, 1, step=1) as row:
+                {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "data_movement.tile_slice_1d": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def data_movement_tile_slice_1d_probe(
+            *,
+            BLOCK: pto.constexpr = 128,
+        ):
+            tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+            start = pto.const(0, dtype=pto.i32)
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "compute_ops.vector_compute": _fixture(
         f"""
         @pto.simd

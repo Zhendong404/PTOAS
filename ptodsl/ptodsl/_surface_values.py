@@ -20,7 +20,7 @@ from ._types import _normalize_address_space, _resolve, ptr
 from mlir.dialects import arith
 from mlir.dialects import memref
 from mlir.dialects import pto as _pto
-from mlir.ir import IndexType, MemRefType, ShapedType, StridedLayoutAttr, Type
+from mlir.ir import IndexType, IntegerType, MemRefType, ShapedType, StridedLayoutAttr, Type
 
 
 def unwrap_surface_value(value):
@@ -339,7 +339,11 @@ class _TileValidShapeView:
         self._cache: dict[int, object] = {}
 
     def __getitem__(self, index: int):
-        if index not in {0, 1}:
+        logical_rank = len(self._tile.shape) if self._tile.shape is not None else 2
+        allowed = {0} if logical_rank == 1 else {0, 1}
+        if index not in allowed:
+            if logical_rank == 1:
+                raise IndexError("PTODSL rank-1 tile.valid_shape currently supports only index 0")
             raise IndexError("PTODSL tile.valid_shape currently supports indices 0 and 1")
         cached = self._cache.get(index)
         if cached is not None:
@@ -352,7 +356,9 @@ class _TileValidShapeView:
                 self._cache[index] = value
                 return value
         try:
-            if index == 0:
+            if logical_rank == 1:
+                value = wrap_surface_value(_pto.TileValidColsOp(self._tile.value).result)
+            elif index == 0:
                 value = wrap_surface_value(_pto.TileValidRowsOp(self._tile.value).result)
             else:
                 value = wrap_surface_value(_pto.TileValidColsOp(self._tile.value).result)
@@ -377,6 +383,7 @@ class TileValue(_SurfaceValue, Tile):
         value,
         *,
         shape=None,
+        physical_shape=None,
         dtype=None,
         memory_space=None,
         valid_shape=None,
@@ -385,6 +392,11 @@ class TileValue(_SurfaceValue, Tile):
         parsed = parse_tile_type_metadata(value.type)
         self.shape = tuple(shape) if shape is not None else (
             parsed["shape_dims"] if parsed is not None else None
+        )
+        self.physical_shape = tuple(physical_shape) if physical_shape is not None else (
+            tuple(shape) if shape is not None else (
+                parsed["shape_dims"] if parsed is not None else None
+            )
         )
         self.dtype = dtype if dtype is not None else (
             parsed["element_type"] if parsed is not None else None
@@ -413,6 +425,7 @@ class TileValue(_SurfaceValue, Tile):
     def surface_metadata(self):
         return {
             "shape": self.shape,
+            "physical_shape": self.physical_shape,
             "dtype": self.dtype,
             "memory_space": self.memory_space,
             "valid_shape": self.static_valid_shape,
@@ -658,12 +671,13 @@ def infer_memref_type_from_surface_value(surface_value):
         return surface_value.type
 
     if isinstance(surface_value, TileValue):
-        if surface_value.shape is not None and surface_value.dtype is not None and surface_value.memory_space is not None:
+        physical_shape = getattr(surface_value, "physical_shape", None)
+        if physical_shape is not None and surface_value.dtype is not None and surface_value.memory_space is not None:
             space_enum = _normalize_address_space(surface_value.memory_space)
             if space_enum is None:
                 raise RuntimeError("unsupported tile memory space for memref address view")
             return MemRefType.get(
-                list(surface_value.shape),
+                list(physical_shape),
                 _resolve(surface_value.dtype),
                 memory_space=_pto.AddressSpaceAttr.get(space_enum),
             )
@@ -739,7 +753,11 @@ def _materialize_tile_slice(tile: TileValue, key):
         if start_slice.stop is not None or start_slice.step is not None:
             raise TypeError("tile[start:] only supports an open-ended slice")
         start = 0 if start_slice.start is None else start_slice.start
-        return _build_tile_slice_view(tile, raw_offsets=[start], shape=[_dynamic_extent(tile.shape[0], start)])
+        return _build_tile_slice_view(
+            tile,
+            raw_offsets=[0, start],
+            shape=[_dynamic_extent(tile.shape[0], start)],
+        )
 
     row, col_slice = key
     if col_slice.stop is not None or col_slice.step is not None:
@@ -796,7 +814,7 @@ def _build_tile_slice_view(tile: TileValue, *, raw_offsets, shape):
     flat_type = _make_strided_memref_type(
         [_static_extent_if_known(shape[0])],
         base_type.element_type,
-        [1],
+        [ShapedType.get_dynamic_size()] if len(tile.shape) == 1 else [1],
         base_type.memory_space,
     )
     slice_value = memref.CollapseShapeOp(flat_type, row_view, [[0, 1]]).result
@@ -811,7 +829,7 @@ def _emit_tile_memref(tile: TileValue):
 def _dynamic_extent(static_dim, start):
     if isinstance(start, int):
         return static_dim - start
-    return arith.SubIOp(_index_const(static_dim), start).result
+    return arith.SubIOp(_index_const(static_dim), _coerce_index_value(start)).result
 
 
 def _static_extent_if_known(extent):
@@ -857,7 +875,13 @@ def _mul_index(lhs, rhs):
 
 def _coerce_index_value(value):
     value = _normalize_index(value)
-    return _index_const(value) if isinstance(value, int) else value
+    if isinstance(value, int):
+        return _index_const(value)
+    if IndexType.isinstance(value.type):
+        return value
+    if IntegerType.isinstance(value.type):
+        return arith.IndexCastOp(IndexType.get(), value).result
+    raise TypeError(f"expected an index-like value, got {value.type}")
 
 
 __all__ = [

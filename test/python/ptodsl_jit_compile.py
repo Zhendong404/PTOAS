@@ -240,6 +240,18 @@ def tile_slice_surface_probe(*, BLOCK: pto.constexpr = 128):
 
 
 @pto.jit(target="a5")
+def tile_slice_1d_surface_probe(*, BLOCK: pto.constexpr = 128):
+    inp_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+    out_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+    start = pto.const(0, dtype=pto.i32)
+    mask, _ = pto.plt_b32(pto.const(64, dtype=pto.i32))
+    align = pto.vldas(inp_tile[start:])
+    vec, align = pto.vldus(inp_tile[start:], align)
+    pto.vsts(vec, out_tile[start:], mask)
+    _ = align
+
+
+@pto.jit(target="a5")
 def tile_valid_shape_update_probe(
     A: pto.tensor_spec(rank=2, dtype=pto.f32),
     *,
@@ -823,6 +835,7 @@ def main() -> None:
     carry_loop_lowering_probe.verify()
     runtime_scalar_operator_probe.verify()
     tile_slice_surface_probe.verify()
+    tile_slice_1d_surface_probe.verify()
     tile_valid_shape_update_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
@@ -1120,6 +1133,13 @@ def main() -> None:
         "pto.vsts" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,
         "vsts(vec, tile[row, col:], mask) should lower against the memref slice view",
     )
+
+    tile_slice_1d_text = tile_slice_1d_surface_probe.compile(BLOCK=128).mlir_text()
+    expect_parse_roundtrip_and_verify(tile_slice_1d_text, "1D tile slice surface specialization")
+    expect("memref.subview" in tile_slice_1d_text, "tile[start:] should lower through memref.subview")
+    expect("pto.vldas" in tile_slice_1d_text, "vldas(tile[start:]) should lower against the 1D slice view")
+    expect("pto.vldus" in tile_slice_1d_text, "vldus(tile[start:], align) should lower against the 1D slice view")
+    expect("pto.vsts" in tile_slice_1d_text, "vsts(vec, tile[start:], mask) should lower against the 1D slice view")
 
     integer_loop_text = integer_loop_bound_probe.compile(BLOCK=8).mlir_text()
     expect_parse_roundtrip_and_verify(integer_loop_text, "integer loop bound specialization")

@@ -287,9 +287,13 @@ Inside `@pto.simd`, data moves between UB tiles and vector registers (`vreg`). V
 
 All vector load and store operations support the element-indexing syntax, which eliminates manual byte-offset calculation:
 
-<!-- ptodsl-doc-pending: tile-index syntax summary block is explanatory prose and is not yet backed by a dedicated compile_fragment fixture -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.tile_slice_2d","symbol":"data_movement_tile_slice_2d_probe","compile":{"BLOCK":128}} -->
 ```python
 vec = pto.vlds(tile[row, col:])       # load from row, starting at column col
+```
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.tile_slice_1d","symbol":"data_movement_tile_slice_1d_probe","compile":{"BLOCK":128}} -->
+```python
 vec = pto.vlds(tile[start:])          # 1D tile, starting at element start
 ```
 
@@ -401,10 +405,16 @@ spellings are PTODSL surface sugar; the pointer form is the canonical form.
 | `align_out` | `AlignType` | Updated alignment state for next load |
 **Example**:
 
-<!-- ptodsl-doc-pending: vldas/vldus tile-slice example is not yet a stable docs-as-test surface; current lowering/verifier support is still pointer-oriented -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.tile_slice_2d","symbol":"data_movement_tile_slice_2d_probe","compile":{"BLOCK":128}} -->
 ```python
 align = pto.vldas(tile[row, col:])
 vec, align = pto.vldus(tile[row, col:], align)
+```
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.tile_slice_1d","symbol":"data_movement_tile_slice_1d_probe","compile":{"BLOCK":128}} -->
+```python
+align = pto.vldas(tile[start:])
+vec, align = pto.vldus(tile[start:], align)
 ```
 
 ---
