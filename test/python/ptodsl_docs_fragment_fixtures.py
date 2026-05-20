@@ -295,6 +295,132 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "kernel_entry.direct_l3_call": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        kernel_entry_direct_l3_call_probe = my_kernel
+        """
+    ),
+    "kernel_entry.ukernel_signature": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_ukernel_signature_probe(
+            A: pto.tensor_spec(rank=2, dtype=pto.f32),
+            *,
+            BLOCK: pto.constexpr = 16,
+        ):
+            view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
+            part = pto.partition_view(view, offsets=[0, 0], sizes=[1, BLOCK])
+            tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            scratch = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT)
+            my_ukernel(part, tile, scratch, tile.as_ptr(), pto.const(0, dtype=pto.i32))
+        """
+    ),
+    "kernel_entry.ukernel_body": _fixture(
+        f"""
+        @pto.cube
+        def qk_matmul(q_tile: pto.Tile, k_tile: pto.Tile, s_tile: pto.Tile):
+            return
+
+
+        @pto.simd
+        def online_softmax(s_tile: pto.Tile, o_tile: pto.Tile, rows: pto.i32, cols: pto.i32):
+            return
+
+
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_ukernel_body_probe(
+            K: pto.tensor_spec(rank=2, dtype=pto.f16),
+            V: pto.tensor_spec(rank=2, dtype=pto.f16),
+            O: pto.tensor_spec(rank=2, dtype=pto.f32),
+            *,
+            ROWS: pto.constexpr = 8,
+            COLS: pto.constexpr = 16,
+        ):
+            k_view = pto.make_tensor_view(K, shape=K.shape, strides=K.strides)
+            v_view = pto.make_tensor_view(V, shape=V.shape, strides=V.strides)
+            o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
+            q_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f16)
+            k_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f16)
+            v_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f16)
+            s_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f32)
+            o_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f32)
+            k_part = pto.partition_view(k_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            v_part = pto.partition_view(v_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            process_block(q_tile, k_part, v_part, k_tile, v_tile, s_tile, o_tile, o_part, ROWS, COLS)
+        """
+    ),
+    "kernel_entry.cube_signature": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_cube_signature_probe(
+            *,
+            BLOCK_M: pto.constexpr = 16,
+            BLOCK_K: pto.constexpr = 16,
+            BLOCK_N: pto.constexpr = 16,
+        ):
+            input_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, valid_shape=[BLOCK_M, BLOCK_K])
+            output_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
+            left_scratch = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
+            right_scratch = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
+            acc_scratch = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[BLOCK_M, BLOCK_N])
+            my_cube_kernel(input_tile, output_tile, left_scratch, right_scratch, acc_scratch)
+        """
+    ),
+    "kernel_entry.simd_signature": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_simd_signature_probe(*, BLOCK: pto.constexpr = 128):
+            input_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            output_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            my_simd_kernel(input_tile, output_tile, pto.const(1, dtype=pto.i32), pto.const(BLOCK, dtype=pto.i32))
+        """
+    ),
+    "kernel_entry.simd_body": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_simd_body_probe(*, BLOCK: pto.constexpr = 128):
+            a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            add_rows(
+                a_tile,
+                b_tile,
+                o_tile,
+                pto.const(1, dtype=pto.index),
+                pto.const(BLOCK, dtype=pto.index),
+            )
+        """
+    ),
+    "kernel_entry.simt_signature": _fixture(
+        f"""
+        {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_simt_signature_probe(*, BLOCK: pto.constexpr = 8):
+            tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[1, BLOCK])
+            my_simt_kernel(tile, tile.as_ptr(), pto.const(0, dtype=pto.i32))
+        """
+    ),
     "scalar_ops.simt_pointer": _fixture(
         f"""
         @pto.jit(target="a5")
@@ -465,8 +591,8 @@ FRAGMENT_FIXTURES = {
             BLOCK_K: pto.constexpr = 16,
             BLOCK_N: pto.constexpr = 16,
         ):
-            q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, valid_shape=[BLOCK_M, BLOCK_K])
-            k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, valid_shape=[BLOCK_K, BLOCK_N])
+            q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
+            k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
             s_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
             q_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
             k_l0b = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
