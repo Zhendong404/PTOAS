@@ -211,25 +211,37 @@ This surface avoids explicit result-type declarations and explicit
 
 `pto.constexpr` parameters (Section 3.8) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
 
-<!-- ptodsl-doc-pending: documented constexpr tracing example uses native range(num_blocks) over runtime tensor metadata, which the current implementation rejects -->
 ```python
 @pto.jit(target="a5")
-def kernel(A, *, BLOCK: pto.constexpr = 128, UNROLL: pto.constexpr = False):
+def kernel(
+    A,
+    *,
+    BLOCK: pto.constexpr = 128,
+    NUM_BLOCKS: pto.constexpr = 8,
+    UNROLL: pto.constexpr = False,
+):
     N = A.shape[0]
     num_blocks = (N + BLOCK - 1) // BLOCK
 
+    # N and num_blocks are runtime values derived from tensor metadata.
+    # They can drive device-side control flow such as pto.for_(...),
+    # but they are not Python integers and cannot be used in range(...).
+    with pto.for_(0, num_blocks, step=1) as i:
+        ...
+
     if UNROLL:
-        # Trace-time: UNROLL is known, so this branch resolves at compile time.
-        # Each iteration records separately — the loop is fully unrolled.
-        for i in range(num_blocks):
+        # Trace-time: UNROLL and NUM_BLOCKS are both known during tracing.
+        # Each iteration records separately, so the loop is fully unrolled.
+        for i in range(NUM_BLOCKS):
             ...
     else:
-        # Device-side: a single loop instruction is recorded.
-        with pto.for_(0, num_blocks, step=1) as i:
+        # The non-unrolled path can still use a device-side loop whose bound
+        # is a constexpr value captured into the traced program.
+        with pto.for_(0, NUM_BLOCKS, step=1) as i:
             ...
 ```
 
-This lets you write a single kernel that specializes into different strategies based on constexpr knobs.
+This lets you write a single kernel that specializes into different strategies based on constexpr knobs, while still using runtime tensor metadata for device-side control flow.
 
 ## 5.5 Summary
 
