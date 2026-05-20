@@ -13,8 +13,10 @@ active insertion point and returns the primary SSA result(s).
 
 Design rules:
 - Vector math ops infer the result type from the first operand's type.
-- ``vlds`` / ``vbrc_load`` still require an explicit ``vreg_type`` argument
-  because the result type cannot be inferred from the pointer alone.
+- ``vlds(tile[row, col:])`` and ``vlds(ptr, offset)`` infer the result
+  ``vreg`` type from the source element type. ``vbrc_load`` still requires an
+  explicit result ``vreg`` type because broadcast widths are authored
+  explicitly in the current surface.
 - ``make_tensor_view`` infers the TensorViewType from ``len(shape)`` and the
   pointer's element type.
 - ``partition_view`` infers the PartitionTensorViewType from the source type.
@@ -139,8 +141,10 @@ def vlds(src_ptr, offset=None, result_vreg_type=None):
             _index_zero(),
         ).result)
 
-    if offset is None or result_vreg_type is None:
-        raise TypeError("vlds(ptr, offset, result_vreg_type) requires both offset and result_vreg_type")
+    if offset is None:
+        raise TypeError("vlds(ptr, offset, result_vreg_type=None) requires an explicit offset")
+    if result_vreg_type is None:
+        result_vreg_type = _infer_vreg_type_from_address_source(src_ptr)
     return wrap_surface_value(_pto.VldsOp(
         _resolve(result_vreg_type),
         unwrap_surface_value(src_ptr),
@@ -156,6 +160,18 @@ def vbrc_load(src_ptr, offset, result_vreg_type):
             unwrap_surface_value(src_ptr),
             unwrap_surface_value(offset),
             dist="BRC_B32",
+        ).result
+    )
+
+
+def vbitcast(vector_value, to_dtype):
+    """``pto.vbitcast`` – reinterpret one vector register as a different element type."""
+    target_elem = _resolve(to_dtype)
+    target_type = _resolve(vreg_type(_elements_per_vreg(target_elem), target_elem))
+    return wrap_surface_value(
+        _pto.VbitcastOp(
+            target_type,
+            unwrap_surface_value(vector_value),
         ).result
     )
 
@@ -638,6 +654,23 @@ def _index_zero():
 def _infer_vreg_type_from_tile_slice(tile_slice: TileSliceValue):
     memref_type = MemRefType(tile_slice.type)
     elem_type = memref_type.element_type
+    lanes = _elements_per_vreg(elem_type)
+    return _resolve(vreg_type(lanes, elem_type))
+
+
+def _infer_vreg_type_from_address_source(src_ptr):
+    raw_source = unwrap_surface_value(src_ptr)
+    source_type = raw_source.type
+    try:
+        elem_type = _pto.PtrType(source_type).element_type
+    except Exception:
+        try:
+            elem_type = MemRefType(source_type).element_type
+        except Exception as exc:
+            raise TypeError(
+                f"vlds(ptr, offset) cannot infer a vector-register type from source {source_type}; "
+                "pass result_vreg_type= explicitly"
+            ) from exc
     lanes = _elements_per_vreg(elem_type)
     return _resolve(vreg_type(lanes, elem_type))
 

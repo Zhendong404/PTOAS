@@ -230,12 +230,13 @@ s.select(cond, t, f)         # arith.select
 ```python
 pto.castptr(addr, ptr_type)              # pto.castptr
 pto.addptr(ptr, offset)                  # pto.addptr
-pto.vlds(ptr, offset, vreg_type)         # pto.vlds
+pto.vlds(ptr, offset)                    # pto.vlds, result vreg inferred from ptr element type
 pto.vbrc_load(ptr, offset, vreg_type)    # pto.vlds {dist="BRC_B32"}
 pto.vsts(v, ptr, offset, mask)           # pto.vsts
 pto.vsts_1pt(v, ptr, offset, mask)       # pto.vsts {dist="1PT_B32"}
 pto.plt_b32(scalar)                      # → (mask, scalar_out)
 pto.pset_b32("PAT_ALL")                  # pto.pset_b32 → mask
+pto.vbitcast(v, dtype)                   # pto.vbitcast
 pto.vadd(a, b, mask)   # infers result type from a.type
 pto.vmul / vmax / vdiv / vcmax / vcadd / vdup / vexpdif  # similarly
 pto.make_tensor_view(ptr, shape=…, strides=…)    # type inferred

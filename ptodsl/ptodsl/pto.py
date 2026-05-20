@@ -52,6 +52,7 @@ from ._ops import (             # noqa: F401
     vlds, vbrc_load, vsts, vsts_1pt,
     plt_b32, pset_b32,
     make_mask, bytewidth, elements_per_vreg,
+    vbitcast,
     vadd, vmul, vmax, vdiv,
     vcmax, vcadd, vdup, vexpdif,
     vexp, vcgmax, vcgadd, vsubs,

@@ -104,7 +104,7 @@ lanes = pto.elements_per_vreg(pto.f32)  # 64
 
 Reinterpret the bits of a vector register as a different element type:
 
-<!-- ptodsl-doc-pending: documented vbitcast example uses vlds(ptr, offset) without the explicit result_vreg_type required by the current implementation -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.vreg_bitcast_ptr","symbol":"type_system_vreg_bitcast_ptr_probe","compile":{"BLOCK":128}} -->
 ```python
 fvec = pto.vlds(ptr, offset)            # !pto.vreg<64xf32>
 ivec = pto.vbitcast(fvec, pto.i32)      # !pto.vreg<64xi32>

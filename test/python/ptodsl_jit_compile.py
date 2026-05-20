@@ -467,6 +467,17 @@ def low_precision_storage_probe():
     _ = lp_tile_ty
 
 
+@pto.jit(target="a5")
+def pointer_vlds_inference_probe(*, BLOCK: pto.constexpr = 128):
+    tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
+    vec = pto.vlds(tile.as_ptr(), pto.const(0))
+    ivec = pto.vbitcast(vec, pto.i32)
+    f16_vec = pto.vbitcast(vec, pto.f16)
+    _ = vec
+    _ = ivec
+    _ = f16_vec
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -496,6 +507,7 @@ def main() -> None:
         "bytewidth",
         "elements_per_vreg",
         "make_mask",
+        "vbitcast",
         "vexp",
         "vcgmax",
         "vcgadd",
@@ -556,6 +568,7 @@ def main() -> None:
     eager_scalar_constructor_probe.verify()
     signed_integer_scalar_probe.verify()
     low_precision_storage_probe.verify()
+    pointer_vlds_inference_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -856,6 +869,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(eager_scalar_text, "eager scalar constructor specialization")
     low_precision_storage_text = low_precision_storage_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(low_precision_storage_text, "low-precision storage specialization")
+    pointer_vlds_text = pointer_vlds_inference_probe.compile(BLOCK=128).mlir_text()
+    expect_parse_roundtrip_and_verify(pointer_vlds_text, "pointer vlds inference specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -870,6 +885,10 @@ def main() -> None:
     expect("pto.mad" in public_surface_text, "mad(...) should lower to pto.mad")
     expect("!pto.tile_buf<vec, 128x64xf8E4M3FN>" in low_precision_storage_text, "low-precision tile allocation should preserve float8 element types in MLIR")
     expect("!pto.tile_buf<vec, 64x64x!pto.hif8>" in low_precision_storage_text, "low-precision tile allocation should preserve HiF8 element types in MLIR")
+    expect("pto.vlds" in pointer_vlds_text, "vlds(ptr, offset) should still lower to pto.vlds")
+    expect("!pto.vreg<64xf32>" in pointer_vlds_text, "vlds(ptr, offset) should infer the result vreg type from the pointer element type")
+    expect("pto.vbitcast" in pointer_vlds_text, "vbitcast(...) should lower to pto.vbitcast")
+    expect("!pto.vreg<128xf16>" in pointer_vlds_text, "vbitcast(vec, pto.f16) should preserve the 256-byte payload while adjusting the lane count")
 
     try:
         block64[1, None]

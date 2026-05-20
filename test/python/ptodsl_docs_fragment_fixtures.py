@@ -144,6 +144,19 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "type_system.vreg_bitcast_ptr": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def type_system_vreg_bitcast_ptr_probe(
+            *,
+            BLOCK: pto.constexpr = 128,
+        ):
+            tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
+            ptr = tile.as_ptr()
+            offset = pto.const(0)
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "type_system.mask_bitcast": _fixture(
         f"""
         @pto.jit(target="a5")
