@@ -176,6 +176,16 @@ def vbitcast(vector_value, to_dtype):
     )
 
 
+def pbitcast(mask_value, to_type):
+    """``pto.pbitcast`` – reinterpret one mask register at a different granularity."""
+    return wrap_surface_value(
+        _pto.PbitcastOp(
+            _resolve(to_type),
+            unwrap_surface_value(mask_value),
+        ).result
+    )
+
+
 def vsts(val, dst_ptr, offset, mask=None):
     """``pto.vsts`` – vector store to a tile slice or to *dst_ptr* at *offset*."""
     if isinstance(dst_ptr, TileSliceValue):
@@ -212,6 +222,152 @@ def vsts_1pt(val, dst_ptr, offset, mask):
 
 # ── Mask / predicate ops ──────────────────────────────────────────────────────
 
+_MASK_PATTERN_TOKENS = {
+    "PAT_ALL",
+    "PAT_ALLF",
+    "PAT_H",
+    "PAT_Q",
+    "PAT_M3",
+    "PAT_M4",
+    *(f"PAT_VL{count}" for count in range(1, 129)),
+}
+
+_CMP_MODE_TOKENS = {"eq", "ne", "lt", "le", "gt", "ge"}
+_PREDICATE_PART_TOKENS = {"LOWER", "HIGHER"}
+_PREDICATE_LOAD_DIST_TOKENS = {"NORM", "US", "DS"}
+_PREDICATE_STORE_DIST_TOKENS = {"NORM", "PK"}
+
+
+def _normalize_mask_pattern(pattern):
+    token = pattern
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    token = token.strip().upper()
+    normalized = token if token.startswith("PAT_") else f"PAT_{token}"
+    if normalized not in _MASK_PATTERN_TOKENS:
+        raise ValueError(
+            f"unsupported mask pattern {pattern!r}; expected one of PAT_ALL, PAT_ALLF, "
+            "PAT_H, PAT_Q, PAT_VL1..PAT_VL128, PAT_M3, PAT_M4"
+        )
+    return normalized
+
+
+def _normalize_cmp_mode(cmp_mode):
+    token = cmp_mode
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().lower()
+    if normalized not in _CMP_MODE_TOKENS:
+        raise ValueError(
+            f"unsupported cmp_mode {cmp_mode!r}; expected one of EQ, NE, LT, LE, GT, GE"
+        )
+    return normalized
+
+
+def _normalize_predicate_part(part):
+    token = part
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized not in _PREDICATE_PART_TOKENS:
+        raise ValueError(f"unsupported predicate part {part!r}; expected LOWER or HIGHER")
+    return normalized
+
+
+def _normalize_predicate_dist(dist, *, allowed: set[str], context: str):
+    token = dist
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support dist {dist!r}; expected one of {expected}")
+    return normalized
+
+
+def _mask_type_from_bits(mask_bits: int):
+    return _resolve(mask_type(f"b{mask_bits}"))
+
+
+def _infer_mask_metadata(mask_value, *, context: str):
+    raw_type = unwrap_surface_value(mask_value).type
+    try:
+        mask_ty = _pto.MaskType(raw_type)
+    except Exception as exc:
+        raise TypeError(f"{context} expects a PTO mask value, got {raw_type}") from exc
+    granularity = mask_ty.granularity
+    return int(granularity[1:]), raw_type
+
+
+def _require_same_mask_types(values, *, context: str):
+    raw_types = [unwrap_surface_value(value).type for value in values]
+    first = raw_types[0]
+    for other in raw_types[1:]:
+        if other != first:
+            raise TypeError(f"{context} expects masks of the same granularity, got {first} and {other}")
+    return first
+
+
+def _pointer_element_type(ptr_value, *, context: str):
+    raw_type = unwrap_surface_value(ptr_value).type
+    try:
+        return _pto.PtrType(raw_type).element_type
+    except Exception:
+        try:
+            return MemRefType(raw_type).element_type
+        except Exception as exc:
+            raise TypeError(f"{context} expects a PTO pointer or memref-backed address, got {raw_type}") from exc
+
+
+def _coerce_index(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    index_type = IndexType.get()
+    if isinstance(raw_value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(raw_value, int):
+        return arith.ConstantOp(index_type, raw_value).result
+    kind = classify_runtime_scalar_type(raw_value.type)
+    if kind == "float":
+        raise TypeError(f"{context} expects an index-like scalar, got {raw_value.type}")
+    if IndexType.isinstance(raw_value.type):
+        return raw_value
+    if IntegerType.isinstance(raw_value.type):
+        return arith.IndexCastOp(index_type, _strip_integer_signedness(raw_value)).result
+    raise TypeError(f"{context} expects an index-like scalar, got {raw_value.type}")
+
+
+def init_align():
+    """``pto.init_align`` – materialize the initial alignment state."""
+    return wrap_surface_value(_pto.InitAlignOp(_pto.AlignType.get()).result)
+
+
+def _plt_impl(mask_bits: int, scalar):
+    plt_op = _plt_op_for_mask_bits(mask_bits)(
+        _mask_type_from_bits(mask_bits),
+        IntegerType.get_signless(32),
+        _coerce_i32(scalar, context=f"plt_b{mask_bits}(scalar)"),
+    )
+    return wrap_surface_value(plt_op.mask), wrap_surface_value(plt_op.scalar_out)
+
+
+def plt_b8(scalar):
+    """``pto.plt_b8`` – predicate-load from a 32-bit scalar into a b8 mask."""
+    return _plt_impl(8, scalar)
+
+
+def plt_b16(scalar):
+    """``pto.plt_b16`` – predicate-load from a 32-bit scalar into a b16 mask."""
+    return _plt_impl(16, scalar)
+
+
 def plt_b32(scalar):
     """
     ``pto.plt_b32`` – predicate-load from a 32-bit scalar.
@@ -219,17 +375,346 @@ def plt_b32(scalar):
     Returns ``(mask_value, scalar_out)``.  ``scalar_out`` is often unused
     and can be discarded with ``_``.
     """
-    plt_op = _pto.PltB32Op(
-        _resolve(mask_type("b32")),
-        IntegerType.get_signless(32),
-        unwrap_surface_value(scalar),
+    return _plt_impl(32, scalar)
+
+
+def _pset_impl(mask_bits: int, pattern):
+    return wrap_surface_value(
+        _pset_op_for_mask_bits(mask_bits)(
+            _mask_type_from_bits(mask_bits),
+            _normalize_mask_pattern(pattern),
+        ).result
     )
-    return wrap_surface_value(plt_op.mask), wrap_surface_value(plt_op.scalar_out)
 
 
-def pset_b32(pattern: str):
-    """``pto.pset_b32 "PATTERN"`` → ``!pto.mask<b32>``."""
-    return wrap_surface_value(_pto.PsetB32Op(_resolve(mask_type("b32")), pattern).result)
+def pset_b8(pattern):
+    """``pto.pset_b8(pattern)`` → ``!pto.mask<b8>``."""
+    return _pset_impl(8, pattern)
+
+
+def pset_b16(pattern):
+    """``pto.pset_b16(pattern)`` → ``!pto.mask<b16>``."""
+    return _pset_impl(16, pattern)
+
+
+def pset_b32(pattern):
+    """``pto.pset_b32(pattern)`` → ``!pto.mask<b32>``."""
+    return _pset_impl(32, pattern)
+
+
+def _pge_op_for_mask_bits(mask_bits: int):
+    return {
+        8: _pto.PgeB8Op,
+        16: _pto.PgeB16Op,
+        32: _pto.PgeB32Op,
+    }[mask_bits]
+
+
+def _pge_impl(mask_bits: int, pattern):
+    return wrap_surface_value(
+        _pge_op_for_mask_bits(mask_bits)(
+            _mask_type_from_bits(mask_bits),
+            _normalize_mask_pattern(pattern),
+        ).result
+    )
+
+
+def pge_b8(pattern):
+    """``pto.pge_b8(pattern)`` → ``!pto.mask<b8>``."""
+    return _pge_impl(8, pattern)
+
+
+def pge_b16(pattern):
+    """``pto.pge_b16(pattern)`` → ``!pto.mask<b16>``."""
+    return _pge_impl(16, pattern)
+
+
+def pge_b32(pattern):
+    """``pto.pge_b32(pattern)`` → ``!pto.mask<b32>``."""
+    return _pge_impl(32, pattern)
+
+
+def pand(src0, src1, mask):
+    """``pto.pand`` – gated mask AND."""
+    result_type = _require_same_mask_types((src0, src1, mask), context="pand(src0, src1, mask)")
+    return wrap_surface_value(
+        _pto.PandOp(
+            result_type,
+            unwrap_surface_value(src0),
+            unwrap_surface_value(src1),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def por(src0, src1, mask):
+    """``pto.por`` – gated mask OR."""
+    result_type = _require_same_mask_types((src0, src1, mask), context="por(src0, src1, mask)")
+    return wrap_surface_value(
+        _pto.PorOp(
+            result_type,
+            unwrap_surface_value(src0),
+            unwrap_surface_value(src1),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def pxor(src0, src1, mask):
+    """``pto.pxor`` – gated mask XOR."""
+    result_type = _require_same_mask_types((src0, src1, mask), context="pxor(src0, src1, mask)")
+    return wrap_surface_value(
+        _pto.PxorOp(
+            result_type,
+            unwrap_surface_value(src0),
+            unwrap_surface_value(src1),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def pnot(src, mask):
+    """``pto.pnot`` – gated mask NOT."""
+    result_type = _require_same_mask_types((src, mask), context="pnot(src, mask)")
+    return wrap_surface_value(
+        _pto.PnotOp(
+            result_type,
+            unwrap_surface_value(src),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def psel(src0, src1, sel):
+    """``pto.psel`` – per-lane mask select."""
+    result_type = _require_same_mask_types((src0, src1, sel), context="psel(src0, src1, sel)")
+    return wrap_surface_value(
+        _pto.PselOp(
+            result_type,
+            unwrap_surface_value(src0),
+            unwrap_surface_value(src1),
+            unwrap_surface_value(sel),
+        ).result
+    )
+
+
+def ppack(mask_value, part):
+    """``pto.ppack`` – pack predicate bits into the selected half."""
+    _, result_type = _infer_mask_metadata(mask_value, context="ppack(mask, part)")
+    return wrap_surface_value(
+        _pto.PpackOp(
+            result_type,
+            unwrap_surface_value(mask_value),
+            _normalize_predicate_part(part),
+        ).result
+    )
+
+
+def punpack(mask_value, part):
+    """``pto.punpack`` – unpack predicate bits from the selected half."""
+    _, result_type = _infer_mask_metadata(mask_value, context="punpack(mask, part)")
+    return wrap_surface_value(
+        _pto.PunpackOp(
+            result_type,
+            unwrap_surface_value(mask_value),
+            _normalize_predicate_part(part),
+        ).result
+    )
+
+
+def _pintlv_op_for_mask_bits(mask_bits: int):
+    return {
+        8: _pto.PintlvB8Op,
+        16: _pto.PintlvB16Op,
+        32: _pto.PintlvB32Op,
+    }[mask_bits]
+
+
+def _pdintlv_op_for_mask_bits(mask_bits: int):
+    return {
+        8: _pto.PdintlvB8Op,
+        16: _pto.PdintlvB16Op,
+        32: _pto.PdintlvB32Op,
+    }[mask_bits]
+
+
+def _mask_pair_op(op_resolver, lhs, rhs, *, expected_mask_bits: int, context: str):
+    mask_bits, result_type = _infer_mask_metadata(lhs, context=context)
+    if mask_bits != expected_mask_bits:
+        raise TypeError(f"{context} expects mask_b{expected_mask_bits} operands, got mask_b{mask_bits}")
+    _require_same_mask_types((lhs, rhs), context=context)
+    op = op_resolver(mask_bits)(
+        result_type,
+        result_type,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+    )
+    return wrap_surface_value(op.low), wrap_surface_value(op.high)
+
+
+def pintlv_b8(lhs, rhs):
+    """``pto.pintlv_b8`` – interleave two b8 masks."""
+    return _mask_pair_op(
+        _pintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=8,
+        context="pintlv_b8(lhs, rhs)",
+    )
+
+
+def pintlv_b16(lhs, rhs):
+    """``pto.pintlv_b16`` – interleave two b16 masks."""
+    return _mask_pair_op(
+        _pintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=16,
+        context="pintlv_b16(lhs, rhs)",
+    )
+
+
+def pintlv_b32(lhs, rhs):
+    """``pto.pintlv_b32`` – interleave two b32 masks."""
+    return _mask_pair_op(
+        _pintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=32,
+        context="pintlv_b32(lhs, rhs)",
+    )
+
+
+def pdintlv_b8(lhs, rhs):
+    """``pto.pdintlv_b8`` – deinterleave two b8 masks."""
+    return _mask_pair_op(
+        _pdintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=8,
+        context="pdintlv_b8(lhs, rhs)",
+    )
+
+
+def pdintlv_b16(lhs, rhs):
+    """``pto.pdintlv_b16`` – deinterleave two b16 masks."""
+    return _mask_pair_op(
+        _pdintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=16,
+        context="pdintlv_b16(lhs, rhs)",
+    )
+
+
+def pdintlv_b32(lhs, rhs):
+    """``pto.pdintlv_b32`` – deinterleave two b32 masks."""
+    return _mask_pair_op(
+        _pdintlv_op_for_mask_bits,
+        lhs,
+        rhs,
+        expected_mask_bits=32,
+        context="pdintlv_b32(lhs, rhs)",
+    )
+
+
+def vcmp(src0, src1, seed_mask, cmp_mode):
+    """``pto.vcmp`` – vector/vector comparison producing a predicate mask."""
+    _, elem_type = _infer_vreg_metadata(src0)
+    result_type = _mask_type_from_bits(_mask_bits_for_dtype(elem_type))
+    seed_type = unwrap_surface_value(seed_mask).type
+    if seed_type != result_type:
+        raise TypeError(
+            f"vcmp(src0, src1, seed_mask, cmp_mode) expects seed_mask {result_type}, got {seed_type}"
+        )
+    return wrap_surface_value(
+        _pto.VcmpOp(
+            result_type,
+            unwrap_surface_value(src0),
+            unwrap_surface_value(src1),
+            unwrap_surface_value(seed_mask),
+            _normalize_cmp_mode(cmp_mode),
+        ).result
+    )
+
+
+def vcmps(src, scalar, seed_mask, cmp_mode):
+    """``pto.vcmps`` – vector/scalar comparison producing a predicate mask."""
+    _, elem_type = _infer_vreg_metadata(src)
+    result_type = _mask_type_from_bits(_mask_bits_for_dtype(elem_type))
+    seed_type = unwrap_surface_value(seed_mask).type
+    if seed_type != result_type:
+        raise TypeError(
+            f"vcmps(src, scalar, seed_mask, cmp_mode) expects seed_mask {result_type}, got {seed_type}"
+        )
+    scalar_value = _coerce_scalar_like_vector_element(src, scalar, context="vcmps")
+    return wrap_surface_value(
+        _pto.VcmpsOp(
+            result_type,
+            unwrap_surface_value(src),
+            unwrap_surface_value(scalar_value),
+            unwrap_surface_value(seed_mask),
+            _normalize_cmp_mode(cmp_mode),
+        ).result
+    )
+
+
+def plds(buf, offset, *, dist="NORM"):
+    """``pto.plds`` – load a predicate mask from UB memory."""
+    elem_type = _pointer_element_type(buf, context="plds(buf, offset)")
+    result_type = _mask_type_from_bits(_mask_bits_for_dtype(elem_type))
+    return wrap_surface_value(
+        _pto.PldsOp(
+            result_type,
+            unwrap_surface_value(buf),
+            _coerce_index(offset, context="plds(buf, offset)"),
+            _normalize_predicate_dist(
+                dist,
+                allowed=_PREDICATE_LOAD_DIST_TOKENS,
+                context="plds(..., dist)",
+            ),
+        ).result
+    )
+
+
+def psts(mask_value, buf, offset, *, dist="NORM"):
+    """``pto.psts`` – store a predicate mask to UB memory."""
+    _infer_mask_metadata(mask_value, context="psts(mask, buf, offset)")
+    _pto.PstsOp(
+        unwrap_surface_value(mask_value),
+        unwrap_surface_value(buf),
+        _coerce_index(offset, context="psts(mask, buf, offset)"),
+        _normalize_predicate_dist(
+            dist,
+            allowed=_PREDICATE_STORE_DIST_TOKENS,
+            context="psts(..., dist)",
+        ),
+    )
+
+
+def pstu(align_in, mask_value, buf):
+    """``pto.pstu`` – unaligned predicate store with threaded alignment state."""
+    mask_bits, _ = _infer_mask_metadata(mask_value, context="pstu(align_in, mask, buf)")
+    if mask_bits not in {16, 32}:
+        raise TypeError("pstu(align_in, mask, buf) currently supports only mask_b16 and mask_b32")
+    elem_type = _pointer_element_type(buf, context="pstu(align_in, mask, buf)")
+    expected_bytes = mask_bits // 8
+    actual_bytes = _element_bytewidth(elem_type)
+    if actual_bytes != expected_bytes:
+        raise TypeError(
+            f"pstu(align_in, mask, buf) expects a {expected_bytes}-byte pointer element for mask_b{mask_bits}, "
+            f"got {elem_type}"
+        )
+    align_type = _pto.AlignType.get()
+    base_type = unwrap_surface_value(buf).type
+    op = _pto.PstuOp(
+        align_type,
+        base_type,
+        unwrap_surface_value(align_in),
+        unwrap_surface_value(mask_value),
+        unwrap_surface_value(buf),
+    )
+    return wrap_surface_value(op.align_out), wrap_surface_value(op.base_out)
 
 
 # ── Vector math (result type inferred from first operand) ─────────────────────
@@ -918,10 +1403,12 @@ def fill_tile(tile, value):
 def make_mask(dtype, value):
     """Create a predicate mask matching *dtype* granularity."""
     mask_bits = _mask_bits_for_dtype(dtype)
-    result_type = _resolve(mask_type(f"b{mask_bits}"))
+    result_type = _mask_type_from_bits(mask_bits)
 
     if isinstance(value, str):
-        return wrap_surface_value(_pset_op_for_mask_bits(mask_bits)(result_type, value).result)
+        return wrap_surface_value(
+            _pset_op_for_mask_bits(mask_bits)(result_type, _normalize_mask_pattern(value)).result
+        )
 
     raw_value = unwrap_surface_value(value)
     raw_value = _coerce_i32(raw_value, context="make_mask(..., value)")
@@ -1137,7 +1624,18 @@ __all__ = [
     "const",
     "castptr", "addptr",
     "vlds", "vbrc_load", "vsts", "vsts_1pt",
-    "plt_b32", "pset_b32", "make_mask",
+    "init_align",
+    "plt_b8", "plt_b16", "plt_b32",
+    "pset_b8", "pset_b16", "pset_b32",
+    "pge_b8", "pge_b16", "pge_b32",
+    "make_mask",
+    "pand", "por", "pxor", "pnot", "psel",
+    "pbitcast", "ppack", "punpack",
+    "pintlv_b8", "pintlv_b16", "pintlv_b32",
+    "pdintlv_b8", "pdintlv_b16", "pdintlv_b32",
+    "vcmp", "vcmps",
+    "plds", "psts", "pstu",
+    "vbitcast",
     "vadd", "vmul", "vmax", "vdiv",
     "vcmax", "vcadd", "vdup", "vexpdif",
     "vexp", "vcgmax", "vcgadd", "vsubs",

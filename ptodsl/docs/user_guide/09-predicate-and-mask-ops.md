@@ -62,7 +62,7 @@ with col_loop:
 
 When the mask pattern is known at compile time, pass a `MaskPattern` instead:
 
-<!-- ptodsl-doc-pending: documented MaskPattern enum form is not exposed on the current public pto surface; today the stable public entry point is pset_b32(\"PAT_ALL\") -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.creation","symbol":"mask_ops_creation_probe","compile":{}} -->
 ```python
 full_mask = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
 ```
@@ -81,10 +81,10 @@ When you need explicit control over the mask granularity, use these ops directly
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.creation","symbol":"mask_ops_creation_probe","compile":{}} -->
 ```python
-full_mask = pto.pset_b32("PAT_ALL")
+full_mask = pto.pset_b32(pto.MaskPattern.ALL)
 ```
 
-<!-- ptodsl-doc-pending: documented b8/b16 pattern constructors are not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.creation","symbol":"mask_ops_creation_probe","compile":{}} -->
 ```python
 mask8 = pto.pset_b8(pto.MaskPattern.ALL)
 mask16 = pto.pset_b16(pto.MaskPattern.ALL)
@@ -152,7 +152,7 @@ mask, remained = pto.plt_b32(remained)
 
 ## 9.4 Mask logical operations
 
-<!-- ptodsl-doc-pending: documented mask logical ops (pand/por/pxor/pnot/psel) are not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.logical","symbol":"mask_ops_logical_probe","compile":{}} -->
 ```python
 merged = pto.pand(src0, src1, gate)
 ```
@@ -203,7 +203,7 @@ These ops reshape masks between granularities and layouts without changing the u
 
 **Example**:
 
-<!-- ptodsl-doc-pending: documented pbitcast mask reorganization surface is not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.mask_bitcast","symbol":"type_system_mask_bitcast_probe","compile":{}} -->
 ```python
 # Reinterpret a b16 mask as b32
 mask32 = pto.pbitcast(mask16, pto.mask_b32)
@@ -266,7 +266,7 @@ Vector comparisons produce predicate masks from vector data. The result can feed
 
 **Example** — threshold a vector:
 
-<!-- ptodsl-doc-pending: documented vcmps/vcmp compare-to-mask surfaces are not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.compare","symbol":"mask_ops_compare_probe","compile":{}} -->
 ```python
 big = pto.vcmps(scores, threshold, seed, pto.CmpMode.GT)
 # big[i] = 1 where scores[i] > threshold

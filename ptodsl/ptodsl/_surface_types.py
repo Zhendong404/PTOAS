@@ -74,6 +74,51 @@ class Pipe:
     ALL = _pto.PIPE.PIPE_ALL
 
 
+class MaskPattern:
+    """Public PTODSL mask-pattern tokens."""
+
+    ALL = "PAT_ALL"
+    ALLF = "PAT_ALLF"
+    H = "PAT_H"
+    Q = "PAT_Q"
+    M3 = "PAT_M3"
+    M4 = "PAT_M4"
+
+
+for _vl in range(1, 129):
+    setattr(MaskPattern, f"VL{_vl}", f"PAT_VL{_vl}")
+
+
+class CmpMode:
+    """Public PTODSL compare-mode tokens."""
+
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LE = "le"
+    GT = "gt"
+    GE = "ge"
+
+
+class PredicatePart:
+    """Public PTODSL predicate pack/unpack part tokens."""
+
+    LOWER = "LOWER"
+    HIGHER = "HIGHER"
+
+
+class PredicateDist:
+    """Public PTODSL predicate load/store distribution tokens."""
+
+    NORM = "NORM"
+    US = "US"
+    DS = "DS"
+    PK = "PK"
+
+
+AlignType = _pto.AlignType
+
+
 class TensorView:
     """Authoring-time marker for a tensor-view descriptor value."""
 
@@ -92,6 +137,11 @@ __all__ = [
     "MemorySpace",
     "BarrierType",
     "Pipe",
+    "MaskPattern",
+    "CmpMode",
+    "PredicatePart",
+    "PredicateDist",
+    "AlignType",
     "TensorView",
     "PartitionTensorView",
     "Tile",

@@ -161,7 +161,8 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def type_system_mask_bitcast_probe():
-            mask_b8 = pto.pset_b8(pto.MaskPattern.ALL)
+            mask_b8, _ = pto.make_mask(pto.i8, pto.const(256, dtype=pto.i32))
+            mask16, _ = pto.make_mask(pto.f16, pto.const(128, dtype=pto.i32))
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -391,6 +392,27 @@ FRAGMENT_FIXTURES = {
         def mask_ops_creation_probe():
             remained = pto.const(16, dtype=pto.i32)
             seed = pto.pset_b32("PAT_ALL")
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "mask_ops.logical": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def mask_ops_logical_probe():
+            src0 = pto.pset_b32(pto.MaskPattern.ALL)
+            src1 = pto.pge_b32(pto.MaskPattern.VL16)
+            gate = pto.pset_b32(pto.MaskPattern.ALL)
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
+    "mask_ops.compare": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def mask_ops_compare_probe():
+            seed = pto.pset_b32(pto.MaskPattern.ALL)
+            vec_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32, valid_shape=[1, 64])
+            scores = pto.vlds(vec_tile.as_ptr(), pto.const(0))
+            threshold = pto.f32(0.0)
             {SNIPPET_PLACEHOLDER}
         """
     ),

@@ -478,6 +478,92 @@ def pointer_vlds_inference_probe(*, BLOCK: pto.constexpr = 128):
     _ = f16_vec
 
 
+@pto.jit(target="a5")
+def public_mask_bitcast_probe():
+    mask_b8, _ = pto.make_mask(pto.i8, pto.const(256, dtype=pto.i32))
+    mask_b16 = pto.pbitcast(mask_b8, pto.mask_b16)
+    mask_b32 = pto.pbitcast(mask_b16, pto.mask_b32)
+    _ = mask_b8
+    _ = mask_b16
+    _ = mask_b32
+
+
+@pto.jit(target="a5")
+def public_mask_surface_probe():
+    remained = pto.const(16, dtype=pto.i32)
+
+    mask8_full = pto.pset_b8(pto.MaskPattern.ALL)
+    mask16_full = pto.pset_b16(pto.MaskPattern.ALL)
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    mask8_prefix = pto.pge_b8(pto.MaskPattern.VL32)
+    mask16_prefix = pto.pge_b16(pto.MaskPattern.VL16)
+    mask32_prefix = pto.pge_b32(pto.MaskPattern.VL8)
+
+    mask8_tail, remained8 = pto.plt_b8(remained)
+    mask16_tail, remained16 = pto.plt_b16(remained)
+    mask32_tail, remained32 = pto.plt_b32(remained)
+
+    merged = pto.pand(mask32_full, mask32_prefix, mask32_full)
+    union = pto.por(mask32_full, mask32_prefix, mask32_full)
+    flipped = pto.pxor(mask32_full, mask32_prefix, mask32_full)
+    inverted = pto.pnot(mask32_prefix, mask32_full)
+    selected = pto.psel(mask32_full, mask32_prefix, mask32_tail)
+
+    packed = pto.ppack(mask32_full, pto.PredicatePart.LOWER)
+    unpacked = pto.punpack(packed, pto.PredicatePart.LOWER)
+    lo8, hi8 = pto.pintlv_b8(mask8_full, mask8_prefix)
+    dlo8, dhi8 = pto.pdintlv_b8(lo8, hi8)
+    lo16, hi16 = pto.pintlv_b16(mask16_full, mask16_prefix)
+    dlo16, dhi16 = pto.pdintlv_b16(lo16, hi16)
+    lo32, hi32 = pto.pintlv_b32(mask32_full, mask32_prefix)
+    dlo32, dhi32 = pto.pdintlv_b32(lo32, hi32)
+
+    vec_tile = pto.alloc_tile(shape=[1, 64], dtype=pto.f32, valid_shape=[1, 64])
+    scores = pto.vlds(vec_tile.as_ptr(), pto.const(0))
+    cmp_eq = pto.vcmp(scores, scores, mask32_full, pto.CmpMode.EQ)
+    cmp_gt = pto.vcmps(scores, pto.f32(0.0), mask32_full, pto.CmpMode.GT)
+
+    mask8_buf = pto.alloc_tile(shape=[1, 64], dtype=pto.ui8, valid_shape=[1, 64])
+    mask16_buf = pto.alloc_tile(shape=[1, 64], dtype=pto.ui16, valid_shape=[1, 64])
+    mask32_buf = pto.alloc_tile(shape=[1, 64], dtype=pto.ui32, valid_shape=[1, 64])
+    pto.psts(mask8_full, mask8_buf.as_ptr(), pto.const(0), dist=pto.PredicateDist.NORM)
+    pto.psts(mask16_full, mask16_buf.as_ptr(), pto.const(0), dist=pto.PredicateDist.PK)
+    loaded8 = pto.plds(mask8_buf.as_ptr(), pto.const(0), dist=pto.PredicateDist.NORM)
+    loaded16 = pto.plds(mask16_buf.as_ptr(), pto.const(0), dist=pto.PredicateDist.US)
+    loaded32 = pto.plds(mask32_buf.as_ptr(), pto.const(0), dist=pto.PredicateDist.DS)
+
+    align0 = pto.init_align()
+    align1, base1 = pto.pstu(align0, mask16_full, mask16_buf.as_ptr())
+    align2, base2 = pto.pstu(align1, mask32_full, mask32_buf.as_ptr())
+
+    _ = mask8_tail
+    _ = mask16_tail
+    _ = mask32_tail
+    _ = remained8
+    _ = remained16
+    _ = remained32
+    _ = merged
+    _ = union
+    _ = flipped
+    _ = inverted
+    _ = selected
+    _ = unpacked
+    _ = dlo8
+    _ = dhi8
+    _ = dlo16
+    _ = dhi16
+    _ = dlo32
+    _ = dhi32
+    _ = cmp_eq
+    _ = cmp_gt
+    _ = loaded8
+    _ = loaded16
+    _ = loaded32
+    _ = align2
+    _ = base1
+    _ = base2
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -507,6 +593,41 @@ def main() -> None:
         "bytewidth",
         "elements_per_vreg",
         "make_mask",
+        "mask_b8",
+        "mask_b16",
+        "mask_b32",
+        "MaskPattern",
+        "CmpMode",
+        "PredicatePart",
+        "PredicateDist",
+        "AlignType",
+        "init_align",
+        "plt_b8",
+        "plt_b16",
+        "pset_b8",
+        "pset_b16",
+        "pge_b8",
+        "pge_b16",
+        "pge_b32",
+        "pand",
+        "por",
+        "pxor",
+        "pnot",
+        "psel",
+        "pbitcast",
+        "ppack",
+        "punpack",
+        "pintlv_b8",
+        "pintlv_b16",
+        "pintlv_b32",
+        "pdintlv_b8",
+        "pdintlv_b16",
+        "pdintlv_b32",
+        "vcmp",
+        "vcmps",
+        "plds",
+        "psts",
+        "pstu",
         "vbitcast",
         "vexp",
         "vcgmax",
@@ -569,8 +690,30 @@ def main() -> None:
     signed_integer_scalar_probe.verify()
     low_precision_storage_probe.verify()
     pointer_vlds_inference_probe.verify()
+    public_mask_bitcast_probe.verify()
+    public_mask_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
+        expect(
+            pto.MaskPattern.ALL == "PAT_ALL",
+            "pto.MaskPattern.ALL should expose the documented PAT_ALL token",
+        )
+        expect(
+            pto.MaskPattern.VL16 == "PAT_VL16",
+            "pto.MaskPattern.VL16 should expose the documented PAT_VL16 token",
+        )
+        expect(
+            pto.CmpMode.GT == "gt",
+            "pto.CmpMode.GT should lower through the documented compare-mode surface",
+        )
+        expect(
+            pto.PredicatePart.LOWER == "LOWER",
+            "pto.PredicatePart.LOWER should expose the documented pack/unpack token",
+        )
+        expect(
+            pto.PredicateDist.PK == "PK",
+            "pto.PredicateDist.PK should expose the documented predicate-store distribution token",
+        )
         expect(
             str(pto.si8.resolve()) == "si8",
             "pto.si8 should resolve to a signed 8-bit integer type",
@@ -608,6 +751,18 @@ def main() -> None:
         expect(
             "f4E1M2x2" in str(pto.f4e1m2x2.resolve()),
             "pto.f4e1m2x2 should resolve to the packed 4-bit float type",
+        )
+        expect(
+            str(pto.mask_b8.resolve()) == "!pto.mask<b8>",
+            "pto.mask_b8 should resolve to the public 8-bit mask type",
+        )
+        expect(
+            str(pto.mask_b16.resolve()) == "!pto.mask<b16>",
+            "pto.mask_b16 should resolve to the public 16-bit mask type",
+        )
+        expect(
+            str(pto.mask_b32.resolve()) == "!pto.mask<b32>",
+            "pto.mask_b32 should resolve to the public 32-bit mask type",
         )
 
         lp_tile_ty = pto.tile_buf_type([16, 16], pto.hif8, [16, 16])
@@ -871,6 +1026,10 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(low_precision_storage_text, "low-precision storage specialization")
     pointer_vlds_text = pointer_vlds_inference_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(pointer_vlds_text, "pointer vlds inference specialization")
+    mask_bitcast_text = public_mask_bitcast_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(mask_bitcast_text, "public mask bitcast specialization")
+    mask_surface_text = public_mask_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -889,6 +1048,42 @@ def main() -> None:
     expect("!pto.vreg<64xf32>" in pointer_vlds_text, "vlds(ptr, offset) should infer the result vreg type from the pointer element type")
     expect("pto.vbitcast" in pointer_vlds_text, "vbitcast(...) should lower to pto.vbitcast")
     expect("!pto.vreg<128xf16>" in pointer_vlds_text, "vbitcast(vec, pto.f16) should preserve the 256-byte payload while adjusting the lane count")
+    expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")
+    expect("!pto.mask<b16>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b16) should materialize the requested result mask type")
+    expect("!pto.mask<b32>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b32) should materialize the requested result mask type")
+    expect("pto.pset_b8" in mask_surface_text, "pset_b8(...) should lower to pto.pset_b8")
+    expect("pto.pset_b16" in mask_surface_text, "pset_b16(...) should lower to pto.pset_b16")
+    expect("pto.pset_b32" in mask_surface_text, "pset_b32(...) should lower to pto.pset_b32")
+    expect("pto.pge_b8" in mask_surface_text, "pge_b8(...) should lower to pto.pge_b8")
+    expect("pto.pge_b16" in mask_surface_text, "pge_b16(...) should lower to pto.pge_b16")
+    expect("pto.pge_b32" in mask_surface_text, "pge_b32(...) should lower to pto.pge_b32")
+    expect("pto.plt_b8" in mask_surface_text, "plt_b8(...) should lower to pto.plt_b8")
+    expect("pto.plt_b16" in mask_surface_text, "plt_b16(...) should lower to pto.plt_b16")
+    expect(mask_surface_text.count("pto.plt_b32") >= 1, "plt_b32(...) should still lower to pto.plt_b32")
+    expect("pto.pand" in mask_surface_text, "pand(...) should lower to pto.pand")
+    expect("pto.por" in mask_surface_text, "por(...) should lower to pto.por")
+    expect("pto.pxor" in mask_surface_text, "pxor(...) should lower to pto.pxor")
+    expect("pto.pnot" in mask_surface_text, "pnot(...) should lower to pto.pnot")
+    expect("pto.psel" in mask_surface_text, "psel(...) should lower to pto.psel")
+    expect("pto.ppack" in mask_surface_text, "ppack(...) should lower to pto.ppack")
+    expect("pto.punpack" in mask_surface_text, "punpack(...) should lower to pto.punpack")
+    expect("pto.pintlv_b8" in mask_surface_text, "pintlv_b8(...) should lower to pto.pintlv_b8")
+    expect("pto.pintlv_b16" in mask_surface_text, "pintlv_b16(...) should lower to pto.pintlv_b16")
+    expect("pto.pintlv_b32" in mask_surface_text, "pintlv_b32(...) should lower to pto.pintlv_b32")
+    expect("pto.pdintlv_b8" in mask_surface_text, "pdintlv_b8(...) should lower to pto.pdintlv_b8")
+    expect("pto.pdintlv_b16" in mask_surface_text, "pdintlv_b16(...) should lower to pto.pdintlv_b16")
+    expect("pto.pdintlv_b32" in mask_surface_text, "pdintlv_b32(...) should lower to pto.pdintlv_b32")
+    expect("pto.vcmp" in mask_surface_text, "vcmp(...) should lower to pto.vcmp")
+    expect("pto.vcmps" in mask_surface_text, "vcmps(...) should lower to pto.vcmps")
+    expect('pto.vcmp %' in mask_surface_text and ', "eq"' in mask_surface_text, "vcmp(..., pto.CmpMode.EQ) should normalize to the compare attribute spelling")
+    expect('pto.vcmps %' in mask_surface_text and ', "gt"' in mask_surface_text, "vcmps(..., pto.CmpMode.GT) should normalize to the compare attribute spelling")
+    expect(mask_surface_text.count("pto.plds") == 3, "plds(...) should lower once per authored predicate load")
+    expect(mask_surface_text.count("pto.psts") == 2, "psts(...) should lower once per authored predicate store")
+    expect(mask_surface_text.count("pto.pstu") == 2, "pstu(...) should lower once per authored predicate unaligned store")
+    expect(', "US"' in mask_surface_text, "plds(..., dist=pto.PredicateDist.US) should preserve the documented DIST token")
+    expect(', "DS"' in mask_surface_text, "plds(..., dist=pto.PredicateDist.DS) should preserve the documented DIST token")
+    expect(', "PK"' in mask_surface_text, "psts(..., dist=pto.PredicateDist.PK) should preserve the documented DIST token")
+    expect("pto.init_align" in mask_surface_text, "init_align() should lower to pto.init_align")
 
     try:
         block64[1, None]

@@ -123,9 +123,28 @@ Masks are typed by bit granularity and must match the vector element width:
 | `pto.mask_b16` | 16-bit | `f16`, `bf16`, `i16`, `si16`, `ui16` |
 | `pto.mask_b32` | 32-bit | `f32`, `i32`, `si32`, `ui32` |
 
-Bitcast between mask types with `pto.pbitcast`:
+### Constructing masks
 
-<!-- ptodsl-doc-pending: documented mask_b8 -> mask_b16 pbitcast example depends on pset_b8/mask_b8 surface that is not fully exposed by the current implementation -->
+Use `make_mask` to generate a mask from a pattern or scalar — it automatically selects the correct bit width from the element dtype:
+
+<!-- ptodsl-doc-pending: documented make_mask API is not yet exposed -->
+```python
+active     = pto.make_mask(pto.f16, "PAT_ALL")   # pattern-based full mask
+tail_mask, _ = pto.make_mask(pto.f32, tail_count) # load mask from tail count scalar
+```
+
+The bit-width-specific `pset_b32` and `plt_b32` forms are also available:
+
+```python
+active      = pto.pset_b32("PAT_ALL")
+one_mask, _ = pto.plt_b32(c1_i32)
+```
+
+### Reinterpreting masks
+
+`pbitcast` reinterprets a mask register at a different granularity:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.mask_bitcast","symbol":"type_system_mask_bitcast_probe","compile":{}} -->
 ```python
 mask_b16 = pto.pbitcast(mask_b8, pto.mask_b16)
 ```

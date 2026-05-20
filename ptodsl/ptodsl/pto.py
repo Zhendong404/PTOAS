@@ -39,6 +39,11 @@ from ._surface_types import (   # noqa: F401
     BarrierType,
     Pipe,
     MemorySpace,
+    MaskPattern,
+    CmpMode,
+    PredicatePart,
+    PredicateDist,
+    AlignType,
     TensorView,
     PartitionTensorView,
     Tile,
@@ -50,8 +55,18 @@ from ._ops import (             # noqa: F401
     const,
     castptr, addptr,
     vlds, vbrc_load, vsts, vsts_1pt,
-    plt_b32, pset_b32,
+    init_align,
+    plt_b8, plt_b16, plt_b32,
+    pset_b8, pset_b16, pset_b32,
+    pge_b8, pge_b16, pge_b32,
     make_mask, bytewidth, elements_per_vreg,
+    pand, por, pxor, pnot, psel,
+    pbitcast,
+    ppack, punpack,
+    pintlv_b8, pintlv_b16, pintlv_b32,
+    pdintlv_b8, pdintlv_b16, pdintlv_b32,
+    vcmp, vcmps,
+    plds, psts, pstu,
     vbitcast,
     vadd, vmul, vmax, vdiv,
     vcmax, vcadd, vdup, vexpdif,
@@ -88,3 +103,6 @@ i8 = int8
 i16 = int16
 i32 = int32
 i64 = int64
+mask_b8 = mask_type("b8")
+mask_b16 = mask_type("b16")
+mask_b32 = mask_type("b32")
