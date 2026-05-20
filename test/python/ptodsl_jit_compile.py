@@ -362,6 +362,23 @@ def public_surface_exports_probe(
     public_cube_surface_probe(lhs_tile, rhs_tile, lhs_l0a, rhs_l0b, acc_tile, cube_out)
 
 
+@pto.jit(target="a5")
+def compile_time_query_probe():
+    f32_bw = pto.bytewidth(pto.f32)
+    f16_bw = pto.bytewidth(pto.f16)
+    i8_bw = pto.bytewidth(pto.i8)
+    f32_vec = pto.elements_per_vreg(pto.f32)
+    f16_vec = pto.elements_per_vreg(pto.f16)
+    i8_vec = pto.elements_per_vreg(pto.i8)
+
+    expect(f32_bw == 4, "pto.bytewidth(pto.f32) should evaluate to 4")
+    expect(f16_bw == 2, "pto.bytewidth(pto.f16) should evaluate to 2")
+    expect(i8_bw == 1, "pto.bytewidth(pto.i8) should evaluate to 1")
+    expect(f32_vec == 64, "pto.elements_per_vreg(pto.f32) should evaluate to 64")
+    expect(f16_vec == 128, "pto.elements_per_vreg(pto.f16) should evaluate to 128")
+    expect(i8_vec == 256, "pto.elements_per_vreg(pto.i8) should evaluate to 256")
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -372,6 +389,8 @@ class _FakeTensor:
 
 def main() -> None:
     expected_public_exports = [
+        "bytewidth",
+        "elements_per_vreg",
         "make_mask",
         "vexp",
         "vcgmax",
@@ -429,6 +448,7 @@ def main() -> None:
     simt_pointer_offset_probe.verify()
     scalar_store_element_coercion_probe.verify()
     public_surface_exports_probe.verify()
+    compile_time_query_probe.verify()
 
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
@@ -615,6 +635,8 @@ def main() -> None:
 
     public_surface_text = public_surface_exports_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
+    compile_time_query_text = compile_time_query_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")

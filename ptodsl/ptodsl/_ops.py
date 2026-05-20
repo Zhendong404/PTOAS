@@ -674,6 +674,16 @@ def _element_bytewidth(elem_type):
     raise TypeError(f"unsupported element type {elem_type}")
 
 
+def bytewidth(dtype):
+    """Return the size in bytes of one element of *dtype*."""
+    return _element_bytewidth(_resolve(dtype))
+
+
+def elements_per_vreg(dtype):
+    """Return how many elements of *dtype* fit in one 256-byte vector register."""
+    return _elements_per_vreg(_resolve(dtype))
+
+
 def _mask_bits_for_dtype(dtype):
     elem_type = _resolve(dtype)
     bytewidth = _element_bytewidth(elem_type)
