@@ -586,6 +586,17 @@ def public_mask_surface_probe():
     _ = base2
 
 
+@pto.jit(target="a5")
+def public_sync_surface_probe():
+    dynamic_event = pto.const(3)
+    pto.get_buf(pto.Pipe.V, 0)
+    pto.rls_buf(pto.Pipe.MTE2, 1, 2)
+    pto.set_cross_core(pto.Pipe.FIX, 0)
+    pto.set_intra_block(pto.Pipe.MTE3, dynamic_event)
+    pto.wait_flag_dev(pto.Pipe.FIX, 0)
+    pto.wait_intra_core(pto.Pipe.V, dynamic_event)
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -661,6 +672,12 @@ def main() -> None:
         "BarrierType",
         "Pipe",
         "pipe_barrier",
+        "get_buf",
+        "rls_buf",
+        "set_cross_core",
+        "wait_flag_dev",
+        "set_intra_block",
+        "wait_intra_core",
         "mte_l1_l0a",
         "mte_l1_l0b",
         "mte_l0c_ub",
@@ -719,6 +736,7 @@ def main() -> None:
     pointer_vlds_inference_probe.verify()
     public_mask_bitcast_probe.verify()
     public_mask_surface_probe.verify()
+    public_sync_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -1069,6 +1087,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_bitcast_text, "public mask bitcast specialization")
     mask_surface_text = public_mask_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
+    sync_surface_text = public_sync_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -1078,6 +1098,12 @@ def main() -> None:
     expect("pto.vcgadd" in public_surface_text, "vcgadd(...) should lower to pto.vcgadd")
     expect("pto.vadds" in public_surface_text, "vsubs(...) should lower via scalar negation plus pto.vadds")
     expect("pto.mte_l1_l0a" in public_surface_text, "mte_l1_l0a(...) should lower to pto.mte_l1_l0a")
+    expect('pto.get_buf "PIPE_V", 0, 0' in sync_surface_text, 'get_buf(Pipe.V, 0) should lower to pto.get_buf with PIPE_V')
+    expect('pto.rls_buf "PIPE_MTE2", 1, 2' in sync_surface_text, 'rls_buf(Pipe.MTE2, 1, 2) should lower to pto.rls_buf with PIPE_MTE2')
+    expect("pto.sync.set <PIPE_FIX>, 0" in sync_surface_text, "set_cross_core(Pipe.FIX, 0) should lower to pto.sync.set")
+    expect("pto.sync.wait <PIPE_FIX>, 0" in sync_surface_text, "wait_flag_dev(Pipe.FIX, 0) should lower to pto.sync.wait")
+    expect("pto.sync.set <PIPE_MTE3>, %c3" in sync_surface_text, "set_intra_block(Pipe.MTE3, dynamic_event) should lower dynamic event ids through pto.sync.set")
+    expect("pto.sync.wait <PIPE_V>, %c3" in sync_surface_text, "wait_intra_core(Pipe.V, dynamic_event) should lower dynamic event ids through pto.sync.wait")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l0c_ub" in public_surface_text, "mte_l0c_ub(...) should lower to pto.mte_l0c_ub")
     expect("pto.mad" in public_surface_text, "mad(...) should lower to pto.mad")

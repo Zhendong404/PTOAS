@@ -1606,6 +1606,48 @@ def pipe_barrier(pipe):
     _pto.BarrierOp(_pipe_attr(pipe))
 
 
+def get_buf(pipe, buf_id, mode=0):
+    """``pto.get_buf(pipe, buf_id, mode=0)`` – acquire a buffer token."""
+    _pto.GetBufOp(
+        _pipe_attr(pipe),
+        buf_id,
+        mode=mode,
+    )
+
+
+def rls_buf(pipe, buf_id, mode=0):
+    """``pto.rls_buf(pipe, buf_id, mode=0)`` – release a buffer token."""
+    _pto.RlsBufOp(
+        _pipe_attr(pipe),
+        buf_id,
+        mode=mode,
+    )
+
+
+def _sync_event_id_operand(event_id):
+    return event_id if isinstance(event_id, int) else unwrap_surface_value(event_id)
+
+
+def set_cross_core(pipe, event_id):
+    """``pto.set_cross_core(pipe, event_id)`` – public facade for ``pto.sync.set``."""
+    _pto.sync_set(_pipe_attr(pipe), _sync_event_id_operand(event_id))
+
+
+def wait_flag_dev(pipe, event_id):
+    """``pto.wait_flag_dev(pipe, event_id)`` – public facade for ``pto.sync.wait``."""
+    _pto.sync_wait(_pipe_attr(pipe), _sync_event_id_operand(event_id))
+
+
+def set_intra_block(pipe, event_id):
+    """``pto.set_intra_block(pipe, event_id)`` – public facade for ``pto.sync.set``."""
+    _pto.sync_set(_pipe_attr(pipe), _sync_event_id_operand(event_id))
+
+
+def wait_intra_core(pipe, event_id):
+    """``pto.wait_intra_core(pipe, event_id)`` – public facade for ``pto.sync.wait``."""
+    _pto.sync_wait(_pipe_attr(pipe), _sync_event_id_operand(event_id))
+
+
 def set_flag(src: str, dst: str, *, event_id: int = 0):
     """``pto.set_flag[src, dst, event_id]``.
 
@@ -1645,5 +1687,7 @@ __all__ = [
     "mte_l1_l0a", "mte_l1_l0b", "mte_l0c_ub", "mad",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",
     "store_vfsimt_info", "get_tid_x", "get_tid_y", "get_tid_z",
-    "pipe_barrier", "set_flag", "wait_flag",
+    "pipe_barrier", "get_buf", "rls_buf",
+    "set_cross_core", "wait_flag_dev", "set_intra_block", "wait_intra_core",
+    "set_flag", "wait_flag",
 ]

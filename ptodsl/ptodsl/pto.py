@@ -78,6 +78,8 @@ from ._ops import (             # noqa: F401
     get_block_idx, get_block_num, get_subblock_idx, get_subblock_num,
     store_vfsimt_info, get_tid_x, get_tid_y, get_tid_z,
     pipe_barrier,
+    get_buf, rls_buf,
+    set_cross_core, wait_flag_dev, set_intra_block, wait_intra_core,
     set_flag, wait_flag,
 )
 

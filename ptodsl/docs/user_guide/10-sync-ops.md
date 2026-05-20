@@ -194,7 +194,7 @@ Double-buffering is a common optimization in NPU kernels: while one buffer is be
 
 ### Double-buffering example
 
-<!-- ptodsl-doc-pending: get_buf/rls_buf are not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.basic","symbol":"sync_ops_basic_probe","compile":{}} -->
 ```python
 # Pipeline V acquires buffer 0 for compute
 pto.get_buf(pto.Pipe.V, 0, 0)
@@ -290,46 +290,46 @@ When a kernel spans multiple cores, cores need to coordinate through shared reso
 
 These are core-level (SU) operations — `wait_flag_dev` stalls the entire core, not just a single pipeline. Use them sparingly: splitting work so that each core operates independently for as long as possible minimises cross-core sync overhead.
 
-#### `pto.set_cross_core(core_id, event_id)`
+#### `pto.set_cross_core(pipe, event_id)`
 
-**Description**: Signal an event to another core, indicating that shared data or a pipeline stage is ready.
+**Description**: Signal an event on a synchronization endpoint. In the current PTODSL surface this is authored with a `Pipe`; the backend maps it to the architecture-specific cross-core / intra-block builtin during lowering.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `core_id` | `pto.i64` | Target core identifier (platform-specific mapping) |
+| `pipe` | `Pipe` | Producing endpoint for the synchronization event |
 | `event_id` | `int` | Cross-core event identifier (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 
 **Example**:
 
-<!-- ptodsl-doc-pending: set_cross_core is not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.basic","symbol":"sync_ops_basic_probe","compile":{}} -->
 ```python
-# Signal core 0 that our computation is complete
-pto.set_cross_core(0, 0)
+# Signal from the FIX/Cube-side endpoint
+pto.set_cross_core(pto.Pipe.FIX, 0)
 ```
 
-#### `pto.wait_flag_dev(core_id, event_id)`
+#### `pto.wait_flag_dev(pipe, event_id)`
 
-**Description**: Wait for an event from another core. Core-level (SU) blocking — the entire core stalls until the event is received.
+**Description**: Wait for an event on a synchronization endpoint. On architectures that lower this surface to `wait_flag_dev`, the wait is core-level (SU) blocking.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `core_id` | `pto.i64` | Source core identifier |
+| `pipe` | `Pipe` | Waiting endpoint for the synchronization event |
 | `event_id` | `int` | Event identifier to wait on (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 
 **Example**:
 
-<!-- ptodsl-doc-pending: wait_flag_dev is not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.basic","symbol":"sync_ops_basic_probe","compile":{}} -->
 ```python
-# Core 1 waits for core 0 to signal event ID0
-pto.wait_flag_dev(0, 0)
+# Wait on the FIX/Cube-side endpoint
+pto.wait_flag_dev(pto.Pipe.FIX, 0)
 ```
 
 ### 10.5.2 Intra-block sync: `set_intra_block`, `wait_intra_core`
@@ -338,28 +338,28 @@ The Cube unit (matrix pipeline) has a dedicated synchronization channel separate
 
 Unlike `wait_flag_dev`, `wait_intra_core` only stalls the specified pipeline — the SU and other pipelines continue executing.
 
-#### `pto.set_intra_block(block_id, event_id)`
+#### `pto.set_intra_block(pipe, event_id)`
 
-**Description**: Signal a synchronization event within a block. Specifies which trigger pipe fires the event.
+**Description**: Signal a synchronization event within a block. The current PTODSL surface authors the trigger endpoint explicitly as a `Pipe`.
 
 **Parameters**:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `block_id` | `pto.i64` | Block or pipeline identifier for the trigger source |
+| `pipe` | `Pipe` | Trigger endpoint for the synchronization event |
 | `event_id` | `int` | Event identifier (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 
 **Example**:
 
-<!-- ptodsl-doc-pending: set_intra_block is not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.basic","symbol":"sync_ops_basic_probe","compile":{}} -->
 ```python
-# Signal event ID0 on block/pipeline 0
-pto.set_intra_block(0, 0)
+# Signal event ID0 from the MTE3-side endpoint
+pto.set_intra_block(pto.Pipe.MTE3, 0)
 ```
 
-#### `pto.wait_intra_core(block_id, event_id)`
+#### `pto.wait_intra_core(pipe, event_id)`
 
 **Description**: Wait for an intra-block event. Only the specified pipeline stalls — the SU and other pipelines continue executing independently.
 
@@ -367,17 +367,17 @@ pto.set_intra_block(0, 0)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `block_id` | `pto.i64` | Block or pipeline identifier specifying which pipeline waits |
+| `pipe` | `Pipe` | Waiting endpoint for the synchronization event |
 | `event_id` | `int` | Event identifier to wait on (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 
 **Example**:
 
-<!-- ptodsl-doc-pending: wait_intra_core is not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.basic","symbol":"sync_ops_basic_probe","compile":{}} -->
 ```python
-# Pipeline 1 waits for event ID0 from pipeline 0 within the same block
-pto.wait_intra_core(1, 0)
+# Vector-side endpoint waits for event ID0
+pto.wait_intra_core(pto.Pipe.V, 0)
 ```
 
 ### 10.5.3 Intra-core configuration: `set_intra_core`
