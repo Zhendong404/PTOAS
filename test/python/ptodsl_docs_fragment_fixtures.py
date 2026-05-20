@@ -444,6 +444,36 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "data_movement.cube_helper": _fixture(
+        f"""
+        @pto.cube
+        def qk_matmul(
+            q_tile: pto.Tile,
+            k_tile: pto.Tile,
+            q_l0a: pto.Tile,
+            k_l0b: pto.Tile,
+            s_acc: pto.Tile,
+            s_tile: pto.Tile,
+        ):
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def data_movement_cube_helper_probe(
+            *,
+            BLOCK_M: pto.constexpr = 16,
+            BLOCK_K: pto.constexpr = 16,
+            BLOCK_N: pto.constexpr = 16,
+        ):
+            q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, valid_shape=[BLOCK_M, BLOCK_K])
+            k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, valid_shape=[BLOCK_K, BLOCK_N])
+            s_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
+            q_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
+            k_l0b = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
+            s_acc = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[BLOCK_M, BLOCK_N])
+            qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile)
+        """
+    ),
     "compute_ops.vector_compute": _fixture(
         f"""
         @pto.simd

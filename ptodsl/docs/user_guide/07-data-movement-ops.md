@@ -985,7 +985,7 @@ Inside `@pto.cube`, data flows through a hierarchy of private buffers: GM → L1
 
 A full cube matmul (`@pto.cube`) follows this dataflow pattern:
 
-<!-- ptodsl-doc-pending: standalone @pto.cube data-movement example is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.cube_helper","symbol":"data_movement_cube_helper_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16}} -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
