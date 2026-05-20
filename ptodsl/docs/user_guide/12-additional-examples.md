@@ -266,7 +266,7 @@ For reference, the same GEMM could be written using `@pto.ukernel` for explicit 
 
 ## 12.4 Online normalization with loop-carried state
 
-Chapter 11 demonstrated online softmax with ping-pong state tiles. A simpler but instructive case is **online layer normalization** — computing mean and variance incrementally across blocks without a second pass.
+Chapter 11 demonstrated online softmax with ping-pong state tiles. A simpler but instructive case is **online layer normalization** — computing mean and variance incrementally across blocks while carrying only scalar state between iterations.
 
 Given a vector `X` of length `N`, the streaming Welford algorithm updates the running mean `mu` and variance `var` as each new element `x` arrives:
 
@@ -277,133 +277,88 @@ mu_next   = mu_prev + delta / n_next
 m2_next   = m2_prev + delta * (x - mu_next)
 ```
 
-The example below applies this pattern block by block, using a ukernel for the per-block SIMD work and `pto.for_` carry state to shuttle the running statistics between blocks.
+The example below keeps the whole pattern inside one `@pto.jit` kernel. The first pass carries `mu`, `n`, and `m2` across blocks; the second pass reloads each block and applies the normalization explicitly with scalar loads and stores. This version assumes `N > 0`.
 
-### 12.4.1 L3: SIMD block statistics
+### 12.4.1 JIT example with loop-carried Welford state
 
-<!-- ptodsl-doc-pending: elements_per_vreg, pto.cvt, and scalar-store orchestration here still need dedicated implementation-aligned coverage -->
-```python
-@pto.simd
-def block_mean_var(x_tile: pto.Tile, block_size: pto.i32,
-                  mu_prev: pto.f32, n_prev: pto.f32, m2_prev: pto.f32,
-                  mu_next_tile: pto.Tile, n_next_tile: pto.Tile,
-                  m2_next_tile: pto.Tile):
-    VEC = pto.elements_per_vreg(pto.f32)
-
-    # Per-row cross-lane reductions to compute the block sum and sum-of-squares
-    row_sum = pto.vdup(0.0, pto.f32)
-    row_sum2 = pto.vdup(0.0, pto.f32)
-
-    col_loop = pto.for_(0, block_size, step=VEC).carry(row_sum=row_sum, row_sum2=row_sum2)
-    with col_loop:
-        c = col_loop.iv
-        remained = pto.i32(block_size) - c
-        mask, _ = pto.make_mask(pto.f32, remained)
-
-        x_vec = pto.vlds(x_tile[0, c:])
-        row_sum = pto.vcadd(x_vec, mask)
-        row_sum2 = pto.vcadd(pto.vmul(x_vec, x_vec, mask), mask)
-        col_loop.update(row_sum=row_sum, row_sum2=row_sum2)
-
-    block_n = pto.cvt(block_size, pto.f32)
-    block_mean = pto.vdiv(col_loop.final("row_sum"), block_n)
-    block_mean_sq = pto.vdiv(col_loop.final("row_sum2"), block_n)
-
-    # Welford update: merge block statistics into running state
-    n_next = n_prev + block_n
-    delta = block_mean - mu_prev
-    mu_next = mu_prev + delta * block_n / n_next
-    m2_next = m2_prev + pto.vdiv(row_sum2, block_n) * block_n  # simplified
-
-    scalar.store(n_next, n_next_tile[0, 0])
-    scalar.store(mu_next, mu_next_tile[0, 0])
-    scalar.store(m2_next, m2_next_tile[0, 0])
-```
-
-### 12.4.2 L2: Ukernel with carry orchestration
-
-<!-- ptodsl-doc-pending: mte_load-based ukernel orchestration in this example still lacks stable compile coverage -->
-```python
-@pto.ukernel
-def norm_block(x_part: pto.PartitionTensorView, x_tile: pto.Tile,
-               block_size: pto.i32,
-               mu_prev: pto.f32, n_prev: pto.f32, m2_prev: pto.f32,
-               mu_next_tile: pto.Tile, n_next_tile: pto.Tile,
-               m2_next_tile: pto.Tile):
-    pto.mte_load(x_part, x_tile)
-    pto.pipe_barrier(pto.Pipe.ALL)
-
-    block_mean_var(x_tile, block_size,
-                   mu_prev, n_prev, m2_prev,
-                   mu_next_tile, n_next_tile, m2_next_tile)
-    pto.pipe_barrier(pto.Pipe.ALL)
-```
-
-### 12.4.3 L1: JIT entry with carry state
-
-<!-- ptodsl-doc-pending: this example depends on unsupported tnormalize and several not-yet-stable scalar-carry idioms -->
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"online_layernorm","compile":{"BLOCK":128}} -->
 ```python
 @pto.jit(target="a5")
-def online_layernorm(X, O, *, BLOCK: pto.constexpr):
+def online_layernorm(
+    X: pto.tensor_spec(rank=1, dtype=pto.f32),
+    O: pto.tensor_spec(rank=1, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
     N = X.shape[0]
     x_view = pto.make_tensor_view(X, shape=[N], strides=X.strides)
     o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
 
-    x_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-
-    mu_tile = pto.alloc_tile(shape=[1], dtype=pto.f32)
-    n_tile = pto.alloc_tile(shape=[1], dtype=pto.f32)
-    m2_tile = pto.alloc_tile(shape=[1], dtype=pto.f32)
+    x_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32, valid_shape=[pto.const(BLOCK)])
+    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32, valid_shape=[pto.const(BLOCK)])
 
     num_blocks = (N + BLOCK - 1) // BLOCK
 
-    # Carry: running statistics across blocks
-    block_loop = pto.for_(0, num_blocks, step=1).carry(
+    # Pass 1: running Welford state across blocks.
+    stats_loop = pto.for_(0, num_blocks, step=1).carry(
         mu=pto.f32(0.0), n=pto.f32(0.0), m2=pto.f32(0.0)
     )
-    with block_loop:
-        i = block_loop.iv
+    with stats_loop:
+        i = stats_loop.iv
         offset = i * BLOCK
-        this_block = min(BLOCK, N - offset)
-
+        this_block = scalar.min(BLOCK, N - offset)
         x_part = pto.partition_view(x_view, offsets=[offset], sizes=[this_block])
+        pto.tile.load(x_part, x_tile)
+        x_tile.valid_shape = [this_block]
 
-        mu_prev = block_loop.mu
-        n_prev = block_loop.n
-        m2_prev = block_loop.m2
+        elem_loop = pto.for_(0, this_block, step=1).carry(
+            mu=stats_loop.mu, n=stats_loop.n, m2=stats_loop.m2
+        )
+        with elem_loop:
+            j = elem_loop.iv
+            x = scalar.load(x_tile.as_ptr(), j)
+            n_next = elem_loop.n + 1.0
+            delta = x - elem_loop.mu
+            mu_next = elem_loop.mu + delta / n_next
+            delta2 = x - mu_next
+            m2_next = elem_loop.m2 + delta * delta2
+            elem_loop.update(mu=mu_next, n=n_next, m2=m2_next)
 
-        norm_block(x_part, x_tile, pto.i32(this_block),
-                   mu_prev, n_prev, m2_prev,
-                   mu_tile, n_tile, m2_tile)
+        stats_loop.update(
+            mu=elem_loop.final("mu"),
+            n=elem_loop.final("n"),
+            m2=elem_loop.final("m2"),
+        )
 
-        n_next = scalar.load(n_tile[0, 0])
-        mu_next = scalar.load(mu_tile[0, 0])
-        m2_next = scalar.load(m2_tile[0, 0])
+    mean = stats_loop.final("mu")
+    count = stats_loop.final("n")
+    inv_std = 1.0 / scalar.sqrt(stats_loop.final("m2") / count + pto.f32(1.0e-5))
 
-        block_loop.update(mu=mu_next, n=n_next, m2=m2_next)
-
-    # After all blocks: finalize normalization with the running stats
-    global_var = m2_next / n_next
-
-    # Second pass: normalize each block (using same tiling)
+    # Pass 2: apply (x - mean) / sqrt(var + eps) block by block.
     with pto.for_(0, num_blocks, step=1) as i:
         offset = i * BLOCK
-        this_block = min(BLOCK, N - offset)
+        this_block = scalar.min(BLOCK, N - offset)
         x_part = pto.partition_view(x_view, offsets=[offset], sizes=[this_block])
         o_part = pto.partition_view(o_view, offsets=[offset], sizes=[this_block])
 
         pto.tile.load(x_part, x_tile)
-        pto.tnormalize(x_tile, mu_next, global_var, o_tile)
+        x_tile.valid_shape = [this_block]
+        o_tile.valid_shape = [this_block]
+
+        with pto.for_(0, this_block, step=1) as j:
+            x = scalar.load(x_tile.as_ptr(), j)
+            y = (x - mean) * inv_std
+            scalar.store(y, o_tile.as_ptr(), j)
+
         pto.tile.store(o_tile, o_part)
 ```
 
 **Key points**:
 
-- **Carry state**: `.carry(mu=..., n=..., m2=...)` on the `pto.for_` declares three loop-carried values. Each iteration reads the previous values via `block_loop.mu` etc. and feeds the updated values via `block_loop.update(...)`.
-- **Ping-pong implicit**: The carry mechanism produces a clean SSA-style handoff between iterations — no explicit swap of tile pairs needed.
-- **Two-pass algorithm**: The first pass accumulates statistics; the second pass applies the normalization. For a single-pass online version, the normalized output would be written block-by-block inside the first loop, but that requires storing the running statistics per element — a tradeoff between memory and passes.
-- **Compare to flash attention**: The flash attention carry in Chapter 11 carries six values (`m_prev`/`m_next`, `l_prev`/`l_next`, `o_prev`/`o_next`) and uses ping-pong tiles. This example shows that for simpler scalar carries, direct values (no tile swap) suffice.
+- **Carry state**: `.carry(mu=..., n=..., m2=...)` on both loops keeps the running Welford state in SSA form. The outer loop carries state across blocks; the inner loop carries state across elements inside one block.
+- **Tail handling**: `scalar.min(BLOCK, N - offset)` computes the live width of the current block, and `tile.valid_shape = [this_block]` keeps the tile contract aligned with that tail.
+- **No special tile op required**: the normalization pass is written explicitly with `scalar.load(...)`, scalar arithmetic, `scalar.sqrt(...)`, and `scalar.store(...)`. There is no dependency on a dedicated `tnormalize` op.
+- **Compare to flash attention**: the flash attention carry in Chapter 11 moves several tiles through ping-pong buffers. Here the carried state is only three scalars, so the same `.carry(...)` surface reads more like a conventional streaming reduction.
 
 ## 12.5 Design guidelines
 
