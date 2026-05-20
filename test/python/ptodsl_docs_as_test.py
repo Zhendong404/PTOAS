@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_GUIDE_ROOT = REPO_ROOT / "ptodsl" / "docs" / "user_guide"
 sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 from ptodsl._bootstrap import make_context
 from mlir.ir import Module
 from ptodsl_docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
@@ -230,6 +230,7 @@ def execute_source(source: str, block: MarkdownCodeBlock, symbol: str | None = N
         "__name__": "__ptodsl_doc_snippet__",
         "__file__": str(block.path),
         "pto": pto,
+        "scalar": scalar,
     }
     try:
         exec(compile(source, str(block.path), "exec"), namespace, namespace)

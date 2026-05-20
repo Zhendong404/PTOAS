@@ -92,9 +92,6 @@ from ._control_flow import (    # noqa: F401
 from ._jit import jit, KernelHandle      # noqa: F401
 from ._subkernels import ukernel, cube, simd, simt     # noqa: F401
 
-# ── Scalar sub-namespace ──────────────────────────────────────────────────────
-from . import scalar            # noqa: F401
-
 # ── Shorthand dtype aliases ───────────────────────────────────────────────────
 f32 = float32
 f16 = float16

@@ -13,8 +13,8 @@ types as lazy descriptors, and control-flow maps 1-to-1 to MLIR operations.
 ptodsl/
 ├── ptodsl/              # pip-installable package
 │   ├── __init__.py      # exports: pto, scalar
-│   ├── pto.py           # main pto.* namespace
-│   ├── scalar.py        # pto.scalar.* arith helpers
+│   ├── pto.py           # main PTO DSL namespace
+│   ├── scalar.py        # top-level scalar.* helper namespace
 │   ├── _bootstrap.py    # MLIR path setup + context factory
 │   ├── _types.py        # lazy dtype descriptors and type constructors
 │   ├── _ops.py          # PTO operation wrappers
@@ -132,9 +132,13 @@ implementation.
 ## DSL-style API quick reference
 
 ```python
-from ptodsl import pto
-s = pto.scalar   # arith shorthand alias
+from ptodsl import pto, scalar
+s = scalar       # arith shorthand alias
 ```
+
+`pto` is the main DSL namespace. `scalar` is a separate top-level helper
+namespace for runtime scalar load/store, arithmetic helpers, and scalar math;
+it is intentionally not exported as `pto.scalar`.
 
 ### Kernel decorator
 
@@ -212,7 +216,7 @@ with pto.if_(has_chunk, results=(vf32, vf32)) as br:
 x, y = br.results
 ```
 
-### Scalar arithmetic (`s = pto.scalar`)
+### Scalar arithmetic (`s = scalar`)
 
 ```python
 s.muli(a, b)                 # arith.muli

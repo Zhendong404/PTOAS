@@ -285,7 +285,6 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def scalar_ops_tile_access_probe():
-            scalar = pto.scalar
             tile = pto.alloc_tile(shape=[1, 8], dtype=pto.f32, valid_shape=[1, 4])
             row = 0
             col = 0
@@ -299,7 +298,6 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def scalar_ops_simt_pointer_probe():
-            scalar = pto.scalar
             meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 4])
             meta_ptr = meta_tile.as_ptr()
             {SNIPPET_PLACEHOLDER}
@@ -309,19 +307,18 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.jit(target="a5")
         def scalar_ops_math_probe():
-            scalar = pto.scalar
             tile = pto.alloc_tile(shape=[1, 8], dtype=pto.f32, valid_shape=[1, 4])
-            alpha = pto.scalar.load(tile[0, 0])
-            o_prev = pto.scalar.load(tile[0, 1])
-            beta = pto.scalar.load(tile[0, 2])
-            pv_val = pto.scalar.load(tile[0, 3])
-            m_prev = pto.scalar.load(tile[0, 0])
-            row_max = pto.scalar.load(tile[0, 1])
-            l_prev = pto.scalar.load(tile[0, 2])
-            m_next = pto.scalar.load(tile[0, 3])
-            val = pto.scalar.load(tile[0, 0])
+            alpha = scalar.load(tile[0, 0])
+            o_prev = scalar.load(tile[0, 1])
+            beta = scalar.load(tile[0, 2])
+            pv_val = scalar.load(tile[0, 3])
+            m_prev = scalar.load(tile[0, 0])
+            row_max = scalar.load(tile[0, 1])
+            l_prev = scalar.load(tile[0, 2])
+            m_next = scalar.load(tile[0, 3])
+            val = scalar.load(tile[0, 0])
             threshold = pto.const(0.0, dtype=pto.f32)
-            tail_count = pto.scalar.load(tile[0, 1])
+            tail_count = scalar.load(tile[0, 1])
             N = pto.const(16, dtype=pto.i32)
             BLOCK = 8
             {SNIPPET_PLACEHOLDER}
@@ -449,7 +446,6 @@ FRAGMENT_FIXTURES = {
             full_br = Br
             full_bc = Bc
             one = 1
-            scalar = pto.scalar
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -479,7 +475,6 @@ FRAGMENT_FIXTURES = {
             block_idx = pto.get_block_idx()
             batch_idx = block_idx // heads
             head_idx = block_idx % heads
-            scalar = pto.scalar
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -506,7 +501,6 @@ FRAGMENT_FIXTURES = {
             full_br = Br
             full_bc = Bc
             one = 1
-            scalar = pto.scalar
             {SNIPPET_PLACEHOLDER}
         """
     ),
@@ -569,7 +563,6 @@ FRAGMENT_FIXTURES = {
 
         @pto.simt
         def materialize_tile_bounds(meta_ptr, valid_rows: pto.i32, valid_cols: pto.i32):
-            scalar = pto.scalar
             scalar.store(0, meta_ptr + 0)
             scalar.store(valid_rows, meta_ptr + 1)
             scalar.store(valid_cols, meta_ptr + 2)
@@ -600,7 +593,6 @@ FRAGMENT_FIXTURES = {
             pv_acc_tile: pto.Tile,
             meta_ptr,
         ):
-            scalar = pto.scalar
             row_start = pto.const(0, dtype=pto.i32)
             row_stop = pto.const(16, dtype=pto.i32)
             valid_cols = pto.const(16, dtype=pto.i32)
@@ -672,7 +664,6 @@ FRAGMENT_FIXTURES = {
             row_stop: pto.i32,
             valid_cols: pto.i32,
         ):
-            scalar = pto.scalar
             {SNIPPET_PLACEHOLDER}
 
 
@@ -712,7 +703,6 @@ FRAGMENT_FIXTURES = {
             row_stop: pto.i32,
             valid_cols: pto.i32,
         ):
-            scalar = pto.scalar
             with pto.for_(row_start, row_stop, step=1) as row:
                 col_mask = pto.make_mask(pto.f32, valid_cols)
                 s_row = pto.vlds(s_tile[row, 0:])
@@ -757,14 +747,13 @@ FRAGMENT_FIXTURES = {
             row_stop: pto.i32,
             valid_cols: pto.i32,
         ):
-            scalar = pto.scalar
             with pto.for_(row_start, row_stop, step=1) as row:
                 col_mask = pto.make_mask(pto.f32, valid_cols)
                 p_row = pto.vexp(pto.vlds(s_tile[row, 0:]), col_mask)
-                m_next = pto.scalar.load(m_prev_tile[row, 0])
-                l_next = pto.scalar.load(l_prev_tile[row, 0])
-                alpha = pto.scalar.load(alpha_tile[row, 0])
-                beta = pto.scalar.load(beta_tile[row, 0])
+                m_next = scalar.load(m_prev_tile[row, 0])
+                l_next = scalar.load(l_prev_tile[row, 0])
+                alpha = scalar.load(alpha_tile[row, 0])
+                beta = scalar.load(beta_tile[row, 0])
             {SNIPPET_PLACEHOLDER}
 
 
@@ -790,7 +779,6 @@ FRAGMENT_FIXTURES = {
     ),
     "flash_attention.simt_materialize": _fixture(
         f"""
-        scalar = pto.scalar
         {SNIPPET_PLACEHOLDER}
 
 
@@ -805,7 +793,6 @@ FRAGMENT_FIXTURES = {
     ),
     "flash_attention.simt_blend": _fixture(
         f"""
-        scalar = pto.scalar
         {SNIPPET_PLACEHOLDER}
 
 

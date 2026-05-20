@@ -69,7 +69,7 @@ with pto.for_(0, num_blocks, step=1) as i:
 ```python
 with pto.for_(0, rows, step=1) as r:
     with pto.for_(0, cols, step=1) as c:
-        val = pto.scalar.load(tile[r, c])
+        val = scalar.load(tile[r, c])
 ```
 
 Both loops execute on the device. The outer loop bound `rows` and inner loop bound `cols` can be runtime values.

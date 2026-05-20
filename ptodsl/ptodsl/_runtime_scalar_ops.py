@@ -16,7 +16,7 @@ from ._types import (
     _strip_integer_signedness,
 )
 
-from mlir.dialects import arith
+from mlir.dialects import arith, math
 from mlir.ir import BF16Type, F16Type, F32Type, FloatAttr, IndexType, IntegerType
 
 
@@ -67,6 +67,26 @@ def emit_runtime_max(lhs, rhs):
         return _restore_integer_signedness(result, lhs.type)
     if kind == "index":
         cond = arith.CmpIOp(arith.CmpIPredicate.sge, lhs, rhs).result
+        return arith.SelectOp(cond, lhs, rhs).result
+    raise TypeError(f"unsupported runtime scalar operand category '{kind}'")
+
+
+def emit_runtime_min(lhs, rhs):
+    """Lower one authored runtime scalar min operation."""
+    lhs, rhs, kind = normalize_runtime_binary_operands(lhs, rhs)
+    if kind == "float":
+        return arith.MinimumFOp(lhs, rhs).result
+    if kind == "integer":
+        signedness = _integer_signedness(lhs.type)
+        signless_lhs = _strip_integer_signedness(lhs)
+        signless_rhs = _strip_integer_signedness(rhs)
+        if signedness == "unsigned":
+            result = arith.MinUIOp(signless_lhs, signless_rhs).result
+        else:
+            result = arith.MinSIOp(signless_lhs, signless_rhs).result
+        return _restore_integer_signedness(result, lhs.type)
+    if kind == "index":
+        cond = arith.CmpIOp(arith.CmpIPredicate.sle, lhs, rhs).result
         return arith.SelectOp(cond, lhs, rhs).result
     raise TypeError(f"unsupported runtime scalar operand category '{kind}'")
 
@@ -226,6 +246,22 @@ def emit_runtime_bitwise_op(op_name: str, lhs, rhs):
     return _restore_integer_signedness(result, authored_type)
 
 
+def emit_runtime_abs(value):
+    """Lower one authored runtime scalar absolute-value operation."""
+    kind = classify_runtime_scalar_type(value.type)
+    if kind == "float":
+        return math.AbsFOp(value).result
+    if kind == "index":
+        return value
+    if kind == "integer":
+        signedness = _integer_signedness(value.type)
+        if signedness == "unsigned":
+            return value
+        result = math.AbsIOp(_strip_integer_signedness(value)).result
+        return _restore_integer_signedness(result, value.type)
+    raise TypeError(f"unsupported runtime scalar operand category '{kind}'")
+
+
 def _integer_binary_op(op_name: str, authored_type):
     if IndexType.isinstance(authored_type):
         return {
@@ -256,9 +292,11 @@ def _integer_binary_op(op_name: str, authored_type):
 
 __all__ = [
     "classify_runtime_scalar_type",
+    "emit_runtime_abs",
     "emit_runtime_binary_op",
     "emit_runtime_compare",
     "emit_runtime_bitwise_op",
     "emit_runtime_max",
+    "emit_runtime_min",
     "normalize_runtime_binary_operands",
 ]

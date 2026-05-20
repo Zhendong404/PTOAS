@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
 from ptodsl._bootstrap import make_context
 from ptodsl._tracing import current_session
@@ -183,12 +183,16 @@ def runtime_scalar_operator_probe(
     y = (x + 1.0) * 2.0
     z = 4.0 - y
     w = 1.0 / z
-    m = pto.scalar.max(w, x)
-    e = pto.scalar.exp(m)
+    m = scalar.max(w, x)
+    n = scalar.min(m, x)
+    e = scalar.exp(m)
+    lg = scalar.log(e)
+    rt = scalar.sqrt(e)
+    mag = scalar.abs(z)
     gt_zero = m > x
     eq_self = x == x
     in_range = (m >= x) & (m <= e)
-    pto.scalar.store(e, o_ptr + 0)
+    scalar.store(e, o_ptr + 0)
 
     _ = batch_idx
     _ = head_idx
@@ -196,7 +200,11 @@ def runtime_scalar_operator_probe(
     _ = tail
     _ = w
     _ = m
+    _ = n
     _ = e
+    _ = lg
+    _ = rt
+    _ = mag
     _ = gt_zero
     _ = eq_self
     _ = in_range
@@ -248,12 +256,12 @@ def integer_loop_bound_probe(*, BLOCK: pto.constexpr = 8):
 def scalar_pointer_offset_probe():
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
     meta_ptr = meta_tile.as_ptr()
-    pto.scalar.store(0, meta_ptr, 0)
-    pto.scalar.store(1, meta_ptr, 1)
-    pto.scalar.store(2, meta_ptr + 2)
-    row_start = pto.scalar.load(meta_ptr, 0)
-    row_stop = pto.scalar.load(meta_ptr, 1)
-    valid_cols = pto.scalar.load(meta_ptr + 2)
+    scalar.store(0, meta_ptr, 0)
+    scalar.store(1, meta_ptr, 1)
+    scalar.store(2, meta_ptr + 2)
+    row_start = scalar.load(meta_ptr, 0)
+    row_stop = scalar.load(meta_ptr, 1)
+    valid_cols = scalar.load(meta_ptr + 2)
     _ = row_start
     _ = row_stop
     _ = valid_cols
@@ -261,16 +269,16 @@ def scalar_pointer_offset_probe():
 
 @pto.simt
 def simt_pointer_offset_helper(meta_ptr: pto.ptr(pto.i32, pto.MemorySpace.UB)):
-    pto.scalar.store(7, meta_ptr + 0)
-    pto.scalar.store(9, meta_ptr + 1)
+    scalar.store(7, meta_ptr + 0)
+    scalar.store(9, meta_ptr + 1)
 
 
 @pto.jit(target="a5")
 def simt_pointer_offset_probe():
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 2])
     simt_pointer_offset_helper(meta_tile.as_ptr())
-    first = pto.scalar.load(meta_tile.as_ptr() + 0)
-    second = pto.scalar.load(meta_tile.as_ptr() + 1)
+    first = scalar.load(meta_tile.as_ptr() + 0)
+    second = scalar.load(meta_tile.as_ptr() + 1)
     _ = first
     _ = second
 
@@ -281,10 +289,10 @@ def scalar_store_element_coercion_probe():
     meta_ptr = meta_tile.as_ptr()
     row_start = pto.const(0)
     row_stop = pto.const(4)
-    pto.scalar.store(row_start, meta_ptr + 0)
-    pto.scalar.store(row_stop, meta_ptr + 1)
-    pto.scalar.store(pto.const(2, dtype=pto.i64), meta_ptr + 2)
-    pto.scalar.store(3, meta_ptr + 3)
+    scalar.store(row_start, meta_ptr + 0)
+    scalar.store(row_stop, meta_ptr + 1)
+    scalar.store(pto.const(2, dtype=pto.i64), meta_ptr + 2)
+    scalar.store(3, meta_ptr + 3)
 
 
 @pto.simd
@@ -297,8 +305,8 @@ def public_vector_surface_probe(inp_tile: pto.Tile, out_tile: pto.Tile, stats_ti
     p_row = pto.vexp(s_shifted, col_mask)
     row_sum = pto.vcgadd(p_row, col_mask)
     pto.vsts(p_row, out_tile[row, 0:], col_mask)
-    pto.scalar.store(row_max, stats_tile[row, 0])
-    pto.scalar.store(row_sum, stats_tile[row, 1])
+    scalar.store(row_max, stats_tile[row, 0])
+    scalar.store(row_sum, stats_tile[row, 1])
 
 
 @pto.cube
@@ -437,28 +445,36 @@ def signed_integer_scalar_probe():
     signed_ptr = signed_tile.as_ptr()
     unsigned_ptr = unsigned_tile.as_ptr()
 
-    pto.scalar.store(pto.si32(-7), signed_ptr + 0)
-    pto.scalar.store(pto.si32(5), signed_ptr + 1)
-    pto.scalar.store(pto.ui32("0xFFFFFFFF"), unsigned_ptr + 0)
-    pto.scalar.store(pto.ui32(9), unsigned_ptr + 1)
+    scalar.store(pto.si32(-7), signed_ptr + 0)
+    scalar.store(pto.si32(5), signed_ptr + 1)
+    scalar.store(pto.ui32("0xFFFFFFFF"), unsigned_ptr + 0)
+    scalar.store(pto.ui32(9), unsigned_ptr + 1)
 
-    s0 = pto.scalar.load(signed_ptr + 0)
-    s1 = pto.scalar.load(signed_ptr + 1)
-    u0 = pto.scalar.load(unsigned_ptr + 0)
-    u1 = pto.scalar.load(unsigned_ptr + 1)
+    s0 = scalar.load(signed_ptr + 0)
+    s1 = scalar.load(signed_ptr + 1)
+    u0 = scalar.load(unsigned_ptr + 0)
+    u1 = scalar.load(unsigned_ptr + 1)
 
     s_add = s0 + 1
     u_add = u1 + 2
-    s_max = pto.scalar.max(s0, s1)
-    u_max = pto.scalar.max(u0, u1)
+    s_max = scalar.max(s0, s1)
+    s_min = scalar.min(s0, s1)
+    u_max = scalar.max(u0, u1)
+    u_min = scalar.min(u0, u1)
+    s_abs = scalar.abs(s0)
+    u_abs = scalar.abs(u0)
     s_cmp = s1 > s0
     u_cmp = u0 > u1
 
-    pto.scalar.store(s_add, signed_ptr + 2)
-    pto.scalar.store(u_add, unsigned_ptr + 2)
+    scalar.store(s_add, signed_ptr + 2)
+    scalar.store(u_add, unsigned_ptr + 2)
 
     _ = s_max
+    _ = s_min
     _ = u_max
+    _ = u_min
+    _ = s_abs
+    _ = u_abs
     _ = s_cmp
     _ = u_cmp
 
@@ -658,9 +674,12 @@ def main() -> None:
     fake_empty = pto.empty_like(fake_tensor)
     expect(isinstance(fake_empty, _FakeTensor), "pto.empty_like(...) should preserve host tensor factory type")
     expect(fake_empty.shape == fake_tensor.shape, "pto.empty_like(...) should preserve the logical tensor shape")
-    expect(not hasattr(pto.scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
-    expect(not hasattr(pto.scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
-    expect(not hasattr(pto.scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
+    expect(not hasattr(pto, "scalar"), "pto.scalar should not remain in the public pto namespace")
+    expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
+    expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
+    expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
+    for name in ("max", "min", "exp", "log", "sqrt", "abs"):
+        expect(hasattr(scalar, name), f"scalar.{name} should be exported from the public scalar namespace")
 
     with make_context() as ctx, Location.unknown(ctx):
         tile_buf_ty = pto.tile_buf_type(
@@ -935,7 +954,11 @@ def main() -> None:
     expect("arith.subf" in runtime_scalar_text, "runtime float - should lower to arith.subf")
     expect("arith.divf" in runtime_scalar_text, "runtime float / should lower to arith.divf")
     expect("arith.maximumf" in runtime_scalar_text, "scalar.max(float, float) should lower to arith.maximumf")
+    expect("arith.minimumf" in runtime_scalar_text, "scalar.min(float, float) should lower to arith.minimumf")
     expect("math.exp" in runtime_scalar_text, "scalar.exp(...) should lower to math.exp")
+    expect("math.log" in runtime_scalar_text, "scalar.log(...) should lower to math.log")
+    expect("math.sqrt" in runtime_scalar_text, "scalar.sqrt(...) should lower to math.sqrt")
+    expect("math.absf" in runtime_scalar_text, "scalar.abs(float) should lower to math.absf")
     expect("arith.cmpf ogt" in runtime_scalar_text, "float runtime '>' should lower to arith.cmpf ogt")
     expect("arith.cmpf oeq" in runtime_scalar_text, "float runtime '==' should lower to arith.cmpf oeq")
     expect("arith.cmpf oge" in runtime_scalar_text, "float runtime '>=' should lower to arith.cmpf oge")
@@ -950,7 +973,10 @@ def main() -> None:
     )
     expect("arith.addi" in signed_integer_scalar_text, "signed/unsigned scalar addition should lower through arith.addi")
     expect("arith.maxsi" in signed_integer_scalar_text, "signed scalar max should lower through arith.maxsi")
+    expect("arith.minsi" in signed_integer_scalar_text, "signed scalar min should lower through arith.minsi")
     expect("arith.maxui" in signed_integer_scalar_text, "unsigned scalar max should lower through arith.maxui")
+    expect("arith.minui" in signed_integer_scalar_text, "unsigned scalar min should lower through arith.minui")
+    expect("math.absi" in signed_integer_scalar_text, "signed scalar abs should lower through math.absi")
     expect("arith.cmpi sgt" in signed_integer_scalar_text, "signed scalar cmp should preserve signed predicate")
     expect("arith.cmpi ugt" in signed_integer_scalar_text, "unsigned scalar cmp should preserve unsigned predicate")
     expect("pto.store" in runtime_scalar_text, "scalar.store(...) should lower to pto.store")

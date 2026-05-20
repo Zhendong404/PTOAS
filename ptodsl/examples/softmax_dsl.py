@@ -37,9 +37,9 @@ The Python maps almost line-for-line to the target MLIR:
   pto.barrier <PIPE_ALL>                               # pto.pipe_barrier(pto.Pipe.ALL)
 """
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 
-s = pto.scalar  # arith shorthand alias
+s = scalar  # arith shorthand alias
 
 
 @pto.jit(

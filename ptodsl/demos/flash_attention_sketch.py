@@ -76,13 +76,11 @@ if __package__ in {None, ""}:
             "Unable to locate the PTODSL Python package root from flash_attention_sketch.py"
         )
 
-from ptodsl import pto
-
-scalar = pto.scalar
+from ptodsl import pto, scalar
 
 
 def _min_index(lhs, rhs):
-    return pto.scalar.select(
+    return scalar.select(
         lhs < rhs,
         lhs,
         rhs,

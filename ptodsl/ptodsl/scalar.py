@@ -6,7 +6,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 """
-Scalar arithmetic helpers – exposed as ``pto.scalar.*`` (or ``s = pto.scalar``).
+Scalar arithmetic helpers – exposed as top-level ``scalar.*`` from the
+``ptodsl`` package (for example ``from ptodsl import scalar``).
 
 Arithmetic helpers operate on raw ``mlir.ir.Value`` objects and emit the
 corresponding arith dialect operations at the active insertion point.
@@ -18,8 +19,10 @@ from ._bootstrap import make_context  # ensure MLIR is on sys.path  # noqa: F401
 from ._scalar_coercion import coerce_scalar_to_type
 from ._runtime_scalar_ops import (
     classify_runtime_scalar_type,
+    emit_runtime_abs,
     emit_runtime_binary_op,
     emit_runtime_max,
+    emit_runtime_min,
 )
 from ._surface_values import resolve_address_access, unwrap_surface_value, wrap_surface_value
 from ._types import _resolve
@@ -77,6 +80,14 @@ def max(lhs, rhs):
     ))
 
 
+def min(lhs, rhs):
+    """Runtime scalar minimum across float / integer / index values."""
+    return wrap_surface_value(emit_runtime_min(
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+    ))
+
+
 def exp(value):
     """Runtime scalar exponential for floating-point values."""
     raw_value = unwrap_surface_value(value)
@@ -84,6 +95,29 @@ def exp(value):
     if kind != "float":
         raise TypeError(f"scalar.exp(...) expects a floating-point runtime scalar, got {raw_value.type}")
     return wrap_surface_value(math.ExpOp(raw_value).result)
+
+
+def log(value):
+    """Runtime scalar natural logarithm for floating-point values."""
+    raw_value = unwrap_surface_value(value)
+    kind = classify_runtime_scalar_type(raw_value.type)
+    if kind != "float":
+        raise TypeError(f"scalar.log(...) expects a floating-point runtime scalar, got {raw_value.type}")
+    return wrap_surface_value(math.LogOp(raw_value).result)
+
+
+def sqrt(value):
+    """Runtime scalar square root for floating-point values."""
+    raw_value = unwrap_surface_value(value)
+    kind = classify_runtime_scalar_type(raw_value.type)
+    if kind != "float":
+        raise TypeError(f"scalar.sqrt(...) expects a floating-point runtime scalar, got {raw_value.type}")
+    return wrap_surface_value(math.SqrtOp(raw_value).result)
+
+
+def abs(value):
+    """Runtime scalar absolute value across float / integer / index values."""
+    return wrap_surface_value(emit_runtime_abs(unwrap_surface_value(value)))
 
 
 def load(ptr_or_ref, offset=None):
@@ -118,6 +152,6 @@ __all__ = [
     "muli", "addi", "subi",
     "index_cast",
     "select",
-    "max", "exp",
+    "max", "min", "exp", "log", "sqrt", "abs",
     "load", "store",
 ]

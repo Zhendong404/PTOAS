@@ -1,12 +1,12 @@
 # 6. Scalar and Pointer Operations
 
-Chapter 5 established the rule: Python constructs are resolved at trace time, PTO constructs produce device-side behavior. This chapter applies that distinction to scalars and pointers — when to use a plain Python number, when to use a `scalar.*` operation, and how to work with typed pointers.
+Chapter 5 established the rule: Python constructs are resolved at trace time, PTO constructs produce device-side behavior. This chapter applies that distinction to scalars and pointers — when to use a plain Python number, when to use a top-level `scalar.*` helper, and how to work with typed pointers.
 
 ## 6.1 Python scalars vs PTO scalars
 
 A **Python scalar** is any value computed by Python during tracing: a literal (`3.14159`), a constexpr parameter (`BLOCK`), or an arithmetic expression built only from compile-time-known values (`1.0 / sqrt(128)`). These are evaluated at trace time and their results are baked into the device code as constants.
 
-A **PTO scalar** is a value that lives on the device at runtime. It comes from a `scalar.load` read, a device-side computation (`scalar.max`, `scalar.exp`), a runtime query (`pto.get_block_idx()`), or `@pto.jit` tensor metadata such as `A.shape[0]` / `A.strides[1]`. PTO scalars flow through the recorded program and are not resolved until the kernel executes.
+A **PTO scalar** is a value that lives on the device at runtime. It comes from a `scalar.load` read, a device-side computation (`scalar.max`, `scalar.exp`), a runtime query (`pto.get_block_idx()`), or `@pto.jit` tensor metadata such as `A.shape[0]` / `A.strides[1]`. PTO scalars flow through the recorded program and are not resolved until the kernel executes. The helper functions that operate on them live in the top-level `scalar` namespace, not under `pto.*`.
 
 ### The mixed expression
 
@@ -130,8 +130,7 @@ When writing to a raw pointer (e.g., a small metadata buffer obtained via `as_pt
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"scalar_pointer_offset_probe","compile":{}} -->
 ```python
-from ptodsl import pto
-scalar = pto.scalar
+from ptodsl import pto, scalar
 
 
 @pto.jit(target="a5")
@@ -169,7 +168,7 @@ When both operands are PTO scalars (loaded from device memory or produced by ano
 
 ### Math functions: `scalar.*`
 
-Non-trivial scalar math functions live under the `scalar` namespace (imported as `from pto import scalar` or accessed as `pto.scalar`):
+Non-trivial scalar math functions live under the top-level `scalar` namespace (imported as `from ptodsl import scalar`). They are intentionally separate from the `pto.*` namespace:
 
 #### `scalar.max(a: ScalarType, b: ScalarType) -> ScalarType`
 
@@ -195,6 +194,14 @@ Non-trivial scalar math functions live under the `scalar` namespace (imported as
 
 **Description**: Absolute value.
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.math","symbol":"scalar_ops_math_probe","compile":{}} -->
+```python
+lo = scalar.min(m_prev, row_max)
+mag = scalar.abs(m_prev - row_max)
+ln = scalar.log(threshold + 1.0)
+root = scalar.sqrt(threshold + 4.0)
+```
+
 ### Comparisons
 
 **Description**: PTO scalars use Python's native comparison operators. The tracer records the corresponding device-side comparison instruction and returns a `pto.i1` result.
@@ -219,12 +226,10 @@ is_zero_mask = val == threshold
 in_range = (val >= threshold) & (val <= row_max)
 ```
 
-For readability in files with many scalar operations, assign `pto.scalar` to a short local name:
+For readability in files with many scalar operations, use the top-level `scalar` namespace directly:
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.math","symbol":"scalar_ops_math_probe","compile":{}} -->
 ```python
-scalar = pto.scalar
-
 m_next = scalar.max(m_prev, row_max)
 l_scaled = l_prev * scalar.exp(m_prev - m_next)
 ```
