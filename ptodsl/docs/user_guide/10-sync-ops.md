@@ -50,10 +50,10 @@ The most commonly used pipes in synchronization are `MTE2` (GM ↔ UB DMA), `MTE
 
 Event identifiers for pipeline synchronization flags. The hardware provides 8 event IDs (`0`–`7`) per pipeline pair, supporting up to 8 concurrent in-flight DMA/compute sequences.
 
-In the current PTODSL surface, `event_id` is passed as an integer keyword argument:
+In PTODSL, `event_id` may be either:
 
-- `pto.set_flag(..., event_id=0)`
-- `pto.wait_flag(..., event_id=0)`
+- a Python integer literal in `0`–`7`
+- a runtime index-like PTO scalar value
 
 Events are per-pipeline-pair: the same `event_id=0` used between `MTE2 → V` is independent from `event_id=0` used between `MTE3 → V`.
 
@@ -73,7 +73,7 @@ Pipeline synchronization is the primary mechanism for ordering work across pipel
 |-----------|------|-------------|
 | `pipe_from` | `Pipe` | Source pipeline — the pipeline that has completed its work |
 | `pipe_to` | `Pipe` | Destination pipeline — the pipeline being notified |
-| `event_id` | `int` | Event identifier for this specific synchronization point (`0`–`7`) |
+| `event_id` | `int` or index-like PTO scalar | Event identifier for this specific synchronization point (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 
@@ -95,7 +95,7 @@ pto.set_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=0)
 |-----------|------|-------------|
 | `pipe_from` | `Pipe` | Source pipeline that set the flag |
 | `pipe_to` | `Pipe` | Destination pipeline — the pipeline that is waiting |
-| `event_id` | `int` | Event identifier matching the corresponding `set_flag` (`0`–`7`) |
+| `event_id` | `int` or index-like PTO scalar | Event identifier matching the corresponding `set_flag` (`0`–`7`) |
 
 **Returns**: None (side-effect operation).
 

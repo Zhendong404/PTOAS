@@ -2302,6 +2302,12 @@ def _sync_event_id_operand(event_id):
     return event_id if isinstance(event_id, int) else unwrap_surface_value(event_id)
 
 
+def _flag_event_id_operand(event_id, *, context: str):
+    if isinstance(event_id, int):
+        return event_id, True
+    return _coerce_index(event_id, context=context), False
+
+
 def set_cross_core(pipe, event_id):
     """``pto.set_cross_core(pipe, event_id)`` – public facade for ``pto.sync.set``."""
     _pto.sync_set(_pipe_attr(pipe), _sync_event_id_operand(event_id))
@@ -2326,14 +2332,33 @@ def set_flag(src: str, dst: str, *, event_id: int = 0):
     """``pto.set_flag[src, dst, event_id]``.
 
     Accepts short pipe names (``"MTE2"``, ``"V"``, …) or full ``"PIPE_MTE2"``
-    names.  ``event_id`` is an integer in ``[0, 7]``.
+    names.  Static ``event_id`` values in ``[0, 7]`` lower to ``pto.set_flag``;
+    runtime index-like values lower to ``pto.set_flag_dyn``.
     """
-    _pto.set_flag(_pipe_attr(src), _pipe_attr(dst), _event_attr(event_id))
+    event_operand, is_static = _flag_event_id_operand(
+        event_id,
+        context="set_flag(..., event_id=...)",
+    )
+    if is_static:
+        _pto.set_flag(_pipe_attr(src), _pipe_attr(dst), _event_attr(event_operand))
+        return
+    _pto.set_flag_dyn(_pipe_attr(src), _pipe_attr(dst), event_operand)
 
 
 def wait_flag(src: str, dst: str, *, event_id: int = 0):
-    """``pto.wait_flag[src, dst, event_id]``."""
-    _pto.wait_flag(_pipe_attr(src), _pipe_attr(dst), _event_attr(event_id))
+    """``pto.wait_flag[src, dst, event_id]``.
+
+    Static ``event_id`` values in ``[0, 7]`` lower to ``pto.wait_flag``;
+    runtime index-like values lower to ``pto.wait_flag_dyn``.
+    """
+    event_operand, is_static = _flag_event_id_operand(
+        event_id,
+        context="wait_flag(..., event_id=...)",
+    )
+    if is_static:
+        _pto.wait_flag(_pipe_attr(src), _pipe_attr(dst), _event_attr(event_operand))
+        return
+    _pto.wait_flag_dyn(_pipe_attr(src), _pipe_attr(dst), event_operand)
 
 
 __all__ = [
