@@ -29,7 +29,7 @@ Python literals are automatically typed by the tracer: `bool` → `pto.i1`, `int
 
 For explicit typing, use type constructors:
 
-<!-- ptodsl-doc-pending: documented scalar type-constructor calls like pto.i32(...) are not accepted by the current implementation -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.scalar_expr","symbol":"type_system_scalar_expr_probe","compile":{}} -->
 ```python
 x = pto.i32(1024)
 y = pto.ui16(7)
@@ -38,7 +38,7 @@ z: pto.i32 = 1024
 
 ### Low-precision types (storage only)
 
-The following types are available for storage and data movement, but **not** for computation. Use them to reduce memory bandwidth; convert to a compute-capable type before arithmetic.
+The following types are **storage-only**: they can be used as buffer element types (tiles, tensors, pointers) for storage and data movement, but they **cannot** be used to construct scalars or vectors. Use them to reduce memory bandwidth; convert to a compute-capable type before arithmetic.
 
 | DSL Type | Description |
 |----------|-------------|
@@ -52,7 +52,7 @@ The following types are available for storage and data movement, but **not** for
 
 Prefer plain integer literals. Hex string literals are reserved for explicit bit-pattern authoring:
 
-<!-- ptodsl-doc-pending: documented integer type-constructor calls like pto.i32(...) are not accepted by the current implementation -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.scalar_expr","symbol":"type_system_scalar_expr_probe","compile":{}} -->
 ```python
 count = pto.i32(1024)
 delta = pto.i16(-12)
@@ -61,7 +61,7 @@ hi_bit = pto.i32("0x80000000")   # bit-pattern: -2147483648
 
 ### Floating-point literal forms
 
-<!-- ptodsl-doc-pending: documented floating-point type-constructor calls like pto.f16(...) are not accepted by the current implementation -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.scalar_expr","symbol":"type_system_scalar_expr_probe","compile":{}} -->
 ```python
 a = pto.f16(-1.5)
 b = pto.f32("inf")
@@ -85,7 +85,7 @@ Constraint: `element_count × bitwidth(dtype) = 2048`.
 
 Use `pto.elements_per_vreg(dtype)` to query the element count:
 
-<!-- ptodsl-doc-pending: documented pto.elements_per_vreg(...) helper is not exposed on the current pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.scalar_expr","symbol":"type_system_scalar_expr_probe","compile":{}} -->
 ```python
 lanes = pto.elements_per_vreg(pto.f32)  # 64
 ```

@@ -18,6 +18,8 @@ from ._bootstrap import make_context  # ensure MLIR is on sys.path  # noqa: F401
 from ._scalar_coercion import coerce_scalar_to_type
 from ._runtime_scalar_ops import (
     classify_runtime_scalar_type,
+    emit_runtime_binary_op,
+    emit_runtime_cmpi,
     emit_runtime_max,
 )
 from ._surface_values import resolve_address_access, unwrap_surface_value, wrap_surface_value
@@ -44,17 +46,17 @@ _CMPI_PREDICATES = {
 
 def muli(lhs, rhs):
     """arith.muli"""
-    return wrap_surface_value(arith.MulIOp(unwrap_surface_value(lhs), unwrap_surface_value(rhs)).result)
+    return wrap_surface_value(emit_runtime_binary_op("mul", unwrap_surface_value(lhs), unwrap_surface_value(rhs)))
 
 
 def addi(lhs, rhs):
     """arith.addi"""
-    return wrap_surface_value(arith.AddIOp(unwrap_surface_value(lhs), unwrap_surface_value(rhs)).result)
+    return wrap_surface_value(emit_runtime_binary_op("add", unwrap_surface_value(lhs), unwrap_surface_value(rhs)))
 
 
 def subi(lhs, rhs):
     """arith.subi"""
-    return wrap_surface_value(arith.SubIOp(unwrap_surface_value(lhs), unwrap_surface_value(rhs)).result)
+    return wrap_surface_value(emit_runtime_binary_op("sub", unwrap_surface_value(lhs), unwrap_surface_value(rhs)))
 
 
 def index_cast(type_or_val, val=None):
@@ -84,18 +86,16 @@ def cmpi(pred: str, lhs, rhs):
         raise ValueError(
             f"Unknown cmpi predicate '{pred}'; known: {list(_CMPI_PREDICATES)}"
         )
-    return wrap_surface_value(
-        arith.CmpIOp(predicate, unwrap_surface_value(lhs), unwrap_surface_value(rhs)).result
-    )
+    return wrap_surface_value(emit_runtime_cmpi(predicate, unwrap_surface_value(lhs), unwrap_surface_value(rhs)))
 
 
 def cmpi_sgt(lhs, rhs):
     """arith.cmpi sgt (signed greater-than)."""
-    return wrap_surface_value(arith.CmpIOp(
+    return wrap_surface_value(emit_runtime_cmpi(
         arith.CmpIPredicate.sgt,
         unwrap_surface_value(lhs),
         unwrap_surface_value(rhs),
-    ).result)
+    ))
 
 
 def select(cond, true_val, false_val):

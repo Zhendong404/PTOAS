@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 from ptodsl import pto
 from ptodsl._bootstrap import make_context
 from ptodsl._tracing import current_session
-from mlir.ir import Location, Module
+from mlir.ir import InsertionPoint, Location, Module
 
 
 def expect(condition: bool, message: str) -> None:
@@ -379,6 +379,67 @@ def compile_time_query_probe():
     expect(i8_vec == 256, "pto.elements_per_vreg(pto.i8) should evaluate to 256")
 
 
+@pto.jit(target="a5")
+def eager_scalar_constructor_probe():
+    i32_val = pto.i32(1024)
+    ui16_val = pto.ui16(7)
+    si32_val = pto.si32(-7)
+    ui8_val = pto.ui8(255)
+    si8_neg1 = pto.si8(-1)
+    ui8_bits = pto.ui8("0xFF")
+    si16_bits = pto.si16("0xFFFF")
+    f16_val = pto.f16(-1.5)
+    f32_val = pto.f32("inf")
+    f16_bits = pto.f16("0xFC00")
+    i32_bits = pto.i32("0x80000000")
+
+    _ = i32_val
+    _ = ui16_val
+    _ = si32_val
+    _ = ui8_val
+    _ = si8_neg1
+    _ = ui8_bits
+    _ = si16_bits
+    _ = f16_val
+    _ = f32_val
+    _ = f16_bits
+    _ = i32_bits
+
+
+@pto.jit(target="a5")
+def signed_integer_scalar_probe():
+    signed_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.si32, valid_shape=[1, 3])
+    unsigned_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.ui32, valid_shape=[1, 3])
+
+    signed_ptr = signed_tile.as_ptr()
+    unsigned_ptr = unsigned_tile.as_ptr()
+
+    pto.scalar.store(pto.si32(-7), signed_ptr + 0)
+    pto.scalar.store(pto.si32(5), signed_ptr + 1)
+    pto.scalar.store(pto.ui32("0xFFFFFFFF"), unsigned_ptr + 0)
+    pto.scalar.store(pto.ui32(9), unsigned_ptr + 1)
+
+    s0 = pto.scalar.load(signed_ptr + 0)
+    s1 = pto.scalar.load(signed_ptr + 1)
+    u0 = pto.scalar.load(unsigned_ptr + 0)
+    u1 = pto.scalar.load(unsigned_ptr + 1)
+
+    s_add = s0 + 1
+    u_add = u1 + 2
+    s_max = pto.scalar.max(s0, s1)
+    u_max = pto.scalar.max(u0, u1)
+    s_cmp = pto.scalar.cmpi("sgt", s1, s0)
+    u_cmp = pto.scalar.cmpi("ugt", u0, u1)
+
+    pto.scalar.store(s_add, signed_ptr + 2)
+    pto.scalar.store(u_add, unsigned_ptr + 2)
+
+    _ = s_max
+    _ = u_max
+    _ = s_cmp
+    _ = u_cmp
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -389,6 +450,17 @@ class _FakeTensor:
 
 def main() -> None:
     expected_public_exports = [
+        "si8",
+        "si16",
+        "si32",
+        "si64",
+        "ui8",
+        "ui16",
+        "ui32",
+        "ui64",
+        "i32",
+        "f16",
+        "f32",
         "bytewidth",
         "elements_per_vreg",
         "make_mask",
@@ -449,6 +521,36 @@ def main() -> None:
     scalar_store_element_coercion_probe.verify()
     public_surface_exports_probe.verify()
     compile_time_query_probe.verify()
+    eager_scalar_constructor_probe.verify()
+    signed_integer_scalar_probe.verify()
+
+    with make_context() as ctx, Location.unknown(ctx):
+        expect(
+            str(pto.si8.resolve()) == "si8",
+            "pto.si8 should resolve to a signed 8-bit integer type",
+        )
+        expect(
+            str(pto.ui8.resolve()) == "ui8",
+            "pto.ui8 should resolve to an unsigned 8-bit integer type",
+        )
+        bit_pattern_module = Module.create()
+        with InsertionPoint(bit_pattern_module.body):
+            _ = pto.si32("0xFFFFFFFF")
+            _ = pto.ui32("0xFFFFFFFF")
+            _ = pto.i32("0x80000000")
+        bit_pattern_text = str(bit_pattern_module)
+        expect(
+            "unrealized_conversion_cast" in bit_pattern_text,
+            "signed/unsigned integer bit-pattern constructors should bridge through unrealized_conversion_cast",
+        )
+        expect(
+            "arith.constant -1 : i32" in bit_pattern_text,
+            "pto.si32/ui32 bit-pattern initialization should materialize the expected signless constant payload",
+        )
+        expect(
+            "arith.constant -2147483648 : i32" in bit_pattern_text,
+            "pto.i32 bit-pattern initialization should materialize the documented signless bit pattern",
+        )
 
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
@@ -557,6 +659,18 @@ def main() -> None:
     expect("arith.divf" in runtime_scalar_text, "runtime float / should lower to arith.divf")
     expect("arith.maximumf" in runtime_scalar_text, "scalar.max(float, float) should lower to arith.maximumf")
     expect("math.exp" in runtime_scalar_text, "scalar.exp(...) should lower to math.exp")
+
+    signed_integer_scalar_text = signed_integer_scalar_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(signed_integer_scalar_text, "signed integer scalar specialization")
+    expect(
+        "builtin.unrealized_conversion_cast" in signed_integer_scalar_text,
+        "signed/unsigned scalar lowering should bridge signless arith values through unrealized_conversion_cast",
+    )
+    expect("arith.addi" in signed_integer_scalar_text, "signed/unsigned scalar addition should lower through arith.addi")
+    expect("arith.maxsi" in signed_integer_scalar_text, "signed scalar max should lower through arith.maxsi")
+    expect("arith.maxui" in signed_integer_scalar_text, "unsigned scalar max should lower through arith.maxui")
+    expect("arith.cmpi sgt" in signed_integer_scalar_text, "signed scalar cmp should preserve signed predicate")
+    expect("arith.cmpi ugt" in signed_integer_scalar_text, "unsigned scalar cmp should preserve unsigned predicate")
     expect("pto.store" in runtime_scalar_text, "scalar.store(...) should lower to pto.store")
 
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
@@ -637,6 +751,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(public_surface_text, "public surface export specialization")
     compile_time_query_text = compile_time_query_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
+    eager_scalar_text = eager_scalar_constructor_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(eager_scalar_text, "eager scalar constructor specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")

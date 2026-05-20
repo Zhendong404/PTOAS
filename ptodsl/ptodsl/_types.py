@@ -22,10 +22,13 @@ the actual type is materialised later by the ``@pto.jit`` decorator.
 from ._bootstrap import make_context  # ensure MLIR is on sys.path
 
 from mlir.dialects import pto as _pto
+from mlir.dialects import arith
+from mlir.dialects.builtin import UnrealizedConversionCastOp
 from mlir.ir import (
     BF16Type,
     F16Type,
     F32Type,
+    FloatAttr,
     IndexType,
     IntegerType,
     ShapedType,
@@ -65,6 +68,15 @@ class _DType:
 
     def resolve(self) -> Type:
         return self._factory()
+
+    def __call__(self, value):
+        target_type = self.resolve()
+        kind = _classify_scalar_type(target_type)
+        if kind == "float":
+            return arith.ConstantOp(target_type, _parse_float_attr(target_type, value)).result
+        if kind == "integer":
+            return _materialize_integer_literal(target_type, value)
+        raise TypeError(f"unsupported eager constructor target type {target_type}")
 
     def __repr__(self):
         return f"<pto.dtype {self._factory}>"
@@ -145,6 +157,123 @@ def _resolve(dtype) -> Type:
     return dtype  # already an mlir.ir.Type
 
 
+def _classify_scalar_type(type_obj):
+    if F32Type.isinstance(type_obj) or F16Type.isinstance(type_obj) or BF16Type.isinstance(type_obj):
+        return "float"
+    if IndexType.isinstance(type_obj) or IntegerType.isinstance(type_obj):
+        return "integer"
+    return None
+
+
+def _integer_signedness(type_obj):
+    if not IntegerType.isinstance(type_obj):
+        raise TypeError(f"expected integer type, got {type_obj}")
+    text = str(type_obj)
+    if text.startswith("si"):
+        return "signed"
+    if text.startswith("ui"):
+        return "unsigned"
+    return "signless"
+
+
+def _signless_integer_type(type_obj):
+    if not IntegerType.isinstance(type_obj):
+        raise TypeError(f"expected integer type, got {type_obj}")
+    return IntegerType.get_signless(IntegerType(type_obj).width)
+
+
+def _strip_integer_signedness(value):
+    value_type = getattr(value, "type", None)
+    if value_type is None or not IntegerType.isinstance(value_type):
+        return value
+    signless_type = _signless_integer_type(value_type)
+    if value_type == signless_type:
+        return value
+    return UnrealizedConversionCastOp([signless_type], [value]).results[0]
+
+
+def _restore_integer_signedness(value, target_type):
+    if not IntegerType.isinstance(target_type):
+        raise TypeError(f"expected integer target type, got {target_type}")
+    signless_type = _signless_integer_type(target_type)
+    if target_type == signless_type:
+        return value
+    return UnrealizedConversionCastOp([target_type], [value]).results[0]
+
+
+def _materialize_integer_literal(target_type, value):
+    if not IntegerType.isinstance(target_type):
+        raise TypeError(f"unsupported eager integer constructor target type {target_type}")
+    signless_type = _signless_integer_type(target_type)
+    raw_value = _parse_integer_value(value, target_type=target_type)
+    constant = arith.ConstantOp(signless_type, raw_value).result
+    if target_type == signless_type:
+        return constant
+    return _restore_integer_signedness(constant, target_type)
+
+
+def _parse_integer_value(value, *, target_type=None):
+    if isinstance(value, bool):
+        raise TypeError("eager scalar constructors do not accept bool values")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        return _parse_integer_text(text)
+    raise TypeError(f"cannot materialize {value!r} as an integer constant of type {target_type}")
+
+
+def _parse_integer_text(text: str):
+    if text.startswith(("0x", "0X", "-0x", "-0X")):
+        return int(text, 16)
+    return int(text, 0)
+
+
+def _parse_float_attr(target_type, value):
+    if isinstance(value, bool):
+        raise TypeError("eager scalar constructors do not accept bool values")
+    if isinstance(value, str):
+        text = value.strip()
+        lower = text.lower()
+        if lower in {"inf", "+inf", "-inf", "nan"}:
+            numeric = float(lower)
+        elif text.startswith(("0x", "0X")):
+            return _float_attr_from_bit_pattern(target_type, text)
+        else:
+            numeric = float(text)
+    else:
+        numeric = float(value)
+    return FloatAttr.get(target_type, numeric)
+
+
+def _float_attr_from_bit_pattern(target_type, text):
+    import math
+    import struct
+
+    if F16Type.isinstance(target_type):
+        bits = int(text, 16) & 0xFFFF
+        as_bytes = bits.to_bytes(2, byteorder="little", signed=False)
+        numeric = struct.unpack("<e", as_bytes)[0]
+        if math.isnan(numeric):
+            numeric = float("nan")
+        return FloatAttr.get(target_type, numeric)
+    if BF16Type.isinstance(target_type):
+        bits = int(text, 16) & 0xFFFF
+        as_bytes = bits.to_bytes(2, byteorder="little", signed=False) + b"\x00\x00"
+        numeric = struct.unpack("<f", as_bytes)[0]
+        if math.isnan(numeric):
+            numeric = float("nan")
+        return FloatAttr.get(target_type, numeric)
+    if F32Type.isinstance(target_type):
+        bits = int(text, 16) & 0xFFFFFFFF
+        as_bytes = bits.to_bytes(4, byteorder="little", signed=False)
+        numeric = struct.unpack("<f", as_bytes)[0]
+        if math.isnan(numeric):
+            numeric = float("nan")
+        return FloatAttr.get(target_type, numeric)
+    raise TypeError(f"bit-pattern float literals are not supported for {target_type}")
+
+
 def _normalize_address_space(space):
     if isinstance(space, str):
         return _ADDR_SPACE.get(space)
@@ -153,16 +282,34 @@ def _normalize_address_space(space):
     return None
 
 
+def _int_descriptor(width: int, signedness: str):
+    if signedness == "signless":
+        return _DType(lambda: IntegerType.get_signless(width))
+    if signedness == "signed":
+        return _DType(lambda: IntegerType.get_signed(width))
+    if signedness == "unsigned":
+        return _DType(lambda: IntegerType.get_unsigned(width))
+    raise ValueError(f"unsupported integer signedness {signedness!r}")
+
+
 # ── Scalar dtype singletons ───────────────────────────────────────────────────
 
 float32 = _DType(F32Type.get)
 float16 = _DType(F16Type.get)
 bf16    = _DType(BF16Type.get)
-int1    = _DType(lambda: IntegerType.get_signless(1))
-int8    = _DType(lambda: IntegerType.get_signless(8))
-int16   = _DType(lambda: IntegerType.get_signless(16))
-int32   = _DType(lambda: IntegerType.get_signless(32))
-int64   = _DType(lambda: IntegerType.get_signless(64))
+int1    = _int_descriptor(1, "signless")
+int8    = _int_descriptor(8, "signless")
+int16   = _int_descriptor(16, "signless")
+int32   = _int_descriptor(32, "signless")
+int64   = _int_descriptor(64, "signless")
+si8     = _int_descriptor(8, "signed")
+si16    = _int_descriptor(16, "signed")
+si32    = _int_descriptor(32, "signed")
+si64    = _int_descriptor(64, "signed")
+ui8     = _int_descriptor(8, "unsigned")
+ui16    = _int_descriptor(16, "unsigned")
+ui32    = _int_descriptor(32, "unsigned")
+ui64    = _int_descriptor(64, "unsigned")
 index   = _DType(IndexType.get)
 
 
@@ -226,7 +373,11 @@ def part_tensor_view_type(rank: int, elem) -> Type:
 
 __all__ = [
     "_DType", "_resolve",
-    "float32", "float16", "bf16", "int1", "int8", "int16", "int32", "int64", "index",
+    "float32", "float16", "bf16",
+    "int1", "int8", "int16", "int32", "int64",
+    "si8", "si16", "si32", "si64",
+    "ui8", "ui16", "ui32", "ui64",
+    "index",
     "ptr", "vreg_type", "mask_type",
     "tile_buf_type", "tensor_view_type", "part_tensor_view_type",
 ]

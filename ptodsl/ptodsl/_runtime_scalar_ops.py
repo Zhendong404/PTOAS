@@ -9,17 +9,16 @@
 
 from __future__ import annotations
 
+from ._types import (
+    _integer_signedness,
+    _materialize_integer_literal,
+    _restore_integer_signedness,
+    _strip_integer_signedness,
+)
+
 from mlir.dialects import arith
 from mlir.ir import BF16Type, F16Type, F32Type, FloatAttr, IndexType, IntegerType
 
-
-_INTEGER_BINARY_OPS = {
-    "add": arith.AddIOp,
-    "sub": arith.SubIOp,
-    "mul": arith.MulIOp,
-    "floordiv": arith.FloorDivSIOp,
-    "mod": arith.RemSIOp,
-}
 
 _FLOAT_BINARY_OPS = {
     "add": arith.AddFOp,
@@ -33,10 +32,17 @@ def emit_runtime_binary_op(op_name: str, lhs, rhs):
     """Lower one authored runtime scalar binary operator."""
     lhs, rhs, kind = normalize_runtime_binary_operands(lhs, rhs)
     if kind in {"index", "integer"}:
-        op_cls = _INTEGER_BINARY_OPS.get(op_name)
+        op_cls = _integer_binary_op(op_name, lhs.type)
         if op_cls is None:
             raise TypeError(f"runtime scalar operator '{op_name}' is not supported for integer/index values")
-        return op_cls(lhs, rhs).result
+        authored_type = lhs.type
+        if kind == "integer":
+            lhs = _strip_integer_signedness(lhs)
+            rhs = _strip_integer_signedness(rhs)
+        result = op_cls(lhs, rhs).result
+        if kind == "index":
+            return result
+        return _restore_runtime_integer_result(result, authored_type)
     if kind == "float":
         op_cls = _FLOAT_BINARY_OPS.get(op_name)
         if op_cls is None:
@@ -51,7 +57,14 @@ def emit_runtime_max(lhs, rhs):
     if kind == "float":
         return arith.MaximumFOp(lhs, rhs).result
     if kind == "integer":
-        return arith.MaxSIOp(lhs, rhs).result
+        signedness = _integer_signedness(lhs.type)
+        signless_lhs = _strip_integer_signedness(lhs)
+        signless_rhs = _strip_integer_signedness(rhs)
+        if signedness == "unsigned":
+            result = arith.MaxUIOp(signless_lhs, signless_rhs).result
+        else:
+            result = arith.MaxSIOp(signless_lhs, signless_rhs).result
+        return _restore_integer_signedness(result, lhs.type)
     if kind == "index":
         cond = arith.CmpIOp(arith.CmpIPredicate.sge, lhs, rhs).result
         return arith.SelectOp(cond, lhs, rhs).result
@@ -82,11 +95,11 @@ def _reconcile_typed_operands(lhs, rhs):
         return lhs, rhs, classify_runtime_scalar_type(lhs_type)
 
     if IndexType.isinstance(lhs_type) and IntegerType.isinstance(rhs_type):
-        rhs = arith.IndexCastOp(IndexType.get(), rhs).result
+        rhs = arith.IndexCastOp(IndexType.get(), _strip_integer_signedness(rhs)).result
         return lhs, rhs, "index"
 
     if IntegerType.isinstance(lhs_type) and IndexType.isinstance(rhs_type):
-        lhs = arith.IndexCastOp(IndexType.get(), lhs).result
+        lhs = arith.IndexCastOp(IndexType.get(), _strip_integer_signedness(lhs)).result
         return lhs, rhs, "index"
 
     raise TypeError(
@@ -102,6 +115,8 @@ def _materialize_literal(value, anchor_type):
     kind = classify_runtime_scalar_type(anchor_type)
     if kind == "float":
         return arith.ConstantOp(anchor_type, FloatAttr.get(anchor_type, float(value))).result
+    if kind == "index":
+        return arith.ConstantOp(anchor_type, int(value)).result
 
     if isinstance(value, float):
         raise TypeError(
@@ -109,7 +124,7 @@ def _materialize_literal(value, anchor_type):
             f"against non-floating operand type {anchor_type}"
         )
 
-    return arith.ConstantOp(anchor_type, int(value)).result
+    return _materialize_integer_literal(anchor_type, value)
 
 
 def classify_runtime_scalar_type(type_obj):
@@ -124,6 +139,53 @@ def classify_runtime_scalar_type(type_obj):
 
 def _is_mlir_value(value) -> bool:
     return not isinstance(value, (bool, int, float)) and hasattr(value, "type")
+
+
+def _restore_runtime_integer_result(result, authored_type):
+    if IndexType.isinstance(authored_type):
+        return result
+    if not IntegerType.isinstance(authored_type):
+        return result
+    return _restore_integer_signedness(result, authored_type)
+
+
+def emit_runtime_cmpi(predicate, lhs, rhs):
+    """Lower one authored runtime scalar integer/index comparison."""
+    lhs, rhs, kind = normalize_runtime_binary_operands(lhs, rhs)
+    if kind not in {"index", "integer"}:
+        raise TypeError(f"runtime scalar comparison expects integer/index operands, got {lhs.type} and {rhs.type}")
+    if kind == "integer":
+        lhs = _strip_integer_signedness(lhs)
+        rhs = _strip_integer_signedness(rhs)
+    return arith.CmpIOp(predicate, lhs, rhs).result
+
+
+def _integer_binary_op(op_name: str, authored_type):
+    if IndexType.isinstance(authored_type):
+        return {
+            "add": arith.AddIOp,
+            "sub": arith.SubIOp,
+            "mul": arith.MulIOp,
+            "floordiv": arith.FloorDivSIOp,
+            "mod": arith.RemSIOp,
+        }.get(op_name)
+
+    signedness = _integer_signedness(authored_type)
+    if op_name in {"add", "sub", "mul"}:
+        return {
+            "add": arith.AddIOp,
+            "sub": arith.SubIOp,
+            "mul": arith.MulIOp,
+        }[op_name]
+    if op_name == "floordiv":
+        if signedness == "unsigned":
+            return arith.DivUIOp
+        return arith.FloorDivSIOp
+    if op_name == "mod":
+        if signedness == "unsigned":
+            return arith.RemUIOp
+        return arith.RemSIOp
+    return None
 
 
 __all__ = [
