@@ -622,6 +622,8 @@ def public_mask_surface_probe():
 
     packed = pto.ppack(mask32_full, pto.PredicatePart.LOWER)
     unpacked = pto.punpack(packed, pto.PredicatePart.LOWER)
+    packed_hi = pto.ppack(mask32_full, pto.PredicatePart.HIGHER)
+    unpacked_hi = pto.punpack(packed_hi, pto.PredicatePart.HIGHER)
     lo8, hi8 = pto.pintlv_b8(mask8_full, mask8_prefix)
     dlo8, dhi8 = pto.pdintlv_b8(lo8, hi8)
     lo16, hi16 = pto.pintlv_b16(mask16_full, mask16_prefix)
@@ -658,7 +660,10 @@ def public_mask_surface_probe():
     _ = flipped
     _ = inverted
     _ = selected
+    _ = packed
     _ = unpacked
+    _ = packed_hi
+    _ = unpacked_hi
     _ = dlo8
     _ = dhi8
     _ = dlo16
@@ -1409,6 +1414,10 @@ def main() -> None:
     expect("pto.psel" in mask_surface_text, "psel(...) should lower to pto.psel")
     expect("pto.ppack" in mask_surface_text, "ppack(...) should lower to pto.ppack")
     expect("pto.punpack" in mask_surface_text, "punpack(...) should lower to pto.punpack")
+    expect(
+        mask_surface_text.count('"HIGHER"') >= 2,
+        "ppack/punpack should accept PredicatePart.HIGHER and preserve it in MLIR",
+    )
     expect("pto.pintlv_b8" in mask_surface_text, "pintlv_b8(...) should lower to pto.pintlv_b8")
     expect("pto.pintlv_b16" in mask_surface_text, "pintlv_b16(...) should lower to pto.pintlv_b16")
     expect("pto.pintlv_b32" in mask_surface_text, "pintlv_b32(...) should lower to pto.pintlv_b32")

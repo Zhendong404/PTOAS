@@ -493,6 +493,14 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "mask_ops.reorg": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def mask_ops_reorg_probe():
+            mask32 = pto.pset_b32(pto.MaskPattern.ALL)
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "sync_ops.basic": _fixture(
         f"""
         @pto.jit(target="a5")

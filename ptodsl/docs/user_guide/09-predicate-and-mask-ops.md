@@ -219,6 +219,12 @@ mask32 = pto.pbitcast(mask16, pto.mask_b32)
 
 **Description**: Widening unpack — reads the selected half of the source, zero-extends each 1-bit element into a 2-bit group in the result.
 
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"mask_ops.reorg","symbol":"mask_ops_reorg_probe","compile":{}} -->
+```python
+packed_hi = pto.ppack(mask32, pto.PredicatePart.HIGHER)
+unpacked_hi = pto.punpack(packed_hi, pto.PredicatePart.HIGHER)
+```
+
 ---
 
 #### `pto.pintlv_b8(src0: pto.mask_b8, src1: pto.mask_b8) -> (pto.mask_b8, pto.mask_b8)`
