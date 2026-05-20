@@ -61,6 +61,16 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "type_system.low_precision_types": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def type_system_low_precision_types_probe(
+            *,
+            BLOCK: pto.constexpr = 128,
+        ):
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "type_system.tensor_view": _fixture(
         f"""
         @pto.jit(target="a5")

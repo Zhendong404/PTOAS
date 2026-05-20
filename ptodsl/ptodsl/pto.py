@@ -23,12 +23,13 @@ internally as ``_pto`` (``from mlir.dialects import pto as _pto``).
 # ── Types ─────────────────────────────────────────────────────────────────────
 from ._types import (           # noqa: F401
     float32, float16, bf16,
+    f8e4m3, f8e5m2, hif8, f4e1m2x2, f4e2m1x2,
     int1, int8, int16, int32, int64,
     si8, si16, si32, si64,
     ui8, ui16, ui32, ui64,
     index,
     ptr, vreg_type, mask_type,
-    tile_buf_type, tensor_view_type, part_tensor_view_type,
+    tile_buf_type,
     _resolve,
 )
 from ._surface_types import (   # noqa: F401

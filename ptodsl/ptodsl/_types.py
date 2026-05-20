@@ -28,6 +28,8 @@ from mlir.ir import (
     BF16Type,
     F16Type,
     F32Type,
+    Float8E4M3FNType,
+    Float8E5M2Type,
     FloatAttr,
     IndexType,
     IntegerType,
@@ -88,7 +90,7 @@ class _PtrDescriptor(_DType):
         self._space = space
 
     def resolve(self) -> Type:
-        elem = _resolve(self._elem)
+        elem = _ensure_non_storage_only_dtype(self._elem, context="pto.ptr(...)")
         space_enum = _normalize_address_space(self._space)
         if space_enum is None:
             raise ValueError(
@@ -120,7 +122,7 @@ class _VRegDescriptor(_DType):
         self._elem = elem
 
     def resolve(self) -> Type:
-        elem = _resolve(self._elem)
+        elem = _ensure_non_storage_only_dtype(self._elem, context="pto.vreg_type(...)")
         vreg_type_cls = getattr(_pto, "VRegType", None)
         if vreg_type_cls is None:
             raise TypeError(
@@ -163,6 +165,63 @@ def _classify_scalar_type(type_obj):
     if IndexType.isinstance(type_obj) or IntegerType.isinstance(type_obj):
         return "integer"
     return None
+
+
+def _isinstance_pto_type(type_obj, type_name: str) -> bool:
+    cls = getattr(_pto, type_name, None)
+    if cls is None:
+        return False
+    try:
+        return cls.isinstance(type_obj)
+    except Exception:
+        return False
+
+
+def _classify_storage_dtype(type_obj):
+    if _classify_scalar_type(type_obj) is not None:
+        return "compute"
+    if Float8E4M3FNType.isinstance(type_obj) or Float8E5M2Type.isinstance(type_obj):
+        return "storage_only"
+    if any(_isinstance_pto_type(type_obj, name) for name in ("HiF8Type", "F4E1M2x2Type", "F4E2M1x2Type")):
+        return "storage_only"
+    return "other"
+
+
+def _is_storage_only_dtype(type_obj):
+    return _classify_storage_dtype(type_obj) == "storage_only"
+
+
+def _is_storage_only_authored_dtype(dtype) -> bool:
+    if isinstance(dtype, _DType):
+        return dtype in _STORAGE_ONLY_DTYPE_DESCRIPTORS
+    return _is_storage_only_dtype(_resolve(dtype))
+
+
+def _ensure_tensor_storage_dtype(dtype, *, context: str):
+    type_obj = _resolve(dtype)
+    category = _classify_storage_dtype(type_obj)
+    if category not in {"compute", "storage_only"}:
+        raise TypeError(f"{context} does not support element type {type_obj}")
+    return type_obj
+
+
+def _ensure_non_storage_only_dtype(dtype, *, context: str):
+    type_obj = _resolve(dtype)
+    if _is_storage_only_dtype(type_obj):
+        raise TypeError(
+            f"{context} does not accept storage-only low-precision type {type_obj}; "
+            "these dtypes are only supported in Tile / TensorView / PartitionTensorView construction"
+        )
+    return type_obj
+
+
+def _ensure_non_storage_only_authored_dtype(dtype, *, context: str):
+    if _is_storage_only_authored_dtype(dtype):
+        raise TypeError(
+            f"{context} does not accept storage-only low-precision types; "
+            "these dtypes are only supported in Tile / TensorView / PartitionTensorView construction"
+        )
+    return dtype
 
 
 def _integer_signedness(type_obj):
@@ -297,6 +356,18 @@ def _int_descriptor(width: int, signedness: str):
 float32 = _DType(F32Type.get)
 float16 = _DType(F16Type.get)
 bf16    = _DType(BF16Type.get)
+f8e4m3  = _DType(Float8E4M3FNType.get)
+f8e5m2  = _DType(Float8E5M2Type.get)
+hif8    = _DType(lambda: _pto.HiF8Type.get())
+f4e1m2x2 = _DType(lambda: _pto.F4E1M2x2Type.get())
+f4e2m1x2 = _DType(lambda: _pto.F4E2M1x2Type.get())
+_STORAGE_ONLY_DTYPE_DESCRIPTORS = (
+    f8e4m3,
+    f8e5m2,
+    hif8,
+    f4e1m2x2,
+    f4e2m1x2,
+)
 int1    = _int_descriptor(1, "signless")
 int8    = _int_descriptor(8, "signless")
 int16   = _int_descriptor(16, "signless")
@@ -344,7 +415,7 @@ def tile_buf_type(shape, dtype, valid_shape, *,
 
     Requires an active MLIR context.
     """
-    elem = _resolve(dtype)
+    elem = _ensure_tensor_storage_dtype(dtype, context="pto.tile_buf_type(...)")
     space_enum = _normalize_address_space(address_space)
     if space_enum is None:
         raise ValueError(
@@ -362,18 +433,22 @@ def tile_buf_type(shape, dtype, valid_shape, *,
 
 def tensor_view_type(rank: int, elem) -> Type:
     """``!pto.tensor_view<?x…xelem>`` with *rank* all-dynamic dims."""
-    return _pto.TensorViewType.get(rank, _resolve(elem))
+    return _pto.TensorViewType.get(rank, _ensure_tensor_storage_dtype(elem, context="pto.tensor_view_type(...)"))
 
 
 def part_tensor_view_type(rank: int, elem) -> Type:
     """``!pto.partition_tensor_view<?x…xelem>`` with *rank* all-dynamic dims."""
     kDynamic = ShapedType.get_dynamic_size()
-    return _pto.PartitionTensorViewType.get([kDynamic] * rank, _resolve(elem))
+    return _pto.PartitionTensorViewType.get(
+        [kDynamic] * rank,
+        _ensure_tensor_storage_dtype(elem, context="pto.part_tensor_view_type(...)"),
+    )
 
 
 __all__ = [
     "_DType", "_resolve",
     "float32", "float16", "bf16",
+    "f8e4m3", "f8e5m2", "hif8", "f4e1m2x2", "f4e2m1x2",
     "int1", "int8", "int16", "int32", "int64",
     "si8", "si16", "si32", "si64",
     "ui8", "ui16", "ui32", "ui64",

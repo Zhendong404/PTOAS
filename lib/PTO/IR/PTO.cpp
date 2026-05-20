@@ -2255,12 +2255,6 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
 
 LogicalResult AllocTileOp::verify() {
   auto ty = getResult().getType(); // TileBufType
-
-  Type elemTy = ty.getElementType();
-  if (isPTOLowPrecisionType(elemTy))
-    return emitOpError() << "result dtype " << elemTy
-                         << " is not supported by pto.alloc_tile yet";
-
   if (failed(verifyTileBufLayoutConstraints(*this, ty, "result")))
     return failure();
 

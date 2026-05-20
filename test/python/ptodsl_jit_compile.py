@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
 from ptodsl import pto
+from ptodsl import _types as pto_types
 from ptodsl._bootstrap import make_context
 from ptodsl._tracing import current_session
 from mlir.ir import InsertionPoint, Location, Module
@@ -23,6 +24,22 @@ from mlir.ir import InsertionPoint, Location, Module
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def expect_raises(exc_type, func, message_substring: str | None = None) -> Exception:
+    try:
+        func()
+    except exc_type as exc:
+        if message_substring is not None and message_substring not in str(exc):
+            raise AssertionError(
+                f"expected {exc_type.__name__} containing {message_substring!r}, got {exc!r}"
+            ) from exc
+        return exc
+    except Exception as exc:
+        raise AssertionError(
+            f"expected {exc_type.__name__}, got {exc.__class__.__name__}: {exc}"
+        ) from exc
+    raise AssertionError(f"expected {exc_type.__name__} to be raised")
 
 
 def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:
@@ -440,6 +457,16 @@ def signed_integer_scalar_probe():
     _ = u_cmp
 
 
+@pto.jit(target="a5")
+def low_precision_storage_probe():
+    lp_tile = pto.alloc_tile(shape=[128, 64], dtype=pto.f8e4m3)
+    lp_tile_hif8 = pto.alloc_tile(shape=[64, 64], dtype=pto.hif8)
+    lp_tile_ty = pto.tile_buf_type([16, 16], pto.f4e2m1x2, [16, 16])
+    _ = lp_tile
+    _ = lp_tile_hif8
+    _ = lp_tile_ty
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -450,6 +477,11 @@ class _FakeTensor:
 
 def main() -> None:
     expected_public_exports = [
+        "f8e4m3",
+        "f8e5m2",
+        "hif8",
+        "f4e1m2x2",
+        "f4e2m1x2",
         "si8",
         "si16",
         "si32",
@@ -523,6 +555,7 @@ def main() -> None:
     compile_time_query_probe.verify()
     eager_scalar_constructor_probe.verify()
     signed_integer_scalar_probe.verify()
+    low_precision_storage_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -551,6 +584,74 @@ def main() -> None:
             "arith.constant -2147483648 : i32" in bit_pattern_text,
             "pto.i32 bit-pattern initialization should materialize the documented signless bit pattern",
         )
+        expect(
+            str(pto.f8e4m3.resolve()) == "f8E4M3FN",
+            "pto.f8e4m3 should resolve to the public E4M3 float8 type",
+        )
+        expect(
+            "hif8" in str(pto.hif8.resolve()),
+            "pto.hif8 should resolve to the public HiF8 type",
+        )
+        expect(
+            "f4E1M2x2" in str(pto.f4e1m2x2.resolve()),
+            "pto.f4e1m2x2 should resolve to the packed 4-bit float type",
+        )
+
+        lp_tile_ty = pto.tile_buf_type([16, 16], pto.hif8, [16, 16])
+        lp_tv_ty = pto_types.tensor_view_type(2, pto.f8e4m3)
+        lp_part_ty = pto_types.part_tensor_view_type(2, pto.f4e2m1x2)
+        expect(
+            "hif8" in str(lp_tile_ty.element_type),
+            "low-precision tile buffers should preserve their authored element type",
+        )
+        expect(
+            str(lp_tv_ty.element_type) == "f8E4M3FN",
+            "internal tensor-view type helper should preserve low-precision element types",
+        )
+        expect(
+            "f4E2M1x2" in str(lp_part_ty.element_type),
+            "internal partition tensor-view type helper should preserve low-precision element types",
+        )
+
+        expect_raises(
+            TypeError,
+            lambda: pto.ptr(pto.hif8).resolve(),
+            "Tile / TensorView / PartitionTensorView construction",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.vreg_type(64, pto.f8e4m3).resolve(),
+            "Tile / TensorView / PartitionTensorView construction",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.hif8(1.0),
+            "unsupported eager constructor target type",
+        )
+        expect_raises(
+            TypeError,
+            lambda: pto.f8e4m3(1.0),
+            "unsupported eager constructor target type",
+        )
+
+    expect_raises(
+        TypeError,
+        lambda: pto.tensor_spec(rank=2, dtype=pto.hif8),
+        "Tile / TensorView / PartitionTensorView construction",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.tensor_spec(rank=2, dtype=pto.f8e4m3),
+        "Tile / TensorView / PartitionTensorView construction",
+    )
+    expect(
+        not hasattr(pto, "tensor_view_type"),
+        "pto.tensor_view_type should remain an internal helper and not be exported on the public namespace",
+    )
+    expect(
+        not hasattr(pto, "part_tensor_view_type"),
+        "pto.part_tensor_view_type should remain an internal helper and not be exported on the public namespace",
+    )
 
     default_compiled = host_vec_copy.compile()
     explicit_default = host_vec_copy.compile(BLOCK=128)
@@ -753,6 +854,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(compile_time_query_text, "compile-time query specialization")
     eager_scalar_text = eager_scalar_constructor_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(eager_scalar_text, "eager scalar constructor specialization")
+    low_precision_storage_text = low_precision_storage_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(low_precision_storage_text, "low-precision storage specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -765,6 +868,8 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l0c_ub" in public_surface_text, "mte_l0c_ub(...) should lower to pto.mte_l0c_ub")
     expect("pto.mad" in public_surface_text, "mad(...) should lower to pto.mad")
+    expect("!pto.tile_buf<vec, 128x64xf8E4M3FN>" in low_precision_storage_text, "low-precision tile allocation should preserve float8 element types in MLIR")
+    expect("!pto.tile_buf<vec, 64x64x!pto.hif8>" in low_precision_storage_text, "low-precision tile allocation should preserve HiF8 element types in MLIR")
 
     try:
         block64[1, None]

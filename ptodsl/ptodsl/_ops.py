@@ -40,6 +40,7 @@ from ._surface_values import (
     wrap_surface_value,
 )
 from ._types import (
+    _isinstance_pto_type,
     _integer_signedness,
     _materialize_integer_literal,
     _resolve,
@@ -56,6 +57,8 @@ from mlir.ir import (
     BF16Type,
     F16Type,
     F32Type,
+    Float8E4M3FNType,
+    Float8E5M2Type,
     FloatAttr,
     IndexType,
     IntegerType,
@@ -640,16 +643,9 @@ def _infer_vreg_type_from_tile_slice(tile_slice: TileSliceValue):
 
 
 def _elements_per_vreg(elem_type):
-    if F32Type.isinstance(elem_type):
-        bytewidth = 4
-    elif any(cls.isinstance(elem_type) for cls in (F16Type, BF16Type)):
-        bytewidth = 2
-    elif IntegerType.isinstance(elem_type):
-        width = IntegerType(elem_type).width
-        if width % 8 != 0:
-            raise TypeError(f"vlds/vsts tile-slice sugar does not support sub-byte integer element type {elem_type}")
-        bytewidth = width // 8
-    else:
+    try:
+        bytewidth = _element_bytewidth(elem_type)
+    except TypeError as exc:
         raise TypeError(f"vlds/vsts tile-slice sugar does not support element type {elem_type}")
     return 256 // bytewidth
 
@@ -681,6 +677,10 @@ def _element_bytewidth(elem_type):
         return 4
     if any(cls.isinstance(elem_type) for cls in (F16Type, BF16Type)):
         return 2
+    if Float8E4M3FNType.isinstance(elem_type) or Float8E5M2Type.isinstance(elem_type):
+        return 1
+    if any(_isinstance_pto_type(elem_type, name) for name in ("HiF8Type", "F4E1M2x2Type", "F4E2M1x2Type")):
+        return 1
     if IntegerType.isinstance(elem_type):
         width = IntegerType(elem_type).width
         if width % 8 != 0:

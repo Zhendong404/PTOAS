@@ -38,7 +38,7 @@ z: pto.i32 = 1024
 
 ### Low-precision types (storage only)
 
-The following types are **storage-only**: they can be used as buffer element types (tiles, tensors, pointers) for storage and data movement, but they **cannot** be used to construct scalars or vectors. Use them to reduce memory bandwidth; convert to a compute-capable type before arithmetic.
+The following types are **storage-only**: they may only appear as element types when constructing `Tile`, `TensorView`, and `PartitionTensorView` values for storage and data movement. They **cannot** be used to construct scalars, vectors, pointers, or `tensor_spec(...)` ABI contracts. Use them to reduce memory bandwidth; convert to a compute-capable type before arithmetic.
 
 | DSL Type | Description |
 |----------|-------------|
@@ -47,6 +47,16 @@ The following types are **storage-only**: they can be used as buffer element typ
 | `pto.f4e2m1x2` | 4-bit float (E2M1, 2-wide packed) |
 | `pto.f8e4m3` | 8-bit float (E4M3) |
 | `pto.f8e5m2` | 8-bit float (E5M2) |
+
+These types can be used when constructing on-chip tiles and view descriptors:
+
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.low_precision_types","symbol":"type_system_low_precision_types_probe","compile":{}} -->
+```python
+lp_tile = pto.alloc_tile(shape=[128, 64], dtype=pto.f8e4m3)
+fp4_tile = pto.alloc_tile(shape=[64, 32], dtype=pto.f4e2m1x2)
+```
+
+Constructing a scalar, vector, pointer, or host tensor ABI contract with a low-precision type is **not supported** — `pto.f8e4m3(1.0)`, `pto.vreg_type(64, pto.f8e4m3)`, `pto.ptr(pto.f8e4m3)`, and `pto.tensor_spec(rank=2, dtype=pto.f8e4m3)` will raise an error. Load data as the storage type, then convert to a compute-capable type before arithmetic.
 
 ### Integer literal guidance
 
@@ -202,6 +212,8 @@ s_acc = pto.alloc_tile(shape=[Br, Bc], dtype=pto.f32, memory_space=pto.MemorySpa
 For narrow logical column tiles such as `[Br, 1]`, author them with
 `blayout="ColMajor"`. Row-major none-box tiles are validated against a 32-byte
 physical row-alignment rule.
+
+For packed types (`pto.f4e1m2x2`, `pto.f4e2m1x2`), `shape` dimensions refer to the number of **packed** elements, each containing 2 f4 values. For example, `alloc_tile(shape=[128, 64], dtype=pto.f4e1m2x2)` allocates a 128×64 tile of packed elements, holding 128×64×2 individual 4-bit floats. The same applies to TensorView shapes when the tensor spec uses a packed dtype.
 
 ### Tile attributes
 
