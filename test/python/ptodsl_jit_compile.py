@@ -615,6 +615,58 @@ def public_sync_surface_probe():
     pto.wait_intra_core(pto.Pipe.V, dynamic_event)
 
 
+@pto.jit(target="a5")
+def public_data_movement_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    gm_src = pto.castptr(zero_u64, pto.ptr(pto.f16, "gm"))
+    gm_dst = pto.castptr(zero_u64, pto.ptr(pto.f16, "gm"))
+    ub_src = pto.castptr(zero_u64, pto.ptr(pto.f16, "ub"))
+    ub_dst = pto.castptr(zero_u64, pto.ptr(pto.f16, "ub"))
+    l1_dst = pto.castptr(zero_u64, pto.ptr(pto.f16, "left"))
+    ub_src_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    ub_dst_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+
+    pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256), loops=[(4, 2048, 2048)])
+    pto.mte_gm_ub(gm_src, ub_dst, 0, 200, nburst=(64, 200, 256), pad=(0.0, 0, 0))
+    pto.mte_ub_gm(ub_src, gm_dst, 256, nburst=(64, 256, 1024))
+    pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
+    pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
+
+    load_align0 = pto.vldas(ub_src)
+    vec0, load_align1 = pto.vldus(ub_src, load_align0)
+    low0, high0 = pto.vldsx2(ub_src, pto.const(0), pto.DeinterleaveDist.DINTLV_B16)
+    store_align0 = pto.init_align()
+    store_align1 = pto.vstur(store_align0, vec0, ub_dst, pto.PostUpdate.OFF)
+    pto.vstar(store_align1, ub_dst)
+
+    store_align2 = pto.init_align()
+    store_align3 = pto.vstus(store_align2, pto.const(32), vec0, ub_dst)
+    pto.vstas(store_align3, ub_dst, pto.const(64))
+
+    vec_f32 = pto.vlds(ub_src_f32, pto.const(0))
+    offsets_i16 = pto.vbitcast(vec0, pto.i16)
+    offsets_i32 = pto.vbitcast(vec_f32, pto.i32)
+    mask16_full = pto.pset_b16(pto.MaskPattern.ALL)
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    gather0 = pto.vgather2(ub_src_f32, offsets_i32, mask32_full)
+    gather1 = pto.vgather2_bc(ub_src_f32, offsets_i32, mask32_full)
+    gatherb = pto.vgatherb(ub_src_f32, offsets_i32, mask32_full)
+    pto.vscatter(gather0, ub_dst_f32, offsets_i32, mask32_full)
+    blocked = pto.vsldb(ub_src, pto.i16(32), pto.i16(0), mask32_full)
+    pto.vsstb(vec0, ub_dst, pto.i16(32), pto.i16(0), mask32_full)
+    pto.vstsx2(low0, high0, ub_dst, pto.const(0), pto.InterleaveDist.INTLV_B16, mask16_full)
+
+    _ = vec0
+    _ = vec_f32
+    _ = load_align1
+    _ = low0
+    _ = high0
+    _ = gather0
+    _ = gather1
+    _ = gatherb
+    _ = blocked
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -651,6 +703,10 @@ def main() -> None:
         "CmpMode",
         "PredicatePart",
         "PredicateDist",
+        "VStoreDist",
+        "DeinterleaveDist",
+        "InterleaveDist",
+        "PostUpdate",
         "AlignType",
         "init_align",
         "plt_b8",
@@ -696,6 +752,24 @@ def main() -> None:
         "wait_flag_dev",
         "set_intra_block",
         "wait_intra_core",
+        "mte_gm_ub",
+        "mte_ub_gm",
+        "mte_ub_ub",
+        "mte_ub_l1",
+        "vldsx2",
+        "vldas",
+        "vldus",
+        "vstsx2",
+        "vgather2",
+        "vgather2_bc",
+        "vgatherb",
+        "vscatter",
+        "vsldb",
+        "vsstb",
+        "vstar",
+        "vstas",
+        "vstur",
+        "vstus",
         "mte_l1_l0a",
         "mte_l1_l0b",
         "mte_l0c_ub",
@@ -763,6 +837,7 @@ def main() -> None:
     public_mask_bitcast_probe.verify()
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
+    public_data_movement_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -1122,6 +1197,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     sync_surface_text = public_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
+    data_movement_surface_text = public_data_movement_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(data_movement_surface_text, "public data movement surface specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")
@@ -1141,6 +1218,24 @@ def main() -> None:
     expect("pto.sync.wait <PIPE_FIX>, 0" in sync_surface_text, "wait_flag_dev(Pipe.FIX, 0) should lower to pto.sync.wait")
     expect("pto.sync.set <PIPE_MTE3>, %c3" in sync_surface_text, "set_intra_block(Pipe.MTE3, dynamic_event) should lower dynamic event ids through pto.sync.set")
     expect("pto.sync.wait <PIPE_V>, %c3" in sync_surface_text, "wait_intra_core(Pipe.V, dynamic_event) should lower dynamic event ids through pto.sync.wait")
+    expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
+    expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
+    expect("pto.mte_ub_ub" in data_movement_surface_text, "public grouped UB->UB wrapper should lower to pto.mte_ub_ub")
+    expect("pto.mte_ub_l1" in data_movement_surface_text, "public grouped UB->L1 wrapper should lower to pto.mte_ub_l1")
+    expect("pto.vldas" in data_movement_surface_text, "vldas(...) should lower to pto.vldas")
+    expect("pto.vldus" in data_movement_surface_text, "vldus(...) should lower to pto.vldus")
+    expect("pto.vldsx2" in data_movement_surface_text, "vldsx2(...) should lower to pto.vldsx2")
+    expect("pto.vstur" in data_movement_surface_text, "vstur(...) should lower to pto.vstur")
+    expect("pto.vstus" in data_movement_surface_text, "vstus(...) should lower to pto.vstus")
+    expect("pto.vstsx2" in data_movement_surface_text, "vstsx2(...) should lower to pto.vstsx2")
+    expect("pto.vgather2" in data_movement_surface_text, "vgather2(...) should lower to pto.vgather2")
+    expect("pto.vgather2_bc" in data_movement_surface_text, "vgather2_bc(...) should lower to pto.vgather2_bc")
+    expect("pto.vgatherb" in data_movement_surface_text, "vgatherb(...) should lower to pto.vgatherb")
+    expect("pto.vscatter" in data_movement_surface_text, "vscatter(...) should lower to pto.vscatter")
+    expect("pto.vsldb" in data_movement_surface_text, "vsldb(...) should lower to pto.vsldb")
+    expect("pto.vsstb" in data_movement_surface_text, "vsstb(...) should lower to pto.vsstb")
+    expect("pto.vstar" in data_movement_surface_text, "vstar(...) should lower to pto.vstar")
+    expect("pto.vstas" in data_movement_surface_text, "vstas(...) should lower to pto.vstas")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l0c_ub" in public_surface_text, "mte_l0c_ub(...) should lower to pto.mte_l0c_ub")
     expect("pto.mad" in public_surface_text, "mad(...) should lower to pto.mad")

@@ -152,6 +152,93 @@ def vlds(src_ptr, offset=None, result_vreg_type=None):
     ).result)
 
 
+def vldas(source):
+    """``pto.vldas`` – prime alignment state for a following unaligned load stream."""
+    return wrap_surface_value(
+        _pto.VldasOp(
+            _pto.AlignType.get(),
+            unwrap_surface_value(source),
+        ).result
+    )
+
+
+def vldus(source, align):
+    """``pto.vldus`` – unaligned vector load threaded through alignment state."""
+    result_type = (
+        _infer_vreg_type_from_tile_slice(source)
+        if isinstance(source, TileSliceValue)
+        else _infer_vreg_type_from_address_source(source)
+    )
+    op = _pto.VldusOp(
+        result_type,
+        _pto.AlignType.get(),
+        unwrap_surface_value(source),
+        unwrap_surface_value(align),
+    )
+    return wrap_surface_value(op.result), wrap_surface_value(op.updated_align)
+
+
+_DEINTERLEAVE_DIST_TOKENS = {"DINTLV_B8", "DINTLV_B16", "DINTLV_B32", "BDINTLV"}
+_INTERLEAVE_DIST_TOKENS = {"INTLV_B8", "INTLV_B16", "INTLV_B32"}
+_VSTORE_DIST_TOKENS = {
+    "NORM_B8", "NORM_B16", "NORM_B32",
+    "1PT_B8", "1PT_B16", "1PT_B32",
+    "PK_B16", "PK_B32", "PK_B64", "PK4_B32",
+    "MRG4CHN_B8", "MRG2CHN_B8", "MRG2CHN_B16",
+}
+
+
+def _normalize_dist_token(dist, *, allowed: set[str], context: str):
+    token = dist
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized.startswith("_"):
+        normalized = normalized[1:]
+    if normalized not in allowed:
+        expected = ", ".join(sorted(allowed))
+        raise ValueError(f"{context} does not support dist {dist!r}; expected one of {expected}")
+    return normalized
+
+
+def vldsx2(source, offset_or_dist, dist=None):
+    """``pto.vldsx2`` – dual vector load with deinterleave."""
+    if isinstance(source, TileSliceValue):
+        if dist is not None:
+            raise TypeError("vldsx2(tile[row, col:], dist) does not accept a separate offset argument")
+        result_type = _infer_vreg_type_from_tile_slice(source)
+        op = _pto.Vldsx2Op(
+            result_type,
+            result_type,
+            unwrap_surface_value(source),
+            _index_zero(),
+            _normalize_dist_token(
+                offset_or_dist,
+                allowed=_DEINTERLEAVE_DIST_TOKENS,
+                context="vldsx2(..., dist)",
+            ),
+        )
+        return wrap_surface_value(op.low), wrap_surface_value(op.high)
+
+    if dist is None:
+        raise TypeError("vldsx2(ptr, offset, dist) requires an explicit offset and dist")
+    result_type = _infer_vreg_type_from_address_source(source)
+    op = _pto.Vldsx2Op(
+        result_type,
+        result_type,
+        unwrap_surface_value(source),
+        _coerce_index(offset_or_dist, context="vldsx2(ptr, offset, dist)"),
+        _normalize_dist_token(
+            dist,
+            allowed=_DEINTERLEAVE_DIST_TOKENS,
+            context="vldsx2(..., dist)",
+        ),
+    )
+    return wrap_surface_value(op.low), wrap_surface_value(op.high)
+
+
 def vbrc_load(src_ptr, offset, result_vreg_type):
     """``pto.vlds {dist="BRC_B32"}`` – broadcast a scalar into all lanes."""
     return wrap_surface_value(
@@ -220,6 +307,144 @@ def vsts_1pt(val, dst_ptr, offset, mask):
     )
 
 
+def vstsx2(low, high, dst_ptr, offset_or_dist, dist_or_mask=None, mask=None):
+    """``pto.vstsx2`` – dual interleaving vector store."""
+    if isinstance(dst_ptr, TileSliceValue):
+        if mask is not None:
+            raise TypeError("vstsx2(low, high, tile[row, col:], dist, mask) does not accept a separate offset argument")
+        _pto.Vstsx2Op(
+            unwrap_surface_value(low),
+            unwrap_surface_value(high),
+            unwrap_surface_value(dst_ptr),
+            _index_zero(),
+            _normalize_dist_token(
+                offset_or_dist,
+                allowed=_INTERLEAVE_DIST_TOKENS,
+                context="vstsx2(..., dist)",
+            ),
+            unwrap_surface_value(dist_or_mask),
+        )
+        return
+
+    if mask is None:
+        raise TypeError("vstsx2(low, high, ptr, offset, dist, mask) requires an explicit offset, dist, and mask")
+    _pto.Vstsx2Op(
+        unwrap_surface_value(low),
+        unwrap_surface_value(high),
+        unwrap_surface_value(dst_ptr),
+        _coerce_index(offset_or_dist, context="vstsx2(ptr, offset, dist, mask)"),
+        _normalize_dist_token(
+            dist_or_mask,
+            allowed=_INTERLEAVE_DIST_TOKENS,
+            context="vstsx2(..., dist)",
+        ),
+        unwrap_surface_value(mask),
+    )
+
+
+def vgather2(buf, offsets, mask, result_vreg_type=None):
+    """``pto.vgather2`` – indexed gather from UB."""
+    rt = result_vreg_type if result_vreg_type is not None else _infer_vreg_type_from_address_source(buf)
+    return wrap_surface_value(
+        _pto.Vgather2Op(
+            _resolve(rt),
+            unwrap_surface_value(buf),
+            unwrap_surface_value(offsets),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vgather2_bc(buf, offsets, mask, result_vreg_type=None):
+    """``pto.vgather2_bc`` – indexed gather from UB with masked zero-fill."""
+    rt = result_vreg_type if result_vreg_type is not None else _infer_vreg_type_from_address_source(buf)
+    return wrap_surface_value(
+        _pto.Vgather2BcOp(
+            _resolve(rt),
+            unwrap_surface_value(buf),
+            unwrap_surface_value(offsets),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vgatherb(buf, offsets, mask, result_vreg_type=None):
+    """``pto.vgatherb`` – block gather from UB using byte offsets."""
+    rt = result_vreg_type if result_vreg_type is not None else _infer_vreg_type_from_address_source(buf)
+    return wrap_surface_value(
+        _pto.VgatherbOp(
+            _resolve(rt),
+            unwrap_surface_value(buf),
+            unwrap_surface_value(offsets),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vscatter(value, destination, offsets, mask):
+    """``pto.vscatter`` – indexed scatter to UB."""
+    _pto.VscatterOp(
+        unwrap_surface_value(value),
+        unwrap_surface_value(destination),
+        unwrap_surface_value(offsets),
+        unwrap_surface_value(mask),
+    )
+
+
+def _coerce_i16(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    i16_type = IntegerType.get_signless(16)
+    if isinstance(raw_value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(raw_value, int):
+        return _materialize_integer_literal(i16_type, raw_value)
+    kind = classify_runtime_scalar_type(raw_value.type)
+    if kind == "float":
+        raise TypeError(f"{context} expects an integer-like scalar, got {raw_value.type}")
+    if kind == "index":
+        return arith.IndexCastOp(i16_type, raw_value).result
+    signless_value = _strip_integer_signedness(raw_value)
+    if signless_value.type == i16_type:
+        return signless_value
+    width = IntegerType(raw_value.type).width
+    if width < 16:
+        if _integer_signedness(raw_value.type) == "unsigned":
+            return arith.ExtUIOp(i16_type, signless_value).result
+        return arith.ExtSIOp(i16_type, signless_value).result
+    if width > 16:
+        return arith.TruncIOp(i16_type, signless_value).result
+    return signless_value
+
+
+def vsldb(source, block_stride, repeat_stride, mask):
+    """``pto.vsldb`` – block-strided load."""
+    result_type = (
+        _infer_vreg_type_from_tile_slice(source)
+        if isinstance(source, TileSliceValue)
+        else _infer_vreg_type_from_address_source(source)
+    )
+    return wrap_surface_value(
+        _pto.VsldbOp(
+            result_type,
+            unwrap_surface_value(source),
+            _coerce_i16(block_stride, context="vsldb(..., block_stride, repeat_stride, mask)"),
+            _coerce_i16(repeat_stride, context="vsldb(..., block_stride, repeat_stride, mask)"),
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vsstb(value, destination, block_stride, repeat_stride, mask):
+    """``pto.vsstb`` – block-strided store."""
+    _pto.VsstbOp(
+        unwrap_surface_value(value),
+        unwrap_surface_value(destination),
+        _coerce_i16(block_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
+        _coerce_i16(repeat_stride, context="vsstb(..., block_stride, repeat_stride, mask)"),
+        unwrap_surface_value(mask),
+    )
+
+
 # ── Mask / predicate ops ──────────────────────────────────────────────────────
 
 _MASK_PATTERN_TOKENS = {
@@ -236,6 +461,7 @@ _CMP_MODE_TOKENS = {"eq", "ne", "lt", "le", "gt", "ge"}
 _PREDICATE_PART_TOKENS = {"LOWER", "HIGHER"}
 _PREDICATE_LOAD_DIST_TOKENS = {"NORM", "US", "DS"}
 _PREDICATE_STORE_DIST_TOKENS = {"NORM", "PK"}
+_POST_UPDATE_TOKENS = {"NO_POST_UPDATE", "POST_UPDATE"}
 
 
 def _normalize_mask_pattern(pattern):
@@ -295,6 +521,21 @@ def _normalize_predicate_dist(dist, *, allowed: set[str], context: str):
         expected = ", ".join(sorted(allowed))
         raise ValueError(f"{context} does not support dist {dist!r}; expected one of {expected}")
     return normalized
+
+
+def _normalize_post_update_mode(mode, *, context: str):
+    token = mode
+    if not isinstance(token, str):
+        token = str(token)
+        if "." in token:
+            token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized in {"OFF", "NO_POST_UPDATE"}:
+        return "NO_POST_UPDATE"
+    if normalized in {"ON", "POST_UPDATE"}:
+        return "POST_UPDATE"
+    expected = ", ".join(sorted(_POST_UPDATE_TOKENS))
+    raise ValueError(f"{context} does not support mode {mode!r}; expected one of ON/OFF ({expected})")
 
 
 def _mask_type_from_bits(mask_bits: int):
@@ -719,6 +960,49 @@ def pstu(align_in, mask_value, buf):
         unwrap_surface_value(buf),
     )
     return wrap_surface_value(op.align_out), wrap_surface_value(op.base_out)
+
+
+def vstar(align, destination):
+    """``pto.vstar`` – flush alignment-buffered tail bytes to the destination base."""
+    _pto.VstarOp(
+        unwrap_surface_value(align),
+        unwrap_surface_value(destination),
+    )
+
+
+def vstas(align, destination, offset):
+    """``pto.vstas`` – flush alignment-buffered tail bytes with an explicit offset."""
+    _pto.VstasOp(
+        unwrap_surface_value(align),
+        unwrap_surface_value(destination),
+        _coerce_i32(offset, context="vstas(align, destination, offset)"),
+    )
+
+
+def vstur(align_in, value, base, mode="NO_POST_UPDATE"):
+    """``pto.vstur`` – unaligned vector store that updates only alignment state."""
+    return wrap_surface_value(
+        _pto.VsturOp(
+            _pto.AlignType.get(),
+            unwrap_surface_value(align_in),
+            unwrap_surface_value(value),
+            unwrap_surface_value(base),
+            _normalize_post_update_mode(mode, context="vstur(..., mode)"),
+        ).align_out
+    )
+
+
+def vstus(align_in, offset, value, base):
+    """``pto.vstus`` – scalar-offset unaligned vector store that updates alignment state."""
+    return wrap_surface_value(
+        _pto.VstusOp(
+            _pto.AlignType.get(),
+            unwrap_surface_value(align_in),
+            _coerce_i32(offset, context="vstus(align, offset, value, base)"),
+            unwrap_surface_value(value),
+            unwrap_surface_value(base),
+        ).align_out
+    )
 
 
 # ── Vector math (result type inferred from first operand) ─────────────────────
@@ -2178,6 +2462,148 @@ def mte_store(source, destination):
     )
 
 
+def _normalize_dma_group(name, triple, *, context: str):
+    if not isinstance(triple, tuple) or len(triple) != 3:
+        raise TypeError(f"{context} expects {name}=(count, src_stride, dst_stride)")
+    count, src_stride, dst_stride = triple
+    return (
+        _coerce_i64(count, context=f"{context} {name}[0]"),
+        _coerce_i64(src_stride, context=f"{context} {name}[1]"),
+        _coerce_i64(dst_stride, context=f"{context} {name}[2]"),
+    )
+
+
+def _normalize_dma_loops(loops, *, context: str):
+    if loops is None:
+        return [], [], []
+    if not isinstance(loops, (list, tuple)):
+        raise TypeError(f"{context} expects loops to be a list[tuple[int, int, int]] or None")
+    counts = []
+    src_strides = []
+    dst_strides = []
+    for i, loop in enumerate(loops):
+        count, src_stride, dst_stride = _normalize_dma_group(
+            f"loops[{i}]",
+            loop,
+            context=context,
+        )
+        counts.append(count)
+        src_strides.append(src_stride)
+        dst_strides.append(dst_stride)
+    return counts, src_strides, dst_strides
+
+
+def _normalize_dma_pad(pad, *, context: str):
+    if pad is None:
+        return None, None, None
+    if not isinstance(pad, tuple):
+        raise TypeError(f"{context} expects pad to be tuple[ScalarType] or tuple[ScalarType, int, int]")
+    if len(pad) == 1:
+        pad_value = pad[0]
+        left_count = 0
+        right_count = 0
+    elif len(pad) == 3:
+        pad_value, left_count, right_count = pad
+    else:
+        raise TypeError(f"{context} expects pad to have length 1 or 3")
+    return (
+        materialize_scalar_literal(pad_value, F32Type.get(), context=f"{context} pad[0]")
+        if not hasattr(pad_value, "type") else unwrap_surface_value(pad_value),
+        _coerce_i64(left_count, context=f"{context} pad[1]"),
+        _coerce_i64(right_count, context=f"{context} pad[2]"),
+    )
+
+
+def mte_gm_ub(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=None, pad=None):
+    """``pto.mte_gm_ub`` – grouped GM-to-UB DMA surface."""
+    n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_gm_ub(...)",
+    )
+    loop_counts, loop_src_strides, loop_dst_strides = _normalize_dma_loops(
+        loops,
+        context="mte_gm_ub(...)",
+    )
+    pad_value, left_padding_count, right_padding_count = _normalize_dma_pad(
+        pad,
+        context="mte_gm_ub(...)",
+    )
+    _pto.MteGmUbOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(l2_cache_ctl, context="mte_gm_ub l2_cache_ctl"),
+        _coerce_i64(len_burst, context="mte_gm_ub len_burst"),
+        n_burst,
+        nburst_src_stride,
+        nburst_dst_stride,
+        loop_counts,
+        loop_src_strides,
+        loop_dst_strides,
+        pad_value=pad_value,
+        left_padding_count=left_padding_count,
+        right_padding_count=right_padding_count,
+    )
+
+
+def mte_ub_gm(source, destination, len_burst, *, nburst, loops=None):
+    """``pto.mte_ub_gm`` – grouped UB-to-GM DMA surface."""
+    n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_ub_gm(...)",
+    )
+    loop_counts, loop_src_strides, loop_dst_strides = _normalize_dma_loops(
+        loops,
+        context="mte_ub_gm(...)",
+    )
+    _pto.MteUbGmOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        _coerce_i64(len_burst, context="mte_ub_gm len_burst"),
+        n_burst,
+        nburst_src_stride,
+        nburst_dst_stride,
+        loop_counts,
+        loop_src_strides,
+        loop_dst_strides,
+    )
+
+
+def mte_ub_ub(source, destination, len_burst, *, nburst):
+    """``pto.mte_ub_ub`` – grouped UB-to-UB DMA surface."""
+    n_burst, src_stride, dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_ub_ub(...)",
+    )
+    _pto.MteUbUbOp(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        n_burst,
+        _coerce_i64(len_burst, context="mte_ub_ub len_burst"),
+        src_stride,
+        dst_stride,
+    )
+
+
+def mte_ub_l1(source, destination, len_burst, *, nburst):
+    """``pto.mte_ub_l1`` – grouped UB-to-L1 DMA surface."""
+    n_burst, src_stride, dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_ub_l1(...)",
+    )
+    _pto.MteUbL1Op(
+        unwrap_surface_value(source),
+        unwrap_surface_value(destination),
+        n_burst,
+        _coerce_i64(len_burst, context="mte_ub_l1 len_burst"),
+        src_stride,
+        dst_stride,
+    )
+
+
 def mem_bar(barrier_type):
     """``pto.mem_bar`` with a small authored enum surface."""
     barrier_name = getattr(barrier_type, "value", barrier_type)
@@ -2364,7 +2790,7 @@ def wait_flag(src: str, dst: str, *, event_id: int = 0):
 __all__ = [
     "const",
     "castptr", "addptr",
-    "vlds", "vbrc_load", "vsts", "vsts_1pt",
+    "vlds", "vldas", "vldus", "vldsx2", "vbrc_load", "vsts", "vsts_1pt", "vstsx2",
     "init_align",
     "plt_b8", "plt_b16", "plt_b32",
     "pset_b8", "pset_b16", "pset_b32",
@@ -2374,8 +2800,9 @@ __all__ = [
     "pbitcast", "ppack", "punpack",
     "pintlv_b8", "pintlv_b16", "pintlv_b32",
     "pdintlv_b8", "pdintlv_b16", "pdintlv_b32",
+    "vgather2", "vgather2_bc", "vgatherb", "vscatter", "vsldb", "vsstb",
     "vcmp", "vcmps",
-    "plds", "psts", "pstu",
+    "plds", "psts", "pstu", "vstar", "vstas", "vstur", "vstus",
     "vbitcast",
     "vadd", "vmul", "vmax", "vdiv",
     "vcmax", "vcadd", "vdup", "vexpdif",
@@ -2398,7 +2825,7 @@ __all__ = [
     "tpartadd", "tpartmul", "tpartmax", "tpartmin",
     "tfillpad", "tfillpad_expand", "tfillpad_inplace",
     "as_ptr",
-    "mte_load", "mte_store", "mem_bar",
+    "mte_load", "mte_store", "mte_gm_ub", "mte_ub_gm", "mte_ub_ub", "mte_ub_l1", "mem_bar",
     "mte_l1_l0a", "mte_l1_l0b", "mte_l0c_ub", "mad",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",
     "store_vfsimt_info", "get_tid_x", "get_tid_y", "get_tid_z",

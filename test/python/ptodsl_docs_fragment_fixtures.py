@@ -365,6 +365,59 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "data_movement.ukernel_dma": _fixture(
+        f"""
+        @pto.ukernel
+        def process_block(
+            k_part: pto.PartitionTensorView,
+            v_part: pto.PartitionTensorView,
+            k_tile: pto.Tile,
+            v_tile: pto.Tile,
+            o_tile: pto.Tile,
+            o_part: pto.PartitionTensorView,
+            rows: pto.i32,
+            cols: pto.i32,
+        ):
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def data_movement_ukernel_dma_probe(
+            K: pto.tensor_spec(rank=2, dtype=pto.f16),
+            V: pto.tensor_spec(rank=2, dtype=pto.f16),
+            O: pto.tensor_spec(rank=2, dtype=pto.f32),
+            *,
+            ROWS: pto.constexpr = 8,
+            COLS: pto.constexpr = 16,
+        ):
+            k_view = pto.make_tensor_view(K, shape=K.shape, strides=K.strides)
+            v_view = pto.make_tensor_view(V, shape=V.shape, strides=V.strides)
+            o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
+            k_part = pto.partition_view(k_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            v_part = pto.partition_view(v_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[ROWS, COLS])
+            k_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f16)
+            v_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f16)
+            o_tile = pto.alloc_tile(shape=[ROWS, COLS], dtype=pto.f32)
+            process_block(k_part, v_part, k_tile, v_tile, o_tile, o_part, ROWS, COLS)
+        """
+    ),
+    "data_movement.grouped_dma_ptrs": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def data_movement_grouped_dma_ptrs_probe():
+            gm_src = pto.castptr(pto.ui64(0), pto.ptr(pto.f16, "gm"))
+            gm_dst = pto.castptr(pto.ui64(0), pto.ptr(pto.f16, "gm"))
+            gm_src_f32 = pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "gm"))
+            gm_dst_f32 = pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "gm"))
+            ub_src = pto.castptr(pto.ui64(0), pto.ptr(pto.f16, "ub"))
+            ub_dst = pto.castptr(pto.ui64(0), pto.ptr(pto.f16, "ub"))
+            ub_src_f32 = pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "ub"))
+            ub_dst_f32 = pto.castptr(pto.ui64(0), pto.ptr(pto.f32, "ub"))
+            l1_dst = pto.castptr(pto.ui64(0), pto.ptr(pto.f16, "left"))
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "compute_ops.vector_compute": _fixture(
         f"""
         @pto.simd
