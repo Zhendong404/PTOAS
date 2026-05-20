@@ -125,7 +125,10 @@ def castptr(int_addr, result_ptr_type):
 def addptr(base_ptr, index_offset):
     """``pto.addptr`` – advance a pointer by an index offset."""
     return wrap_surface_value(
-        _pto.AddPtrOp(unwrap_surface_value(base_ptr), unwrap_surface_value(index_offset)).result
+        _pto.AddPtrOp(
+            unwrap_surface_value(base_ptr),
+            _coerce_index(index_offset, context="addptr(ptr, offset)"),
+        ).result
     )
 
 

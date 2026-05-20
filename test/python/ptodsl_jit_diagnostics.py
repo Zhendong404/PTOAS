@@ -52,6 +52,12 @@ def float_loop_bound_probe():
 
 
 @pto.jit(target="a5")
+def float_addptr_offset_probe():
+    tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 4])
+    _ = pto.addptr(tile.as_ptr(), pto.const(1.5, dtype=pto.f32))
+
+
+@pto.jit(target="a5")
 def carry_update_mismatch_probe(*, BLOCK: pto.constexpr = 8):
     acc = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     loop = pto.for_(0, 1, step=1).carry(acc=acc)
@@ -196,6 +202,13 @@ def main() -> None:
         TypeError,
         "pto.for_(...) loop bound",
         "expects an index or integer runtime scalar",
+        "f32",
+    )
+    expect_raises(
+        float_addptr_offset_probe.compile,
+        TypeError,
+        "addptr(ptr, offset)",
+        "expects an index-like scalar",
         "f32",
     )
     expect_raises(

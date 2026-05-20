@@ -342,6 +342,20 @@ def scalar_pointer_offset_probe():
     _ = valid_cols
 
 
+@pto.jit(target="a5")
+def addptr_surface_probe():
+    meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 4])
+    meta_ptr = meta_tile.as_ptr()
+    ptr_pyint = pto.addptr(meta_ptr, 2)
+    ptr_i32 = pto.addptr(meta_ptr, pto.i32(3))
+    scalar.store(11, ptr_pyint)
+    scalar.store(13, ptr_i32)
+    val_pyint = scalar.load(ptr_pyint)
+    val_i32 = scalar.load(ptr_i32)
+    _ = val_pyint
+    _ = val_i32
+
+
 @pto.simt
 def simt_pointer_offset_helper(meta_ptr: pto.ptr(pto.i32, pto.MemorySpace.UB)):
     scalar.store(7, meta_ptr + 0)
@@ -892,6 +906,7 @@ def main() -> None:
     tile_valid_shape_update_1d_probe.verify()
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
+    addptr_surface_probe.verify()
     simt_pointer_offset_probe.verify()
     scalar_store_element_coercion_probe.verify()
     public_surface_exports_probe.verify()
@@ -1260,6 +1275,25 @@ def main() -> None:
     expect(
         re.search(r"pto\.load %\d+\[%c2(?:_\d+)?\]", scalar_pointer_offset_text) is not None,
         "scalar.load(ptr + 2) should lower as element offset 2",
+    )
+
+    addptr_surface_text = addptr_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(addptr_surface_text, "addptr surface specialization")
+    expect(
+        addptr_surface_text.count("pto.addptr") == 2,
+        "addptr(...) should lower one PTO addptr op per authored pointer-advance call",
+    )
+    expect(
+        "arith.index_cast" in addptr_surface_text,
+        "addptr(ptr, i32-value) should coerce integer runtime scalars to index",
+    )
+    expect(
+        re.search(r"pto\.addptr %\d+, %c2(?:_\d+)?", addptr_surface_text) is not None,
+        "addptr(ptr, 2) should accept a Python int offset and lower it as an index element offset",
+    )
+    expect(
+        re.search(r"pto\.addptr %\d+, %\d+", addptr_surface_text) is not None,
+        "addptr(ptr, pto.i32(...)) should accept integer runtime scalars as element offsets",
     )
 
     simt_pointer_offset_text = simt_pointer_offset_probe.compile().mlir_text()

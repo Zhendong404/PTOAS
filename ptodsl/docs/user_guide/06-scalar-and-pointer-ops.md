@@ -273,9 +273,9 @@ ub_ptr = tile.as_ptr()         # UB pointer from a Tile
 
 **Example**:
 
-<!-- ptodsl-doc-pending: documented addptr example currently needs implementation-specific index-typed offsets to compile, so this pointer-advance surface is not yet a stable docs-as-test contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.pointer_manip","symbol":"scalar_ops_pointer_manip_probe","compile":{}} -->
 ```python
-ptr = pto.addptr(base_ptr, pto.const(1024, dtype=pto.index))
+ptr = pto.addptr(base_ptr, 1024)
 ```
 
 The `+` shorthand on pointers also counts in elements, not bytes.
