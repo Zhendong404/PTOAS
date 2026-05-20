@@ -156,11 +156,28 @@ with col_loop:
 
 The condition must be a PTO scalar value (e.g., the result of a comparison like `a > b` or a value loaded from a tile). Python booleans evaluated at trace time should use a plain `if` instead.
 
-### Value merge across branches
+### Recommended block structure
 
-When a variable is assigned inside both branches of `pto.if_`/`pto.else_`, the assignments are recorded and the variable holds the merged value after the conditional block. This is the standard SSA-style merge — the downstream code sees whichever value was produced by the taken branch:
+PTODSL should treat one device-side conditional as one explicit branch object.
+The recommended surface is:
 
-<!-- ptodsl-doc-pending: documented pto.if_/pto.else_ block syntax does not match the current implementation surface, which requires explicit result types and pto.yield_ for merged values -->
+```python
+with pto.if_(cond) as br:
+    with br.then_:
+        ...
+    with br.else_:
+        ...
+```
+
+This keeps the `if` / `else` pairing explicit. The `else_` branch is optional
+for side-effect-only conditionals.
+
+### Automatic named merge across branches
+
+When a value must flow out of both branches, PTODSL should merge by explicit
+name. Each branch assigns the same output names with `br.assign(...)`, and the
+merged results are read back from the branch handle after the conditional:
+
 ```python
 @pto.simt
 def conditional_scale(
@@ -175,31 +192,20 @@ def conditional_scale(
             val = scalar.load(tile[r, c])
             big = val > threshold
 
-            with pto.if_(big):
-                # Branch A: scale the value up
-                val = val * scale
-            with pto.else_():
-                # Branch B: leave it as-is
-                pass
+            with pto.if_(big) as br:
+                with br.then_:
+                    br.assign(val=val * scale)
+                with br.else_:
+                    br.assign(val=val)
 
-            # val is usable here — it is the merged result from both branches.
-            # If big was true,  val = original * scale.
-            # If big was false, val = original (passed through unchanged).
+            val = br.val
             scalar.store(val, tile[r, c])
 ```
 
-In this example, `val` is reassigned in the `if_` branch but left untouched in the `else_` branch. After the conditional block, `val` correctly represents the merged result and is stored back to the tile. You can reassign the same variable in both branches as well — the downstream code always sees the correct value.
-
-### Expression form
-
-For simple either-or selection, `pto.if_` also works as an expression that directly returns the merged value:
-
-<!-- ptodsl-doc-pending: documented expression-form pto.if_(cond, then_value, else_value) is not supported by the current implementation -->
-```python
-result = pto.if_(cond, then_value, else_value)
-```
-
-This is equivalent to the block form above and is convenient when each branch simply produces a different scalar or tile reference.
+In this example, both branches define the merged value named `val`. After the
+conditional closes, `br.val` is the SSA-merged result seen by downstream code.
+This surface avoids explicit result-type declarations and explicit
+`pto.yield_(...)` in user code while still keeping the merge contract explicit.
 
 ## 5.4 `pto.constexpr` and tracing
 

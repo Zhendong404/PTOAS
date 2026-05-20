@@ -175,6 +175,40 @@ def carry_loop_lowering_probe(*, BLOCK: pto.constexpr = 128):
 
 
 @pto.jit(target="a5")
+def branch_handle_then_only_probe():
+    cond = pto.const(1, dtype=pto.i1)
+    with pto.if_(cond) as br:
+        with br.then_:
+            pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5")
+def branch_handle_side_effect_probe():
+    lhs = pto.const(4, dtype=pto.i32)
+    rhs = pto.const(2, dtype=pto.i32)
+    with pto.if_(lhs > rhs) as br:
+        with br.then_:
+            pto.pipe_barrier(pto.Pipe.ALL)
+        with br.else_:
+            pto.mem_bar(pto.BarrierType.VST_VLD)
+
+
+@pto.jit(target="a5")
+def branch_handle_merge_probe():
+    lhs = pto.const(4, dtype=pto.i32)
+    rhs = pto.const(2, dtype=pto.i32)
+    with pto.if_(lhs > rhs) as br:
+        with br.then_:
+            br.assign(total=lhs + rhs, diff=lhs - rhs)
+        with br.else_:
+            br.assign(total=rhs + lhs, diff=rhs - lhs)
+    total = br.total
+    diff = br.diff
+    merged = total + diff
+    _ = merged
+
+
+@pto.jit(target="a5")
 def runtime_scalar_operator_probe(
     A: pto.tensor_spec(rank=2, dtype=pto.f32),
     O: pto.tensor_spec(rank=2, dtype=pto.f32),
@@ -848,6 +882,9 @@ def main() -> None:
     shared_subkernel_lowering_probe.verify()
     simt_helper_lowering_probe.verify()
     carry_loop_lowering_probe.verify()
+    branch_handle_then_only_probe.verify()
+    branch_handle_side_effect_probe.verify()
+    branch_handle_merge_probe.verify()
     runtime_scalar_operator_probe.verify()
     tile_slice_surface_probe.verify()
     tile_slice_1d_surface_probe.verify()
@@ -1107,6 +1144,34 @@ def main() -> None:
     expect(
         re.search(r"outs\(%[^\s]+#2 : !pto\.tile_buf<vec, 1x32xf32>\)", carry_text) is not None,
         "loop.final(\"o\") should materialize the third scf.for result as the final carried state",
+    )
+
+    branch_then_only_text = branch_handle_then_only_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(branch_then_only_text, "branch handle then-only specialization")
+    expect(branch_then_only_text.count("scf.if") == 1, "then-only branch handle should lower to one scf.if")
+    expect("pto.barrier <PIPE_ALL>" in branch_then_only_text, "br.then_ body should lower into the scf.if then branch")
+    expect("}, {" not in branch_then_only_text, "then-only branch handle should not materialize an else region")
+
+    branch_side_effect_text = branch_handle_side_effect_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(branch_side_effect_text, "branch handle side-effect specialization")
+    expect(branch_side_effect_text.count("scf.if") == 1, "side-effect branch handle should lower to one scf.if")
+    expect("pto.barrier <PIPE_ALL>" in branch_side_effect_text, "br.then_ side effects should lower into the then branch")
+    expect("pto.mem_bar" in branch_side_effect_text, "br.else_ side effects should lower into the else branch")
+    expect("} else {" in branch_side_effect_text, "side-effect branch handle should materialize an explicit else region")
+
+    branch_merge_text = branch_handle_merge_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(branch_merge_text, "branch handle merge specialization")
+    expect(
+        re.search(r"scf\.if %\d+ -> \(i32, i32\)", branch_merge_text) is not None,
+        "br.assign(...) should infer scf.if result types from the assigned branch values",
+    )
+    expect(
+        branch_merge_text.count("scf.yield") >= 2,
+        "automatic branch merge should materialize one internal scf.yield per branch",
+    )
+    expect(
+        "arith.addi" in branch_merge_text and "arith.subi" in branch_merge_text,
+        "merged branch values should remain usable as ordinary runtime scalars after the conditional",
     )
 
     runtime_scalar_text = runtime_scalar_operator_probe.compile(BLOCK=8).mlir_text()

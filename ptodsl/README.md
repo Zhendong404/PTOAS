@@ -204,16 +204,17 @@ with pto.for_(c0, c128, step=c64, iter_args=(a, b)) as loop:
     pto.yield_(nx, ny)             # scf.yield with values
 fx, fy = loop.results
 
-with pto.if_(has_rows):            # simple scf.if
-    ...                             # scf.yield inserted automatically
-
-with pto.if_(has_chunk, results=(vf32, vf32)) as br:
+with pto.if_(has_rows) as br:      # simple scf.if
     with br.then_:
         ...
-        pto.yield_(merged_max, merged_sum)
+
+with pto.if_(has_chunk) as br:
+    with br.then_:
+        br.assign(x=merged_max, y=merged_sum)
     with br.else_:
-        pto.yield_(running_max, running_sum)
-x, y = br.results
+        br.assign(x=running_max, y=running_sum)
+x = br.x
+y = br.y
 ```
 
 ### Scalar arithmetic (`s = scalar`)
