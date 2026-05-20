@@ -131,14 +131,28 @@ pto.pipe_barrier(pto.Pipe.ALL)
 
 A common ukernel pattern interleaves DMA and compute with `set_flag` / `wait_flag` pairs:
 
-<!-- ptodsl-doc-pending: ukernel example references undefined helper kernels/partitions and still needs dedicated compile fixture coverage -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.flag_pattern_ukernel","symbol":"sync_ops_flag_pattern_ukernel_probe","compile":{"ROWS":8,"COLS":16}} -->
 ```python
 @pto.ukernel
-def gemm_block(q_tile, k_tile, v_tile, o_tile, ...):
+def gemm_block(
+    q_tile: pto.Tile,
+    k_part: pto.PartitionTensorView,
+    v_part: pto.PartitionTensorView,
+    k_tile: pto.Tile,
+    v_tile: pto.Tile,
+    p_tile: pto.Tile,
+    o_tile: pto.Tile,
+    o_part: pto.PartitionTensorView,
+    rows: pto.i32,
+    cols: pto.i32,
+):
     # DMA: load K and V tiles from GM to UB
     row_bytes = cols * pto.bytewidth(pto.f16)
     gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f16)
     ub_row_stride = k_tile.shape[1] * pto.bytewidth(pto.f16)
+    out_row_bytes = cols * pto.bytewidth(pto.f32)
+    out_gm_row_stride = o_part.strides[0] * pto.bytewidth(pto.f32)
+    out_ub_row_stride = o_tile.shape[1] * pto.bytewidth(pto.f32)
     pto.mte_load(k_part.as_ptr(), k_tile.as_ptr(), 0, row_bytes,
                  nburst=(rows, gm_row_stride, ub_row_stride))
     pto.mte_load(v_part.as_ptr(), v_tile.as_ptr(), 0, row_bytes,
@@ -151,16 +165,16 @@ def gemm_block(q_tile, k_tile, v_tile, o_tile, ...):
     pto.wait_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=0)
 
     # Compute: now safe to use k_tile and v_tile
-    qk_matmul(q_tile, k_tile, ...)
-    pv_matmul(p_tile, v_tile, ...)
+    qk_matmul(q_tile, k_tile, p_tile)
+    pv_matmul(p_tile, v_tile, o_tile)
 
     # Signal: compute done, results ready for store
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=1)
     pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=1)
 
     # DMA: store results back to GM
-    pto.mte_store(o_tile.as_ptr(), o_part.as_ptr(), row_bytes,
-                  nburst=(rows, ub_row_stride, gm_row_stride))
+    pto.mte_store(o_tile.as_ptr(), o_part.as_ptr(), out_row_bytes,
+                  nburst=(rows, out_ub_row_stride, out_gm_row_stride))
 ```
 
 ---
@@ -257,29 +271,48 @@ The most commonly used barrier types in practice:
 In flash attention, phase boundaries use `pipe_barrier(Pipe.ALL)`, while
 `mem_bar` remains the tool for narrower intra-pipeline ordering:
 
-<!-- ptodsl-doc-pending: ukernel example references undefined helper kernels/partitions and still needs dedicated compile fixture coverage -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"sync_ops.phase_barrier_ukernel","symbol":"sync_ops_phase_barrier_ukernel_probe","compile":{"ROWS":8,"COLS":16}} -->
 ```python
 @pto.ukernel
-def flash_attention_block(q_tile, k_tile, v_tile, ...):
+def flash_attention_block(
+    q_tile: pto.Tile,
+    k_part: pto.PartitionTensorView,
+    v_part: pto.PartitionTensorView,
+    k_tile: pto.Tile,
+    v_tile: pto.Tile,
+    s_tile: pto.Tile,
+    p_tile: pto.Tile,
+    pv_tile: pto.Tile,
+    o_prev_tile: pto.Tile,
+    o_next_tile: pto.Tile,
+    rows: pto.i32,
+    cols: pto.i32,
+):
     # Phase 1: load K/V
-    pto.mte_load(k_part, k_tile)
-    pto.mte_load(v_part, v_tile)
+    row_bytes = cols * pto.bytewidth(pto.f16)
+    gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f16)
+    ub_row_stride = k_tile.shape[1] * pto.bytewidth(pto.f16)
+    pto.mte_load(k_part.as_ptr(), k_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
+    pto.mte_load(v_part.as_ptr(), v_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Phase 2: S = Q @ K^T
-    qk_matmul(q_tile, k_tile, ...)
+    qk_matmul(q_tile, k_tile, s_tile)
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Phase 3: softmax(S)
-    online_softmax(s_tile, ...)
+    online_softmax(s_tile, p_tile, rows, cols)
+    pto.mem_bar(pto.BarrierType.VV_ALL)
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Phase 4: PV = P @ V
-    pv_matmul(p_tile, v_tile, ...)
+    pv_matmul(p_tile, v_tile, pv_tile)
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Phase 5: blend output
-    blend_output(o_prev_tile, pv_tile, ...)
+    blend_output(o_prev_tile, pv_tile, o_next_tile, rows, cols)
     pto.pipe_barrier(pto.Pipe.ALL)
 ```
 

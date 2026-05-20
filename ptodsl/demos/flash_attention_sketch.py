@@ -579,9 +579,26 @@ def kv_block_process(
     - wiring together the explicit state transition
       (prev -> next for m/l/o).
     """
-    # Current-block GM->MAT staging via MTE micro-instructions.
-    pto.mte_load(k_part, k_mat)
-    pto.mte_load(v_part, v_mat)
+    # Current-block GM->MAT staging via explicit ptr-based DMA parameters.
+    rows = k_mat.valid_shape[0]
+    cols = k_mat.valid_shape[1]
+    row_bytes = cols * pto.bytewidth(pto.f32)
+    gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f32)
+    mat_row_stride = k_mat.shape[1] * pto.bytewidth(pto.f32)
+    pto.mte_load(
+        k_part.as_ptr(),
+        k_mat.as_ptr(),
+        0,
+        row_bytes,
+        nburst=(rows, gm_row_stride, mat_row_stride),
+    )
+    pto.mte_load(
+        v_part.as_ptr(),
+        v_mat.as_ptr(),
+        0,
+        row_bytes,
+        nburst=(rows, gm_row_stride, mat_row_stride),
+    )
     pto.pipe_barrier(pto.Pipe.ALL)
 
     materialize_tile_bounds(

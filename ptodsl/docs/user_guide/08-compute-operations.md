@@ -626,15 +626,15 @@ The Cube unit performs matrix multiplication. Its operands are typed pointers in
 
 A full cube matmul follows a three-stage pattern: stage operands into L0A/L0B, compute, write back to UB.
 
-<!-- ptodsl-doc-pending: standalone @pto.cube matmul pattern is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"data_movement.cube_helper","symbol":"data_movement_cube_helper_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16}} -->
 ```python
 @pto.cube
 def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
     m = q_tile.valid_shape[0]
     k = q_tile.valid_shape[1]
-    n = k_tile.valid_shape[0]
+    n = k_tile.valid_shape[1]
 
-    # Stage: UB → L0A / L0B
+    # Stage: source tiles → L0A / L0B
     pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)
     pto.mte_l1_l0b(k_tile.as_ptr(), k_l0b.as_ptr(), k, n, transpose=True)
 
@@ -645,7 +645,7 @@ def qk_matmul(q_tile, k_tile, q_l0a, k_l0b, s_acc, s_tile):
     pto.mte_l0c_ub(s_acc.as_ptr(), s_tile.as_ptr(), m, n, n, n, 0)
 ```
 
-The `mte_l1_l0a`/`mte_l1_l0b` stage operands from UB into cube-local buffers. `mad` performs the matrix multiply into L0C. `mte_l0c_ub` writes the result back to a UB tile for downstream processing. At this micro-op layer, the operands are explicit pointer views obtained with `.as_ptr()`.
+The `mte_l1_l0a`/`mte_l1_l0b` stage operands from the authored source tiles into cube-local buffers. `mad` performs the matrix multiply into L0C. `mte_l0c_ub` writes the result back to a UB tile for downstream processing. At this micro-op layer, the operands are explicit pointer views obtained with `.as_ptr()`.
 
 ---
 

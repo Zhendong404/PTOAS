@@ -67,7 +67,7 @@ When a data dimension is not evenly divisible by the tile size or the hardware v
 
 Below is a self-contained `@pto.simd` kernel that adds two tiles row by row, handling column tails with `make_mask`:
 
-<!-- ptodsl-doc-pending: elements_per_vreg is not exposed on the current PTODSL public surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"tail.simd_helper","symbol":"tail_simd_helper_probe","compile":{"BLOCK":128}} -->
 ```python
 @pto.simd
 def add_rows_with_tail(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,

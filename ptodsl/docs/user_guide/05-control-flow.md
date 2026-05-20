@@ -134,7 +134,7 @@ with loop:
 
 For SIMD kernels that process data in vector-width chunks, use a carry loop to track the remaining element count across column iterations:
 
-<!-- ptodsl-doc-pending: documented chunked carry-loop example depends on pto.elements_per_vreg(...), which is not exposed on the current pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"tail.chunked_inner_loop","symbol":"tail_chunked_inner_loop_probe","compile":{"BLOCK":128}} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)

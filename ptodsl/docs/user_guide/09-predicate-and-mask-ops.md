@@ -42,7 +42,7 @@ The recommended front door for creating masks is `pto.make_mask`. It dispatches 
 
 **Example** — chunked SIMD loop with tail handling:
 
-<!-- ptodsl-doc-pending: documented tail-handling example depends on pto.elements_per_vreg(...), which is not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"tail.chunked_inner_loop","symbol":"tail_chunked_inner_loop_probe","compile":{"BLOCK":128}} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
@@ -364,7 +364,7 @@ The mask granularity must match the vector element type. Using a `mask_b16` with
 
 **Typical pattern** — tail-safe vector processing:
 
-<!-- ptodsl-doc-pending: documented tail-safe pattern depends on pto.elements_per_vreg(...), which is not exposed on the current public pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"tail.vector_pattern","symbol":"tail_vector_pattern_probe","compile":{"BLOCK":128}} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 with pto.for_(0, rows, step=1) as r:

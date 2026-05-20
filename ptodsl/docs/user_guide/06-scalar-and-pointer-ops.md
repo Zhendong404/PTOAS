@@ -107,7 +107,7 @@ scalar.store(value, ptr, offset)
 
 `scalar.load` and `scalar.store` are the primary data access pattern inside `@pto.simt` kernels. Each `load`/`store` operates on one element per work-item, but the SIMT unit executes the same instruction across many work-items in parallel:
 
-<!-- ptodsl-doc-pending: standalone @pto.simt scalar load/store example is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.simt_blend","symbol":"flash_attention_simt_blend_probe","compile":{"BLOCK":8}} -->
 ```python
 @pto.simt
 def blend_output_rows(
@@ -328,7 +328,7 @@ These functions return values that are known at trace time from type information
 
 **Example**:
 
-<!-- ptodsl-doc-pending: documented pto.bytewidth(...) helper is not exposed on the current pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.helper_queries","symbol":"scalar_ops_helper_queries_probe","compile":{}} -->
 ```python
 bw = pto.bytewidth(pto.f32)   # 4
 bw = pto.bytewidth(pto.f16)   # 2
@@ -355,7 +355,7 @@ bw = pto.bytewidth(pto.i8)    # 1
 
 **Example**:
 
-<!-- ptodsl-doc-pending: documented pto.elements_per_vreg(...) helper is not exposed on the current pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.helper_queries","symbol":"scalar_ops_helper_queries_probe","compile":{}} -->
 ```python
 vec = pto.elements_per_vreg(pto.f32)   # 64
 vec = pto.elements_per_vreg(pto.f16)   # 128
@@ -364,7 +364,7 @@ vec = pto.elements_per_vreg(pto.i8)    # 256
 
 This is the standard stride for chunking column loops in SIMD kernels:
 
-<!-- ptodsl-doc-pending: documented chunk-size query depends on pto.elements_per_vreg(...), which is not exposed on the current pto surface -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.chunk_loop","symbol":"scalar_ops_chunk_loop_probe","compile":{"BLOCK":128}} -->
 ```python
 VEC = pto.elements_per_vreg(pto.f32)
 with pto.for_(0, cols, step=VEC) as c:
@@ -375,7 +375,7 @@ with pto.for_(0, cols, step=VEC) as c:
 
 `@pto.simt` kernels are the natural home for per-element scalar work. A typical pattern uses nested `pto.for_` loops to walk over a tile row by row, column by column:
 
-<!-- ptodsl-doc-pending: standalone @pto.simt per-element traversal example is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.simt_scale","symbol":"scalar_ops_simt_scale_probe","compile":{"BLOCK":8}} -->
 ```python
 @pto.simt
 def elementwise_scale(
@@ -396,7 +396,7 @@ This reads each element from `src_tile`, multiplies by `scale`, and writes to `d
 
 For operations that need per-row metadata alongside per-element computation, lift the row-level scalar out of the inner loop:
 
-<!-- ptodsl-doc-pending: standalone @pto.simt per-row coefficient example is documented, but this sub-kernel form is not yet covered by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"scalar_ops.simt_row_coeffs","symbol":"scalar_ops_simt_row_coeffs_probe","compile":{"BLOCK":8}} -->
 ```python
 @pto.simt
 def blend_with_per_row_coeffs(
