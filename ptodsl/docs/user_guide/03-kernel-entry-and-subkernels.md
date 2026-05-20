@@ -15,7 +15,7 @@ PTODSL provides five decorators that mark functions as PTO kernels, plus three c
 L3 sub-kernels can be invoked in two ways:
 
 1. **As decorated functions** (`@pto.cube` / `@pto.simd` / `@pto.simt`) — reusable, named sub-kernels that can be called from `@pto.ukernel` or directly from `@pto.jit`.
-2. **As context managers** (`with pto.cube():` / `with pto.simd():` / `with pto.simt():`) — inline L3 blocks for quick prototyping or one-off compute snippets inside any kernel.
+2. **As context managers** (`with pto.cube():` / `with pto.simd():` / `with pto.simt():`) — inline L3 blocks for quick prototyping or one-off compute snippets inside `@pto.jit` or `@pto.ukernel`.
 
 Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you stage data with `tile.load`/`tile.store` instead of `mte_load`/`mte_store`, and PTOAS handles the synchronization between Tile Ops and L3 compute automatically. This is the recommended path for most users — drop down to `@pto.ukernel` only when you need explicit control over micro-instruction ordering and synchronization.
 
@@ -374,11 +374,11 @@ SIMT kernels read and write individual scalar elements from tiles. The unit exec
 
 ## 3.7 Context manager syntax for L3 sub-kernels
 
-In addition to the decorator form, each L3 sub-kernel unit provides a context manager: `with pto.cube():`, `with pto.simd():`, and `with pto.simt():`. These open an inline L3 block without requiring a separate named function — useful for quick prototyping, one-off compute snippets, or when the logic is too trivial to extract.
+In addition to the decorator form, each L3 sub-kernel unit provides a context manager: `with pto.cube():`, `with pto.simd():`, and `with pto.simt():`. These open an inline L3 block without requiring a separate named function — useful for quick prototyping, one-off compute snippets, or when the logic is too trivial to extract. The inline form is supported in top-level `@pto.jit` bodies and inside `@pto.ukernel`.
 
 ### Syntax
 
-<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.inline_simd_scope","symbol":"kernel_entry_inline_simd_scope_probe","compile":{"BLOCK":128}} -->
 ```python
 with pto.simd():
     # Direct L3 instructions — vreg ops, scalar loads/stores
@@ -388,7 +388,7 @@ with pto.simd():
     pto.vsts(o_vec, o_tile[r, c:], mask)
 ```
 
-<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.inline_simt_scope","symbol":"kernel_entry_inline_simt_scope_probe","compile":{"BLOCK":8}} -->
 ```python
 with pto.simt():
     alpha = scalar.load(alpha_tile[row, 0])
@@ -397,7 +397,7 @@ with pto.simt():
     scalar.store(o_next, o_next_tile[row, col])
 ```
 
-<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.inline_cube_scope","symbol":"kernel_entry_inline_cube_scope_probe","compile":{"BLOCK_M":16,"BLOCK_K":16,"BLOCK_N":16}} -->
 ```python
 with pto.cube():
     pto.mte_l1_l0a(q_tile.as_ptr(), q_l0a.as_ptr(), m, k)

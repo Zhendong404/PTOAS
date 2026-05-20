@@ -421,6 +421,77 @@ FRAGMENT_FIXTURES = {
             my_simt_kernel(tile, tile.as_ptr(), pto.const(0, dtype=pto.i32))
         """
     ),
+    "kernel_entry.inline_simd_scope": _fixture(
+        f"""
+        @pto.ukernel
+        def kernel_entry_inline_simd_scope(
+            a_tile: pto.Tile,
+            b_tile: pto.Tile,
+            o_tile: pto.Tile,
+        ):
+            with pto.for_(0, 1, step=1) as r:
+                c = pto.const(0, dtype=pto.index)
+                mask, _ = pto.make_mask(pto.f32, pto.const(16, dtype=pto.i32))
+                {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_inline_simd_scope_probe(*, BLOCK: pto.constexpr = 128):
+            a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+            kernel_entry_inline_simd_scope(a_tile, b_tile, o_tile)
+        """
+    ),
+    "kernel_entry.inline_simt_scope": _fixture(
+        f"""
+        @pto.ukernel
+        def kernel_entry_inline_simt_scope(
+            o_prev_tile: pto.Tile,
+            pv_tile: pto.Tile,
+            alpha_tile: pto.Tile,
+            beta_tile: pto.Tile,
+            o_next_tile: pto.Tile,
+        ):
+            with pto.for_(0, 1, step=1) as row:
+                col = pto.const(0, dtype=pto.index)
+                o_prev = scalar.load(o_prev_tile[row, col])
+                pv_val = scalar.load(pv_tile[row, col])
+                {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def kernel_entry_inline_simt_scope_probe(*, BLOCK: pto.constexpr = 8):
+            one = 1
+            o_prev_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            pv_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            alpha_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            beta_tile = pto.alloc_tile(shape=[8, 1], dtype=pto.f32, valid_shape=[2, one], blayout="ColMajor")
+            o_next_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
+            kernel_entry_inline_simt_scope(o_prev_tile, pv_tile, alpha_tile, beta_tile, o_next_tile)
+        """
+    ),
+    "kernel_entry.inline_cube_scope": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def kernel_entry_inline_cube_scope_probe(
+            *,
+            BLOCK_M: pto.constexpr = 16,
+            BLOCK_K: pto.constexpr = 16,
+            BLOCK_N: pto.constexpr = 16,
+        ):
+            q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
+            k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
+            s_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
+            q_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
+            k_l0b = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
+            s_acc = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[BLOCK_M, BLOCK_N])
+            m = q_tile.valid_shape[0]
+            k = q_tile.valid_shape[1]
+            n = k_tile.valid_shape[1]
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "scalar_ops.simt_pointer": _fixture(
         f"""
         @pto.jit(target="a5")
