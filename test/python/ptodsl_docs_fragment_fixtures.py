@@ -606,6 +606,7 @@ FRAGMENT_FIXTURES = {
             *,
             BLOCK_Q: pto.constexpr = 128,
             BLOCK_KV: pto.constexpr = 128,
+            HEAD_DIM: pto.constexpr = 128,
         ):
             batch = Q.shape[0]
             seq_q = Q.shape[1]
@@ -614,7 +615,7 @@ FRAGMENT_FIXTURES = {
             dim = Q.shape[3]
             Br = BLOCK_Q
             Bc = BLOCK_KV
-            D = dim
+            D = HEAD_DIM
             full_br = Br
             full_bc = Bc
             one = 1

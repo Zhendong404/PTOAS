@@ -146,7 +146,7 @@ Two categories of tiles are allocated:
 
 **UB-resident tiles** — data tiles that live in the Unified Buffer:
 
-<!-- ptodsl-doc-pending: tile shapes still use runtime dim as a physical extent, but alloc_tile(shape=...) currently requires static physical shapes -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_tiles","symbol":"flash_attention_l1_tiles_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"HEAD_DIM":128}} -->
 ```python
 q_tile  = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[full_br, dim])
 k_tile  = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[full_bc, dim])
@@ -170,7 +170,7 @@ The online-softmax algorithm requires **ping-pong state tiles**: `m_prev`/`m_nex
 
 **Cube-local scratch tiles** — allocated in specific memory spaces:
 
-<!-- ptodsl-doc-pending: cube scratch allocation still uses runtime dim as a physical extent, but alloc_tile(shape=...) currently requires static physical shapes -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.l1_tiles","symbol":"flash_attention_l1_tiles_probe","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"HEAD_DIM":128}} -->
 ```python
 q_l0a  = pto.alloc_tile(shape=[Br, D], dtype=pto.f16,
                         memory_space=pto.MemorySpace.LEFT, valid_shape=[full_br, dim])
