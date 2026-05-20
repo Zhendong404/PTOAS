@@ -380,29 +380,6 @@ pto.set_intra_block(pto.Pipe.MTE3, 0)
 pto.wait_intra_core(pto.Pipe.V, 0)
 ```
 
-### 10.5.3 Intra-core configuration: `set_intra_core`
-
-#### `pto.set_intra_core(config)`
-
-**Description**: Configures intra-core synchronization parameters. The meaning of `config` is hardware-specific.
-
-**Parameters**:
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `config` | `pto.i32` | Hardware-specific configuration value |
-
-**Returns**: None (side-effect operation).
-
-**Example**:
-
-<!-- ptodsl-doc-pending: set_intra_core is not exposed on the current PTODSL public surface -->
-```python
-pto.set_intra_core(3)
-```
-
----
-
 ## 10.6 Synchronization in the abstraction hierarchy
 
 Where do sync operations belong in PTODSL's layered model?
