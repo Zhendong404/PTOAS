@@ -158,26 +158,26 @@ This example demonstrates a complete GEMM kernel: `C = A @ B` where A is `[M, K]
 
 ### 12.3.1 L3: Cube sub-kernel
 
-<!-- ptodsl-doc-pending: current cube staging verifier rejects this authored mte_l1_l0a/mte_l1_l0b usage, so the example is not yet compile-valid as written -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"gemm.cube_helper","symbol":"gemm_tile_probe","compile":{"BLOCK_M":64,"BLOCK_K":64,"BLOCK_N":64}} -->
 ```python
 @pto.cube
-def gemm_tile(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
+def gemm_tile(a_mat: pto.Tile, b_mat: pto.Tile, o_tile: pto.Tile,
               a_l0a: pto.Tile, b_l0b: pto.Tile, o_acc: pto.Tile):
-    m = a_tile.valid_shape[0]
-    k = a_tile.valid_shape[1]
-    n = b_tile.valid_shape[0]
+    m = a_mat.valid_shape[0]
+    k = a_mat.valid_shape[1]
+    n = b_mat.valid_shape[1]
 
-    pto.mte_l1_l0a(a_tile.as_ptr(), a_l0a.as_ptr(), m, k)
-    pto.mte_l1_l0b(b_tile.as_ptr(), b_l0b.as_ptr(), k, n, transpose=True)
+    pto.mte_l1_l0a(a_mat.as_ptr(), a_l0a.as_ptr(), m, k)
+    pto.mte_l1_l0b(b_mat.as_ptr(), b_l0b.as_ptr(), k, n)
     pto.mad(a_l0a.as_ptr(), b_l0b.as_ptr(), o_acc.as_ptr(), m, n, k)
     pto.mte_l0c_ub(o_acc.as_ptr(), o_tile.as_ptr(), m, n, n, n, 0)
 ```
 
-The cube sub-kernel consumes UB tiles and cube-local scratch buffers. The four-step sequence — stage left operand, stage right operand, multiply, writeback — is the canonical cube compute pattern.
+The cube sub-kernel consumes MAT staging tiles plus cube-local scratch buffers. The four-step sequence — stage left operand, stage right operand, multiply, writeback — is the canonical cube compute pattern.
 
 ### 12.3.2 L1: Tile orchestration
 
-<!-- ptodsl-doc-pending: depends on the pending gemm_tile cube path, which is not yet compile-valid under the current verifier -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"gemm.jit_kernel","symbol":"gemm","compile":{"BLOCK_M":64,"BLOCK_K":64,"BLOCK_N":64}} -->
 ```python
 @pto.jit(target="a5")
 def gemm(
@@ -196,8 +196,10 @@ def gemm(
     b_view = pto.make_tensor_view(B, shape=[K_, N_], strides=B.strides)
     o_view = pto.make_tensor_view(O, shape=[M, N_], strides=O.strides)
 
-    a_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32)
-    b_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32)
+    a_mat = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32,
+                           memory_space=pto.MemorySpace.MAT)
+    b_mat = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32,
+                           memory_space=pto.MemorySpace.MAT)
     o_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32)
 
     a_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32,
@@ -215,6 +217,8 @@ def gemm(
         m_off = mi * BLOCK_M
         with pto.for_(0, num_n, step=1) as ni:
             n_off = ni * BLOCK_N
+            o_part = pto.partition_view(o_view, offsets=[m_off, n_off],
+                                        sizes=[BLOCK_M, BLOCK_N])
 
             o_tile.fill(0.0)
 
@@ -225,13 +229,11 @@ def gemm(
                                             sizes=[BLOCK_M, BLOCK_K])
                 b_part = pto.partition_view(b_view, offsets=[k_off, n_off],
                                             sizes=[BLOCK_K, BLOCK_N])
-                o_part = pto.partition_view(o_view, offsets=[m_off, n_off],
-                                            sizes=[BLOCK_M, BLOCK_N])
 
-                pto.tile.load(a_part, a_tile)
-                pto.tile.load(b_part, b_tile)
+                pto.tile.load(a_part, a_mat)
+                pto.tile.load(b_part, b_mat)
 
-                gemm_tile(a_tile, b_tile, o_tile, a_l0a, b_l0b, o_acc)
+                gemm_tile(a_mat, b_mat, o_tile, a_l0a, b_l0b, o_acc)
 
             pto.tile.store(o_tile, o_part)
 ```
@@ -240,7 +242,7 @@ def gemm(
 
 - **Triply nested loops**: M, N, and K dimensions are all blocked. The K loop accumulates partial results into `o_tile`.
 - **Accumulation**: `o_tile.fill(0.0)` resets the accumulator before the K loop. Each K-block calls `gemm_tile` which writes its partial product back to `o_tile`. The Cube unit accumulates implicitly via `mad` — each K-block's partial result is added to the running total in `o_acc`.
-- **Cube-local scratch**: `a_l0a`, `b_l0b`, and `o_acc` are allocated with explicit `memory_space` parameters (`LEFT`, `RIGHT`, `ACC`). Cube-local state does not leak into UB.
+- **MAT staging + cube-local scratch**: `a_mat` and `b_mat` are explicit MAT tiles that satisfy the `mte_l1_l0a` / `mte_l1_l0b` source contract. `a_l0a`, `b_l0b`, and `o_acc` are cube-local scratch (`LEFT`, `RIGHT`, `ACC`).
 - **Direct L3 call**: `gemm_tile` is called directly from `@pto.jit` — no ukernel needed. The compiler handles sync between `tile.load` and the Cube sub-kernel.
 - **Cube sub-kernel reuse**: the same `gemm_tile` function is called for every K-block — the named decorator form enables reuse.
 

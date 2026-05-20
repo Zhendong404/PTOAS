@@ -960,8 +960,8 @@ FRAGMENT_FIXTURES = {
         f"""
         @pto.cube
         def gemm_tile(
-            a_tile: pto.Tile,
-            b_tile: pto.Tile,
+            a_mat: pto.Tile,
+            b_mat: pto.Tile,
             o_tile: pto.Tile,
             a_l0a: pto.Tile,
             b_l0b: pto.Tile,
@@ -972,31 +972,31 @@ FRAGMENT_FIXTURES = {
 
         @pto.jit(target="a5")
         def gemm_tile_probe(*, BLOCK_M: pto.constexpr = 64, BLOCK_K: pto.constexpr = 64, BLOCK_N: pto.constexpr = 64):
-            a_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_K])
-            b_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_K, BLOCK_N])
+            a_mat = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
+            b_mat = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
             o_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
             a_l0a = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, memory_space=pto.MemorySpace.LEFT, valid_shape=[BLOCK_M, BLOCK_K])
             b_l0b = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.RIGHT, valid_shape=[BLOCK_K, BLOCK_N])
             o_acc = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.ACC, valid_shape=[BLOCK_M, BLOCK_N])
-            gemm_tile(a_tile, b_tile, o_tile, a_l0a, b_l0b, o_acc)
+            gemm_tile(a_mat, b_mat, o_tile, a_l0a, b_l0b, o_acc)
         """
     ),
     "gemm.jit_kernel": _fixture(
         f"""
         @pto.cube
         def gemm_tile(
-            a_tile: pto.Tile,
-            b_tile: pto.Tile,
+            a_mat: pto.Tile,
+            b_mat: pto.Tile,
             o_tile: pto.Tile,
             a_l0a: pto.Tile,
             b_l0b: pto.Tile,
             o_acc: pto.Tile,
         ):
-            m = a_tile.valid_shape[0]
-            k = a_tile.valid_shape[1]
-            n = b_tile.valid_shape[0]
-            pto.mte_l1_l0a(a_tile.as_ptr(), a_l0a.as_ptr(), m, k)
-            pto.mte_l1_l0b(b_tile.as_ptr(), b_l0b.as_ptr(), k, n, transpose=True)
+            m = a_mat.valid_shape[0]
+            k = a_mat.valid_shape[1]
+            n = b_mat.valid_shape[1]
+            pto.mte_l1_l0a(a_mat.as_ptr(), a_l0a.as_ptr(), m, k)
+            pto.mte_l1_l0b(b_mat.as_ptr(), b_l0b.as_ptr(), k, n)
             pto.mad(a_l0a.as_ptr(), b_l0b.as_ptr(), o_acc.as_ptr(), m, n, k)
             pto.mte_l0c_ub(o_acc.as_ptr(), o_tile.as_ptr(), m, n, n, n, 0)
 
