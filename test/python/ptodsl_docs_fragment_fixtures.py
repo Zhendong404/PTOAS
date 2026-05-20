@@ -766,6 +766,28 @@ FRAGMENT_FIXTURES = {
             )
         """
     ),
+    "flash_attention.inline_simt_scope": _fixture(
+        f"""
+        @pto.ukernel
+        def flash_attention_inline_simt_scope(
+            q_tile: pto.Tile,
+            k_tile: pto.Tile,
+            meta_ptr,
+        ):
+            {SNIPPET_PLACEHOLDER}
+
+
+        @pto.jit(target="a5")
+        def flash_attention_inline_simt_scope_probe(*, BLOCK_Q: pto.constexpr = 16, BLOCK_KV: pto.constexpr = 16):
+            Br = BLOCK_Q
+            Bc = BLOCK_KV
+            D = 16
+            q_tile = pto.alloc_tile(shape=[Br, D], dtype=pto.f32, valid_shape=[Br, D])
+            k_tile = pto.alloc_tile(shape=[Bc, D], dtype=pto.f32, valid_shape=[Bc, D])
+            meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 3])
+            flash_attention_inline_simt_scope(q_tile, k_tile, meta_tile.as_ptr())
+        """
+    ),
     "flash_attention.online_softmax_loop": _fixture(
         f"""
         @pto.simd

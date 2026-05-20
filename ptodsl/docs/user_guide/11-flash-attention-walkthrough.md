@@ -516,29 +516,17 @@ The SIMT kernel walks the tile element by element with nested `pto.for_` loops. 
 
 ### Context manager alternative
 
-For trivial sub-kernels like `materialize_tile_bounds`, a named function is overkill — the context manager form keeps the logic inline where it's used. Here is how the ukernel body would look with `materialize_tile_bounds` inlined:
+For trivial sub-kernels like `materialize_tile_bounds`, a named function is overkill — the context manager form keeps the logic inline where it's used. The inline SIMT scope itself looks like this:
 
-<!-- ptodsl-doc-pending: inline L3 context-manager syntax is documented but not implemented yet -->
+<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"flash_attention.inline_simt_scope","symbol":"flash_attention_inline_simt_scope_probe","compile":{"BLOCK_Q":16,"BLOCK_KV":16}} -->
 ```python
-@pto.ukernel
-def kv_block_process(...):
-    pto.mte_load(k_part, k_tile)
-    pto.mte_load(v_part, v_tile)
-    pto.pipe_barrier(pto.Pipe.ALL)
-
-    # Inline SIMT: materialize loop bounds (replaces the named @pto.simt function)
-    with pto.simt():
-        scalar.store(0, meta_ptr + 0)
-        scalar.store(valid_rows, meta_ptr + 1)
-        scalar.store(valid_cols, meta_ptr + 2)
-
-    pto.pipe_barrier(pto.Pipe.ALL)
-
-    qk_matmul(q_tile, k_tile, ...)
-    ...
+with pto.simt():
+    scalar.store(0, meta_ptr + 0)
+    scalar.store(q_tile.valid_shape[0], meta_ptr + 1)
+    scalar.store(k_tile.valid_shape[0], meta_ptr + 2)
 ```
 
-The `with pto.simt():` block is semantically identical to calling a `@pto.simt` function — the compiler treats it as an anonymous sub-kernel. For 3-line helpers that have no reuse, the context manager avoids the indirection of a separate function. For complex, reusable logic like `online_softmax_rows` or `qk_matmul`, the named decorator form remains the better fit.
+The `with pto.simt():` block acts as an anonymous inline sub-kernel scope. For 3-line helpers that have no reuse, the context manager avoids the indirection of a separate function. For complex, reusable logic like `online_softmax_rows` or `qk_matmul`, the named decorator form remains the better fit.
 
 ## 11.8 Putting it all together: one KV block execution
 

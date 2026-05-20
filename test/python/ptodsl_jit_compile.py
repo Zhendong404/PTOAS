@@ -106,6 +106,7 @@ def tile_surface_compute_probe():
 
 
 SUBKERNEL_OBSERVATIONS = []
+INLINE_SUBKERNEL_SCOPE_OBSERVATIONS = []
 
 
 @pto.simd
@@ -135,6 +136,29 @@ def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.constexpr = 0):
     top_level_cube_probe()
     ukernel_probe()
     nested_simd_probe()
+
+
+@pto.ukernel
+def inline_subkernel_scope_ukernel(meta_ptr: pto.ptr(pto.i32, pto.MemorySpace.UB)):
+    session = current_session()
+    with pto.simt():
+        frame = session.current_subkernel
+        INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
+        scalar.store(0, meta_ptr + 0)
+    with pto.simd():
+        frame = session.current_subkernel
+        INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
+        pto.pipe_barrier(pto.Pipe.ALL)
+    with pto.cube():
+        frame = session.current_subkernel
+        INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.append((frame.role, frame.symbol_name, session.subkernel_stack_depth))
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5")
+def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 1])
+    inline_subkernel_scope_ukernel(meta_tile.as_ptr())
 
 
 @pto.simt
@@ -899,6 +923,7 @@ def main() -> None:
     runtime_metadata_kernel.verify()
     tile_surface_compute_probe.verify()
     shared_subkernel_lowering_probe.verify()
+    inline_subkernel_scope_probe.verify()
     simt_helper_lowering_probe.verify()
     carry_loop_lowering_probe.verify()
     branch_handle_then_only_probe.verify()
@@ -1132,6 +1157,26 @@ def main() -> None:
             ("simd", "nested_simd_probe", 1),
         ],
         f"unexpected shared subkernel lowering observations: {SUBKERNEL_OBSERVATIONS!r}",
+    )
+
+    INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
+    inline_subkernel_scope_text = inline_subkernel_scope_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(inline_subkernel_scope_text, "inline subkernel scope specialization")
+    expect(
+        INLINE_SUBKERNEL_SCOPE_OBSERVATIONS == [
+            ("simt", "inline_simt", 2),
+            ("simd", "inline_simd", 2),
+            ("cube", "inline_cube", 2),
+        ],
+        f"unexpected inline subkernel scope observations: {INLINE_SUBKERNEL_SCOPE_OBSERVATIONS!r}",
+    )
+    expect(
+        "pto.store" in inline_subkernel_scope_text,
+        "inline pto.simt() body should lower authored scalar ops inside the surrounding kernel trace",
+    )
+    expect(
+        inline_subkernel_scope_text.count("pto.barrier <PIPE_ALL>") >= 2,
+        "inline pto.simd()/pto.cube() bodies should lower their authored operations in place",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
