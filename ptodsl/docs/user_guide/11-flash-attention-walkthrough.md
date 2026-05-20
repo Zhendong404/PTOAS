@@ -34,7 +34,6 @@ After each KV block:
 
 ## 11.2 L0 — Python wrapper
 
-<!-- ptodsl-doc-pending: host-side wrapper includes runtime allocation and launch behavior that is outside the current compile-only docs contract -->
 ```python
 def flash_attention(Q, K, V, *, O=None, causal=False,
                     block_q=128, block_kv=128, stream=None):
@@ -331,7 +330,6 @@ Key points:
 
 ## 11.4 L2 — `@pto.ukernel`
 
-<!-- ptodsl-doc-pending: signature overview only; the complete ukernel body is covered by the phase snippets below -->
 ```python
 @pto.ukernel
 def kv_block_process(
@@ -484,7 +482,6 @@ Structurally identical to `qk_matmul`, but without transposition and with differ
 
 ## 11.6 L3b — `@pto.simd` online softmax
 
-<!-- ptodsl-doc-pending: signature overview only; detailed behavior is covered by the tested loop/body fragments below -->
 ```python
 @pto.simd
 def online_softmax_rows(
