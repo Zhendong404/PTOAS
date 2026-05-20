@@ -49,6 +49,7 @@ from ._surface_types import (   # noqa: F401
     Tile,
 )
 from ._tensor_factories import empty_like  # noqa: F401
+from ._tile_namespace import tile  # noqa: F401
 
 # ── Operations ────────────────────────────────────────────────────────────────
 from ._ops import (             # noqa: F401
@@ -72,7 +73,7 @@ from ._ops import (             # noqa: F401
     vcmax, vcadd, vdup, vexpdif,
     vexp, vcgmax, vcgadd, vsubs,
     make_tensor_view, partition_view,
-    alloc_tile, tload, tstore, tmov, as_ptr,
+    alloc_tile, as_ptr,
     mte_load, mte_store, mem_bar,
     mte_l1_l0a, mte_l1_l0b, mte_l0c_ub, mad,
     get_block_idx, get_block_num, get_subblock_idx, get_subblock_num,

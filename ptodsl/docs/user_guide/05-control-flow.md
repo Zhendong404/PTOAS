@@ -13,7 +13,6 @@ This has one critical implication for how you write loops and branches:
 
 When you write a plain Python `for` loop inside a kernel body, Python executes it immediately during tracing. Each iteration records its instructions separately, so the device code gets a linear sequence with the body repeated:
 
-<!-- ptodsl-doc-pending: documented trace-time unrolling example still uses the documented pto.tadd API, which is not implemented on the current pto surface -->
 ```python
 @pto.jit(target="a5")
 def unrolled_kernel(A, O, *, N: pto.constexpr):
@@ -27,9 +26,9 @@ def unrolled_kernel(A, O, *, N: pto.constexpr):
         o_part = pto.partition_view(o_view, offsets=[i], sizes=[1])
         a_tile = pto.alloc_tile(shape=[1], dtype=pto.f32)
         o_tile = pto.alloc_tile(shape=[1], dtype=pto.f32)
-        pto.tload(a_part, a_tile)
-        pto.tadd(a_tile, a_tile, o_tile)
-        pto.tstore(o_tile, o_part)
+        pto.tile.load(a_part, a_tile)
+        pto.tile.add(a_tile, a_tile, o_tile)
+        pto.tile.store(o_tile, o_part)
 ```
 
 This works when the loop bound is a compile-time constant (like a `constexpr` parameter). But if `N` comes from a tensor shape and varies per launch, `range(N)` would trace a different number of iterations each time — you would get a cache miss and recompilation on every new value. For dynamic bounds, use `pto.for_`.
@@ -43,7 +42,7 @@ This works when the loop bound is a compile-time constant (like a `constexpr` pa
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"control_flow.basic_for","symbol":"control_flow_basic_for_probe","compile":{"BLOCK":8}} -->
 ```python
 with pto.for_(start, stop, step=step) as iv:
-    pto.tload(pto.partition_view(a_view, offsets=[iv, 0], sizes=[1, cols]), tile)
+    pto.tile.load(pto.partition_view(a_view, offsets=[iv, 0], sizes=[1, cols]), tile)
 ```
 
 - `start`, `stop`, `step` are PTO scalar expressions. They are evaluated on the device.
@@ -56,11 +55,11 @@ Compare the two approaches:
 ```python
 # Trace-time unrolling — BLOCK must be constexpr
 for i in range(BLOCK):
-    pto.tload(pto.partition_view(a_view, offsets=[0, 0], sizes=[1, cols]), tile)
+    pto.tile.load(pto.partition_view(a_view, offsets=[0, 0], sizes=[1, cols]), tile)
 
 # Device-side loop — num_blocks can be dynamic
 with pto.for_(0, num_blocks, step=1) as i:
-    pto.tload(pto.partition_view(a_view, offsets=[i, 0], sizes=[1, cols]), tile)
+    pto.tile.load(pto.partition_view(a_view, offsets=[i, 0], sizes=[1, cols]), tile)
 ```
 
 ### Nested loops

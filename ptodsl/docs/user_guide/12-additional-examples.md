@@ -6,7 +6,6 @@ This chapter presents four self-contained examples that build on the concepts in
 
 Chapter 2 showed a 1D vector add with a single blocking dimension. Real workloads often involve 2D tensors — matrices — where blocking happens along both rows and columns.
 
-<!-- ptodsl-doc-pending: tadd is not exposed on the current PTODSL public surface -->
 ```python
 @pto.jit(target="a5")
 def mat_add(A, B, O, *, BLOCK_M: pto.constexpr = 64, BLOCK_N: pto.constexpr = 128):
@@ -32,16 +31,16 @@ def mat_add(A, B, O, *, BLOCK_M: pto.constexpr = 64, BLOCK_N: pto.constexpr = 12
             b_part = pto.partition_view(b_view, offsets=[m_off, n_off], sizes=[BLOCK_M, BLOCK_N])
             o_part = pto.partition_view(o_view, offsets=[m_off, n_off], sizes=[BLOCK_M, BLOCK_N])
 
-            pto.tload(a_part, a_tile)
-            pto.tload(b_part, b_tile)
-            pto.tadd(a_tile, b_tile, o_tile)
-            pto.tstore(o_tile, o_part)
+            pto.tile.load(a_part, a_tile)
+            pto.tile.load(b_part, b_tile)
+            pto.tile.add(a_tile, b_tile, o_tile)
+            pto.tile.store(o_tile, o_part)
 ```
 
 **Key points**:
 
 - Nested `pto.for_` loops produce a 2D block traversal. Both loops are recorded as device-side control flow — they adapt to the runtime shape `M`.
-- Tile shape `[BLOCK_M, BLOCK_N]` is 2D; all three tiles use the same shape so `tadd` is elementwise.
+- Tile shape `[BLOCK_M, BLOCK_N]` is 2D; all three tiles use the same shape so `tile.add` is elementwise.
 - `partition_view` takes 2D offsets and sizes.
 - `BLOCK_M` and `BLOCK_N` are `constexpr` — the compiler specializes the kernel per tile shape.
 
@@ -99,9 +98,9 @@ The pattern:
 
 ### 12.2.2 Tile-level tail handling
 
-At the Tile Op level, tail handling is built into `tload` and `tstore`. When a partition size along a dimension is smaller than the tile size, the tile's `valid_shape` tracks the actual data extent:
+At the Tile Op level, tail handling is built into `tile.load` and `tile.store`. When a partition size along a dimension is smaller than the tile size, the tile's `valid_shape` tracks the actual data extent:
 
-<!-- ptodsl-doc-pending: tadd is not exposed, and this example also relies on mutating tile.valid_shape directly -->
+<!-- ptodsl-doc-pending: this example still relies on mutating tile.valid_shape directly -->
 ```python
 @pto.jit(target="a5")
 def vec_add_with_tail(A, B, O, *, BLOCK: pto.constexpr):
@@ -125,25 +124,25 @@ def vec_add_with_tail(A, B, O, *, BLOCK: pto.constexpr):
         b_part = pto.partition_view(b_view, offsets=[offset], sizes=[this_block])
         o_part = pto.partition_view(o_view, offsets=[offset], sizes=[this_block])
 
-        pto.tload(a_part, a_tile)
-        pto.tload(b_part, b_tile)
+        pto.tile.load(a_part, a_tile)
+        pto.tile.load(b_part, b_tile)
 
         a_tile.valid_shape = [this_block]
         b_tile.valid_shape = [this_block]
         o_tile.valid_shape = [this_block]
 
-        pto.tadd(a_tile, b_tile, o_tile)
-        pto.tstore(o_tile, o_part)
+        pto.tile.add(a_tile, b_tile, o_tile)
+        pto.tile.store(o_tile, o_part)
 ```
 
 - `this_block = min(BLOCK, N - offset)` computes the actual block size for the tail iteration.
-- `sizes=[this_block]` on the partition and `valid_shape` on the tile tell `tload`/`tadd`/`tstore` how many elements are live.
+- `sizes=[this_block]` on the partition and `valid_shape` on the tile tell `tile.load`/`tile.add`/`tile.store` how many elements are live.
 
 ### 12.2.3 The general rule
 
 | Tail scenario | Mechanism |
 |---------------|-----------|
-| Tile Op boundary (tload/tstore) | `valid_shape` on tile + smaller `sizes` on partition |
+| Tile Op boundary (tile.load/tile.store) | `valid_shape` on tile + smaller `sizes` on partition |
 | SIMD vector boundary (vlds/vadd/vsts) | `make_mask` + mask parameter on op |
 | SIMT scalar loop boundary | `min(BLOCK, N - offset)` in loop bound |
 
@@ -223,12 +222,12 @@ def gemm(
                 o_part = pto.partition_view(o_view, offsets=[m_off, n_off],
                                             sizes=[BLOCK_M, BLOCK_N])
 
-                pto.tload(a_part, a_tile)
-                pto.tload(b_part, b_tile)
+                pto.tile.load(a_part, a_tile)
+                pto.tile.load(b_part, b_tile)
 
                 gemm_tile(a_tile, b_tile, o_tile, a_l0a, b_l0b, o_acc)
 
-            pto.tstore(o_tile, o_part)
+            pto.tile.store(o_tile, o_part)
 ```
 
 **Key points**:
@@ -236,7 +235,7 @@ def gemm(
 - **Triply nested loops**: M, N, and K dimensions are all blocked. The K loop accumulates partial results into `o_tile`.
 - **Accumulation**: `o_tile.fill(0.0)` resets the accumulator before the K loop. Each K-block calls `gemm_tile` which writes its partial product back to `o_tile`. The Cube unit accumulates implicitly via `mad` — each K-block's partial result is added to the running total in `o_acc`.
 - **Cube-local scratch**: `a_l0a`, `b_l0b`, and `o_acc` are allocated with explicit `memory_space` parameters (`LEFT`, `RIGHT`, `ACC`). Cube-local state does not leak into UB.
-- **Direct L3 call**: `gemm_tile` is called directly from `@pto.jit` — no ukernel needed. The compiler handles sync between `tload` and the Cube sub-kernel.
+- **Direct L3 call**: `gemm_tile` is called directly from `@pto.jit` — no ukernel needed. The compiler handles sync between `tile.load` and the Cube sub-kernel.
 - **Cube sub-kernel reuse**: the same `gemm_tile` function is called for every K-block — the named decorator form enables reuse.
 
 ### 12.3.3 L0 wrapper
@@ -255,7 +254,7 @@ This pattern extends directly to batch-GEMM: pass a grid of `batch` and use `pto
 
 ### 12.3.4 Comparison with ukernel path
 
-For reference, the same GEMM could be written using `@pto.ukernel` for explicit MTE control. The ukernel would replace the inner `tload`/`tstore` calls with `mte_load`/`mte_store` and add `mem_bar` synchronization between DMA and compute. The direct-call path used above is recommended for most users — the ukernel path is for cases that need hand-tuned DMA scheduling.
+For reference, the same GEMM could be written using `@pto.ukernel` for explicit MTE control. The ukernel would replace the inner `tile.load`/`tile.store` calls with `mte_load`/`mte_store` and add `mem_bar` synchronization between DMA and compute. The direct-call path used above is recommended for most users — the ukernel path is for cases that need hand-tuned DMA scheduling.
 
 ## 12.4 Online normalization with loop-carried state
 
@@ -386,9 +385,9 @@ def online_layernorm(X, O, *, BLOCK: pto.constexpr):
         x_part = pto.partition_view(x_view, offsets=[offset], sizes=[this_block])
         o_part = pto.partition_view(o_view, offsets=[offset], sizes=[this_block])
 
-        pto.tload(x_part, x_tile)
+        pto.tile.load(x_part, x_tile)
         pto.tnormalize(x_tile, mu_next, global_var, o_tile)
-        pto.tstore(o_tile, o_part)
+        pto.tile.store(o_tile, o_part)
 ```
 
 **Key points**:
@@ -407,7 +406,7 @@ def online_layernorm(X, O, *, BLOCK: pto.constexpr):
 | Goal | Use |
 |------|-----|
 | Whole-kernel orchestration, GM↔UB boundary | `@pto.jit` |
-| Tile-level data movement | `tload` / `tstore` |
+| Tile-level data movement | `tile.load` / `tile.store` |
 | Custom row-wise vector math | `@pto.simd` |
 | Custom per-element logic | `@pto.simt` |
 | Matrix multiply | `@pto.cube` |

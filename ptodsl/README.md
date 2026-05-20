@@ -247,8 +247,8 @@ pto.vmul / vmax / vdiv / vcmax / vcadd / vdup / vexpdif  # similarly
 pto.make_tensor_view(ptr, shape=…, strides=…)    # type inferred
 pto.partition_view(tv, offsets=…, sizes=…)        # type inferred
 pto.alloc_tile(shape=…, dtype=…, memory_space=…)  # authored surface
-pto.tload(part, tile)
-pto.tstore(tile, part)
+pto.tile.load(part, tile)
+pto.tile.store(tile, part)
 tile.as_ptr() / view.as_ptr()
 pto.get_block_idx()           # → i64
 pto.set_flag("MTE2", "V", event_id=0)

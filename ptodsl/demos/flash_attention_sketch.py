@@ -14,7 +14,7 @@ layering explicit and keep the semantic contracts clean:
 
     emit_flash_attention_mlir(...) compile/inspect wrapper
       └─ @pto.jit flash_attention_kernel
-           ├─ Tile Ops                 tload / tstore at the GM↔UB boundary
+           ├─ Tile Ops                 tile.load / tile.store at the GM↔UB boundary
            └─ @pto.ukernel  one KV-block worth of MTE/sync orchestration
                 ├─ @pto.cube   matrix products (QK^T and P@V)
                 ├─ @pto.simd   row-wise online softmax
@@ -33,7 +33,7 @@ Design rules illustrated here:
 4. ``ukernel`` owns the per-block execution sandwich: stage the current K/V
    block with explicit micro-instructions, synchronize, call hardware-bound
    sub-kernels, and manage scratch/state.
-5. ``@pto.jit`` may use tile ops such as ``tload`` / ``tstore`` at the logical
+5. ``@pto.jit`` may use tile ops such as ``tile.load`` / ``tile.store`` at the logical
    scheduling boundary, but ``ukernel`` stays below that abstraction level.
    Once execution enters ``ukernel``, GM<->UB movement is expressed with
    MTE micro-instructions such as ``mte_load`` instead of tile ops.
@@ -298,7 +298,7 @@ def flash_attention_kernel(
         pv_tile.valid_shape = [q_rows, dim]
         q_l0a.valid_shape = [q_rows, dim]
 
-        pto.tload(q_part, q_mat)
+        pto.tile.load(q_part, q_mat)
 
         # Initial online-softmax state for this Q block.
         # ``CAUSAL`` is threaded at the API boundary even though the masking
@@ -367,7 +367,7 @@ def flash_attention_kernel(
             )
 
         o_final_tile = kv_loop.final("o")
-        pto.tstore(o_final_tile, o_part)
+        pto.tile.store(o_final_tile, o_part)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -614,7 +614,7 @@ def kv_block_process(
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Stage the probability tile onto the cube MAT path.
-    pto.tmov(p_tile, p_mat)
+    pto.tile.mov(p_tile, p_mat)
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # 3. PV = P @ V
@@ -649,7 +649,7 @@ def kv_block_process(
 # │ L1  @pto.jit         compile + cache + top-level orchestration            │
 # │                                                                            │
 # │   flash_attention_kernel.compile(...).mlir_text()                         │
-# │   TensorView metadata / alloc_tile / partition_view / tload / tstore      │
+# │   TensorView metadata / alloc_tile / partition_view / tile.load / tile.store      │
 # │   outer Q loop + inner KV loop + ping-pong state ownership                │
 # │                                                                            │
 # │   Key idea: one launchable entry owns both runtime binding and logical     │

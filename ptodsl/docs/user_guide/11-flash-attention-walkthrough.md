@@ -9,7 +9,7 @@ The sketch computes **online-softmax flash attention** for one `(batch, head)` s
 ```
 flash_attention(...)           L0  user-facing wrapper
   └─ @pto.jit flash_attention_kernel
-       ├─ Tile Ops                 tload / tstore at the GM↔UB boundary
+       ├─ Tile Ops                 tile.load / tile.store at the GM↔UB boundary
        └─ @pto.ukernel  kv_block_process
             ├─ @pto.simt   materialize_tile_bounds
             ├─ @pto.cube   qk_matmul
@@ -211,7 +211,7 @@ with pto.for_(0, q_blocks, step=1) as qi:
     o_part = pto.partition_view(o_head, offsets=[0, qi * Br, 0, 0],
                                 sizes=[1, Br, 1, dim])
 
-    pto.tload(q_part, q_tile)
+    pto.tile.load(q_part, q_tile)
 
     m_prev_tile.fill(float("-inf"))
     l_prev_tile.fill(0.0)
@@ -244,15 +244,15 @@ with pto.for_(0, q_blocks, step=1) as qi:
         kv_loop.update(m=m_next_tile, l=l_next_tile, o=o_next_tile)
 
     o_final_tile = kv_loop.final("o")
-    pto.tstore(o_final_tile, o_part)
+    pto.tile.store(o_final_tile, o_part)
 ```
 
 Key points:
 
-- **`tload` at the L1 boundary**: Q is loaded once per Q block using a tile op. The compiler auto-inserts the necessary `set_flag`/`wait_flag` pairs.
+- **`tile.load` at the L1 boundary**: Q is loaded once per Q block using a tile op. The compiler auto-inserts the necessary `set_flag`/`wait_flag` pairs.
 - **State initialization**: `fill(float("-inf"))` and `fill(0.0)` initialize the online-softmax accumulators before the first KV block.
 - **Carry state**: the inner `kv_loop` carries three ping-pong tiles (`m`, `l`, `o`) across iterations using `.carry(...)` / `.update(...)` / `.final(...)`. After each KV block, the loop updates the carried values to the `_next` tiles. After the loop, `.final("o")` extracts the final output accumulator.
-- **`tstore` at the L1 boundary**: writes the final result for this Q block back to GM.
+- **`tile.store` at the L1 boundary**: writes the final result for this Q block back to GM.
 
 ## 11.4 L2 — `@pto.ukernel`
 
@@ -546,7 +546,7 @@ For one KV block, the full execution sequence is:
 
 | Step | Layer | Operation | Hardware |
 |------|-------|-----------|----------|
-| 1 | L1 | `tload(q_part, q_tile)` | MTE2 → UB |
+| 1 | L1 | `tile.load(q_part, q_tile)` | MTE2 → UB |
 | 2 | L2 | `mte_load(k_part, k_tile)` | MTE2 → UB |
 | 3 | L2 | `mte_load(v_part, v_tile)` | MTE2 → UB |
 | 4 | L2 | `mem_bar(SYNC)` | — |
@@ -560,7 +560,7 @@ For one KV block, the full execution sequence is:
 | 12 | L3c | `blend_output_rows` | SIMT |
 | 13 | L2 | `mem_bar(SYNC)` | — |
 
-After all KV blocks: L1 issues `tstore(o_final_tile, o_part)` to write the result back to GM.
+After all KV blocks: L1 issues `tile.store(o_final_tile, o_part)` to write the result back to GM.
 
 ## 11.9 Design patterns in this sketch
 
@@ -568,7 +568,7 @@ After all KV blocks: L1 issues `tstore(o_final_tile, o_part)` to write the resul
 
 **Scratch reuse**: `rhs_l0b` serves both `K` (in `qk_matmul`) and `V` (in `pv_matmul`). `pv_acc_tile` reuses the accumulator from QK^T. The caller (L1) allocates once; the ukernel passes them to both cube sub-kernels.
 
-**Tile-level boundary vs micro-instruction boundary**: `tload`/`tstore` appear only in `@pto.jit`. `mte_load`/`mte_store` appear only in `@pto.ukernel`. This is the key abstraction split: L1 operates on tiles, L2 operates on micro-instructions.
+**Tile-level boundary vs micro-instruction boundary**: `tile.load`/`tile.store` appear only in `@pto.jit`. `mte_load`/`mte_store` appear only in `@pto.ukernel`. This is the key abstraction split: L1 operates on tiles, L2 operates on micro-instructions.
 
 **No vreg across sub-kernel boundaries**: vector registers are local to each `@pto.simd` kernel. Data crosses sub-kernel boundaries through UB tiles — the boundary contract is enforced by the type system.
 

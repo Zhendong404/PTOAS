@@ -394,7 +394,7 @@ Where do sync operations belong in PTODSL's layered model?
 
 ### Auto-sync at the tile level
 
-When writing `@pto.jit` code with tile ops (`tload`, `tstore`, `tadd`, etc.), each op carries a pipe assignment (e.g., `tload` → `PIPE_MTE2`, `tadd` → `PIPE_V`). PTOAS's sync-insertion pass analyzes the op sequence, infers the necessary `set_flag`/`wait_flag` pairs from the pipe transitions, and injects them into the lowered code. The tile ops themselves still require synchronization — the difference is that the compiler, not the user, writes it.
+When writing `@pto.jit` code with tile ops (`tile.load`, `tile.store`, `tile.add`, etc.), each op carries a pipe assignment (e.g., `tile.load` → `PIPE_MTE2`, `tile.add` → `PIPE_V`). PTOAS's sync-insertion pass analyzes the op sequence, infers the necessary `set_flag`/`wait_flag` pairs from the pipe transitions, and injects them into the lowered code. The tile ops themselves still require synchronization — the difference is that the compiler, not the user, writes it.
 
 ### Quick reference: which sync for which scenario
 

@@ -274,7 +274,7 @@ big = pto.vcmps(scores, threshold, seed, pto.CmpMode.GT)
 
 ---
 
-**Tile-level comparisons** (`pto.tcmp`, `pto.tcmps`) compare two tiles and write packed predicate bytes into an `i8` destination tile. They are used when the comparison result needs to be stored to UB for later selection (`tsel`) or cross-kernel communication.
+**Tile-level comparisons** (`pto.tile.cmp`, `pto.tile.cmps`) compare two tiles and write packed predicate bytes into an `i8` destination tile. They are used when the comparison result needs to be stored to UB for later selection (`tile.sel`) or cross-kernel communication.
 
 ---
 
@@ -381,9 +381,9 @@ The `mask` gates the `vexp` (masked-off lanes produce 0) and the `vsts` (masked-
 
 ## 9.9 Tile-level mask operations
 
-When working at the tile level (L1, `@pto.jit`), masks are carried in `i8` tile buffers holding packed predicate bytes. The key consumer of tile-level masks is `tsel`.
+When working at the tile level (L1, `@pto.jit`), masks are carried in `i8` tile buffers holding packed predicate bytes. The key consumer of tile-level masks is `tile.sel`.
 
-#### `pto.tsel(mask: Tile, src0: Tile, src1: Tile, tmp: Tile, dst: Tile) -> None`
+#### `pto.tile.sel(mask: Tile, src0: Tile, src1: Tile, tmp: Tile, dst: Tile) -> None`
 
 **Description**: Element-wise ternary select: `dst[i,j] = mask[i,j] ? src0[i,j] : src1[i,j]`. `mask` is an integer tile (typically `i8`) where zero means false. `tmp` is a scratch tile for the underlying implementation.
 
@@ -401,7 +401,7 @@ When working at the tile level (L1, `@pto.jit`), masks are carried in `i8` tile 
 
 ---
 
-#### `pto.tsels(mask: Tile, src: Tile, scalar: ScalarType, tmp: Tile, dst: Tile) -> None`
+#### `pto.tile.sels(mask: Tile, src: Tile, scalar: ScalarType, tmp: Tile, dst: Tile) -> None`
 
 **Description**: Element-wise select with scalar fallback: `dst[i,j] = mask[i,j] ? src[i,j] : scalar`.
 

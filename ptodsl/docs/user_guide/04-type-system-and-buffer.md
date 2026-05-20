@@ -187,7 +187,7 @@ def kernel(
     return
 ```
 
-`make_tensor_view` wraps a Python-native tensor. You provide the logical shape and the stride of each dimension in **elements** (not bytes). The resulting `TensorView` can be partitioned for `tload`/`tstore`.
+`make_tensor_view` wraps a Python-native tensor. You provide the logical shape and the stride of each dimension in **elements** (not bytes). The resulting `TensorView` can be partitioned for `tile.load`/`tile.store`.
 
 ### TensorView attributes
 
@@ -201,7 +201,7 @@ Strides support non-contiguous tensors. Pass `strides=A.strides` from the source
 
 ## 4.6 PartitionTensorView
 
-`partition_view` creates a sub-view of a TensorView at a given offset and size. It describes *which part* of the GM tensor a `tload` or `tstore` should operate on:
+`partition_view` creates a sub-view of a TensorView at a given offset and size. It describes *which part* of the GM tensor a `tile.load` or `tile.store` should operate on:
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"type_system.partition_view","symbol":"type_system_partition_view_probe","compile":{"BLOCK":128}} -->
 ```python

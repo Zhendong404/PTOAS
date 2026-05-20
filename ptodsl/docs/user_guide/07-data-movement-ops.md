@@ -2,11 +2,11 @@
 
 This chapter covers every operation that moves data between memory spaces in PTODSL — tile-level transfers, DMA micro-instructions, vector loads and stores, and cube data movement. Operations are organized by abstraction level: tile ops (L1), DMA ops (L2), vector memory ops (L3 SIMD), and cube memory ops (L3 cube).
 
-## 7.1 Tile-level movement: tload and tstore
+## 7.1 Tile-level movement: tile.load and tile.store
 
 Tile ops move entire blocks between Global Memory and the Unified Buffer in a single call. They are the primary data movement interface inside `@pto.jit`.
 
-#### `pto.tload(partition: PartitionTensorView, tile: Tile) -> None`
+#### `pto.tile.load(partition: PartitionTensorView, tile: Tile) -> None`
 
 **Description**: Copies data from a GM partition into a UB tile. The transfer size is determined by the partition's `sizes` and the tile's shape — they must be compatible.
 
@@ -25,12 +25,12 @@ Tile ops move entire blocks between Global Memory and the Unified Buffer in a si
 ```python
 a_part = pto.partition_view(a_view, offsets=[offset, 0], sizes=[1, cols])
 a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
-pto.tload(a_part, a_tile)
+pto.tile.load(a_part, a_tile)
 ```
 
 ---
 
-#### `pto.tstore(tile: Tile, partition: PartitionTensorView) -> None`
+#### `pto.tile.store(tile: Tile, partition: PartitionTensorView) -> None`
 
 **Description**: Copies data from a UB tile back to a GM partition. The tile's `valid_shape` determines how many elements are written; elements outside `valid_shape` are not stored.
 
@@ -47,12 +47,12 @@ pto.tload(a_part, a_tile)
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"quick_start.tile_io","symbol":"quick_start_tile_io_probe","compile":{"BLOCK":128}} -->
 ```python
-pto.tstore(o_tile, o_part)
+pto.tile.store(o_tile, o_part)
 ```
 
 ---
 
-Both `tload` and `tstore` operate at **tile granularity** — they are the idiomatic choice inside `@pto.jit` loops. When you need finer control over DMA scheduling, drop down to the micro-instruction level.
+Both `tile.load` and `tile.store` operate at **tile granularity** — they are the idiomatic choice inside `@pto.jit` loops. When you need finer control over DMA scheduling, drop down to the micro-instruction level.
 
 ## 7.2 DMA micro-instructions (ukernel)
 

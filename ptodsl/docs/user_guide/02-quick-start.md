@@ -34,8 +34,8 @@ def tile_copy(
     o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
 
     # Load from GM into UB, then store back out.
-    pto.tload(a_part, a_tile)
-    pto.tstore(o_tile, o_part)
+    pto.tile.load(a_part, a_tile)
+    pto.tile.store(o_tile, o_part)
 ```
 
 Let us step through each piece.
@@ -71,22 +71,22 @@ a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
 ```
 
-`partition_view` creates a sub-view of a `TensorView` at a given offset and size. It describes *which part* of the GM tensor a `tload` or `tstore` should operate on. For this simple whole-tensor example the offset is zero and the size matches the logical tensor extent; in a blocked kernel you would slide the offset through a loop.
+`partition_view` creates a sub-view of a `TensorView` at a given offset and size. It describes *which part* of the GM tensor a `tile.load` or `tile.store` should operate on. For this simple whole-tensor example the offset is zero and the size matches the logical tensor extent; in a blocked kernel you would slide the offset through a loop.
 
-### Moving data: tload and tstore
+### Moving data: tile.load and tile.store
 
 ```python
-pto.tload(a_part, a_tile)   # GM → UB
-pto.tstore(o_tile, o_part)  # UB → GM
+pto.tile.load(a_part, a_tile)   # GM → UB
+pto.tile.store(o_tile, o_part)  # UB → GM
 ```
 
-`tload` copies a block of data from GM (described by a partition) into a UB tile. `tstore` copies a UB tile back to GM. These are **Tile Ops** — they operate on entire tile buffers at once.
+`tile.load` copies a block of data from GM (described by a partition) into a UB tile. `tile.store` copies a UB tile back to GM. These are **Tile Ops** — they operate on entire tile buffers at once.
 
 ### Why start with copy
 
 ```python
-pto.tload(a_part, a_tile)
-pto.tstore(o_tile, o_part)
+pto.tile.load(a_part, a_tile)
+pto.tile.store(o_tile, o_part)
 ```
 
 A copy kernel strips the example down to the essential PTODSL boundary objects:
@@ -95,7 +95,7 @@ A copy kernel strips the example down to the essential PTODSL boundary objects:
 - `TensorView` descriptors over GM tensors
 - UB `Tile` allocation
 - `PartitionTensorView` slices
-- tile-level movement with `tload` / `tstore`
+- tile-level movement with `tile.load` / `tile.store`
 
 Once these pieces are clear, arithmetic and sub-kernel orchestration become much easier to layer on.
 
@@ -127,8 +127,8 @@ def blocked_copy(
         a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, cols])
         o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, cols])
 
-        pto.tload(a_part, tile)
-        pto.tstore(tile, o_part)
+        pto.tile.load(a_part, tile)
+        pto.tile.store(tile, o_part)
 ```
 
 Here `rows` and `cols` are dynamic — they come from `A.shape` and can differ across launches. The loop bound depends on `rows`, so `pto.for_` records a structured loop in the IR rather than unrolling at trace time. The `BLOCK` parameter stays `constexpr` because it is a tuning knob, not data-dependent. Chapter 5 covers this distinction in detail.
@@ -174,7 +174,7 @@ This lets you map different data slices to different blocks — for example, one
 
 ## 2.5 Dropping down to micro-instructions
 
-The examples above used Tile Ops (`tload` / `tstore` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
+The examples above used Tile Ops (`tile.load` / `tile.store` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
 
 <!-- ptodsl-doc-pending: layered micro-instruction vec_add example is documented but not supported by the current compile-only docs contract -->
 ```python

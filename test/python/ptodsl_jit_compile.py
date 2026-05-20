@@ -68,8 +68,8 @@ def host_vec_copy(
     o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
-    pto.tload(part, a_tile)
-    pto.tstore(o_tile, out)
+    pto.tile.load(part, a_tile)
+    pto.tile.store(o_tile, out)
 
 
 @pto.jit(target="a5")
@@ -87,8 +87,22 @@ def runtime_metadata_kernel(
     o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
     part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
-    pto.tload(part, a_tile)
-    pto.tstore(o_tile, out)
+    pto.tile.load(part, a_tile)
+    pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5")
+def tile_surface_compute_probe():
+    lhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
+    rhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
+    out = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
+    cmp_out = pto.alloc_tile(shape=[2, 32], dtype=pto.i8, valid_shape=[2, 16])
+
+    pto.tile.expands(1.0, lhs)
+    pto.tile.expands(2.0, rhs)
+    pto.tile.add(lhs, rhs, out)
+    pto.tile.adds(out, 3.0, out)
+    pto.tile.cmps(out, 0.0, cmp_out, cmp_mode=pto.CmpMode.GT)
 
 
 SUBKERNEL_OBSERVATIONS = []
@@ -692,6 +706,13 @@ def main() -> None:
     expect(isinstance(fake_empty, _FakeTensor), "pto.empty_like(...) should preserve host tensor factory type")
     expect(fake_empty.shape == fake_tensor.shape, "pto.empty_like(...) should preserve the logical tensor shape")
     expect(not hasattr(pto, "scalar"), "pto.scalar should not remain in the public pto namespace")
+    expect(hasattr(pto, "tile"), "pto.tile should be exported from the public namespace")
+    expect(hasattr(pto.tile, "load"), "pto.tile.load should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "add"), "pto.tile.add should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "cmps"), "pto.tile.cmps should be exported from the public tile namespace")
+    expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
+    expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
+    expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
     expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
@@ -718,6 +739,7 @@ def main() -> None:
 
     host_vec_copy.verify()
     runtime_metadata_kernel.verify()
+    tile_surface_compute_probe.verify()
     shared_subkernel_lowering_probe.verify()
     simt_helper_lowering_probe.verify()
     carry_loop_lowering_probe.verify()
@@ -899,6 +921,13 @@ def main() -> None:
         "pto.make_tensor_view %arg0, shape = [%arg1, %arg2], strides = [%arg3, %arg4]" in runtime_metadata_text,
         "make_tensor_view(A) should materialize runtime shape/stride metadata from the tensor proxy",
     )
+
+    tile_surface_text = tile_surface_compute_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(tile_surface_text, "tile surface compute specialization")
+    expect("pto.texpands" in tile_surface_text, "pto.tile.expands should lower to pto.texpands")
+    expect("pto.tadd " in tile_surface_text, "pto.tile.add should lower to pto.tadd")
+    expect("pto.tadds" in tile_surface_text, "pto.tile.adds should lower to pto.tadds")
+    expect("pto.tcmps" in tile_surface_text, "pto.tile.cmps should lower to pto.tcmps")
     expect(
         "pto.alloc_tile valid_row = %arg1 valid_col = %arg2 : !pto.tile_buf<vec, 1x128xf32, valid=?x?>" in runtime_metadata_text,
         "alloc_tile(valid_shape=[rows, cols]) should lower runtime metadata through valid_row/valid_col operands",

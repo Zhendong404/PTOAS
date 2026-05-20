@@ -268,6 +268,10 @@ def _normalize_cmp_mode(cmp_mode):
     return normalized
 
 
+def _cmp_mode_attr(cmp_mode):
+    return Attribute.parse(f"#pto<cmp {_normalize_cmp_mode(cmp_mode)}>")
+
+
 def _normalize_predicate_part(part):
     token = part
     if not isinstance(token, str):
@@ -1115,6 +1119,676 @@ def tmov(src, dst):
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst))
 
 
+def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
+    return _constant_like(scalar, infer_tile_element_type(wrap_surface_value(tile)))
+
+
+def tadd(src0, src1, dst):
+    """``pto.tadd ins(src0, src1) outs(dst)``."""
+    _pto.tadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tsub(src0, src1, dst):
+    """``pto.tsub ins(src0, src1) outs(dst)``."""
+    _pto.tsub(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmul(src0, src1, dst):
+    """``pto.tmul ins(src0, src1) outs(dst)``."""
+    _pto.tmul(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tdiv(src0, src1, dst, *, precision_mode=None):
+    """``pto.tdiv ins(src0, src1) outs(dst)``."""
+    _pto.tdiv(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tmax(src0, src1, dst):
+    """``pto.tmax ins(src0, src1) outs(dst)``."""
+    _pto.tmax(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmin(src0, src1, dst):
+    """``pto.tmin ins(src0, src1) outs(dst)``."""
+    _pto.tmin(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tadds(src, scalar, dst):
+    """``pto.tadds ins(src, scalar) outs(dst)``."""
+    _pto.tadds(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tadds"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tsubs(src, scalar, dst):
+    """``pto.tsubs ins(src, scalar) outs(dst)``."""
+    _pto.tsubs(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tsubs"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmuls(src, scalar, dst):
+    """``pto.tmuls ins(src, scalar) outs(dst)``."""
+    _pto.tmuls(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tmuls"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tdivs(src, scalar, dst, *, precision_mode=None):
+    """``pto.tdivs ins(src, scalar) outs(dst)``."""
+    _pto.tdivs(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tmaxs(src, scalar, dst):
+    """``pto.tmaxs ins(src, scalar) outs(dst)``."""
+    _pto.tmaxs(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tmaxs"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmins(src, scalar, dst):
+    """``pto.tmins ins(src, scalar) outs(dst)``."""
+    _pto.tmins(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tmins"),
+        unwrap_surface_value(dst),
+    )
+
+
+def texp(src, dst, *, precision_mode=None):
+    """``pto.texp ins(src) outs(dst)``."""
+    _pto.texp(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tlog(src, dst, *, precision_mode=None):
+    """``pto.tlog ins(src) outs(dst)``."""
+    _pto.tlog(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tsqrt(src, dst, *, precision_mode=None):
+    """``pto.tsqrt ins(src) outs(dst)``."""
+    _pto.tsqrt(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def trsqrt(src, dst, *, tmp=None, precision_mode=None):
+    """``pto.trsqrt ins(src, tmp?) outs(dst)``."""
+    _pto.trsqrt(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        precision_mode=precision_mode,
+    )
+
+
+def trecip(src, dst, *, precision_mode=None):
+    """``pto.trecip ins(src) outs(dst)``."""
+    _pto.trecip(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tabs(src, dst):
+    """``pto.tabs ins(src) outs(dst)``."""
+    _pto.tabs(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tneg(src, dst):
+    """``pto.tneg ins(src) outs(dst)``."""
+    _pto.tneg(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def trelu(src, dst):
+    """``pto.trelu ins(src) outs(dst)``."""
+    _pto.trelu(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tlrelu(src, slope, dst):
+    """``pto.tlrelu ins(src, slope) outs(dst)``."""
+    _pto.tlrelu(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, slope, context="tlrelu"),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowsum(src, tmp, dst):
+    """``pto.trowsum ins(src, tmp) outs(dst)``."""
+    _pto.trowsum(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowmax(src, tmp, dst):
+    """``pto.trowmax ins(src, tmp) outs(dst)``."""
+    _pto.trowmax(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowmin(src, tmp, dst):
+    """``pto.trowmin ins(src, tmp) outs(dst)``."""
+    _pto.trowmin(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowprod(src, tmp, dst):
+    """``pto.trowprod ins(src, tmp) outs(dst)``."""
+    _pto.trowprod(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowargmax(src, tmp, dst):
+    """``pto.trowargmax ins(src, tmp) outs(dst)``."""
+    _pto.trowargmax(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowargmin(src, tmp, dst):
+    """``pto.trowargmin ins(src, tmp) outs(dst)``."""
+    _pto.trowargmin(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolsum(src, dst, *, tmp=None, is_binary=None):
+    """``pto.tcolsum ins(src, tmp?) outs(dst)``."""
+    _pto.tcolsum(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        is_binary=is_binary,
+    )
+
+
+def tcolmax(src, dst):
+    """``pto.tcolmax ins(src) outs(dst)``."""
+    _pto.tcolmax(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolmin(src, dst):
+    """``pto.tcolmin ins(src) outs(dst)``."""
+    _pto.tcolmin(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolprod(src, dst):
+    """``pto.tcolprod ins(src) outs(dst)``."""
+    _pto.tcolprod(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolargmax(src, tmp, dst):
+    """``pto.tcolargmax ins(src, tmp) outs(dst)``."""
+    _pto.tcolargmax(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolargmin(src, tmp, dst):
+    """``pto.tcolargmin ins(src, tmp) outs(dst)``."""
+    _pto.tcolargmin(
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcmp(src0, src1, dst, *, cmp_mode=None):
+    """``pto.tcmp ins(src0, src1) outs(dst)``."""
+    _pto.tcmp(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        cmp_mode=None if cmp_mode is None else _cmp_mode_attr(cmp_mode),
+    )
+
+
+def tcmps(src, scalar, dst, *, cmp_mode=None):
+    """``pto.tcmps ins(src, scalar) outs(dst)``."""
+    _pto.tcmps(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tcmps"),
+        unwrap_surface_value(dst),
+        cmp_mode=None if cmp_mode is None else _cmp_mode_attr(cmp_mode),
+    )
+
+
+def texpands(scalar, dst):
+    """``pto.texpands ins(scalar) outs(dst)``."""
+    _pto.texpands(
+        _coerce_tile_scalar_operand(dst, scalar, context="texpands"),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowexpand(src, dst):
+    """``pto.trowexpand ins(src) outs(dst)``."""
+    _pto.trowexpand(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpand(src, dst):
+    """``pto.tcolexpand ins(src) outs(dst)``."""
+    _pto.tcolexpand(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowexpandadd(src0, src1, dst):
+    """``pto.trowexpandadd ins(src0, src1) outs(dst)``."""
+    _pto.trowexpandadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def trowexpandsub(src0, src1, dst, *, tmp=None):
+    """``pto.trowexpandsub ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpandsub(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def trowexpandmul(src0, src1, dst, *, tmp=None):
+    """``pto.trowexpandmul ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpandmul(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def trowexpanddiv(src0, src1, dst, *, tmp=None, precision_mode=None):
+    """``pto.trowexpanddiv ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpanddiv(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        precision_mode=precision_mode,
+    )
+
+
+def trowexpandmax(src0, src1, dst, *, tmp=None):
+    """``pto.trowexpandmax ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpandmax(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def trowexpandmin(src0, src1, dst, *, tmp=None):
+    """``pto.trowexpandmin ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpandmin(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def trowexpandexpdif(src0, src1, dst, *, tmp=None):
+    """``pto.trowexpandexpdif ins(src0, src1, tmp?) outs(dst)``."""
+    _pto.trowexpandexpdif(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+    )
+
+
+def tcolexpandadd(src0, src1, dst):
+    """``pto.tcolexpandadd ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpandsub(src0, src1, dst):
+    """``pto.tcolexpandsub ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandsub(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpandmul(src0, src1, dst):
+    """``pto.tcolexpandmul ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandmul(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpanddiv(src0, src1, dst, *, precision_mode=None):
+    """``pto.tcolexpanddiv ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpanddiv(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        precision_mode=precision_mode,
+    )
+
+
+def tcolexpandmax(src0, src1, dst):
+    """``pto.tcolexpandmax ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandmax(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpandmin(src0, src1, dst):
+    """``pto.tcolexpandmin ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandmin(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcolexpandexpdif(src0, src1, dst):
+    """``pto.tcolexpandexpdif ins(src0, src1) outs(dst)``."""
+    _pto.tcolexpandexpdif(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tsel(mask, src0, src1, tmp, dst):
+    """``pto.tsel ins(mask, src0, src1, tmp) outs(dst)``."""
+    _pto.tsel(
+        unwrap_surface_value(mask),
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def tsels(mask, src, tmp, scalar, dst):
+    """``pto.tsels ins(mask, src, tmp, scalar) outs(dst)``."""
+    _pto.tsels(
+        unwrap_surface_value(mask),
+        unwrap_surface_value(src),
+        unwrap_surface_value(tmp),
+        _coerce_tile_scalar_operand(src, scalar, context="tsels"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tcvt(src, dst, *, tmp=None, rmode=None, sat_mode=None):
+    """``pto.tcvt ins(src, tmp?) outs(dst)``."""
+    _pto.tcvt(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+        tmp=None if tmp is None else unwrap_surface_value(tmp),
+        rmode=rmode,
+        sat_mode=sat_mode,
+    )
+
+
+def tnot(src, dst):
+    """``pto.tnot ins(src) outs(dst)``."""
+    _pto.tnot(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tand(src0, src1, dst):
+    """``pto.tand ins(src0, src1) outs(dst)``."""
+    _pto.tand(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tands(src, scalar, dst):
+    """``pto.tands ins(src, scalar) outs(dst)``."""
+    _pto.tands(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tands"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tor(src0, src1, dst):
+    """``pto.tor ins(src0, src1) outs(dst)``."""
+    _pto.tor(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tors(src, scalar, dst):
+    """``pto.tors ins(src, scalar) outs(dst)``."""
+    _pto.tors(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tors"),
+        unwrap_surface_value(dst),
+    )
+
+
+def txor(src0, src1, tmp, dst):
+    """``pto.txor ins(src0, src1, tmp) outs(dst)``."""
+    _pto.txor(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def txors(src, scalar, tmp, dst):
+    """``pto.txors ins(src, scalar, tmp) outs(dst)``."""
+    _pto.txors(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="txors"),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
+def tshl(src0, src1, dst):
+    """``pto.tshl ins(src0, src1) outs(dst)``."""
+    _pto.tshl(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tshls(src, scalar, dst):
+    """``pto.tshls ins(src, scalar) outs(dst)``."""
+    _pto.tshls(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tshls"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tshr(src0, src1, dst):
+    """``pto.tshr ins(src0, src1) outs(dst)``."""
+    _pto.tshr(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tshrs(src, scalar, dst):
+    """``pto.tshrs ins(src, scalar) outs(dst)``."""
+    _pto.tshrs(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tshrs"),
+        unwrap_surface_value(dst),
+    )
+
+
+def tpartadd(src0, src1, dst):
+    """``pto.tpartadd ins(src0, src1) outs(dst)``."""
+    _pto.tpartadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tpartmul(src0, src1, dst):
+    """``pto.tpartmul ins(src0, src1) outs(dst)``."""
+    _pto.tpartmul(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tpartmax(src0, src1, dst):
+    """``pto.tpartmax ins(src0, src1) outs(dst)``."""
+    _pto.tpartmax(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tpartmin(src0, src1, dst):
+    """``pto.tpartmin ins(src0, src1) outs(dst)``."""
+    _pto.tpartmin(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def tfillpad(src, dst):
+    """``pto.tfillpad ins(src) outs(dst)``."""
+    _pto.tfillpad(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tfillpad_expand(src, dst):
+    """``pto.tfillpad_expand ins(src) outs(dst)``."""
+    _pto.tfillpad_expand(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
+def tfillpad_inplace(src, dst):
+    """``pto.tfillpad_inplace ins(src) outs(dst)``."""
+    _pto.tfillpad_inplace(
+        unwrap_surface_value(src),
+        unwrap_surface_value(dst),
+    )
+
+
 def as_ptr(value, result_ptr_type=None):
     """Materialize a typed pointer from a tile or tensor-view descriptor."""
     wrapped = wrap_surface_value(value)
@@ -1682,7 +2356,23 @@ __all__ = [
     "vcmax", "vcadd", "vdup", "vexpdif",
     "vexp", "vcgmax", "vcgadd", "vsubs",
     "make_tensor_view", "partition_view",
-    "alloc_tile", "tload", "tstore", "tmov", "as_ptr",
+    "alloc_tile",
+    "tload", "tstore", "tmov",
+    "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
+    "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
+    "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",
+    "trelu", "tlrelu",
+    "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
+    "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",
+    "tcmp", "tcmps",
+    "texpands", "trowexpand", "tcolexpand",
+    "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
+    "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
+    "tsel", "tsels", "tcvt",
+    "tnot", "tand", "tands", "tor", "tors", "txor", "txors", "tshl", "tshls", "tshr", "tshrs",
+    "tpartadd", "tpartmul", "tpartmax", "tpartmin",
+    "tfillpad", "tfillpad_expand", "tfillpad_inplace",
+    "as_ptr",
     "mte_load", "mte_store", "mem_bar",
     "mte_l1_l0a", "mte_l1_l0b", "mte_l0c_ub", "mad",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",

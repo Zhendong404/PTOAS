@@ -19,7 +19,7 @@ The Python maps almost line-for-line to the target MLIR:
       %arg0: !pto.ptr<f32, gm>, …, %arg7: i32, …)     # arg0: pto.ptr(…), …
 
   scf.if %has_rows {                                   # with pto.if_(has_rows):
-    pto.tload ins(…) outs(…)                           #   pto.tload(part, tile)
+    pto.tload ins(…) outs(…)                           #   pto.tile.load(part, tile)
     pto.vecscope {                                      #   with pto.vecscope():
       scf.for %row = … {                               #     with pto.for_(…) as row:
         %final_max, %final_sum =                       #
@@ -143,9 +143,9 @@ def online_softmax_update_kernel_2d(
         expmax_tile = pto.alloc_tile(tile_col, addr=c16896_i64, valid_row=row_count)
 
         # ── Tile loads from GM ────────────────────────────────────────────────
-        pto.tload(oldmax_part, oldmax_tile)
-        pto.tload(oldsum_part, oldsum_tile)
-        pto.tload(qk_part,     qk_tile)
+        pto.tile.load(oldmax_part, oldmax_tile)
+        pto.tile.load(oldsum_part, oldsum_tile)
+        pto.tile.load(qk_part,     qk_tile)
 
         pto.set_flag("MTE2", "V", event_id=0)
         pto.wait_flag("MTE2", "V", event_id=0)
@@ -229,10 +229,10 @@ def online_softmax_update_kernel_2d(
         pto.wait_flag("V", "MTE3", event_id=0)
 
         # Tile stores to GM
-        pto.tstore(newmax_tile, newmax_part)
-        pto.tstore(newsum_tile, newsum_part)
-        pto.tstore(expmax_tile, expmax_part)
-        pto.tstore(out_tile,    out_part)
+        pto.tile.store(newmax_tile, newmax_part)
+        pto.tile.store(newsum_tile, newsum_part)
+        pto.tile.store(expmax_tile, expmax_part)
+        pto.tile.store(out_tile,    out_part)
 
     pto.pipe_barrier(pto.Pipe.ALL)
 

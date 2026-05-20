@@ -17,7 +17,7 @@ L3 sub-kernels can be invoked in two ways:
 1. **As decorated functions** (`@pto.cube` / `@pto.simd` / `@pto.simt`) — reusable, named sub-kernels that can be called from `@pto.ukernel` or directly from `@pto.jit`.
 2. **As context managers** (`with pto.cube():` / `with pto.simd():` / `with pto.simt():`) — inline L3 blocks for quick prototyping or one-off compute snippets inside any kernel.
 
-Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you stage data with `tload`/`tstore` instead of `mte_load`/`mte_store`, and PTOAS handles the synchronization between Tile Ops and L3 compute automatically. This is the recommended path for most users — drop down to `@pto.ukernel` only when you need explicit control over micro-instruction ordering and synchronization.
+Calling an L3 sub-kernel directly from `@pto.jit` skips the ukernel layer: you stage data with `tile.load`/`tile.store` instead of `mte_load`/`mte_store`, and PTOAS handles the synchronization between Tile Ops and L3 compute automatically. This is the recommended path for most users — drop down to `@pto.ukernel` only when you need explicit control over micro-instruction ordering and synchronization.
 
 ## 3.2 `@pto.jit` — top-level JIT entry
 
@@ -72,7 +72,6 @@ Available inside a `@pto.jit` body:
 
 ### Typical body
 
-<!-- ptodsl-doc-pending: tile-level arithmetic example uses documented pto.tadd API, but the current implementation does not provide it -->
 ```python
 @pto.jit(target="a5")
 def my_kernel(
@@ -97,15 +96,15 @@ def my_kernel(
         b_part = pto.partition_view(b_view, offsets=[row, 0], sizes=[1, cols])
         o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, cols])
 
-        pto.tload(a_part, a_tile)
-        pto.tload(b_part, b_tile)
-        pto.tadd(a_tile, b_tile, o_tile)
-        pto.tstore(o_tile, o_part)
+        pto.tile.load(a_part, a_tile)
+        pto.tile.load(b_part, b_tile)
+        pto.tile.add(a_tile, b_tile, o_tile)
+        pto.tile.store(o_tile, o_part)
 ```
 
 ### Calling L3 sub-kernels directly
 
-When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handled by Tile Ops (`tload`/`tstore`) instead of MTE micro-instructions. PTOAS handles the synchronization between Tile Ops and L3 compute — the sub-kernel itself is unchanged:
+When you call an L3 sub-kernel directly from `@pto.jit`, data movement is handled by Tile Ops (`tile.load`/`tile.store`) instead of MTE micro-instructions. PTOAS handles the synchronization between Tile Ops and L3 compute — the sub-kernel itself is unchanged:
 
 <!-- ptodsl-doc-pending: direct L3 sub-kernel invocation from @pto.jit is documented but not covered by the current compile-only docs contract -->
 ```python
@@ -141,13 +140,13 @@ def my_kernel(A, B, O, *, BLOCK: pto.constexpr):
         o_part = pto.partition_view(o_view, offsets=[offset, 0], sizes=[BLOCK, BLOCK])
 
         # Tile Ops stage data from GM to UB (replaces mte_load at L1)
-        pto.tload(a_part, a_tile)
-        pto.tload(b_part, b_tile)
+        pto.tile.load(a_part, a_tile)
+        pto.tile.load(b_part, b_tile)
 
-        # Direct L3 call — PTOAS handles sync between tload and compute
+        # Direct L3 call — PTOAS handles sync between tile.load and compute
         my_matmul(a_tile, b_tile, l0a, l0b, acc, o_tile)
 
-        pto.tstore(o_tile, o_part)
+        pto.tile.store(o_tile, o_part)
 ```
 
 This is the recommended path for users who want hardware-unit compute without writing explicit MTE Ops and manual sync. Mixing direct L3 calls with Tile Ops and ukernel calls in the same `@pto.jit` body is supported — the compiler unifies the lowering.
@@ -156,7 +155,7 @@ This is the recommended path for users who want hardware-unit compute without wr
 
 ### Role
 
-`@pto.ukernel` (short for *micro-instruction kernel*) is the entry point for writing PTO micro-instructions directly. Unlike `@pto.jit` where you work with tile-level ops (`tload`, `tadd`, etc.), a ukernel lets you write explicit MTE, SIMD, SIMT, and Cube instructions — staging data with `mte_load`, synchronizing with `mem_bar`, and dispatching L3 sub-kernels. This is an advanced programming mode for expert users who need precise control over instruction ordering and hardware-level data movement.
+`@pto.ukernel` (short for *micro-instruction kernel*) is the entry point for writing PTO micro-instructions directly. Unlike `@pto.jit` where you work with tile-level ops (`tile.load`, `tile.add`, etc.), a ukernel lets you write explicit MTE, SIMD, SIMT, and Cube instructions — staging data with `mte_load`, synchronizing with `mem_bar`, and dispatching L3 sub-kernels. This is an advanced programming mode for expert users who need precise control over instruction ordering and hardware-level data movement.
 
 ### Signature
 
@@ -197,7 +196,7 @@ def process_block(k_part, v_part, k_tile, v_tile,
     pto.mte_store(o_tile, o_part)
 ```
 
-A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with `mte_load`/`mte_store` (MTE Ops) rather than `tload`/`tstore`.
+A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with `mte_load`/`mte_store` (MTE Ops) rather than `tile.load`/`tile.store`.
 
 ## 3.4 `@pto.cube` — Cube unit sub-kernel
 
