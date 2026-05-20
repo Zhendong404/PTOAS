@@ -795,14 +795,14 @@ def _build_tile_slice_view(tile: TileValue, *, raw_offsets, shape):
         ).result
         return TileSliceValue(slice_value, tile=tile, offsets=tuple(raw_offsets), shape=shape)
 
-    row_type = _make_strided_memref_type(
-        [1, _static_extent_if_known(shape[0])],
+    slice_type = _make_strided_memref_type(
+        [_static_extent_if_known(shape[0])],
         base_type.element_type,
-        [base_type.shape[1], 1],
+        [1],
         base_type.memory_space,
     )
-    row_view = memref.SubViewOp(
-        row_type,
+    slice_value = memref.SubViewOp(
+        slice_type,
         base_memref,
         offset_operands,
         shape_operands,
@@ -811,13 +811,6 @@ def _build_tile_slice_view(tile: TileValue, *, raw_offsets, shape):
         [1, static_shape[0]],
         [1, 1],
     ).result
-    flat_type = _make_strided_memref_type(
-        [_static_extent_if_known(shape[0])],
-        base_type.element_type,
-        [ShapedType.get_dynamic_size()] if len(tile.shape) == 1 else [1],
-        base_type.memory_space,
-    )
-    slice_value = memref.CollapseShapeOp(flat_type, row_view, [[0, 1]]).result
     return TileSliceValue(slice_value, tile=tile, offsets=tuple(raw_offsets), shape=shape)
 
 

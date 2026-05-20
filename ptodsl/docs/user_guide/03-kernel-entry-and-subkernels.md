@@ -180,9 +180,15 @@ Parameters are PTO-specific types — `Tile`, `PartitionTensorView`, `pto.ptr`, 
 @pto.ukernel
 def process_block(k_part, v_part, k_tile, v_tile,
                   s_tile, o_tile, rows: pto.i32, cols: pto.i32):
+    row_bytes = cols * pto.bytewidth(pto.f16)
+    gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f16)
+    ub_row_stride = k_tile.shape[1] * pto.bytewidth(pto.f16)
+
     # Stage current block from GM to UB
-    pto.mte_load(k_part, k_tile)
-    pto.mte_load(v_part, v_tile)
+    pto.mte_load(k_part.as_ptr(), k_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
+    pto.mte_load(v_part.as_ptr(), v_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Dispatch sub-kernels
@@ -193,10 +199,11 @@ def process_block(k_part, v_part, k_tile, v_tile,
     pto.pipe_barrier(pto.Pipe.ALL)
 
     # Write result back
-    pto.mte_store(o_tile, o_part)
+    pto.mte_store(o_tile.as_ptr(), o_part.as_ptr(), row_bytes,
+                  nburst=(rows, ub_row_stride, gm_row_stride))
 ```
 
-A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with `mte_load`/`mte_store` (MTE Ops) rather than `tile.load`/`tile.store`.
+A ukernel stays below the tile-op boundary — GM↔UB movement is expressed with ptr-based `mte_load`/`mte_store` (MTE Ops) rather than `tile.load`/`tile.store`.
 
 ## 3.4 `@pto.cube` — Cube unit sub-kernel
 

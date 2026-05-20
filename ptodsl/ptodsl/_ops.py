@@ -2441,89 +2441,74 @@ def make_mask(dtype, value):
 
 # ── Hardware / sync ───────────────────────────────────────────────────────────
 
-def mte_load(source, destination):
-    """
-    Convenience GM->on-chip load surface.
+def _require_pto_ptr_operand(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    try:
+        _pto.PtrType(raw_value.type)
+    except Exception as exc:
+        raise TypeError(f"{context} expects PTO ptr operands, got {raw_value.type}") from exc
+    return raw_value
 
-    Current scope is intentionally narrow: contiguous rank-1 or squeezed-rank-2
-    partition views lowering into VEC or MAT tiles.
-    """
-    source = wrap_surface_value(source)
-    destination = wrap_surface_value(destination)
-    if not isinstance(source, PartitionTensorViewValue) or not isinstance(destination, TileValue):
-        raise TypeError("mte_load(source, destination) expects (PartitionTensorView, Tile)")
 
-    src_ptr = emit_as_ptr(source)
-    dst_ptr = emit_as_ptr(destination)
-    row_count, valid_cols, src_row_stride, dst_row_stride = _infer_dma_2d_copy_signature(
-        source, destination, direction="gm_to_ub"
+def mte_load(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=None, pad=None):
+    """
+    Ptr-based GM->UB DMA wrapper aligned with the underlying ``pto.dma_load`` surface.
+
+    This wrapper intentionally accepts only explicit pointer operands. It does
+    not infer burst shape or strides from TensorView / PartitionTensorView /
+    Tile metadata.
+    """
+    n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_load(...)",
     )
-    destination_type = parse_tile_type_metadata(unwrap_surface_value(destination).type)
-    if destination_type is None:
-        raise TypeError("mte_load(source, destination) expects a tile_buf-backed destination")
-    destination_space = destination_type["memory_space"]
-    len_burst = _coerce_i64(_mul_bytes(valid_cols, infer_tile_element_type(destination)), context="mte_load len_burst")
-    n_burst = _coerce_i64(row_count, context="mte_load n_burst")
-    src_stride = _coerce_i64(src_row_stride, context="mte_load src_stride")
-    dst_stride = _coerce_i64(dst_row_stride, context="mte_load dst_stride")
-
-    if destination_space == "vec":
-        _pto.MteGmUbOp(
-            unwrap_surface_value(src_ptr),
-            unwrap_surface_value(dst_ptr),
-            _i64_zero(),
-            len_burst,
-            n_burst,
-            src_stride,
-            dst_stride,
-            [],
-            [],
-            [],
-        )
-        return
-
-    if destination_space == "mat":
-        _pto.MteGmL1Op(
-            unwrap_surface_value(src_ptr),
-            unwrap_surface_value(dst_ptr),
-            len_burst,
-            n_burst,
-            src_stride,
-            dst_stride,
-            [],
-            [],
-            [],
-        )
-        return
-
-    raise TypeError(
-        "mte_load(source, destination) currently supports VEC or MAT tile destinations, "
-        f"got memory_space={destination_space!r}"
+    loop_counts, loop_src_strides, loop_dst_strides = _normalize_dma_loops(
+        loops,
+        context="mte_load(...)",
+    )
+    pad_value, left_padding_count, right_padding_count = _normalize_dma_pad(
+        pad,
+        context="mte_load(...)",
+    )
+    _pto.MteGmUbOp(
+        _require_pto_ptr_operand(source, context="mte_load(...)"),
+        _require_pto_ptr_operand(destination, context="mte_load(...)"),
+        _coerce_i64(l2_cache_ctl, context="mte_load l2_cache_ctl"),
+        _coerce_i64(len_burst, context="mte_load len_burst"),
+        n_burst,
+        nburst_src_stride,
+        nburst_dst_stride,
+        loop_counts,
+        loop_src_strides,
+        loop_dst_strides,
+        pad_value=pad_value,
+        left_padding_count=left_padding_count,
+        right_padding_count=right_padding_count,
     )
 
 
-def mte_store(source, destination):
-    """Convenience UB->GM store surface matching ``mte_load`` scope."""
-    source = wrap_surface_value(source)
-    destination = wrap_surface_value(destination)
-    if not isinstance(source, TileValue) or not isinstance(destination, PartitionTensorViewValue):
-        raise TypeError("mte_store(source, destination) expects (Tile, PartitionTensorView)")
-
-    src_ptr = emit_as_ptr(source)
-    dst_ptr = emit_as_ptr(destination)
-    row_count, valid_cols, src_row_stride, dst_row_stride = _infer_dma_2d_copy_signature(
-        destination, source, direction="ub_to_gm"
+def mte_store(source, destination, len_burst, *, nburst, loops=None):
+    """Ptr-based UB->GM DMA wrapper aligned with the underlying ``pto.dma_store`` surface."""
+    n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
+        "nburst",
+        nburst,
+        context="mte_store(...)",
+    )
+    loop_counts, loop_src_strides, loop_dst_strides = _normalize_dma_loops(
+        loops,
+        context="mte_store(...)",
     )
     _pto.MteUbGmOp(
-        unwrap_surface_value(src_ptr),
-        unwrap_surface_value(dst_ptr),
-        _coerce_i64(_mul_bytes(valid_cols, infer_tile_element_type(source)), context="mte_store len_burst"),
-        _coerce_i64(row_count, context="mte_store n_burst"),
-        _coerce_i64(src_row_stride, context="mte_store src_stride"),
-        _coerce_i64(dst_row_stride, context="mte_store dst_stride"),
-        [],
-        [],
-        [],
+        _require_pto_ptr_operand(source, context="mte_store(...)"),
+        _require_pto_ptr_operand(destination, context="mte_store(...)"),
+        _coerce_i64(len_burst, context="mte_store len_burst"),
+        n_burst,
+        nburst_src_stride,
+        nburst_dst_stride,
+        loop_counts,
+        loop_src_strides,
+        loop_dst_strides,
     )
 
 

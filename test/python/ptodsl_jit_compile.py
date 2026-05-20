@@ -440,32 +440,22 @@ def public_cube_surface_probe(
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, 0)
 
 
-@pto.ukernel
-def public_mte_surface_probe(
-    inp_part: pto.PartitionTensorView,
-    out_part: pto.PartitionTensorView,
-    dma_tile: pto.Tile,
-):
-    pto.mte_load(inp_part, dma_tile)
-    pto.pipe_barrier(pto.Pipe.ALL)
-    pto.mte_store(dma_tile, out_part)
-    pto.mem_bar(pto.BarrierType.VST_VLD)
-    pto.pipe_barrier(pto.Pipe.ALL)
-
-
 @pto.jit(target="a5")
 def public_surface_exports_probe(
     A: pto.tensor_spec(rank=2, dtype=pto.f32),
     O: pto.tensor_spec(rank=2, dtype=pto.f32),
 ):
-    cols = A.shape[1]
+    pto.mem_bar(pto.BarrierType.VST_VLD)
+    pto.pipe_barrier(pto.Pipe.ALL)
+
     a_view = pto.make_tensor_view(A)
     o_view = pto.make_tensor_view(O)
-    a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[1, cols])
-    o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[1, cols])
-
-    dma_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.f32, valid_shape=[1, cols])
-    public_mte_surface_probe(a_part, o_part, dma_tile)
+    a_part = pto.partition_view(a_view, offsets=[0, 0], sizes=[1, 16])
+    o_part = pto.partition_view(o_view, offsets=[0, 0], sizes=[1, 16])
+    dma_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.f32, valid_shape=[1, 16])
+    pto.mte_load(a_part.as_ptr(), dma_tile.as_ptr(), 0, 64, nburst=(1, 0, 128))
+    pto.pipe_barrier(pto.Pipe.ALL)
+    pto.mte_store(dma_tile.as_ptr(), o_part.as_ptr(), 64, nburst=(1, 128, 0))
 
     vec_in = pto.alloc_tile(shape=[1, 128], dtype=pto.f32, valid_shape=[1, 16])
     vec_out = pto.alloc_tile(shape=[1, 128], dtype=pto.f32, valid_shape=[1, 16])
@@ -1279,7 +1269,7 @@ def main() -> None:
     tile_slice_text = tile_slice_surface_probe.compile(BLOCK=128).mlir_text()
     expect_parse_roundtrip_and_verify(tile_slice_text, "tile slice surface specialization")
     expect("memref.subview" in tile_slice_text, "tile[row, col:] should lower through memref.subview")
-    expect("memref.collapse_shape" in tile_slice_text, "2D tile[row, col:] should flatten through memref.collapse_shape")
+    expect("memref.collapse_shape" not in tile_slice_text, "2D tile[row, col:] should lower directly to a rank-reduced memref view")
     expect("pto.tile_buf_addr" in tile_slice_text, "tile[row, col:] should materialize a memref tile address view")
     expect(
         "pto.vlds" in tile_slice_text and "memref<128xf32, strided<[1], offset: ?>, #pto.address_space<vec>>" in tile_slice_text,

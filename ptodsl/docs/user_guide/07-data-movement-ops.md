@@ -67,8 +67,6 @@ Inside `@pto.ukernel`, data movement between memory spaces is expressed with gro
 
 All four share a common structure: a required innermost `nburst(...)` group that defines the repeated burst transfer, plus optional outer `loop(...)` groups for multi-level repetition. `pto.mte_gm_ub` additionally supports `pad(...)` for UB row padding.
 
-> **Convenience wrappers**: `pto.mte_load(src, dst)` and `pto.mte_store(src, dst)` are Python-level shorthands that expand to `mte_gm_ub` / `mte_ub_gm` with inferred strides. The reference operations below are the full grouped MTE interfaces.
-
 ### 7.2.1 GM → UB: `pto.mte_gm_ub`
 
 #### `pto.mte_gm_ub(gm_src: PtrType, ub_dst: PtrType, l2_cache_ctl: int, len_burst: int, *, nburst: tuple[int, int, int], loops: list[tuple[int, int, int]] | None = None, pad: tuple[ScalarType, int, int] | tuple[ScalarType] | None = None) -> None`

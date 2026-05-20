@@ -176,15 +176,16 @@ This lets you map different data slices to different blocks — for example, one
 
 The examples above used Tile Ops (`tile.load` / `tile.store` here, and arithmetic Tile Ops in later chapters), which operate on entire tiles at once. When you need finer control — for instance, writing a custom softmax or an activation that maps directly to vector hardware — you can drop down to the micro-instruction level. This involves three layers working together:
 
-<!-- ptodsl-doc-pending: layered micro-instruction vec_add example is documented but not supported by the current compile-only docs contract -->
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"vec_add_micro","compile":{"BLOCK":128}} -->
 ```python
 # L3: hardware-bound SIMD kernel — vector instructions on individual rows.
 @pto.simd
 def add_rows(a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
-             rows: pto.i32, cols: pto.i32):
+             rows: pto.index, cols: pto.index):
     VEC = pto.elements_per_vreg(pto.f32)
+    initial_remained = scalar.index_cast(pto.i32, cols)
     with pto.for_(0, rows, step=1) as r:
-        col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
+        col_loop = pto.for_(0, cols, step=VEC).carry(remained=initial_remained)
         with col_loop:
             c = col_loop.iv
             remained = col_loop.remained
@@ -202,41 +203,52 @@ def add_block(a_part: pto.PartitionTensorView,
               b_part: pto.PartitionTensorView,
               o_part: pto.PartitionTensorView,
               a_tile: pto.Tile, b_tile: pto.Tile, o_tile: pto.Tile,
-              rows: pto.i32, cols: pto.i32):
-    pto.mte_load(a_part, a_tile)
-    pto.mte_load(b_part, b_tile)
+              rows: pto.index, cols: pto.index):
+    row_bytes = cols * pto.bytewidth(pto.f32)
+    pto.mte_load(a_part.as_ptr(), a_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, 0, 0))
+    pto.mte_load(b_part.as_ptr(), b_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, 0, 0))
     pto.pipe_barrier(pto.Pipe.ALL)
 
     add_rows(a_tile, b_tile, o_tile, rows, cols)
     pto.pipe_barrier(pto.Pipe.ALL)
 
-    pto.mte_store(o_tile, o_part)
+    pto.mte_store(o_tile.as_ptr(), o_part.as_ptr(), row_bytes,
+                  nburst=(rows, 0, 0))
 
 
 # L1: JIT entry — tile allocation, partitioning, launch.
 @pto.jit(target="a5")
-def vec_add_micro(A, B, O, *, BLOCK: pto.constexpr):
+def vec_add_micro(
+    A: pto.tensor_spec(rank=1, dtype=pto.f32),
+    B: pto.tensor_spec(rank=1, dtype=pto.f32),
+    O: pto.tensor_spec(rank=1, dtype=pto.f32),
+    *,
+    BLOCK: pto.constexpr = 128,
+):
     N = A.shape[0]
     a_view = pto.make_tensor_view(A, shape=[N], strides=A.strides)
     b_view = pto.make_tensor_view(B, shape=[N], strides=B.strides)
     o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
 
-    a_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    b_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
-    o_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
+    a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
 
     num_blocks = (N + BLOCK - 1) // BLOCK
     with pto.for_(0, num_blocks, step=1) as i:
         offset = i * BLOCK
-        a_part = pto.partition_view(a_view, offsets=[offset], sizes=[BLOCK])
-        b_part = pto.partition_view(b_view, offsets=[offset], sizes=[BLOCK])
-        o_part = pto.partition_view(o_view, offsets=[offset], sizes=[BLOCK])
-        add_block(a_part, b_part, o_part, a_tile, b_tile, o_tile, 1, BLOCK)
+        this_block = scalar.min(N - offset, BLOCK)
+        a_part = pto.partition_view(a_view, offsets=[offset], sizes=[this_block])
+        b_part = pto.partition_view(b_view, offsets=[offset], sizes=[this_block])
+        o_part = pto.partition_view(o_view, offsets=[offset], sizes=[this_block])
+        add_block(a_part, b_part, o_part, a_tile, b_tile, o_tile, 1, this_block)
 ```
 
 - **L1 `@pto.jit`**: allocates tiles, partitions the GM views, and loops over blocks — the same tile-level orchestration as Section 2.2, but now calling a ukernel instead of Tile Ops.
 
-- **L2 `@pto.ukernel`**: stages data with `mte_load`, synchronizes with `mem_bar`, dispatches the SIMD kernel, synchronizes again, then writes back with `mte_store`. The ukernel owns the hardware-level sequencing.
+- **L2 `@pto.ukernel`**: stages data with ptr-based `mte_load`, inserts explicit `pipe_barrier` phase boundaries, dispatches the SIMD kernel, synchronizes again, then writes back with `mte_store`. The ukernel owns the hardware-level sequencing.
 
 - **L3 `@pto.simd`**: the outer `pto.for_` iterates over rows, the inner `pto.for_` iterates over column chunks of the hardware vector width (`elements_per_vreg`). Each iteration loads a vector-width slice into a `vreg`, does the addition under a mask (for tail elements), and stores the result back. Both loops are recorded as structured control flow IR — the compiler decides whether to keep them or unroll them.
 

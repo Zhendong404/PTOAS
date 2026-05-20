@@ -136,9 +136,13 @@ A common ukernel pattern interleaves DMA and compute with `set_flag` / `wait_fla
 @pto.ukernel
 def gemm_block(q_tile, k_tile, v_tile, o_tile, ...):
     # DMA: load K and V tiles from GM to UB
-    # mte_load derives strides, burst sizes, etc. from k_part / k_tile types
-    pto.mte_load(k_part, k_tile)
-    pto.mte_load(v_part, v_tile)
+    row_bytes = cols * pto.bytewidth(pto.f16)
+    gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f16)
+    ub_row_stride = k_tile.shape[1] * pto.bytewidth(pto.f16)
+    pto.mte_load(k_part.as_ptr(), k_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
+    pto.mte_load(v_part.as_ptr(), v_tile.as_ptr(), 0, row_bytes,
+                 nburst=(rows, gm_row_stride, ub_row_stride))
 
     # Signal: DMA done, UB data ready
     pto.set_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=0)
@@ -155,7 +159,8 @@ def gemm_block(q_tile, k_tile, v_tile, o_tile, ...):
     pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=1)
 
     # DMA: store results back to GM
-    pto.mte_store(o_tile, o_part)
+    pto.mte_store(o_tile.as_ptr(), o_part.as_ptr(), row_bytes,
+                  nburst=(rows, ub_row_stride, gm_row_stride))
 ```
 
 ---

@@ -277,12 +277,17 @@ The ukernel processes one KV block against an already-loaded Q tile. It owns the
 
 <!-- ptodsl-doc-pending: mte_load phase wiring in this walkthrough still lacks stable compile coverage under the current ukernel fixture -->
 ```python
-pto.mte_load(k_part, k_tile)
-pto.mte_load(v_part, v_tile)
+row_bytes = cols * pto.bytewidth(pto.f16)
+gm_row_stride = k_part.strides[0] * pto.bytewidth(pto.f16)
+ub_row_stride = k_tile.shape[1] * pto.bytewidth(pto.f16)
+pto.mte_load(k_part.as_ptr(), k_tile.as_ptr(), 0, row_bytes,
+             nburst=(rows, gm_row_stride, ub_row_stride))
+pto.mte_load(v_part.as_ptr(), v_tile.as_ptr(), 0, row_bytes,
+             nburst=(rows, gm_row_stride, ub_row_stride))
 pto.pipe_barrier(pto.Pipe.ALL)
 ```
 
-`mte_load` copies the current K and V block from GM to UB. `pipe_barrier(Pipe.ALL)` makes the phase boundary explicit before the cube unit reads `k_tile`/`v_tile`.
+`mte_load` is the ptr-based GM→UB DMA wrapper. The ukernel passes explicit GM/UB pointers plus the DMA grouping parameters, and `pipe_barrier(Pipe.ALL)` makes the phase boundary explicit before the cube unit reads `k_tile`/`v_tile`.
 
 ### Phase 0b — Materialize loop bounds
 
@@ -535,8 +540,8 @@ For one KV block, the full execution sequence is:
 | Step | Layer | Operation | Hardware |
 |------|-------|-----------|----------|
 | 1 | L1 | `tile.load(q_part, q_tile)` | MTE2 → UB |
-| 2 | L2 | `mte_load(k_part, k_tile)` | MTE2 → UB |
-| 3 | L2 | `mte_load(v_part, v_tile)` | MTE2 → UB |
+| 2 | L2 | `mte_load(k_part.as_ptr(), k_tile.as_ptr(), ...)` | MTE2 → UB |
+| 3 | L2 | `mte_load(v_part.as_ptr(), v_tile.as_ptr(), ...)` | MTE2 → UB |
 | 4 | L2 | `mem_bar(SYNC)` | — |
 | 5 | L3c | `materialize_tile_bounds` | SIMT |
 | 6 | L3a | `qk_matmul` (mte_l1_l0a, mte_l1_l0b, mad, mte_l0c_ub) | Cube |
