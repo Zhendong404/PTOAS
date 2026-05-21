@@ -14,6 +14,7 @@ End-to-end: @pto.jit → MLIR → binary → launch → accuracy check.
 """
 
 import argparse
+import time
 
 import numpy as np
 import torch
@@ -108,6 +109,10 @@ def init_torch_npu() -> None:
     torch.npu.set_device(_DEVICE)
 
 
+def npu_stream():
+    return torch.npu.current_stream()._as_parameter_  # noqa: SLF001
+
+
 def run_case(case: dict) -> None:
     shape = case["shape"]
     rng = np.random.RandomState(hash(case["name"]) & 0xFFFFFFFF)
@@ -118,12 +123,22 @@ def run_case(case: dict) -> None:
     a = torch.from_numpy(x).to(_DEVICE)
     b = torch.from_numpy(y).to(_DEVICE)
     c = torch.empty(shape, dtype=torch.float32, device=_DEVICE)
+    stream = npu_stream()
 
-    case["kernel"].compile()[1, None](a, b, c)
+    t0 = time.perf_counter()
+    compiled = case["kernel"].compile()
+    compile_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    compiled[1, stream](a, b, c)
     torch.npu.synchronize()
+    launch_s = time.perf_counter() - t0
 
     torch.testing.assert_close(ref, c.cpu().numpy(), rtol=case["eps"], atol=case["eps"])
-    print(f"PASS {case['name']}")
+    print(
+        f"PASS {case['name']}  "
+        f"compile={compile_s:.3f}s launch={launch_s:.3f}s"
+    )
 
 
 def test_tadd() -> None:

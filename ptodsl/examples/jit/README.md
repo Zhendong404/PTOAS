@@ -57,10 +57,12 @@ msprof op simulator --soc-version=Ascend950PR_9599 \
 Expected output:
 
 ```
-PASS f32_16x64
-PASS f32_32x32
+PASS f32_16x64  compile=0.024s launch=35.193s
+PASS f32_32x32  compile=0.022s launch=35.926s
 All cases passed.
 ```
+
+(Timing varies by machine; launch includes msprof simulator overhead and one-time native build on first run per kernel.)
 
 Direct run on a real NPU (omit the msprof wrapper when hardware is available):
 
