@@ -64,6 +64,13 @@ tmp/
 .cache/
 .pytest_cache/
 
+# PTODSL JIT / msprof simulator artifacts
+.ptodsl_jit/
+.ptodsl_cache/
+msprof_res/
+ptodsl/examples/jit/.cache/
+ptodsl/examples/jit/msprof_res/
+
 # Remote/NPU validation artifacts
 /payload/
 /payload.tgz
