@@ -23,27 +23,29 @@ export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/tools/simulator/Ascend950PR_9599/lib
 ulimit -n 65535
 ```
 
-## 1. Compile-only: DSL → MLIR (`tadd_builder.py`)
+## `tadd_launch.py`
 
-Verifies Python `@pto.jit` emits the same IR as the TileLang ST `tadd.pto` testcase.
+Single script: kernel definition, compile, launch, and accuracy check. Equivalent IR to the TileLang ST `tadd.pto` testcase.
+
+### Compile-only: DSL → MLIR
 
 ```bash
 cd ptodsl/examples/jit
-python3 tadd_builder.py
+python3 tadd_launch.py --emit-mlir
 ```
 
-Expected: MLIR module text printed to stdout containing `@TADD_f32_16x64` and `@TADD_f32_32x32`.
+Expected: MLIR module text containing `@TADD_f32_16x64` and `@TADD_f32_32x32`.
 
 Optional — run through the ptoas frontend:
 
 ```bash
-python3 tadd_builder.py > /tmp/tadd_dsl.mlir
+python3 tadd_launch.py --emit-mlir > /tmp/tadd_dsl.mlir
 ptoas --emit-pto-ir /tmp/tadd_dsl.mlir -o - | head
 ```
 
-## 2. End-to-end: DSL → IR → binary → launch → accuracy (`tadd_launch.py`)
+### End-to-end: DSL → IR → binary → launch → accuracy
 
-Self-contained smoke test with inline golden generation and accuracy checks. Runs under the msprof CPU simulator — no physical NPU required.
+Runs under the msprof CPU simulator — no physical NPU required.
 
 ```bash
 cd ptodsl/examples/jit
