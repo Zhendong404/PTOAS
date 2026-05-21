@@ -49,6 +49,7 @@ venv/
 dist/
 
 # Logs/temp
+tmp/
 *.log
 *.tmp
 *.swp
