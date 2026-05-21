@@ -7,110 +7,90 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 """
-TADD kernel – low-level builder for the TileLang ST testcase.
+TADD kernel – DSL-style builder for the TileLang ST testcase.
 
 Generates the same IR as
   test/tilelang_st/npu/a5/src/st/testcase/tadd/tadd.pto
+using the ``@pto.jit`` decorator and the ``pto.*`` namespace.
 
-Each case is a flat ``pto.aicore`` kernel that performs
-``tload(a) + tload(b) + tadd(a,b)->c + tstore(c)`` on a single tile.
+The Python maps line-for-line to the target MLIR:
+
+  func.func @TADD_f32_16x64(                           # @pto.jit(..., func_attr="pto.aicore")
+      %a_ptr: !pto.ptr<f32, gm>, …) attributes {pto.aicore} {
+    %c0 = arith.constant 0 : index                      # c0 = pto.const(0)
+    …
+    %a_view = pto.make_tensor_view %a_ptr, …           # pto.make_tensor_view(a_ptr, shape=…, strides=…)
+    %a_part = pto.partition_view %a_view, …            # pto.partition_view(a_view, offsets=…, sizes=…)
+    %a = pto.alloc_tile …                               # pto.alloc_tile(shape=[…], dtype=pto.float32)
+    pto.tload ins(%a_part) outs(%a)                     # pto.tile.load(a_part, a)
+    pto.tadd ins(%a, %b) outs(%c)                       # pto.tile.add(a, b, c)
+    pto.tstore ins(%c) outs(%c_part)                    # pto.tile.store(c, c_part)
+  }
 """
 
-from mlir.ir import (
-    Attribute,
-    Context,
-    F32Type,
-    IndexType,
-    InsertionPoint,
-    Location,
-    Module,
-    StringAttr,
-    UnitAttr,
-)
-from mlir.dialects import arith, func, pto
+from ptodsl import pto
 
 
-def _emit_tadd_kernel(entry, rows: int, cols: int) -> None:
-    """Emit one ``TADD_f32_{rows}x{cols}`` kernel body into *entry*."""
-    idx = IndexType.get()
-    f32 = F32Type.get()
-    vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC)
-    tile_cfg = pto.TileBufConfigAttr.get(
-        pto.BLayoutAttr.get(pto.BLayout.RowMajor),
-        pto.SLayoutAttr.get(pto.SLayout.NoneBox),
-        512,
-        pto.PadValueAttr.get(pto.PadValue.Null),
-    )
-
-    tv_type = pto.TensorViewType.get([1, 1, 1, rows, cols], f32)
-    ptv_type = pto.PartitionTensorViewType.get([1, 1, 1, rows, cols], f32)
-    tile_type = pto.TileBufType.get([rows, cols], f32, vec, [rows, cols], tile_cfg)
-    elem_count = rows * cols
-
-    a_ptr, b_ptr, c_ptr = entry.arguments
-
-    c0 = arith.ConstantOp(idx, 0).result
-    c1 = arith.ConstantOp(idx, 1).result
-    c_rows = arith.ConstantOp(idx, rows).result
-    c_cols = c_rows if rows == cols else arith.ConstantOp(idx, cols).result
-    c_elems = arith.ConstantOp(idx, elem_count).result
+def _tadd_tile(a_ptr, b_ptr, c_ptr, rows: int, cols: int) -> None:
+    """Shared tile-add body for one static ``rows x cols`` case."""
+    c0 = pto.const(0)
+    c1 = pto.const(1)
+    c_rows = pto.const(rows)
+    c_cols = c_rows if rows == cols else pto.const(cols)
+    c_elems = pto.const(rows * cols)
 
     shape = [c1, c1, c1, c_rows, c_cols]
     strides = [c_elems, c_elems, c_elems, c_cols, c1]
-    offsets = [c0, c0, c0, c0, c0]
+    off = [c0, c0, c0, c0, c0]
 
-    a_view = pto.MakeTensorViewOp(tv_type, a_ptr, shape, strides).result
-    b_view = pto.MakeTensorViewOp(tv_type, b_ptr, shape, strides).result
-    c_view = pto.MakeTensorViewOp(tv_type, c_ptr, shape, strides).result
+    a_view = pto.make_tensor_view(a_ptr, shape=shape, strides=strides)
+    b_view = pto.make_tensor_view(b_ptr, shape=shape, strides=strides)
+    c_view = pto.make_tensor_view(c_ptr, shape=shape, strides=strides)
 
-    a_part = pto.PartitionViewOp(ptv_type, a_view, offsets, shape).result
-    b_part = pto.PartitionViewOp(ptv_type, b_view, offsets, shape).result
-    c_part = pto.PartitionViewOp(ptv_type, c_view, offsets, shape).result
+    a_part = pto.partition_view(a_view, offsets=off, sizes=shape)
+    b_part = pto.partition_view(b_view, offsets=off, sizes=shape)
+    c_part = pto.partition_view(c_view, offsets=off, sizes=shape)
 
-    a_tile = pto.AllocTileOp(tile_type).result
-    b_tile = pto.AllocTileOp(tile_type).result
-    c_tile = pto.AllocTileOp(tile_type).result
+    a_tile = pto.alloc_tile(shape=[rows, cols], dtype=pto.float32)
+    b_tile = pto.alloc_tile(shape=[rows, cols], dtype=pto.float32)
+    c_tile = pto.alloc_tile(shape=[rows, cols], dtype=pto.float32)
 
-    pto.TLoadOp(None, a_part, a_tile)
-    pto.TLoadOp(None, b_part, b_tile)
-    pto.TAddOp(a_tile, b_tile, c_tile)
-    pto.TStoreOp(None, c_tile, c_part)
+    pto.tile.load(a_part, a_tile)
+    pto.tile.load(b_part, b_tile)
+    pto.tile.add(a_tile, b_tile, c_tile)
+    pto.tile.store(c_tile, c_part)
+
+
+@pto.jit(
+    name="TADD_f32_16x64",
+    kernel_kind="vector",
+    target="a5",
+    func_attr="pto.aicore",
+)
+def TADD_f32_16x64(
+    a_ptr: pto.ptr(pto.float32, "gm"),
+    b_ptr: pto.ptr(pto.float32, "gm"),
+    c_ptr: pto.ptr(pto.float32, "gm"),
+):
+    _tadd_tile(a_ptr, b_ptr, c_ptr, 16, 64)
+
+
+@pto.jit(
+    name="TADD_f32_32x32",
+    kernel_kind="vector",
+    target="a5",
+    func_attr="pto.aicore",
+)
+def TADD_f32_32x32(
+    a_ptr: pto.ptr(pto.float32, "gm"),
+    b_ptr: pto.ptr(pto.float32, "gm"),
+    c_ptr: pto.ptr(pto.float32, "gm"),
+):
+    _tadd_tile(a_ptr, b_ptr, c_ptr, 32, 32)
 
 
 def build():
-    with Context() as ctx:
-        pto.register_dialect(ctx, load=True)
-
-        with Location.unknown():
-            f32 = F32Type.get()
-            ptr_f32_gm = pto.PtrType.get(
-                f32,
-                memory_space=pto.AddressSpaceAttr.get(pto.AddressSpace.GM),
-            )
-
-            module = Module.create()
-            module.operation.attributes["pto.target_arch"] = StringAttr.get("a5")
-            module.operation.attributes["pto.kernel_kind"] = Attribute.parse(
-                "#pto.kernel_kind<vector>"
-            )
-
-            fn_ty = func.FunctionType.get([ptr_f32_gm, ptr_f32_gm, ptr_f32_gm], [])
-            cases = (
-                ("TADD_f32_16x64", 16, 64),
-                ("TADD_f32_32x32", 32, 32),
-            )
-
-            with InsertionPoint(module.body):
-                for fn_name, rows, cols in cases:
-                    fn = func.FuncOp(fn_name, fn_ty)
-                    fn.attributes["pto.aicore"] = UnitAttr.get()
-                    entry = fn.add_entry_block()
-                    with InsertionPoint(entry):
-                        _emit_tadd_kernel(entry, rows, cols)
-                        func.ReturnOp([])
-
-            module.operation.verify()
-            return module
+    return pto.merge_jit_modules(TADD_f32_16x64, TADD_f32_32x32)
 
 
 if __name__ == "__main__":
