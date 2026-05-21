@@ -233,6 +233,11 @@ static FailureOr<StringRef> buildMadMxCalleeName(MLIRContext *context,
   return StringAttr::get(context, "llvm.hivm.MMAD.MX." + lhs + rhs).getValue();
 }
 
+static bool isSignedOrSignlessInteger(IntegerType intType, unsigned width) {
+  return intType && intType.getWidth() == width &&
+         (intType.isSigned() || intType.isSignless());
+}
+
 static std::string getMadRhsFragment(Type type) {
   if (type.isF16())
     return "f16";
@@ -241,9 +246,9 @@ static std::string getMadRhsFragment(Type type) {
   if (type.isF32())
     return "f32";
   if (auto intType = dyn_cast<IntegerType>(type)) {
-    if (intType.isSigned() && intType.getWidth() == 4)
+    if (isSignedOrSignlessInteger(intType, 4))
       return "s4";
-    if (intType.isSigned() && intType.getWidth() == 8)
+    if (isSignedOrSignlessInteger(intType, 8))
       return "s8";
     if (intType.isUnsigned() && intType.getWidth() == 2)
       return "u2";
@@ -270,7 +275,7 @@ static std::string getMadDstFragment(Type type) {
   if (type.isF32())
     return "f32";
   if (auto intType = dyn_cast<IntegerType>(type)) {
-    if (intType.isSigned() && intType.getWidth() == 32)
+    if (isSignedOrSignlessInteger(intType, 32))
       return "s32";
   }
   return {};
@@ -291,6 +296,9 @@ static FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context,
     return StringAttr::get(context, "llvm.hivm.MAD.bf162f32.c310").getValue();
   if (lhsElem.isF32() && rhs == "f32" && dst == "f32")
     return StringAttr::get(context, "llvm.hivm.MAD.f322f32.c310").getValue();
+  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(lhsElem), 8) &&
+      rhs == "s8" && dst == "s32")
+    return StringAttr::get(context, "llvm.hivm.MAD.s8.c310").getValue();
   if (isMadE4M3ElementType(lhsElem) && isMadE4M3ElementType(rhsElem) &&
       dst == "f32")
     return StringAttr::get(context, "llvm.hivm.MAD.e4m3e4m3.c310").getValue();
