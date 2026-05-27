@@ -16,6 +16,7 @@ from .._host_tensors import (
     inspect_host_tensor_metadata,
     looks_like_host_tensor,
 )
+from .._bootstrap import make_context
 from .._kernel_signature import DeviceParameterSpec, RuntimeScalarParameterSpec, TensorSpecParameterSpec
 from .._types import _resolve
 from .native_build import build_native_library
@@ -24,6 +25,11 @@ from mlir.ir import BF16Type, F16Type, F32Type, IndexType, IntegerType
 
 if TYPE_CHECKING:
     from .._kernel_compilation import CompiledKernelHandle
+
+
+def _resolve_type(annotation):
+    with make_context():
+        return _resolve(annotation)
 
 
 def _normalize_stream_ptr(stream):
@@ -56,7 +62,7 @@ def _as_void_ptr(value):
 
 
 def _ctype_for_runtime_scalar(annotation):
-    type_obj = _resolve(annotation)
+    type_obj = _resolve_type(annotation)
     if IndexType.isinstance(type_obj):
         return ctypes.c_int64
     if IntegerType.isinstance(type_obj):

@@ -112,9 +112,9 @@ def define_missing_entry_annotation_probe():
     return bad_probe
 
 
-def define_ptr_entry_annotation_probe():
+def define_non_gm_ptr_entry_annotation_probe():
     @pto.jit(target="a5")
-    def bad_probe(A: pto.ptr(pto.f32, "gm")):
+    def bad_probe(A: pto.ptr(pto.f32, "ub")):
         pto.pipe_barrier(pto.Pipe.ALL)
 
     return bad_probe
@@ -258,15 +258,16 @@ def main() -> None:
         define_missing_entry_annotation_probe,
         TypeError,
         "@pto.jit positional parameter 'A' does not declare an entry ABI annotation",
+        "pto.ptr(..., 'gm')",
         "pto.tensor_spec(...)",
         "pto.i32/pto.f32/pto.i1",
     )
     expect_raises(
-        define_ptr_entry_annotation_probe,
+        define_non_gm_ptr_entry_annotation_probe,
         TypeError,
         "@pto.jit positional parameter 'A' uses unsupported entry annotation",
         "pto.ptr(",
-        "not at the host/kernel entry",
+        "Non-GM pointers",
     )
     expect_raises(
         missing_if_branch_probe.compile,

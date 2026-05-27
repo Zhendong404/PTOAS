@@ -50,7 +50,7 @@ def jit_missing_annotation_error(name: str) -> TypeError:
     """Return one diagnostic for missing ``@pto.jit`` positional ABI annotations."""
     return TypeError(
         f"@pto.jit positional parameter '{name}' does not declare an entry ABI annotation. "
-        "Use pto.tensor_spec(...) for runtime tensors, a PTO scalar type such as "
+        "Use pto.ptr(..., 'gm') for device pointers, pto.tensor_spec(...) for runtime tensors, a PTO scalar type such as "
         "pto.i32/pto.f32/pto.i1 for runtime scalars, or move compile-time values "
         "to keyword-only pto.constexpr parameters."
     )
@@ -60,11 +60,11 @@ def jit_illegal_formal_annotation_error(name: str, annotation: object) -> TypeEr
     """Return one diagnostic for unsupported ``@pto.jit`` positional annotations."""
     return TypeError(
         f"@pto.jit positional parameter '{name}' uses unsupported entry annotation {annotation!r}. "
-        "The public @pto.jit entry ABI accepts pto.tensor_spec(...) runtime tensors, "
+        "The public @pto.jit entry ABI accepts pto.ptr(..., 'gm') device pointers, pto.tensor_spec(...) runtime tensors, "
         "PTO scalar annotations such as pto.i32/pto.f32/pto.i1 for runtime scalars, "
         "and keyword-only pto.constexpr compile-time parameters. "
-        "Low-level PTODSL types such as pto.ptr(...), Tile, PartitionTensorView, and VReg "
-        "belong inside the kernel body or across sub-kernel boundaries, not at the host/kernel entry."
+        "Non-GM pointers, Tile, PartitionTensorView, and VReg belong inside the kernel body "
+        "or across sub-kernel boundaries, not at the host/kernel entry."
     )
 
 

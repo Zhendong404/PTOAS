@@ -19,7 +19,16 @@ from ._diagnostics import (
 from ._host_tensors import bind_host_tensor_argument, infer_jit_host_tensor_spec
 from ._surface_values import wrap_surface_value
 from ._surface_types import constexpr as _constexpr_marker
-from ._types import _DType, _MaskDescriptor, _PtrDescriptor, _VRegDescriptor, _resolve
+from ._types import (
+    _DType,
+    _MaskDescriptor,
+    _PtrDescriptor,
+    _VRegDescriptor,
+    _normalize_address_space,
+    _resolve,
+)
+
+from mlir.dialects import pto as _pto
 
 
 @dataclass(frozen=True)
@@ -110,6 +119,12 @@ def _is_supported_runtime_scalar_annotation(annotation) -> bool:
     )
 
 
+def _is_supported_device_parameter_annotation(annotation) -> bool:
+    if not isinstance(annotation, _PtrDescriptor):
+        return False
+    return _normalize_address_space(annotation._space) == _pto.AddressSpace.GM
+
+
 @dataclass(frozen=True)
 class KernelSignature:
     positional_parameters: tuple
@@ -179,6 +194,10 @@ def parse_jit_kernel_signature(py_fn) -> KernelSignature:
             if host_tensor_spec is not None:
                 positional_parameters.append(
                     TensorSpecParameterSpec(param.name, host_tensor_spec)
+                )
+            elif _is_supported_device_parameter_annotation(param.annotation):
+                positional_parameters.append(
+                    DeviceParameterSpec(param.name, param.annotation)
                 )
             elif _is_supported_runtime_scalar_annotation(param.annotation):
                 positional_parameters.append(

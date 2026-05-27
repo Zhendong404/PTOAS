@@ -1445,11 +1445,13 @@ def make_tensor_view(ptr, *, shape=None, strides=None):
         if static_dims is not None
         else tensor_view_type(rank, elem)
     )
+    shape_operands = [_coerce_index_value(dim) for dim in shape]
+    stride_operands = [_coerce_index_value(dim) for dim in strides]
     value = _pto.MakeTensorViewOp(
         tv_type,
         raw_ptr,
-        _unwrap_sequence(shape),
-        _unwrap_sequence(strides),
+        shape_operands,
+        stride_operands,
     ).result
     return TensorViewValue(value, shape=tuple(shape), strides=tuple(strides))
 

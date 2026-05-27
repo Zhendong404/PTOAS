@@ -8,6 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from pathlib import Path
+import ctypes
 import re
 import sys
 
@@ -17,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
 from ptodsl._bootstrap import make_context
+from ptodsl._runtime.codegen import generate_launch_cpp
+from ptodsl._runtime.launch import _launch_argtypes, _marshal_launch_args
 from ptodsl._tracing import current_session
 from mlir.ir import InsertionPoint, Location, Module
 
@@ -51,6 +54,14 @@ def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:
         roundtrip_text == text,
         f"{label} should survive Module.parse(...) round-trip without textual drift",
     )
+
+
+class DummyTensor:
+    def __init__(self, ptr: int):
+        self._ptr = ptr
+
+    def data_ptr(self):
+        return self._ptr
 
 
 expect_raises(
@@ -145,6 +156,28 @@ def runtime_metadata_kernel(
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
     pto.tile.store(o_tile, out)
+
+
+PTR_ENTRY_STATIC_COLS = 1024
+
+
+@pto.jit(target="a5")
+def ptr_entry_dynamic_shape_kernel(
+    A: pto.ptr(pto.f32, "gm"),
+    O: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    a_view = pto.make_tensor_view(
+        A,
+        shape=[rows, PTR_ENTRY_STATIC_COLS],
+        strides=[PTR_ENTRY_STATIC_COLS, 1],
+    )
+    o_view = pto.make_tensor_view(
+        O,
+        shape=[rows, PTR_ENTRY_STATIC_COLS],
+        strides=[PTR_ENTRY_STATIC_COLS, 1],
+    )
+    _ = a_view, o_view
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -1299,6 +1332,48 @@ def main() -> None:
     expect(
         "pto.make_tensor_view %arg0, shape = [%arg1, %arg2], strides = [%arg3, %arg4]" in runtime_metadata_text,
         "make_tensor_view(A) should materialize runtime shape/stride metadata from the tensor proxy",
+    )
+    ptr_entry_text = ptr_entry_dynamic_shape_kernel.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(ptr_entry_text, "ptr entry dynamic shape specialization")
+    expect(
+        "func.func @ptr_entry_dynamic_shape_kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: i32)" in ptr_entry_text,
+        "ptr entry kernel should expose raw GM pointers plus an authored runtime scalar",
+    )
+    expect(
+        "arith.index_cast %arg2 : i32 to index" in ptr_entry_text,
+        "make_tensor_view should cast pto.i32 dynamic shape operands to index",
+    )
+    expect(
+        re.search(
+            r"pto\.make_tensor_view %arg0, shape = \[%0, %c1024\], "
+            r"strides = \[%c1024(?:_\d+)?, %c1\]",
+            ptr_entry_text,
+        ) is not None,
+        "ptr entry make_tensor_view should infer rank from mixed dynamic/static shape operands",
+    )
+    ptr_entry_compiled = ptr_entry_dynamic_shape_kernel.compile()
+    launch_cpp = generate_launch_cpp(
+        ir_function_name="ptr_entry_dynamic_shape_kernel",
+        kernel_signature=ptr_entry_compiled._kernel_signature,
+    )
+    expect(
+        "__gm__ float *A, __gm__ float *O, int32_t rows" in launch_cpp
+        and "float *A, float *O, int32_t rows" in launch_cpp
+        and "(__gm__ float *)A, (__gm__ float *)O, rows" in launch_cpp,
+        "ptr entry launch wrapper should keep pointer + scalar ABI order",
+    )
+    expect(
+        _launch_argtypes(ptr_entry_compiled._kernel_signature)
+        == [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32],
+        "ptr entry launch argtypes should be grid, stream, ptr, ptr, i32",
+    )
+    marshaled = _marshal_launch_args(
+        ptr_entry_compiled._kernel_signature,
+        (DummyTensor(0x1000), DummyTensor(0x2000), 7),
+    )
+    expect(
+        [arg.value for arg in marshaled] == [0x1000, 0x2000, 7],
+        "ptr entry launch marshaling should accept tensor data_ptr plus Python int",
     )
 
     tile_surface_text = tile_surface_compute_probe.compile().mlir_text()

@@ -11,8 +11,14 @@ from __future__ import annotations
 
 from mlir.ir import BF16Type, F16Type, F32Type, IndexType, IntegerType
 
+from .._bootstrap import make_context
 from .._kernel_signature import DeviceParameterSpec, RuntimeScalarParameterSpec, TensorSpecParameterSpec
 from .._types import _PtrDescriptor, _resolve
+
+
+def _resolve_type(annotation):
+    with make_context():
+        return _resolve(annotation)
 
 
 def _elem_cpp_type(elem) -> str:
@@ -52,7 +58,7 @@ def _device_param_cpp_type(annotation) -> str:
 
 
 def _runtime_scalar_cpp_type(annotation) -> str:
-    type_obj = _resolve(annotation)
+    type_obj = _resolve_type(annotation)
     if IndexType.isinstance(type_obj):
         return "int64_t"
     if IntegerType.isinstance(type_obj):
