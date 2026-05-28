@@ -1939,6 +1939,29 @@ class TileLangDSLMatcherEntryTests(unittest.TestCase):
 
         self.assertTrue(evaluation.passed, msg=evaluation.error_message)
 
+    def test_daemon_context_attrs_normalize_dtype_to_scalartype(self) -> None:
+        operand_specs = [
+            {
+                "kind": "view",
+                "dtype": "f32",
+                "shape": [1, 1, 1, 16, 64],
+                "strides": [1024, 1024, 1024, 64, 1],
+                "memory_space": "gm",
+            },
+            {
+                "kind": "tile",
+                "dtype": "f32",
+                "shape": [16, 64],
+                "valid_shape": [16, 64],
+                "memory_space": "ub",
+            },
+        ]
+
+        context_attrs = daemon_core._build_positional_context_attrs(operand_specs)
+
+        self.assertIs(context_attrs["arg0_dtype"], pto.f32)
+        self.assertIs(context_attrs["arg1_dtype"], pto.f32)
+
     def test_select_kernel_constraints_can_read_scalar_parameter_values(self) -> None:
         @pto.vkernel(
             op="matcher_scalar_value_unique",
@@ -2078,6 +2101,64 @@ def kernel(value: pto.si32):
             mlir_text = asyncio.run(instantiate_from_tmpdir(tmpdir))
 
         self.assertIn("func.func @kernel(%arg0: si32)", mlir_text)
+
+    def test_instance_cache_constraints_can_read_dtype_objects(self) -> None:
+        source = """
+import tilelang_dsl as pto
+
+@pto.vkernel(
+    target="a5",
+    op="matcher_daemon_dtype_constraints_unique",
+    dtypes=[(pto.AnyType, pto.AnyType)],
+    constraints=[lambda src, dst: src.dtype == pto.f32 and dst.dtype == pto.f32],
+    priority=100,
+)
+def constrained(src: pto.TensorView, dst: pto.Tile):
+    return None
+
+@pto.vkernel(
+    target="a5",
+    op="matcher_daemon_dtype_constraints_unique",
+    dtypes=[(pto.AnyType, pto.AnyType)],
+    constraints=[],
+    priority=10,
+)
+def fallback(src: pto.TensorView, dst: pto.Tile):
+    return None
+"""
+
+        operand_specs = [
+            {
+                "kind": "view",
+                "dtype": "f32",
+                "shape": [1, 1, 1, 16, 64],
+                "strides": [1024, 1024, 1024, 64, 1],
+                "memory_space": "gm",
+            },
+            {
+                "kind": "tile",
+                "dtype": "f32",
+                "shape": [16, 64],
+                "valid_shape": [16, 64],
+                "memory_space": "ub",
+            },
+        ]
+
+        async def instantiate_from_tmpdir(tmpdir: str) -> str:
+            cache = daemon_core.InstanceCache()
+            cache.scan_template_directory(Path(tmpdir))
+            return await cache.instantiate(
+                "a5",
+                "matcher_daemon_dtype_constraints_unique",
+                operand_specs,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_path = Path(tmpdir) / "matcher_daemon_dtype_constraints_unique.py"
+            module_path.write_text(source, encoding="utf-8")
+            mlir_text = asyncio.run(instantiate_from_tmpdir(tmpdir))
+
+        self.assertIn("func.func @constrained", mlir_text)
 
     def test_select_kernel_binds_selected_op_for_multi_op_descriptor(self) -> None:
         @pto.vkernel(
