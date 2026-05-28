@@ -248,8 +248,9 @@ static std::string stringifyMemorySpace(pto::AddressSpace space) {
     return "acc";
   case pto::AddressSpace::BIAS:
     return "bias";
-  case pto::AddressSpace::VEC:
   case pto::AddressSpace::SCALING:
+    return "scaling";
+  case pto::AddressSpace::VEC:
   case pto::AddressSpace::Zero:
     return "ub";
   }
