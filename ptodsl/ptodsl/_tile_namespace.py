@@ -104,6 +104,7 @@ class _TileNamespace:
     cmps = staticmethod(_ops.tcmps)
 
     expands = staticmethod(_ops.texpands)
+    reshape = staticmethod(_ops.treshape)
     rowexpand = staticmethod(_ops.trowexpand)
     colexpand = staticmethod(_ops.tcolexpand)
 

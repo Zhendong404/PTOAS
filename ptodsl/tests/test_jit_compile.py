@@ -239,12 +239,17 @@ def tile_surface_compute_probe():
     rhs = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     out = pto.alloc_tile(shape=[2, 16], dtype=pto.f32)
     cmp_out = pto.alloc_tile(shape=[2, 32], dtype=pto.i8, valid_shape=[2, 16])
+    reshape_src = pto.alloc_tile(shape=[8, 64], dtype=pto.f32, valid_shape=[8, 64])
 
     pto.tile.expands(1.0, lhs)
     pto.tile.expands(2.0, rhs)
     pto.tile.add(lhs, rhs, out)
     pto.tile.adds(out, 3.0, out)
     pto.tile.cmps(out, 0.0, cmp_out, cmp_mode=pto.CmpMode.GT)
+    reshape_1d = pto.tile.reshape(reshape_src, shape=[512])
+    reshape_col = pto.tile.reshape(reshape_src, shape=[8, 64], blayout="ColMajor")
+    _ = reshape_1d
+    _ = reshape_col
 
 
 SUBKERNEL_OBSERVATIONS = []
@@ -503,6 +508,16 @@ def make_mask_index_roundtrip_probe(
     cols: pto.i32,
 ):
     col_loop = pto.for_(0, cols, step=64).carry(remained=cols)
+    with col_loop:
+        remained = col_loop.remained
+        mask, remained_after_pack = pto.make_mask(pto.f32, remained)
+        _ = mask
+        col_loop.update(remained=remained_after_pack)
+
+
+@pto.jit(target="a5", mode="explicit")
+def carry_static_pyint_init_probe():
+    col_loop = pto.for_(0, 64, step=64).carry(remained=64)
     with col_loop:
         remained = col_loop.remained
         mask, remained_after_pack = pto.make_mask(pto.f32, remained)
@@ -1763,6 +1778,7 @@ def main() -> None:
     tile_surface_text = tile_surface_compute_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_surface_text, "tile surface compute specialization")
     expect("pto.texpands" in tile_surface_text, "pto.tile.expands should lower to pto.texpands")
+    expect("pto.treshape" in tile_surface_text, "pto.tile.reshape should lower to pto.treshape")
     expect("pto.tadd " in tile_surface_text, "pto.tile.add should lower to pto.tadd")
     expect("pto.tadds" in tile_surface_text, "pto.tile.adds should lower to pto.tadds")
     expect("pto.tcmps" in tile_surface_text, "pto.tile.cmps should lower to pto.tcmps")
@@ -1863,6 +1879,20 @@ def main() -> None:
             make_mask_index_roundtrip_text,
         ) is not None,
         "make_mask(...) should keep the carried remainder in public i32 form after tail-mask generation",
+    )
+
+    carry_static_pyint_init_text = carry_static_pyint_init_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(carry_static_pyint_init_text, "carry static pyint init specialization")
+    expect(
+        re.search(
+            r"iter_args\(%[a-zA-Z0-9_]+ = %c64_i32\) -> \(i32\)",
+            carry_static_pyint_init_text,
+        ) is not None,
+        "pto.for_(...).carry(remained=64) should materialize Python int carry init values as public i32 constants",
+    )
+    expect(
+        "pto.plt_b32" in carry_static_pyint_init_text,
+        "a carried Python int should remain compatible with make_mask(...) without manual pto.const(...) wrapping",
     )
 
     SUBKERNEL_OBSERVATIONS.clear()
@@ -2139,8 +2169,14 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
     data_movement_surface_text = public_data_movement_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(data_movement_surface_text, "public data movement surface specialization")
-    vector_post_update_surface_text = vector_post_update_surface_probe.compile().mlir_text()
-    expect_parse_roundtrip_and_verify(vector_post_update_surface_text, "vector post-update surface specialization")
+    vector_conversion_surface_text = public_vector_conversion_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vector_conversion_surface_text, "public vector conversion surface specialization")
+    vdup_surface_text = vdup_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vdup_surface_text, "public vdup surface specialization")
+    vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
+    vsstb_post_update_surface_text = vsstb_post_update_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vsstb_post_update_surface_text, "vsstb post-update surface specialization")
     expect("pto.mte_gm_ub" in public_surface_text, "mte_load(...) should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in public_surface_text, "mte_store(...) should lower to pto.mte_ub_gm")
     expect(public_surface_text.count("pto.mem_bar") >= 1, "mem_bar(...) should still lower explicit memory barriers")

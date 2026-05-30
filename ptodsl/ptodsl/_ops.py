@@ -208,11 +208,14 @@ _VLOAD_DIST_TOKENS = {
 }
 
 
-def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, return_updated_base=False):
+def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update="OFF"):
     """``pto.vlds`` – vector load from a tile slice or from *src_ptr* at *offset*."""
+    post_mode = _normalize_post_update_mode(post_update, context="vlds(..., post_update=...)")
     if isinstance(src_ptr, TileSliceValue):
         if offset is not None or result_vreg_type is not None:
             raise TypeError("vlds(tile[row, col:]) infers its memref slice and vreg type; do not pass offset/result_vreg_type")
+        if post_mode != "NO_POST_UPDATE":
+            raise TypeError("vlds(tile[...], post_update=...) only supports post_update=PostUpdate.OFF; use the pointer form for stateful loads")
         kwargs = {}
         if dist is not None:
             kwargs["dist"] = _normalize_dist_token(
@@ -2543,6 +2546,77 @@ def texpands(scalar, dst):
     )
 
 
+def _tile_numel(shape, *, context: str):
+    numel = 1
+    for dim in shape:
+        if isinstance(dim, bool) or not isinstance(dim, int):
+            raise TypeError(f"{context} currently requires a static shape")
+        numel *= dim
+    return numel
+
+
+def treshape(src, *, shape, dtype=None, blayout=None):
+    """``pto.treshape ins(src) -> result``."""
+    src_value = unwrap_surface_value(src)
+    src_shape = getattr(src, "shape", None)
+    src_dtype = getattr(src, "dtype", None)
+    src_memory_space = getattr(src, "memory_space", None)
+    src_valid_shape = getattr(src, "static_valid_shape", None)
+    src_metadata = parse_tile_type_metadata(src_value.type)
+    if src_shape is None and src_metadata is not None:
+        src_shape = tuple(src_metadata["shape_dims"])
+    if src_dtype is None and src_metadata is not None:
+        src_dtype = src_metadata["element_type"]
+    if src_memory_space is None and src_metadata is not None:
+        src_memory_space = src_metadata["memory_space"]
+    if src_valid_shape is None and src_metadata is not None:
+        src_valid_shape = tuple(src_metadata["valid_dims"])
+    if src_shape is None or src_dtype is None or src_memory_space is None:
+        raise TypeError("treshape(...) expects a tile_buf-backed Tile value")
+
+    result_shape = _normalize_static_tile_shape(shape)
+    result_dtype = dtype if dtype is not None else src_dtype
+    result_blayout = blayout if blayout is not None else "RowMajor"
+
+    src_numel = _tile_numel(src_shape, context="treshape(src, shape=...) source")
+    dst_numel = _tile_numel(result_shape, context="treshape(src, shape=...) result")
+    src_bytes = src_numel * _element_bytewidth(_resolve(src_dtype))
+    dst_bytes = dst_numel * _element_bytewidth(_resolve(result_dtype))
+    if src_bytes != dst_bytes:
+        raise ValueError(
+            "treshape(src, shape=..., dtype=...) requires source and result to have the same total byte size"
+        )
+
+    if src_valid_shape is None or len(src_valid_shape) != len(result_shape):
+        result_valid_shape = tuple(result_shape)
+    else:
+        result_valid_shape = tuple(src_valid_shape)
+    result_memory_space = src_memory_space
+    result_physical_shape = _authored_tile_physical_shape(result_shape)
+    _validate_authored_tile_row_alignment(result_physical_shape, result_dtype, blayout=result_blayout, slayout="NoneBox")
+
+    from ._types import tile_buf_type
+
+    result_type = tile_buf_type(
+        result_physical_shape,
+        result_dtype,
+        _authored_tile_physical_shape(result_valid_shape),
+        blayout=result_blayout,
+        address_space=result_memory_space,
+    )
+    value = _pto.treshape(result_type, src_value)
+    return wrap_surface_value(
+        value,
+        tile_metadata={
+            "shape": result_shape,
+            "physical_shape": result_physical_shape,
+            "dtype": result_dtype,
+            "memory_space": result_memory_space,
+            "valid_shape": result_valid_shape,
+        },
+    )
+
+
 def trowexpand(src, dst):
     """``pto.trowexpand ins(src) outs(dst)``."""
     _pto.trowexpand(
@@ -4398,7 +4472,7 @@ __all__ = [
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",
     "tcmp", "tcmps",
-    "texpands", "trowexpand", "tcolexpand",
+    "texpands", "treshape", "trowexpand", "tcolexpand",
     "trowexpandadd", "trowexpandsub", "trowexpandmul", "trowexpanddiv", "trowexpandmax", "trowexpandmin", "trowexpandexpdif",
     "tcolexpandadd", "tcolexpandsub", "tcolexpandmul", "tcolexpanddiv", "tcolexpandmax", "tcolexpandmin", "tcolexpandexpdif",
     "tsel", "tsels", "tcvt",

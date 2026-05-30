@@ -132,6 +132,17 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "type_system.tile_reshape": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def type_system_tile_reshape_probe(
+            *,
+            BR: pto.constexpr = 8,
+            BC: pto.constexpr = 64,
+        ):
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "type_system.vreg_bitcast": _fixture(
         f"""
         @pto.jit(target="a5")
