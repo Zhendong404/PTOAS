@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code With PTODSL"
+  short_description: "Write PTODSL kernels with the current public surface"
+  default_prompt: "Use $code-with-ptodsl to write or revise PTODSL kernels and sub-kernels."
