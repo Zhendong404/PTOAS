@@ -8,7 +8,7 @@ The sketch computes **online-softmax flash attention** for one `(batch, head)` s
 
 ```
 flash_attention(...)           L0  user-facing wrapper
-  └─ @pto.jit(mode="explicit") flash_attention_kernel
+  └─ @pto.jit(entry=True, mode="explicit") flash_attention_kernel
        ├─ Tile Ops                 tile.load / tile.store at the GM↔UB boundary
        ├─ explicit orchestration   mte_load / pipe_barrier / pointer sequencing
        ├─ @pto.cube               qk_matmul / pv_matmul
@@ -59,11 +59,11 @@ This is plain Python — no PTO types, no IR. It handles ergonomic runtime conce
 
 The wrapper knows nothing about tiles, UB, or pipelines. It is the boundary between the user's tensor world and the PTO device world.
 
-## 11.3 Top-level `@pto.jit(mode="explicit")` kernel entry
+## 11.3 Top-level `@pto.jit(entry=True, mode="explicit")` kernel entry
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"flash_attention_kernel","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false,"NUM_STAGES":2}} -->
 ```python
-@pto.jit(target="a5", mode="explicit")
+@pto.jit(target="a5", entry=True, mode="explicit")
 def flash_attention_kernel(
     Q_ptr: pto.ptr(pto.f32, "gm"),
     K_ptr: pto.ptr(pto.f32, "gm"),
@@ -84,7 +84,7 @@ def flash_attention_kernel(
     return
 ```
 
-The `@pto.jit(mode="explicit")` decorator marks the compile + launch boundary. Inputs and outputs arrive as explicit GM pointers plus runtime shape metadata; keyword-only `constexpr` parameters (`BLOCK_Q`, `BLOCK_KV`, `CAUSAL`) are baked at compile time.
+The `@pto.jit(entry=True, mode="explicit")` decorator marks the compile + launch boundary. Inputs and outputs arrive as explicit GM pointers plus runtime shape metadata; keyword-only `constexpr` parameters (`BLOCK_Q`, `BLOCK_KV`, `CAUSAL`) are baked at compile time.
 
 ### 11.3.1 TensorView construction
 
@@ -662,4 +662,4 @@ After all KV blocks: the top-level kernel issues `tile.store(o_final_tile, o_par
 
 **No vreg across sub-kernel boundaries**: vector registers are local to each `@pto.simd` kernel. Data crosses sub-kernel boundaries through UB tiles — the boundary contract is enforced by the type system.
 
-**Invocation flexibility**: This sketch uses the explicit `@pto.jit(mode="explicit")` path for full micro-instruction control. The same named sub-kernels can also be reused from `@pto.jit(mode="auto")` when the body stays within the auto-mode contract, or written inline as context managers (`with pto.simd():`, etc.). See Chapter 3 for details.
+**Invocation flexibility**: This sketch uses the explicit `@pto.jit(entry=True, mode="explicit")` path for full micro-instruction control. The same named sub-kernels can also be reused from `@pto.jit(mode="auto")` when the body stays within the auto-mode contract, or written inline as context managers (`with pto.simd():`, etc.). The orchestration logic could be extracted into `@pto.jit(entry=False)` kernel modules for reuse across multiple entry kernels. See Chapter 3 for details.

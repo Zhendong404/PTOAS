@@ -46,7 +46,7 @@ Let us step through each piece.
 def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
 ```
 
-`@pto.jit` marks this function as a launchable PTO kernel. The positional parameters `A_ptr` and `O_ptr` are explicit GM pointers, while `rows` and `cols` are runtime scalar metadata passed at launch time. The keyword-only argument `BLOCK` is a compile-time constant declared with `pto.constexpr`; the compiler specializes the kernel for each tile width.
+`@pto.jit` marks this function as a launchable PTO kernel. By default `entry=True`, which means it uses the host-visible pointer-first ABI: explicit GM pointers, runtime scalars, and keyword-only `pto.constexpr` compile-time constants. The default compilation backend is `backend="vpto"`. The positional parameters `A_ptr` and `O_ptr` are explicit GM pointers, while `rows` and `cols` are runtime scalar metadata passed at launch time. The keyword-only argument `BLOCK` is a compile-time constant declared with `pto.constexpr`; the compiler specializes the kernel for each tile width.
 
 ### Describing GM tensors
 
@@ -264,3 +264,59 @@ The same pattern also has an `auto` counterpart: keep `@pto.jit` in its
 default mode and replace the explicit `mte_*` sequence with `tile.load` /
 `tile.store`. Chapter 3 covers the full entry model; Chapters 7–10 cover each
 operation family in detail.
+
+## 2.6 Kernel modules — decomposing kernels
+
+When a kernel grows too large to keep in a single function, you can extract
+reusable pieces into **kernel modules** with `@pto.jit(entry=False)`. Unlike
+sub-kernels (`@pto.simd` / `@pto.simt` / `@pto.cube`), which are bound to a
+specific hardware unit, a kernel module is a general-purpose device-side
+function that can contain any mix of tile ops, sub-kernel calls, and
+orchestration logic:
+
+```python
+@pto.jit(entry=False)
+def process_tile(
+    a_tile: pto.Tile,
+    b_tile: pto.Tile,
+    o_tile: pto.Tile,
+    rows: pto.i32,
+    cols: pto.i32,
+):
+    VEC = pto.elements_per_vreg(pto.f32)
+    with pto.for_(0, rows, step=1) as r:
+        col_loop = pto.for_(0, cols, step=VEC).carry(remained=cols)
+        with col_loop:
+            c = col_loop.iv
+            remained = col_loop.remained
+            mask, remained = pto.make_mask(pto.f32, remained)
+            a_vec = pto.vlds(a_tile[r, c:])
+            b_vec = pto.vlds(b_tile[r, c:])
+            o_vec = pto.vadd(a_vec, b_vec, mask)
+            pto.vsts(o_vec, o_tile[r, c:], mask)
+            col_loop.update(remained=remained)
+
+
+@pto.jit(target="a5", entry=True)
+def my_kernel(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    B_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+    cols: pto.i32,
+    *,
+    BLOCK: pto.constexpr = 128,
+):
+    # ... allocate tiles, load data ...
+    process_tile(a_tile, b_tile, o_tile, 1, cols)  # call the module
+    # ... store results ...
+```
+
+Modules accept device-side types (`Tile`, `TensorView`, `PartitionTensorView`,
+typed `pto.ptr`, PTO scalars) and are called with normal Python function call
+syntax inside a traced body. They are not host-launchable — the module is
+compiled as a child module inside the same container and linked together with
+its callers.
+
+See Chapter 3 (Section 3.3) for the full kernel module contract, signature
+rules, and backend selection.

@@ -1,18 +1,26 @@
-# 3. Kernel Entry and Sub-Kernels
+# 3. Kernel Entries, Kernel Modules, and Sub-Kernels
 
-PTODSL provides one host-visible kernel decorator (`@pto.jit`) and three
-compute-unit sub-kernel decorators (`@pto.cube`, `@pto.simd`, `@pto.simt`),
-plus matching context managers for inline use. This chapter covers the kernel
-entry, the two programming models, sub-kernel reference, parameter contracts,
-and boundary constraints.
+PTODSL provides one kernel decorator (`@pto.jit`) with two roles
+(`entry=True` / `entry=False`), two compilation backends (`vpto` / `emitc`),
+and three compute-unit sub-kernel decorators (`@pto.cube`, `@pto.simd`,
+`@pto.simt`), plus matching context managers for inline use. This chapter covers
+the `@pto.jit` entry and module contracts, the two programming models, the two
+compilation backends, sub-kernel reference, parameter contracts, and boundary
+constraints.
 
-## 3.1 `@pto.jit` — the only kernel entry
+
+## 3.1 `@pto.jit` — roles, backends, and modes
 
 Decorator overview:
 
 ```text
-@pto.jit(mode="auto")       tile-first authoring, compiler-managed staging
-@pto.jit(mode="explicit")   micro-instruction authoring, user-managed staging
+@pto.jit(entry=True)        host-launchable kernel entry
+@pto.jit(entry=False)       kernel module, callable from entries and other modules
+  backend="vpto"            VPTO backend (default) — mode="auto" or "explicit"
+  backend="emitc"           EmitC backend — mode="auto" only
+  mode="auto"               tile-first authoring, compiler-managed staging (default)
+  mode="explicit"           micro-instruction authoring, user-managed staging
+
 @pto.cube                   Cube-unit matrix sub-kernel
 @pto.simd                   SIMD-unit vector sub-kernel
 @pto.simt                   SIMT-unit scalar sub-kernel
@@ -20,16 +28,43 @@ Decorator overview:
 
 ### Role
 
-`@pto.jit` marks a function as a launchable PTO kernel. It owns compilation
-(tracing + lowering), caching, and runtime launch binding. This is the only
-decorator that can be invoked directly from the host; the compute-unit
-decorators define sub-kernels that are called from within `@pto.jit`.
+`@pto.jit` marks a function as a PTO kernel. Its **`entry`** parameter
+selects the role:
+
+- **`entry=True`** (the default): a host-launchable kernel entry. The public
+  ABI is pointer-first — explicit GM pointers, runtime scalars, and
+  keyword-only `constexpr` compile-time constants. This is the only form that
+  can be compiled with `.compile(...)` and launched with `[grid, stream]`.
+- **`entry=False`**: a kernel module — a device-side function. The ABI accepts
+  device-side types — `Tile`, `TensorView`, `PartitionTensorView`, typed
+  `pto.ptr(...)`, and PTO scalars. Modules are called from entries (or other
+  modules) and are not host-launchable.
+
+The **`backend`** parameter selects the compilation target:
+
+- `backend="vpto"` (default) compiles through the VPTO backend. Supports both
+  `mode="auto"` and `mode="explicit"`.
+- `backend="emitc"` compiles through the EmitC (C++ codegen) backend. Only
+  supports `mode="auto"`. Using `mode="explicit"` with `backend="emitc"` is
+  rejected at decoration time with an actionable diagnostic.
+
+The **`mode`** parameter selects the programming model within the kernel body
+(see Section 3.4). `mode` only affects what you can write inside the function —
+it doesn't change how you compile or launch the kernel.
+
+`@pto.jit` owns compilation (tracing + lowering), caching, and — for
+`entry=True` — runtime launch binding. The compute-unit decorators
+(`@pto.cube`, `@pto.simd`, `@pto.simt`) define sub-kernels that are called from
+within `@pto.jit` bodies.
+
+
+## 3.2 `entry=True` — host-launchable kernel entry
 
 ### Signature
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel_name","compile":{"CONST_A":128,"CONST_B":64}} -->
 ```python
-@pto.jit(target="a5", mode="auto")
+@pto.jit(target="a5", entry=True)
 def kernel_name(
     x_ptr: pto.ptr(pto.f32, "gm"),  # explicit GM pointer (positional)
     y_ptr: pto.ptr(pto.f32, "gm"),  # explicit GM pointer (positional)
@@ -45,9 +80,12 @@ def kernel_name(
     return
 ```
 
+Since `entry=True` is the default, you can omit it:
+`@pto.jit(target="a5")` is equivalent to `@pto.jit(target="a5", entry=True)`.
+
 ### How to declare and pass parameters
 
-A `@pto.jit` kernel accepts three kinds of parameters. Each has a distinct role,
+A host-entry kernel accepts three kinds of parameters. Each has a distinct role,
 position in the signature, and way to supply the value:
 
 | Parameter kind | Position | Annotation | Pass the value at |
@@ -149,33 +187,12 @@ compiled[1, None](X.ctypes.data, O.ctypes.data, 4, 128, 2.0, 1.0)
 
 ### What is NOT accepted at the entry
 
-The following types are intentionally **not** accepted as `@pto.jit` parameters:
+The following types are intentionally **not** accepted as `entry=True` parameters:
 
-- `pto.tensor_spec(...)` — legacy host-tensor annotations are no longer part
-  of the public `@pto.jit` contract.
+- `pto.tensor_spec(...)` — legacy host-tensor annotations are deprecated and
+  rejected everywhere.
 - `Tile`, `PartitionTensorView`, `VReg` — these are created inside the kernel
-  body, not passed from the host.
-
-They are valid **inside** the kernel and across sub-kernel calls, just not at
-the public host/kernel boundary.
-
-### `mode`: auto vs explicit
-
-`mode` is a keyword on the decorator, not a function parameter. It selects the
-programming model:
-
-- `mode="auto"` (the default) is **tile-centric**. You write kernels in terms
-  of tiles and Tile Ops. The compiler manages staging, scheduling, and
-  synchronization around the tile abstraction.
-- `mode="explicit"` adds the full **micro-instruction** surface — MTE ops,
-  explicit synchronization, and direct pointer manipulation — on top of
-  everything available in `auto`.
-
-`mode` changes what you can write **inside the kernel body**. It does **not**
-change the host-visible entry ABI: both modes use the same
-`ptr + runtime scalar + constexpr` contract at the `@pto.jit` boundary.
-
-Section 3.2 covers the two models in detail.
+  body or passed across module boundaries, not from the host.
 
 ### Compilation and launch
 
@@ -203,9 +220,12 @@ compiled[grid, stream](A.ctypes.data, O.ctypes.data, 4, 128)
   the number of SPMD blocks (an integer); `stream` is the NPU stream (`None`
   for default).
 
+**Only `entry=True` kernels support `.compile()` and `[grid, stream]` launch.**
+Calling `.compile()` on an `entry=False` module raises an error.
+
 ### SPMD built-ins
 
-Available inside a `@pto.jit` body:
+Available inside an `entry=True` body:
 
 | Built-in | Returns | Description |
 |----------|---------|-------------|
@@ -246,19 +266,78 @@ def my_kernel(
         pto.tile.store(o_tile, o_part)
 ```
 
-### Custom sub-kernels
 
-When Tile Ops don't cover the computation you need — a custom softmax, a
-specialized activation, per-element blending — you write a sub-kernel in
-`@pto.simd`, `@pto.simt`, or `@pto.cube` and call it directly from
-`@pto.jit`. In auto mode, data movement stays with Tile Ops
-(`tile.load`/`tile.store`) and PTOAS handles the synchronization between Tile
-Ops and the sub-kernel:
+## 3.3 `entry=False` — kernel modules
 
-<!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.direct_l3_call","symbol":"kernel_entry_direct_l3_call_probe","compile":{"BLOCK":128}} -->
+A kernel module is an `@pto.jit(entry=False)` function that entry kernels or
+other modules call directly from their traced bodies. Modules are **not**
+host-launchable — you cannot call `.compile()` directly on a module, nor invoke
+it with `[grid, stream]`. Instead, the module is compiled and linked together
+with its callers automatically.
+
+### Why use modules?
+
+Modules let you decompose large kernels into reusable, testable pieces without
+giving up compile-time specialization:
+
+- **Mix backends freely**: an `emitc` entry can call a `vpto` module, or vice
+  versa. The compiler wires cross-backend calls together automatically.
+- **No special casing**: VPTO→VPTO, EmitC→EmitC, EmitC→VPTO — all module
+  calls work through the same mechanism. You just call the function.
+- **Independent modes**: each module keeps its own `mode`. An auto-mode entry
+  can call an explicit-mode module, so you get micro-instruction control only
+  where you need it.
+
+A module accepts device-side types:
+
+A module accepts device-side types:
+
 ```python
-@pto.simd
-def add_rows(
+@pto.jit(entry=False)
+def my_module(
+    a_tile: pto.Tile,                          # UB tile buffer
+    view: pto.TensorView,                      # GM tensor descriptor
+    part: pto.PartitionTensorView,             # GM sub-view descriptor
+    ptr: pto.ptr(pto.f32, pto.MemorySpace.UB), # typed UB pointer
+    scalar_value: pto.i32,                     # PTO scalar
+):
+    # ... SIMD/SIMT/Cube operations on the provided values ...
+    return
+```
+
+The module ABI accepts:
+
+| Type | Description |
+|------|-------------|
+| `pto.Tile` | UB tile buffer |
+| `pto.TensorView` | GM tensor descriptor |
+| `pto.PartitionTensorView` | GM sub-view descriptor |
+| `pto.ptr(dtype, space)` | Typed pointer in any memory space (GM, UB, L1, L0A, L0B, ...) |
+| PTO scalar (`pto.i32`, `pto.f32`, ...) | Device-side scalar value |
+
+### What is NOT accepted by modules
+
+The following are intentionally **not** supported in `entry=False` signatures:
+
+- `tensor_spec(...)` — deprecated everywhere, rejected at decoration time.
+- `pto.constexpr` — compile-time constants belong at the `entry=True` boundary.
+  If a module needs a compile-time-known value, pass it as a PTO scalar from
+  the caller (where it may originate from a `constexpr`).
+- Return values — module functions must return `None`. Data crosses the module
+  boundary only through mutable references (tiles, pointers). VReg and mask
+  values cannot escape the module boundary.
+- Host launch — calling `.compile()` or `[grid, stream]` on an `entry=False`
+  module raises an error. Modules are compiled automatically as dependencies
+  when their calling entry kernel is compiled.
+
+### Calling modules from entries and other modules
+
+A module is invoked with a normal Python function call inside a traced body:
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"entry_with_helper","compile":{"BLOCK":128}} -->
+```python
+@pto.jit(entry=False)
+def process_tile(
     a_tile: pto.Tile,
     b_tile: pto.Tile,
     o_tile: pto.Tile,
@@ -279,7 +358,8 @@ def add_rows(
             pto.vsts(o_vec, o_tile[r, c:], mask)
             col_loop.update(remained=remained)
 
-@pto.jit(target="a5", mode="auto")
+
+@pto.jit(target="a5", entry=True)
 def my_kernel(
     A_ptr: pto.ptr(pto.f32, "gm"),
     B_ptr: pto.ptr(pto.f32, "gm"),
@@ -305,26 +385,39 @@ def my_kernel(
         pto.tile.load(a_part, a_tile)
         pto.tile.load(b_part, b_tile)
 
-        add_rows(a_tile, b_tile, o_tile, 1, cols)
+        process_tile(a_tile, b_tile, o_tile, 1, cols)  # call the module
 
         pto.tile.store(o_tile, o_part)
 ```
 
-Sub-kernels are the mechanism for custom compute in PTODSL — when Tile Ops
-cover your needs, you don't need one; when they don't, a sub-kernel gives you
-direct access to the hardware unit. In auto mode, a sub-kernel's parameters
-are restricted to `Tile` and PTO scalar types — the compiler owns staging and
-sync. In explicit mode, sub-kernels may also accept `PartitionTensorView` and
-`pto.ptr` parameters, matching the richer type surface available there.
-This richer pointer surface belongs to the **in-kernel orchestration and
-sub-kernel boundary**, not to the public `@pto.jit` host entry ABI.
-Section 3.3 covers each sub-kernel decorator in detail.
+When a traced body calls a module, PTODSL automatically records the
+dependency. You don't need to register modules or declare imports — just
+call the function. The compiler compiles the module alongside the caller
+and links them together. Modules can call other modules; the same automatic
+wiring applies transitively.
 
-## 3.2 Programming models: auto vs explicit
+The subkernel rules still apply: `@pto.simd` / `@pto.cube` / `@pto.simt`
+are not replaced by module-to-module nesting.
 
-`@pto.jit` exposes a single entry with two programming models. The entry's
-host ABI, compilation flow, and launch mechanism are identical in both — the
-difference is what you can write inside the kernel body.
+### Module vs sub-kernel
+
+| | `@pto.jit(entry=False)` module | `@pto.simd` / `@pto.simt` / `@pto.cube` |
+|---|---|---|
+| Scope | Full device-side logic (orchestration, compute, data movement) | Hardware-bound compute unit |
+| ABI | Tile, TensorView, PartitionTensorView, ptr, PTO scalars | Tile, PTO scalars (VReg for simd) |
+| Backend | VPTO or EmitC | Always VPTO |
+| Compilation | Compiled separately, linked automatically | Inlined or nested in caller's module |
+| Callable from | Entries and other modules | Entries and modules |
+| Can call modules | Yes | No (go through UB tiles via the caller) |
+
+
+## 3.4 Programming models: auto vs explicit
+
+The `mode` you choose for a kernel and the `mode` you choose for its modules
+are independent. An `entry=True, mode="auto"` kernel can call an
+`entry=False, mode="explicit"` module — this is a common pattern where the
+entry stays at tile level for simplicity, and the module uses micro-instructions
+for hand-tuned compute.
 
 ### `mode="auto"` — tile-centric
 
@@ -349,11 +442,11 @@ you can drop below the tile abstraction without leaving the `@pto.jit` entry.
 The richer type surface also applies to sub-kernels: in auto mode, a
 sub-kernel's parameters are restricted to `Tile` and PTO scalar types; in
 explicit mode they may also accept `PartitionTensorView` and `pto.ptr`,
-matching the types available in the enclosing orchestration code. Organize
-orchestration logic into helper functions that accept these types:
+matching the types available in the enclosing orchestration code.
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.explicit_signature","symbol":"kernel_entry_explicit_signature_probe","compile":{"BLOCK":16}} -->
 ```python
+@pto.jit(entry=False, mode="explicit")
 def my_orchestration_helper(
     part: pto.PartitionTensorView,   # GM partition descriptors
     tile: pto.Tile,                  # UB tile buffers
@@ -413,7 +506,68 @@ of micro-instructions — for example, to overlap DMA and compute with
 double-buffering, or to hand-optimize a phase boundary that the compiler
 doesn't fuse as aggressively as you need.
 
-## 3.3 Sub-kernels
+
+## 3.5 `backend`: VPTO vs EmitC
+
+`backend` chooses which compiler pipeline builds your kernel:
+
+- **`backend="vpto"`** (the default) is the native VPTO path. It works with
+  both `mode="auto"` and `mode="explicit"`. Use this unless you specifically
+  need C++ codegen.
+- **`backend="emitc"`** generates C++ through the EmitC pipeline. It only
+  works with `mode="auto"` — if you try `mode="explicit"` with it, PTODSL
+  raises an error at decoration time.
+
+### Choosing a backend
+
+| | `backend="vpto"` | `backend="emitc"` |
+|---|---|---|
+| Supported modes | `auto`, `explicit` | `auto` only |
+| Typical use | Most kernels (default) | C++ codegen integration |
+
+### Mixing backends with modules
+
+You can use different backends for different functions within the same
+compilation. Common patterns:
+
+- **Pure VPTO**: entry and all modules use `backend="vpto"` (the default).
+- **EmitC entry + VPTO modules**: the entry uses `backend="emitc"` for C++
+  codegen, while compute-heavy modules use `backend="vpto"` for direct
+  hardware access.
+- **Same-backend modules**: VPTO→VPTO or EmitC→EmitC — modules are compiled
+  as separate units and linked together automatically.
+
+The compiler resolves cross-backend calls automatically — when an `emitc`
+entry calls a `vpto` module, the linker wires them together into the final
+binary. You just write the Python call; the toolchain handles the rest.
+
+
+## 3.6 Combining compiled kernels with `merge_jit_modules()`
+
+When you compile an `entry=True` kernel that calls modules, everything is
+bundled together automatically. Sometimes you need to combine kernels that
+were compiled separately — for example, a pre-compiled module that you want
+to reuse across multiple entry kernels without recompiling it each time.
+
+`pto.merge_jit_modules()` merges multiple compiled handles into one module:
+
+```python
+from ptodsl import pto
+
+merged = pto.merge_jit_modules(
+    entry_kernel,
+    module_a,
+    module_b,
+)
+# merged contains all three functions, linked and ready
+```
+
+All handles in the merge must share the same target architecture. Backend and
+mode can differ per handle — the merge appends the functions together and
+preserves each one's compilation settings.
+
+
+## 3.7 Sub-kernels
 
 Sub-kernels are functions decorated with `@pto.cube`, `@pto.simd`, or
 `@pto.simt` that execute on a specific NPU compute unit. They can be invoked
@@ -422,9 +576,9 @@ in two ways:
 1. **As decorated functions** — reusable, named sub-kernels called from
    `@pto.jit`.
 2. **As context managers** (`with pto.cube():`, etc.) — inline blocks for
-   one-off snippets (see Section 3.4).
+   one-off snippets (see Section 3.8).
 
-### 3.3.1 `@pto.cube` — Cube unit
+### 3.7.1 `@pto.cube` — Cube unit
 
 **Role**: `@pto.cube` marks a function that executes on the Cube unit (matrix
 multiplication engine). It consumes UB-resident tiles and explicit cube-local
@@ -477,9 +631,9 @@ caller's responsibility to allocate scratch buffers and pass them in
 explicitly.
 
 **Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.cube():` (Section 3.4).
+inline with `with pto.cube():` (Section 3.8).
 
-### 3.3.2 `@pto.simd` — SIMD unit
+### 3.7.2 `@pto.simd` — SIMD unit
 
 **Role**: `@pto.simd` marks a function that executes on the SIMD unit (vector
 engine). It operates on vector registers (`vreg`) loaded from UB tiles and
@@ -531,9 +685,9 @@ the function. The only way to persist data across a `@pto.simd` call is to
 write it back to a UB tile via `vsts` (or `psts`, etc.).
 
 **Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.simd():` (Section 3.4).
+inline with `with pto.simd():` (Section 3.8).
 
-### 3.3.3 `@pto.simt` — SIMT unit
+### 3.7.3 `@pto.simt` — SIMT unit
 
 **Role**: `@pto.simt` marks a function that executes on the SIMT unit. SIMT
 (Single Instruction, Multiple Threads) is a programming model where you write
@@ -582,9 +736,10 @@ executes the same scalar instruction across many work-items in parallel, making
 it efficient for per-element operations.
 
 **Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.simt():` (Section 3.4).
+inline with `with pto.simt():` (Section 3.8).
 
-## 3.4 Inline context manager syntax
+
+## 3.8 Inline context manager syntax
 
 In addition to the decorator form, each sub-kernel unit provides a context
 manager: `with pto.cube():`, `with pto.simd():`, and `with pto.simt():`. These
@@ -644,27 +799,32 @@ with pto.cube():
 
 The two forms can be freely mixed in the same `@pto.jit` body.
 
-## 3.5 Boundary contracts
+
+## 3.9 Boundary contracts
 
 Data crosses decorator boundaries only through UB-backed tiles or typed UB
 pointers:
 
 | Boundary | Allowed |
 |----------|---------|
-| Host → `@pto.jit` | explicit GM pointers + runtime scalars |
-| `@pto.jit(mode="auto")` → sub-kernel | `Tile`, PTO scalars (compiler handles staging + sync) |
-| `@pto.jit(mode="explicit")` → sub-kernel | `Tile`, `PartitionTensorView`, `pto.ptr`, PTO scalars |
+| Host → `@pto.jit(entry=True)` | explicit GM pointers + runtime scalars |
+| `@pto.jit(entry=True)` → `@pto.jit(entry=False)` module | `Tile`, `TensorView`, `PartitionTensorView`, `pto.ptr`, PTO scalars |
+| `@pto.jit(entry=False)` → another module | Same types as above |
+| `@pto.jit(entry=True, mode="auto")` → sub-kernel | `Tile`, PTO scalars (compiler handles staging + sync) |
+| `@pto.jit(entry=True, mode="explicit")` → sub-kernel | `Tile`, `PartitionTensorView`, `pto.ptr`, PTO scalars |
 | `@pto.jit` → `with pto.{cube,simd,simt}:` | `Tile` captured from enclosing scope |
 | Sub-kernel → sub-kernel | Not allowed (go through UB tiles via the caller) |
 | `@pto.simd` → caller | Only via `vsts`/`psts` to UB tiles; `vreg` cannot escape |
 | Cube-local → UB | Only via `mte_l0c_ub`; LEFT/RIGHT/ACC/BIAS are private |
+| `entry=False` module → caller | No return values; data crosses only via mutable references |
 
-## 3.6 `pto.constexpr`
 
-`pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time
-constant. The compiler specializes the kernel for each combination of constexpr
-values, and the compiled artifact is cached by specialization key together with
-the kernel's entry annotation contract.
+## 3.10 `pto.constexpr`
+
+`pto.constexpr` marks a `@pto.jit(entry=True)` keyword-only parameter as a
+compile-time constant. The compiler specializes the kernel for each combination
+of constexpr values, and the compiled artifact is cached by specialization key
+together with the kernel's entry annotation contract.
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel","compile":{}} -->
 ```python
@@ -685,6 +845,9 @@ def kernel(
   default.
 - Cannot change between launches of the same compiled instance — compile a new
   variant for a different value.
+- **Only valid in `entry=True` kernels.** `entry=False` modules do not
+  support `constexpr` — pass compile-time-known values as PTO scalars from the
+  caller instead.
 
 `pto.constexpr` parameters can be used anywhere in the kernel body where a
 Python value is expected: tile shapes, loop bounds that are known at compile
