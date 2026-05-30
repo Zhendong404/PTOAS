@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
 from ptodsl import pto
+from ptodsl._host_tensors import TensorSpec
 
 
 def expect(condition: bool, message: str) -> None:
@@ -34,7 +35,7 @@ def expect_raises(callback, exc_type, *message_fragments: str) -> None:
 
 def define_bad_subkernel_signature_probe():
     @pto.simd
-    def bad_tensor_formal(A: pto.tensor_spec(rank=2, dtype=pto.f32)):
+    def bad_tensor_formal(A: TensorSpec(rank=2, dtype=pto.f32)):
         pto.pipe_barrier(pto.Pipe.ALL)
 
     return bad_tensor_formal
@@ -42,6 +43,14 @@ def define_bad_subkernel_signature_probe():
 
 def define_removed_ukernel_surface_probe():
     return pto.ukernel
+
+
+def define_removed_tensor_spec_surface_probe():
+    return pto.tensor_spec
+
+
+def define_removed_tensor_spec_type_surface_probe():
+    return pto.TensorSpec
 
 
 def define_invalid_jit_mode_probe():
@@ -59,7 +68,7 @@ def host_tensor_operand_probe(tensor):
 
 def define_host_tensor_into_subkernel_probe():
     @pto.jit(target="a5")
-    def bad_probe(A: pto.tensor_spec(rank=2, dtype=pto.f32)):
+    def bad_probe(A: TensorSpec(rank=2, dtype=pto.f32)):
         host_tensor_operand_probe(A)
 
     return bad_probe
@@ -108,6 +117,19 @@ def main() -> None:
         "pto.ukernel is not a supported PTODSL public interface",
         '@pto.jit(mode="explicit")',
         "@pto.simd/@pto.simt/@pto.cube",
+    )
+    expect_raises(
+        define_removed_tensor_spec_surface_probe,
+        AttributeError,
+        "pto.tensor_spec is not a supported PTODSL public interface",
+        "Host tensor ABI hints were removed",
+        "pto.make_tensor_view(...)",
+    )
+    expect_raises(
+        define_removed_tensor_spec_type_surface_probe,
+        AttributeError,
+        "pto.TensorSpec is not a supported PTODSL public interface",
+        "TensorSpec was removed from the PTODSL public surface",
     )
     expect_raises(
         define_invalid_jit_mode_probe,

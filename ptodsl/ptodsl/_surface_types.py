@@ -10,7 +10,6 @@
 from enum import Enum
 
 from ._bootstrap import make_context  # noqa: F401
-from ._host_tensors import TensorSpec, tensor_spec
 
 from mlir.dialects import pto as _pto
 
@@ -285,7 +284,6 @@ class Tile:
 
 __all__ = [
     "constexpr",
-    "TensorSpec",
     "MemorySpace",
     "BarrierType",
     "Pipe",
@@ -319,5 +317,4 @@ __all__ = [
     "TensorView",
     "PartitionTensorView",
     "Tile",
-    "tensor_spec",
 ]

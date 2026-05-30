@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
 from ptodsl import pto
+from ptodsl._bootstrap import make_context
+from mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:
@@ -41,27 +43,75 @@ def resolve_ptoas_binary() -> Path:
     raise FileNotFoundError("unable to locate a ptoas binary under build/, install/, or PATH")
 
 
-def run_ptoas_frontend_verify(ptoas_bin: Path, mlir_text: str, label: str) -> str:
-    with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
-        handle.write(mlir_text)
-        input_path = Path(handle.name)
+def extract_child_module_texts(container_text: str, label: str) -> list[str]:
+    with make_context() as ctx:
+        parsed = Module.parse(container_text, ctx)
+        top_level_ops = list(parsed.body.operations)
+    expect(top_level_ops, f"{label} should contain at least one top-level operation")
+    if all(op.operation.name == "builtin.module" for op in top_level_ops):
+        return [str(op) for op in top_level_ops]
+    return [container_text]
 
-    try:
-        result = subprocess.run(
-            [str(ptoas_bin), str(input_path), "--emit-pto-ir", "-o", "-"],
-            capture_output=True,
-            text=True,
-            check=False,
+
+def run_ptoas_frontend_verify(ptoas_bin: Path, mlir_text: str, label: str) -> list[str]:
+    child_modules = extract_child_module_texts(mlir_text, label)
+    frontend_texts: list[str] = []
+
+    for index, child_text in enumerate(child_modules, start=1):
+        with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
+            handle.write(child_text)
+            input_path = Path(handle.name)
+
+        child_label = f"{label} [child {index}]"
+        try:
+            result = subprocess.run(
+                [str(ptoas_bin), str(input_path), "--emit-pto-ir", "-o", "-"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            input_path.unlink(missing_ok=True)
+
+        if result.returncode == 0 and result.stdout.strip():
+            frontend_texts.append(result.stdout)
+            continue
+
+        if "object output requires an explicit file path passed with -o." in result.stderr:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_root = Path(temp_dir)
+                fallback_input_path = temp_root / "input.mlir"
+                output_path = temp_root / "kernel.o"
+                fallback_input_path.write_text(child_text, encoding="utf-8")
+                fallback_result = subprocess.run(
+                    [str(ptoas_bin), str(fallback_input_path), "-o", str(output_path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                artifact_exists = output_path.is_file()
+                artifact_size = output_path.stat().st_size if artifact_exists else 0
+            expect(
+                fallback_result.returncode == 0,
+                f"{child_label} should pass PTOAS fallback compilation when the VPTO fast path skips --emit-pto-ir.\n"
+                f"stdout:\n{fallback_result.stdout}\nstderr:\n{fallback_result.stderr}",
+            )
+            expect(artifact_exists, f"{child_label} should produce an output artifact via fallback ptoas -o")
+            expect(
+                artifact_size > 0,
+                f"{child_label} should produce a non-empty output artifact via fallback ptoas -o",
+            )
+            frontend_texts.append("")
+            continue
+
+        expect(
+            result.returncode == 0,
+            f"{child_label} should pass PTOAS frontend verification.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
-    finally:
-        input_path.unlink(missing_ok=True)
+        expect(result.stdout.strip(), f"{child_label} should emit non-empty PTO IR after PTOAS frontend passes")
+        frontend_texts.append(result.stdout)
 
-    expect(
-        result.returncode == 0,
-        f"{label} should pass PTOAS frontend verification.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-    )
-    expect(result.stdout.strip(), f"{label} should emit non-empty PTO IR after PTOAS frontend passes")
-    return result.stdout
+    return frontend_texts
 
 
 @pto.jit(target="a5")
@@ -87,11 +137,16 @@ def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
 
     simple_text = host_vec_copy.compile().mlir_text()
-    simple_frontend_text = run_ptoas_frontend_verify(
+    simple_frontend_texts = run_ptoas_frontend_verify(
         ptoas_bin,
         simple_text,
         "host_vec_copy PTODSL artifact",
     )
+    expect(
+        len(simple_frontend_texts) == 1,
+        "host_vec_copy PTODSL artifact should lower to exactly one backend child module",
+    )
+    simple_frontend_text = simple_frontend_texts[0]
     expect(
         "func.func @host_vec_copy" in simple_frontend_text,
         "host_vec_copy frontend verification output should preserve the kernel symbol",

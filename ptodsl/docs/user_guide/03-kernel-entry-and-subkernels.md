@@ -334,7 +334,7 @@ The following are intentionally **not** supported in `entry=False` signatures:
 
 A module is invoked with a normal Python function call inside a traced body:
 
-<!-- ptodsl-doc-test: {"mode":"compile","symbol":"entry_with_helper","compile":{"BLOCK":128}} -->
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"my_kernel","compile":{"BLOCK":128}} -->
 ```python
 @pto.jit(entry=False)
 def process_tile(
