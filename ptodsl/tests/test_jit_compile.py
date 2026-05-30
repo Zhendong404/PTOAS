@@ -1092,27 +1092,144 @@ def public_data_movement_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
-def vector_post_update_surface_probe():
+def public_vector_conversion_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
-    ub_src = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
-    ub_dst = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
-    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    ub_f16 = pto.castptr(zero_u64, pto.ptr(pto.f16, "ub"))
 
-    vec, load_base = pto.vlds(ub_src, pto.const(0), return_updated_base=True)
-    store_base = pto.vsts(vec, ub_dst, pto.const(0), mask32_full, return_updated_base=True)
-    block_base = pto.vsstb(
-        vec,
-        ub_dst,
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32, ub_f32_next = pto.vlds(ub_f32, pto.const(0), post_update=pto.PostUpdate.ON)
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    converted = pto.vcvt(
+        vec_f32,
+        pto.f16,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        sat=pto.VcvtSatMode.SAT,
+        part=pto.VcvtPartMode.EVEN,
+    )
+    ub_f16_next = pto.vsts(
+        converted,
+        ub_f16,
+        pto.const(0),
+        mask32_full,
+        dist=pto.VStoreDist.PK_B32,
+        post_update=pto.PostUpdate.ON,
+    )
+    packed = pto.vpack(vec_i32, pto.VPackPart.LOWER)
+
+    _ = ub_f32_next
+    _ = ub_f16_next
+    _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vdup_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    scalar_dup = pto.vdup(pto.f32(0), mask32_full)
+    lowest_dup = pto.vdup(vec_f32, mask32_full)
+    highest_dup = pto.vdup(vec_f32, mask32_full, pto.PositionMode.HIGHEST)
+    _ = scalar_dup
+    _ = lowest_dup
+    _ = highest_dup
+
+
+@pto.jit(target="a5", mode="explicit")
+def vdup_surface_invalid_scalar_position_probe():
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    _ = pto.vdup(pto.f32(0), mask32_full, pto.PositionMode.HIGHEST)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    packed = pto.vmulscvt(
+        vec_f32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.A,
+        part=pto.PartMode.EVEN,
+    )
+    _ = packed
+
+
+@pto.jit(target="a5", mode="explicit")
+def vcvt_surface_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vcvt(vec_f32, pto.ui16, mask32_full)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_invalid_dtype_pair_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    _ = pto.vmulscvt(
+        vec_i32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.A,
+        part=pto.PartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vpack_surface_invalid_shape_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i64 = pto.castptr(zero_u64, pto.ptr(pto.i64, "ub"))
+    vec_i64 = pto.vlds(ub_i64, pto.const(0))
+    _ = pto.vpack(vec_i64, pto.VPackPart.LOWER)
+
+
+@pto.jit(target="a5", mode="explicit")
+def vpack_surface_invalid_part_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_i32 = pto.castptr(zero_u64, pto.ptr(pto.i32, "ub"))
+    vec_i32 = pto.vlds(ub_i32, pto.const(0))
+    _ = pto.vpack(vec_i32, "MIDDLE")
+
+
+@pto.jit(target="a5", mode="explicit")
+def vmulscvt_surface_invalid_attr_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    _ = pto.vmulscvt(
+        vec_f32,
+        1.0,
+        mask32_full,
+        rnd=pto.VcvtRoundMode.R,
+        part=pto.PartMode.EVEN,
+    )
+
+
+@pto.jit(target="a5", mode="explicit")
+def vsstb_post_update_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    ub_f32_next = pto.vsstb(
+        vec_f32,
+        ub_f32,
         pto.i16(32),
         pto.i16(0),
         mask32_full,
-        return_updated_base=True,
+        post_update=pto.PostUpdate.ON,
     )
-
-    _ = load_base
-    _ = store_base
-    _ = block_base
-
+    _ = ub_f32_next
 
 @pto.jit(target="a5")
 def auto_mode_explicit_surface_violation_probe():
@@ -1162,6 +1279,12 @@ def main() -> None:
         "DeinterleaveDist",
         "InterleaveDist",
         "PostUpdate",
+        "PartMode",
+        "PositionMode",
+        "VPackPart",
+        "VcvtRoundMode",
+        "VcvtSatMode",
+        "VcvtPartMode",
         "AlignType",
         "init_align",
         "plt_b8",
@@ -1177,6 +1300,9 @@ def main() -> None:
         "pnot",
         "psel",
         "pbitcast",
+        "vcvt",
+        "vpack",
+        "vmulscvt",
         "ppack",
         "punpack",
         "pintlv_b8",
@@ -1348,6 +1474,10 @@ def main() -> None:
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
     public_data_movement_surface_probe.verify()
+    public_vector_conversion_surface_probe.verify()
+    vdup_surface_probe.verify()
+    vmulscvt_surface_probe.verify()
+    vsstb_post_update_surface_probe.verify()
 
     with make_context() as ctx, Location.unknown(ctx):
         expect(
@@ -2052,16 +2182,29 @@ def main() -> None:
     expect("pto.vscatter" in data_movement_surface_text, "vscatter(...) should lower to pto.vscatter")
     expect("pto.vsldb" in data_movement_surface_text, "vsldb(...) should lower to pto.vsldb")
     expect("pto.vsstb" in data_movement_surface_text, "vsstb(...) should lower to pto.vsstb")
-    expect(
-        "-> !pto.vreg<64xf32>, !pto.ptr<f32, ub>" in vector_post_update_surface_text,
-        "vlds(..., return_updated_base=True) should request the updated base result",
-    )
-    expect(
-        vector_post_update_surface_text.count("-> !pto.ptr<f32, ub>") >= 2,
-        "vsts/vsstb(..., return_updated_base=True) should request updated base results",
-    )
     expect("pto.vstar" in data_movement_surface_text, "vstar(...) should lower to pto.vstar")
     expect("pto.vstas" in data_movement_surface_text, "vstas(...) should lower to pto.vstas")
+    expect("pto.vlds" in vector_conversion_surface_text, "vlds(..., post_update=ON) should lower through pto.vlds on the current VPTO Python surface")
+    expect("-> !pto.vreg<64xf32>, !pto.ptr<f32, ub>" in vector_conversion_surface_text, "vlds(..., post_update=ON) should request the updated source pointer result")
+    expect("pto.vcvt" in vector_conversion_surface_text, "vcvt(...) should lower to pto.vcvt")
+    expect('rnd = "R"' in vector_conversion_surface_text, "vcvt(..., rnd=VcvtRoundMode.R) should preserve the authored rounding attr")
+    expect('sat = "SAT"' in vector_conversion_surface_text, "vcvt(..., sat=VcvtSatMode.SAT) should preserve the authored saturation attr")
+    expect('part = "EVEN"' in vector_conversion_surface_text, "vcvt(..., part=VcvtPartMode.EVEN) should preserve the authored part attr")
+    expect("pto.vsts" in vector_conversion_surface_text, "vsts(..., post_update=ON) should lower through pto.vsts on the current VPTO Python surface")
+    expect(vector_conversion_surface_text.count("-> !pto.ptr<f16, ub>") >= 1, "vsts(..., post_update=ON) should request the updated destination pointer result")
+    expect('dist = "PK_B32"' in vector_conversion_surface_text, "vsts(..., dist=VStoreDist.PK_B32) should preserve the authored store distribution")
+    expect("pto.vpack" in vector_conversion_surface_text, "vpack(...) should lower to pto.vpack")
+    expect("!pto.vreg<128xui16>" in vector_conversion_surface_text, "vpack(i32/u32 -> u16) should infer the unsigned packed result type")
+    expect(vdup_surface_text.count("pto.vdup") == 3, "vdup(...) should lower once per authored scalar/vector duplication")
+    expect("f32, !pto.mask<b32> -> !pto.vreg<64xf32>" in vdup_surface_text, "vdup(scalar_f32, mask_b32) should infer an f32 vector result type")
+    expect(vdup_surface_text.count('position = "LOWEST"') >= 1, "vdup(vec, mask) should default position to LOWEST")
+    expect('position = "HIGHEST"' in vdup_surface_text, "vdup(vec, mask, PositionMode.HIGHEST) should preserve the authored position")
+    expect("pto.vmulscvt" in vmulscvt_surface_text, "vmulscvt(...) should lower to pto.vmulscvt")
+    expect('\"A\"' in vmulscvt_surface_text, "vmulscvt(..., rnd=VcvtRoundMode.A) should preserve the authored round token")
+    expect('\"EVEN\"' in vmulscvt_surface_text, "vmulscvt(..., part=PartMode.EVEN) should preserve the authored part token")
+    expect("!pto.vreg<128xf16>" in vmulscvt_surface_text, "vmulscvt(f32 -> f16) should infer the packed f16 result type")
+    expect("pto.vsstb" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should still lower through pto.vsstb on the current VPTO IR")
+    expect("-> !pto.ptr<f32, ub>" in vsstb_post_update_surface_text, "vsstb(..., post_update=ON) should request the updated destination pointer result")
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
@@ -2088,6 +2231,36 @@ def main() -> None:
     expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")
     expect("!pto.mask<b16>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b16) should materialize the requested result mask type")
     expect("!pto.mask<b32>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b32) should materialize the requested result mask type")
+    expect_raises(
+        ValueError,
+        lambda: vmulscvt_surface_invalid_attr_probe.compile(),
+        "vmulscvt(..., rnd=...) currently only supports A",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vcvt_surface_invalid_dtype_pair_probe.compile(),
+        "vcvt(src, to_dtype, mask) currently does not support the dtype pair f32 -> u16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vmulscvt_surface_invalid_dtype_pair_probe.compile(),
+        "vmulscvt(src, scalar, mask) currently only supports the dtype pair f32 -> f16",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vpack_surface_invalid_shape_probe.compile(),
+        "vpack(src, part) currently supports only the source/result shape pairs s32/u32 -> u16 and s16/u16 -> u8",
+    )
+    expect_raises(
+        TypeError,
+        lambda: vdup_surface_invalid_scalar_position_probe.compile(),
+        "position is only valid for vector input",
+    )
+    expect_raises(
+        ValueError,
+        lambda: vpack_surface_invalid_part_probe.compile(),
+        "vpack(src, part) does not support part",
+    )
     expect("pto.pset_b8" in mask_surface_text, "pset_b8(...) should lower to pto.pset_b8")
     expect("pto.pset_b16" in mask_surface_text, "pset_b16(...) should lower to pto.pset_b16")
     expect("pto.pset_b32" in mask_surface_text, "pset_b32(...) should lower to pto.pset_b32")

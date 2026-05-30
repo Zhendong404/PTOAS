@@ -595,6 +595,65 @@ s_shifted = pto.vsubs(s_row, m_next, col_mask)
 
 ---
 
+### 8.2.3.1 Vector duplication: `pto.vdup`
+
+#### `pto.vdup(input: ScalarType, mask: MaskType) -> VRegType`
+#### `pto.vdup(input: VRegType, mask: MaskType, position: PositionMode = PositionMode.LOWEST) -> VRegType`
+
+**Description**: Duplicate a scalar value or one selected vector element into
+the active lanes of a destination vector.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input` | `ScalarType` or `VRegType` | Input scalar or source vector |
+| `mask` | `MaskType` | Predicate mask controlling which lanes are written |
+| `position` | `PositionMode` | Optional enum for the vector-input overload, selecting the source vector element to duplicate (default: `PositionMode.LOWEST`) |
+
+**Position Mode Enum**:
+
+| Enum Value | Meaning |
+|------------|---------|
+| `pto.PositionMode.LOWEST` | Duplicate the lowest-index source lane |
+| `pto.PositionMode.HIGHEST` | Duplicate the highest-index source lane |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Vector whose active lanes receive the duplicated value |
+
+**Constraints**:
+
+- `mask` granularity must match the destination vector element type. For example, `f32`/`i32`/`si32`/`ui32` vectors require `mask_b32`.
+- When `input` is a scalar, the scalar value is duplicated to every active lane.
+- When `input` is a vector, `position` selects one source element and that value is duplicated to every active lane.
+- The scalar overload does not accept `position`.
+- Supported scalar types are the 8/16/32-bit integer families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32`.
+- Inactive lanes follow VPTO predicate semantics and are not guaranteed to carry meaningful values for subsequent masked-off use.
+
+**Example**:
+
+```python
+mask32 = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
+
+# Duplicate a scalar into all active lanes.
+broadcast = pto.vdup(3.14, mask32)
+seed = pto.vdup(pto.f32("-inf"), mask32)
+
+# Assume `vec` is an existing f32 vector register value.
+vec = pto.vlds(src, 0)
+
+# Duplicate the lowest source lane to all active lanes.
+dup_lowest = pto.vdup(vec, mask32)
+
+# Duplicate the highest source lane to all active lanes.
+dup_highest = pto.vdup(vec, mask32, pto.PositionMode.HIGHEST)
+```
+
+---
+
 ### 8.2.4 Full-vector and group reductions
 
 #### Full-vector reductions
@@ -678,6 +737,41 @@ These combine an arithmetic operation with a math function or activation in a si
 
 ---
 
+#### `pto.vmulscvt(src: VRegType, scalar: ScalarType, mask: MaskType, *, rnd: VcvtRoundMode, part: PartMode) -> VRegType`
+
+**Description**: Fused multiply-by-scalar and type conversion. Computes `cvt_rnd(src[i] * scalar)` for active lanes. The destination vector's element type is the conversion target; it must be a legal narrower type than the source. This is a core micro-op in hand-written softmax/attention kernels for fusing the scale step into the downcast.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (wider element type) |
+| `scalar` | `ScalarType` | Scale factor (multiplied element-wise before conversion) |
+| `mask` | `MaskType` | Predicate mask gating which lanes participate |
+| `rnd` | `VcvtRoundMode` | Rounding mode used by the cast stage |
+| `part` | `PartMode` | `EVEN` or `ODD` — selects which half of the vector is processed |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Converted vector (narrower element type) |
+
+**Example** — softmax scale-and-downcast:
+
+```python
+# f32 -> f16 with scale factor 1.0
+exp_f16_even = pto.vmulscvt(exp_f32_even, 1.0, mask, rnd=pto.VcvtRoundMode.A, part=pto.PartMode.EVEN)
+exp_f16_odd  = pto.vmulscvt(exp_f32_odd, 1.0, mask, rnd=pto.VcvtRoundMode.A, part=pto.PartMode.ODD)
+```
+
+**Constraints**:
+- The source and result vector types must form a legal dtype pair. Current PTOAS support for this fused op is the A5 `f32 -> f16` packed form.
+- `rnd` and `part` must be provided explicitly — there is no default to prevent accidental authoring of the packed half-width form.
+- Current PTOAS lowering accepts `rnd=VcvtRoundMode.A` for `vmulscvt`.
+
+---
+
 ### 8.2.6 Comparison and selection
 
 #### `pto.vcmp(v0: VRegType, v1: VRegType, seed_mask: MaskType, cmp_mode: CmpMode) -> MaskType`
@@ -727,7 +821,70 @@ These combine an arithmetic operation with a math function or activation in a si
 
 ---
 
-### 8.2.7 Vector compute quick reference
+### 8.2.7 Vector type conversion and packing
+
+These ops change the element type or layout of vector registers. They are distinct from the tile-level `tile.cvt` — they operate on `VRegType` values inside `@pto.simd` and are the explicit micro-op counterparts to higher-level conversion helpers.
+
+#### `pto.vcvt(src: VRegType, mask: MaskType, *, rnd: str | None = None, sat: str | None = None, part: str | None = None) -> VRegType`
+
+**Description**: Generic vector type conversion. Converts the element type of `src` to the target type implied by the result `VRegType`. Supports narrowing conversions (e.g., `f32 -> f16`), widening conversions, and same-width re-interpretations (subject to hardware legality). This is the explicit micro-op form of vector convert — use it when authoring conversion steps directly rather than relying on fused ops like `vmulscvt`.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (source element type) |
+| `mask` | `MaskType` | Predicate mask gating which lanes participate |
+| `rnd` | `str` or `None` | Optional rounding mode string |
+| `sat` | `str` or `None` | Optional saturation mode string |
+| `part` | `str` or `None` | Optional part selector for half-width processing |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Converted vector (target element type) |
+
+**Constraints**:
+- Source and result dtype pair must be a legal hardware conversion. Illegal pairs (e.g., unsupported narrowing/widening combinations) are rejected at frontend time.
+
+---
+
+#### `pto.vpack(src: VRegType, part: VPackPart) -> VRegType`
+
+**Description**: Pack (narrow) a vector register into a result register with half the element width. The `part` selector determines which half of the source lanes are kept: `LOWER` packs the lower half, `HIGHER` packs the upper half. The result vector has the same total bit width (256 bits) but twice as many lanes at half the element width. This is the primary micro-op for collapsing intermediate wider-type results into compact narrower-type storage.
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src` | `VRegType` | Input vector (wider element type) |
+| `part` | `VPackPart` | `LOWER` or `HIGHER` — which half of source lanes to pack |
+
+**Returns**:
+
+| Return Value | Type | Description |
+|--------------|------|-------------|
+| `result` | `VRegType` | Packed vector (narrower element type, twice as many lanes) |
+
+**Constraints**:
+- `part` must be a valid `VPackPart` value. Only `LOWER` and `HIGHER` are accepted.
+- Source shape must be compatible with the pack operation (typically a vector with
+  fewer lanes of a wider type, e.g. 64×f32 → 128×f16).
+- The source and result vector element types must form a legal widen/narrow pair.
+  Illegal combinations are rejected at frontend time.
+
+**Example** — pack f32 vector halves into f16 vectors for strided store:
+
+```python
+# exp_f32: 64×f32 = 256 bytes, holds two conceptual f16-sized halves
+exp_f16_low  = pto.vpack(exp_f32, pto.VPackPart.LOWER)   # lower 64 lanes → 128×f16
+exp_f16_high = pto.vpack(exp_f32, pto.VPackPart.HIGHER)  # upper 64 lanes → 128×f16
+```
+
+---
+
+### 8.2.8 Vector compute quick reference
 
 | Category | Operations |
 |----------|------------|
@@ -738,9 +895,9 @@ These combine an arithmetic operation with a math function or activation in a si
 | Full reduction | `vcadd`, `vcmax`, `vcmin` |
 | Group reduction | `vcgadd`, `vcgmax`, `vcgmin` |
 | Scan | `vcpadd` |
-| Fused | `vexpdif`, `vaxpy`, `vaddrelu`, `vsubrelu` |
+| Fused | `vexpdif`, `vaxpy`, `vaddrelu`, `vsubrelu`, `vmulscvt` |
 | Compare/select | `vcmp`, `vcmps`, `vsel` |
-| Conversion | `vbitcast`, `pbitcast` |
+| Conversion | `vcvt`, `vpack`, `vbitcast`, `pbitcast` |
 
 ---
 
