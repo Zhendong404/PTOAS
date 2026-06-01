@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from mlir.dialects import func
-from mlir.ir import Attribute, InsertionPoint, Module, Operation, StringAttr, UnitAttr
+from mlir.ir import InsertionPoint, Module, Operation, StringAttr, UnitAttr
 
 
 class ModuleStyle(str, Enum):
@@ -40,13 +40,9 @@ class KernelModuleSpec:
     source_line: int | None = None
 
 
-def _kernel_kind_attr(kernel_kind: str):
-    return Attribute.parse(f"#pto.kernel_kind<{kernel_kind}>")
-
 def _build_flat_aicore_module(spec: KernelModuleSpec, arg_types):
     module = Module.create()
     module.operation.attributes["pto.target_arch"] = StringAttr.get(spec.target_arch)
-    module.operation.attributes["pto.kernel_kind"] = _kernel_kind_attr(spec.kernel_kind)
     module.operation.attributes["pto.mode"] = StringAttr.get(spec.mode)
     fn_ty = func.FunctionType.get(arg_types, [])
     with InsertionPoint(module.body):
@@ -63,7 +59,6 @@ def _build_nested_module(spec: KernelModuleSpec, arg_types):
     with InsertionPoint(outer.body):
         inner_op = Operation.create("builtin.module", regions=1)
         inner_op.attributes["pto.target_arch"] = StringAttr.get(spec.target_arch)
-        inner_op.attributes["pto.kernel_kind"] = _kernel_kind_attr(spec.kernel_kind)
         inner_op.attributes["pto.mode"] = StringAttr.get(spec.mode)
         inner_body = inner_op.regions[0].blocks.append()
 
@@ -78,10 +73,6 @@ def _apply_child_module_attrs(child_op, spec: KernelModuleSpec) -> None:
     """Populate one child module with PTOAS-facing backend metadata."""
     child_op.attributes["pto.target_arch"] = StringAttr.get(spec.target_arch)
     child_op.attributes["pto.backend"] = StringAttr.get(spec.backend)
-    if spec.backend == "vpto":
-        child_op.attributes["pto.kernel_kind"] = _kernel_kind_attr(spec.kernel_kind)
-    if "pto.kernel_kind" in child_op.attributes and spec.backend != "vpto":
-        del child_op.attributes["pto.kernel_kind"]
 
 
 def create_container_child_module(outer_module, spec: KernelModuleSpec):

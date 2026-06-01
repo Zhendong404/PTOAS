@@ -129,7 +129,10 @@ def jit(
     ----------
     name:        IR function name (defaults to the Python function name).
     target:      Target architecture string, e.g. ``"a5"``.
-    kernel_kind: ``"vector"`` or ``"cube"`` – sets ``pto.kernel_kind``.
+    kernel_kind: authored default physical kind, used for native build selection
+                 and VPTO authoring intent. PTODSL now expresses physical regions
+                 through ``pto.section.vector/cube`` instead of child-module
+                 ``pto.kernel_kind`` attributes.
     backend:     ``"vpto"`` or ``"emitc"`` – records the intended backend.
     entry:       ``True`` for launchable kernel entries, ``False`` for helpers.
     mode:        ``"auto"`` or ``"explicit"`` – feeds child compile policy.

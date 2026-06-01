@@ -143,9 +143,10 @@ def _require_explicit_mode(surface: str):
         session = None
     if session is None:
         return
-    current_mode = getattr(session.module_spec, "mode", None)
+    current_module_spec = getattr(session, "current_function_module_spec", session.module_spec)
+    current_mode = getattr(current_module_spec, "mode", None)
     if current_mode != "explicit":
-        raise explicit_mode_required_with_context_error(surface, session.module_spec)
+        raise explicit_mode_required_with_context_error(surface, current_module_spec)
 
 
 def _explicit_mode_only(surface: str):

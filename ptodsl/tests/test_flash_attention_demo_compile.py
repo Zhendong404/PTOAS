@@ -66,7 +66,7 @@ def main() -> None:
     expect("func.func @flash_attention_kernel" in wrapper_text, "wrapper compile should emit the flash_attention_kernel entry")
     expect(wrapper_text.count("module") >= 2, "wrapper compile should emit an outer container plus child modules")
     expect(
-        'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         in wrapper_text,
         "flash attention wrapper compile should encode the VPTO backend directly on the child module",
     )
@@ -98,7 +98,7 @@ def main() -> None:
     expect("func.func @flash_attention_kernel" in specialized_text, "direct compile should emit the flash_attention_kernel entry")
     expect(specialized_text.count("module") >= 2, "direct compile should keep the backend-partitioned container shape")
     expect(
-        'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         in specialized_text,
         "direct compile should encode the VPTO backend directly on the child module",
     )

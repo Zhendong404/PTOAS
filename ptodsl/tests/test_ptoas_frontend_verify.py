@@ -43,6 +43,21 @@ def resolve_ptoas_binary() -> Path:
     raise FileNotFoundError("unable to locate a ptoas binary under build/, install/, or PATH")
 
 
+def emit_example_mlir(example_path: Path) -> str:
+    result = subprocess.run(
+        [sys.executable, str(example_path), "--emit-mlir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    expect(
+        result.returncode == 0,
+        f"{example_path.name} --emit-mlir should succeed.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    expect(result.stdout.strip(), f"{example_path.name} --emit-mlir should print non-empty MLIR text")
+    return result.stdout
+
+
 def extract_child_module_texts(container_text: str, label: str) -> list[str]:
     with make_context() as ctx:
         parsed = Module.parse(container_text, ctx)
@@ -133,8 +148,52 @@ def host_vec_copy(
     pto.tile.store(o_tile, out)
 
 
+@pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
+def process_row_ptr_kernel_module(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    with pto.simd():
+        c0_i64 = pto.const(0, dtype=pto.i64)
+        row_offset = row * 16
+        src_row = pto.addptr(src_gm, row_offset)
+        dst_row = pto.addptr(dst_gm, row_offset)
+        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+
+        pto.get_buf(pto.Pipe.MTE2, 0)
+        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+        pto.rls_buf(pto.Pipe.MTE2, 0)
+
+        pto.get_buf(pto.Pipe.MTE3, 0)
+        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+        pto.rls_buf(pto.Pipe.MTE3, 0)
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5", backend="emitc")
+def emitc_entry_calls_vpto_kernel_module_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, 16], strides=[16, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, 16], strides=[16, 1])
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+
+    with pto.for_(0, rows, step=1) as row:
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, 16])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, 16])
+        pto.tile.load(a_part, a_tile)
+        pto.tile.adds(a_tile, 1.0, o_tile)
+        pto.tile.store(o_tile, o_part)
+        process_row_ptr_kernel_module(A_ptr, O_ptr, row)
+
+
 def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
+    mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
 
     simple_text = host_vec_copy.compile().mlir_text()
     simple_frontend_texts = run_ptoas_frontend_verify(
@@ -154,6 +213,115 @@ def main() -> None:
     expect(
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
+    )
+
+    mixed_backend_text = emitc_entry_calls_vpto_kernel_module_probe.compile().mlir_text()
+    mixed_backend_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        mixed_backend_text,
+        "emitc_entry_calls_vpto_kernel_module_probe PTODSL artifact",
+    )
+    expect(
+        len(mixed_backend_frontend_texts) == 2,
+        "mixed-backend PTODSL artifact should lower to separate caller/callee child modules",
+    )
+    mixed_backend_emitc_frontend_text = mixed_backend_frontend_texts[0]
+    expect(
+        'module attributes {pto.backend = "emitc", pto.target_arch = "a5"}'
+        in mixed_backend_emitc_frontend_text,
+        "mixed-backend caller child should stay on the EmitC backend through PTOAS frontend verification",
+    )
+    expect(
+        "func.func @emitc_entry_calls_vpto_kernel_module_probe"
+        in mixed_backend_emitc_frontend_text,
+        "mixed-backend caller frontend verification output should preserve the entry symbol",
+    )
+    expect(
+        mixed_backend_emitc_frontend_text.count("pto.section.vector {") == 1,
+        "mixed-backend caller frontend verification should infer exactly one top-level vector section for the uncovered entry tile path",
+    )
+    expect(
+        "pto.tload" in mixed_backend_emitc_frontend_text
+        and "pto.tadds" in mixed_backend_emitc_frontend_text
+        and "pto.tstore" in mixed_backend_emitc_frontend_text,
+        "mixed-backend caller frontend verification output should preserve the entry tile path after inferred section normalization",
+    )
+    expect(
+        "func.call @process_row_ptr_kernel_module__ptodsl_" in mixed_backend_emitc_frontend_text,
+        "mixed-backend caller frontend verification output should keep the kernel-module call alongside the normalized tile path",
+    )
+    expect(
+        mixed_backend_emitc_frontend_text.index("pto.section.vector {")
+        < mixed_backend_emitc_frontend_text.index("pto.tload"),
+        "mixed-backend caller frontend verification should place the entry tile path inside the inferred vector section",
+    )
+    expect(
+        mixed_backend_frontend_texts[1] == "",
+        "mixed-backend VPTO callee child should continue to compile through the fallback object path when --emit-pto-ir is unavailable",
+    )
+
+    example_mlir_text = emit_example_mlir(mixed_backend_example)
+    example_child_texts = extract_child_module_texts(
+        example_mlir_text,
+        "mixed_backend_kernel_module.py --emit-mlir output",
+    )
+    expect(
+        len(example_child_texts) == 2,
+        "mixed_backend_kernel_module.py should materialize one EmitC caller child and one VPTO callee child",
+    )
+    example_emitc_child = example_child_texts[0]
+    example_vpto_child = example_child_texts[1]
+    expect(
+        'module attributes {pto.backend = "emitc", pto.target_arch = "a5"}'
+        in example_emitc_child,
+        "mixed_backend_kernel_module.py EmitC child should carry the authored EmitC backend metadata",
+    )
+    expect(
+        "func.func @emitc_entry_calls_vpto_module" in example_emitc_child
+        and "func.func private @scale_row_kernel_module__ptodsl_" in example_emitc_child,
+        "mixed_backend_kernel_module.py EmitC child should resemble mixed-external-vadd by keeping an entry symbol plus one private imported helper symbol",
+    )
+    expect(
+        "pto.tload" in example_emitc_child
+        and "pto.tadds" in example_emitc_child
+        and "pto.tstore" in example_emitc_child
+        and "func.call @scale_row_kernel_module__ptodsl_" in example_emitc_child,
+        "mixed_backend_kernel_module.py EmitC child should keep the entry tile path plus one cross-backend helper call, like mixed-external-vadd's caller-side shape",
+    )
+    expect(
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
+        in example_vpto_child,
+        "mixed_backend_kernel_module.py VPTO child should carry the callee backend metadata",
+    )
+    expect(
+        "func.func public @scale_row_kernel_module__ptodsl_" in example_vpto_child
+        and "pto.section.vector {" in example_vpto_child,
+        "mixed_backend_kernel_module.py VPTO child should expose a public helper definition with explicit vector authoring, matching the vector-helper side of mixed-external-vadd",
+    )
+
+    example_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        example_mlir_text,
+        "mixed_backend_kernel_module.py --emit-mlir output",
+    )
+    expect(
+        len(example_frontend_texts) == 2,
+        "mixed_backend_kernel_module.py frontend verification should keep the two-child backend partition",
+    )
+    example_emitc_frontend_text = example_frontend_texts[0]
+    expect(
+        example_emitc_frontend_text.count("pto.section.vector {") == 1,
+        "mixed_backend_kernel_module.py frontend verification should normalize the uncovered EmitC entry tile path into one vector section",
+    )
+    expect(
+        example_emitc_frontend_text.index("pto.section.vector {")
+        < example_emitc_frontend_text.index("pto.tload")
+        < example_emitc_frontend_text.index("func.call @scale_row_kernel_module__ptodsl_"),
+        "mixed_backend_kernel_module.py frontend verification should place the entry tile path and helper call inside the inferred caller-side vector section",
+    )
+    expect(
+        example_frontend_texts[1] == "",
+        "mixed_backend_kernel_module.py VPTO child should continue to compile through the fallback object path in frontend verification",
     )
 
     print("ptodsl_ptoas_frontend_verify: PASS")

@@ -25,7 +25,7 @@ from .._surface_values import unwrap_surface_value, wrap_like_surface_value
 
 from mlir.dialects import arith, func
 from mlir.dialects import pto as _pto
-from mlir.ir import FlatSymbolRefAttr, InsertionPoint, IntegerType, StringAttr, UnitAttr
+from mlir.ir import InsertionPoint, IntegerType, StringAttr, UnitAttr
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,14 @@ class TraceSession:
         return self.current_function.name.value
 
     @property
+    def current_function_module_spec(self):
+        """Return the module spec that owns the actively lowered function."""
+        current_record = self._kernel_module_child_records.get(self.current_function_symbol_name)
+        if current_record is not None:
+            return current_record.module_spec
+        return self.module_spec
+
+    @property
     def current_subkernel(self):
         if not self._subkernel_stack:
             return None
@@ -167,7 +175,19 @@ class TraceSession:
         )
         self._subkernel_stack.append(frame)
         try:
-            yield frame
+            section_op = None
+            if role == "simd":
+                section_op = _pto.SectionVectorOp()
+            elif role == "cube":
+                section_op = _pto.SectionCubeOp()
+
+            if section_op is None:
+                yield frame
+                return
+
+            block = section_op.body.blocks.append()
+            with InsertionPoint(block):
+                yield frame
         finally:
             popped = self._subkernel_stack.pop()
             if popped is not frame:
@@ -182,6 +202,16 @@ class TraceSession:
             subkernel.spec.target,
         ) as frame:
             yield frame
+
+    @contextmanager
+    def suspend_subkernel_scope(self):
+        """Temporarily clear caller-owned subkernel scope while lowering a new function body."""
+        saved_stack = self._subkernel_stack
+        self._subkernel_stack = []
+        try:
+            yield
+        finally:
+            self._subkernel_stack = saved_stack
 
     def lower_inline_subkernel(self, subkernel, *args, **kwargs):
         """Lower one inline PTODSL subkernel call through the shared session."""
@@ -282,7 +312,7 @@ class TraceSession:
                 wrap_like_surface_value(template, value)
                 for template, value in zip(arg_templates, entry_block.arguments)
             )
-            with self.enter_function(helper_fn), InsertionPoint(entry_block):
+            with self.enter_function(helper_fn), self.suspend_subkernel_scope(), InsertionPoint(entry_block):
                 compiler._callback(*wrapped_args)
                 func.ReturnOp([])
 
@@ -292,7 +322,8 @@ class TraceSession:
             helper_spec,
         )
         self.record_kernel_module_dependency(caller_symbol_name, helper_spec.symbol_name)
-        func.CallOp(import_fn, [unwrap_surface_value(arg) for arg in arg_templates])
+        call_args = [unwrap_surface_value(arg) for arg in arg_templates]
+        func.CallOp(import_fn, call_args)
 
     def lookup_helper(self, symbol_name: str):
         """Return a previously declared helper function, or ``None``."""
@@ -336,8 +367,9 @@ class TraceSession:
         return helper, True
 
     def kernel_module_import_symbol_name(self, caller_symbol_name: str, callee_symbol_name: str) -> str:
-        """Return the stable private-import alias symbol for one caller/callee pair."""
-        return f"__ptodsl_import__{caller_symbol_name}__{callee_symbol_name}"
+        """Return the import declaration symbol for one caller/callee pair."""
+        _ = caller_symbol_name
+        return callee_symbol_name
 
     def get_or_create_kernel_module_import_declaration(
         self,
@@ -360,7 +392,6 @@ class TraceSession:
         with InsertionPoint(caller_symbol_table):
             helper = func.FuncOp(import_symbol_name, fn_ty)
             helper.attributes["sym_visibility"] = StringAttr.get("private")
-            helper.attributes["ptodsl.import_target"] = FlatSymbolRefAttr.get(target_symbol_name)
         self._kernel_module_private_imports[key] = helper
         return helper, True
 

@@ -185,19 +185,20 @@ def process_tile_module(
     rows: pto.i32,
     cols: pto.i32,
 ):
-    vec = pto.elements_per_vreg(pto.f32)
-    initial_remained = cols
-    with pto.for_(0, rows, step=1) as r:
-        col_loop = pto.for_(0, cols, step=vec).carry(remained=initial_remained)
-        with col_loop:
-            c = col_loop.iv
-            remained = col_loop.remained
-            mask, remained = pto.make_mask(pto.f32, remained)
-            a_vec = pto.vlds(a_tile[r, c:])
-            b_vec = pto.vlds(b_tile[r, c:])
-            o_vec = pto.vadd(a_vec, b_vec, mask)
-            pto.vsts(o_vec, o_tile[r, c:], mask)
-            col_loop.update(remained=remained)
+    with pto.simd():
+        vec = pto.elements_per_vreg(pto.f32)
+        initial_remained = cols
+        with pto.for_(0, rows, step=1) as r:
+            col_loop = pto.for_(0, cols, step=vec).carry(remained=initial_remained)
+            with col_loop:
+                c = col_loop.iv
+                remained = col_loop.remained
+                mask, remained = pto.make_mask(pto.f32, remained)
+                a_vec = pto.vlds(a_tile[r, c:])
+                b_vec = pto.vlds(b_tile[r, c:])
+                o_vec = pto.vadd(a_vec, b_vec, mask)
+                pto.vsts(o_vec, o_tile[r, c:], mask)
+                col_loop.update(remained=remained)
 
 
 @pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
@@ -206,15 +207,39 @@ def explicit_vpto_kernel_module(
     o_tile: pto.Tile,
     cols: pto.i32,
 ):
-    remained = cols
-    vec = pto.elements_per_vreg(pto.f32)
-    loop = pto.for_(0, cols, step=vec).carry(remained=remained)
-    with loop:
-        c = loop.iv
-        mask, remained = pto.make_mask(pto.f32, loop.remained)
-        a_vec = pto.vlds(a_tile[0, c:])
-        pto.vsts(a_vec, o_tile[0, c:], mask)
-        loop.update(remained=remained)
+    with pto.simd():
+        remained = cols
+        vec = pto.elements_per_vreg(pto.f32)
+        loop = pto.for_(0, cols, step=vec).carry(remained=remained)
+        with loop:
+            c = loop.iv
+            mask, remained = pto.make_mask(pto.f32, loop.remained)
+            a_vec = pto.vlds(a_tile[0, c:])
+            pto.vsts(a_vec, o_tile[0, c:], mask)
+            loop.update(remained=remained)
+
+
+@pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
+def process_row_ptr_kernel_module(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    with pto.simd():
+        c0_i64 = pto.const(0, dtype=pto.i64)
+        row_offset = row * 16
+        src_row = pto.addptr(src_gm, row_offset)
+        dst_row = pto.addptr(dst_gm, row_offset)
+        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+
+        pto.get_buf(pto.Pipe.MTE2, 0)
+        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+        pto.rls_buf(pto.Pipe.MTE2, 0)
+
+        pto.get_buf(pto.Pipe.MTE3, 0)
+        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+        pto.rls_buf(pto.Pipe.MTE3, 0)
+        pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5")
@@ -251,19 +276,38 @@ def emitc_entry_calls_vpto_kernel_module_probe(
     A_ptr: pto.ptr(pto.f32, "gm"),
     O_ptr: pto.ptr(pto.f32, "gm"),
     rows: pto.i32,
-    cols: pto.i32,
 ):
-    a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
-    o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, 16], strides=[16, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, 16], strides=[16, 1])
     a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
     o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
 
     with pto.for_(0, rows, step=1) as row:
-        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, cols])
-        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, cols])
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, 16])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, 16])
         pto.tile.load(a_part, a_tile)
-        explicit_vpto_kernel_module(a_tile, o_tile, cols)
+        pto.tile.adds(a_tile, 1.0, o_tile)
         pto.tile.store(o_tile, o_part)
+        process_row_ptr_kernel_module(A_ptr, O_ptr, row)
+
+
+@pto.simd
+def emitc_vpto_kernel_module_callsite_simd_helper(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    process_row_ptr_kernel_module(src_gm, dst_gm, row)
+
+
+@pto.jit(target="a5", backend="emitc")
+def emitc_entry_calls_vpto_kernel_module_via_decorated_simd_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    with pto.for_(0, rows, step=1) as row:
+        emitc_vpto_kernel_module_callsite_simd_helper(A_ptr, O_ptr, row)
 
 
 @pto.jit(target="a5")
@@ -1883,12 +1927,12 @@ def main() -> None:
     expect('module attributes {pto.target_arch = "a5"}' in default_text, "outer container should carry only shared target-arch metadata")
     expect('pto.mode = ' not in default_text, "generated PTODSL container IR should no longer expose public pto.mode")
     expect(
-        'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         in default_text,
         "primary VPTO child module should carry PTOAS-facing backend metadata directly on the child module",
     )
     expect(
-        'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         in explicit_text,
         "explicit specialization child module should keep the same VPTO child metadata shape",
     )
@@ -2000,22 +2044,20 @@ def main() -> None:
     kernel_module_call_text = kernel_module_compiled.mlir_text()
     expect_parse_roundtrip_and_verify(kernel_module_call_text, "entry calling kernel-module specialization")
     expect(
-        "func.call @__ptodsl_import__entry_calls_kernel_module_probe__process_tile_module" in kernel_module_call_text,
-        "entry kernel should lower @pto.jit(entry=False) calls through a private import declaration",
+        "func.call @process_tile_module__ptodsl_" in kernel_module_call_text,
+        "entry kernel should lower @pto.jit(entry=False) calls through the ABI-specialized symbol",
     )
     expect(
         "func.func public @process_tile_module__ptodsl_" in kernel_module_call_text,
         "kernel-module callee definition should be materialized as a public ABI-specialized symbol",
     )
     expect(
-        "func.func private @__ptodsl_import__entry_calls_kernel_module_probe__process_tile_module__ptodsl_"
-        in kernel_module_call_text
-        and "attributes {ptodsl.import_target = @process_tile_module__ptodsl_" in kernel_module_call_text,
-        "kernel-module callsite lowering should materialize a private import declaration targeting the ABI-specialized callee",
+        kernel_module_call_text.count("func.func private @process_tile_module__ptodsl_") >= 1,
+        "kernel-module callsite lowering should materialize one private declaration for the ABI-specialized callee",
     )
     expect(
         kernel_module_call_text.count(
-            'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+            'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         )
         >= 2,
         "entry-plus-helper specialization should materialize separate child modules for caller and callee",
@@ -2033,9 +2075,7 @@ def main() -> None:
         len(kernel_module_graph.imports) == 1
         and kernel_module_graph.imports[0].caller_symbol_name == "entry_calls_kernel_module_probe"
         and kernel_module_graph.imports[0].target_symbol_name.startswith("process_tile_module__ptodsl_")
-        and kernel_module_graph.imports[0].import_symbol_name.startswith(
-            "__ptodsl_import__entry_calls_kernel_module_probe__process_tile_module__ptodsl_"
-        ),
+        and kernel_module_graph.imports[0].import_symbol_name.startswith("process_tile_module__ptodsl_"),
         "kernel-module import metadata should preserve caller/import/callee ownership including the ABI-specialized target symbol",
     )
     mixed_backend_text = emitc_entry_calls_vpto_kernel_module_probe.compile().mlir_text()
@@ -2045,9 +2085,57 @@ def main() -> None:
         "mixed-backend caller child should encode the authored EmitC backend through pto.backend",
     )
     expect(
-        'module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        'module attributes {pto.backend = "vpto", pto.target_arch = "a5"}'
         in mixed_backend_text,
         "mixed-backend callee child should preserve the callee's VPTO backend through child pto.backend metadata",
+    )
+    expect(
+        "pto.tload" in mixed_backend_text and "pto.tstore" in mixed_backend_text,
+        "mixed-backend EmitC entry should keep its top-level tile load/store path alongside the kernel-module call",
+    )
+    expect(
+        mixed_backend_text.count("pto.section.vector {") == 1,
+        "before PTOAS inferred normalization, the mixed-backend PTODSL IR should only carry the helper-authored explicit vector section",
+    )
+    expect(
+        "pto.tload" in mixed_backend_text
+        and "pto.tstore" in mixed_backend_text
+        and "func.call @process_row_ptr_kernel_module__ptodsl_" in mixed_backend_text,
+        "mixed-backend PTODSL IR should keep the naked entry tile path plus kernel-module call so PTOAS can infer the missing section later",
+    )
+    expect(
+        "func.func public @process_row_ptr_kernel_module__ptodsl_(" not in mixed_backend_text,
+        "ABI-specialized kernel-module public symbols should carry a stable specialization suffix",
+    )
+    expect(
+        "func.func public @process_row_ptr_kernel_module__ptodsl_" in mixed_backend_text
+        and "func.call @process_row_ptr_kernel_module__ptodsl_"
+        in mixed_backend_text
+        and ": (!pto.ptr<f32, gm>, !pto.ptr<f32, gm>, index) -> ()" in mixed_backend_text
+        and "func.func private @process_row_ptr_kernel_module__ptodsl_"
+        in mixed_backend_text,
+        "mixed-backend kernel-module calls should currently lower through the C-ABI-compatible ptr/scalar subset",
+    )
+    expect(
+        mixed_backend_text.count("func.func private @process_row_ptr_kernel_module__ptodsl_") >= 1
+        and "!pto.tile_buf" not in mixed_backend_text.split(
+            "func.func private @process_row_ptr_kernel_module__ptodsl_",
+            1,
+        )[1].split("\n", 1)[0],
+        "mixed-backend kernel-module calls should currently lower through the C-ABI-compatible ptr/scalar subset",
+    )
+    expect(
+        "pto.mte_gm_ub" in mixed_backend_text and "pto.mte_ub_gm" in mixed_backend_text,
+        "mixed-backend ptr/scalar kernel modules should be able to keep explicit VPTO data-movement ops in the callee child",
+    )
+    decorated_mixed_backend_text = emitc_entry_calls_vpto_kernel_module_via_decorated_simd_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        decorated_mixed_backend_text,
+        "emitc entry calling vpto kernel-module through @pto.simd specialization",
+    )
+    expect(
+        "pto.section.vector {" in decorated_mixed_backend_text,
+        "@pto.simd helper callsites should also lower through one vector section",
     )
     multi_abi_compiled = entry_calls_kernel_module_multiple_abi_probe.compile()
     multi_abi_text = multi_abi_compiled.mlir_text()
@@ -2060,7 +2148,7 @@ def main() -> None:
         "one kernel-module symbol called through two concrete Tile ABIs should materialize two specialized public callee definitions",
     )
     expect(
-        multi_abi_text.count("ptodsl.import_target = @process_tile_module__ptodsl_") == 2,
+        multi_abi_text.count("func.func private @process_tile_module__ptodsl_") == 2,
         "one kernel-module symbol called through two concrete Tile ABIs should materialize two specialized private imports",
     )
     multi_abi_graph = multi_abi_compiled.kernel_module_graph
@@ -2360,7 +2448,8 @@ def main() -> None:
     )
 
     SUBKERNEL_OBSERVATIONS.clear()
-    shared_subkernel_lowering_probe.compile(TRACE_TOKEN=1)
+    shared_subkernel_text = shared_subkernel_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(shared_subkernel_text, "shared subkernel lowering specialization")
     expect(
         SUBKERNEL_OBSERVATIONS == [
             ("cube", "top_level_cube_probe", 1),
@@ -2368,6 +2457,10 @@ def main() -> None:
             ("simd", "nested_simd_probe", 1),
         ],
         f"unexpected shared subkernel lowering observations: {SUBKERNEL_OBSERVATIONS!r}",
+    )
+    expect(
+        "pto.section.cube {" in shared_subkernel_text and "pto.section.vector {" in shared_subkernel_text,
+        "@pto.cube/@pto.simd decorated helpers should materialize PTO section regions in the caller body",
     )
 
     INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
@@ -2388,6 +2481,11 @@ def main() -> None:
     expect(
         inline_subkernel_scope_text.count("pto.barrier <PIPE_ALL>") >= 2,
         "inline pto.simd()/pto.cube() bodies should lower their authored operations in place",
+    )
+    expect(
+        "pto.section.vector {" in inline_subkernel_scope_text
+        and "pto.section.cube {" in inline_subkernel_scope_text,
+        "inline pto.simd()/pto.cube() scopes should materialize PTO section regions in place",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()

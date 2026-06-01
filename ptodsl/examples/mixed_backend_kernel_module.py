@@ -35,8 +35,9 @@ import numpy as np
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
     for candidate in here.parents:
-        if (candidate / "ptodsl" / "__init__.py").exists():
-            sys.path.insert(0, str(candidate))
+        package_root = candidate / "ptodsl"
+        if (package_root / "ptodsl" / "__init__.py").exists():
+            sys.path.insert(0, str(package_root))
             break
     else:
         raise RuntimeError(
@@ -54,25 +55,29 @@ _HELPER_SCALE = 2.0
 
 @pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
 def scale_row_kernel_module(
-    row_gm: pto.ptr(pto.f32, "gm"),
+    base_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
 ):
-    c0_i64 = pto.const(0, dtype=pto.i64)
-    ub_row = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
-    vec_offset = pto.const(0)
-    full_mask = pto.make_mask(pto.f32, pto.const(_ROW_ELEMS, dtype=pto.i32))
+    with pto.simd():
+        c0_i64 = pto.const(0, dtype=pto.i64)
+        row_offset = row * _ROW_ELEMS
+        row_gm = pto.addptr(base_gm, row_offset)
+        ub_row = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+        vec_offset = pto.const(0)
 
-    pto.get_buf(pto.Pipe.MTE2, 0)
-    pto.mte_gm_ub(row_gm, ub_row, 0, _ROW_BYTES, nburst=(1, _ROW_BYTES, _ROW_BYTES))
-    pto.rls_buf(pto.Pipe.MTE2, 0)
+        pto.get_buf(pto.Pipe.MTE2, 0)
+        pto.mte_gm_ub(row_gm, ub_row, 0, _ROW_BYTES, nburst=(1, _ROW_BYTES, _ROW_BYTES))
+        pto.rls_buf(pto.Pipe.MTE2, 0)
 
-    row_vec = pto.vlds(ub_row, vec_offset)
-    row_vec = pto.vmuls(row_vec, _HELPER_SCALE, full_mask)
-    pto.vsts(row_vec, ub_row, vec_offset, full_mask)
+        full_mask = pto.make_mask(pto.f32, pto.const(_ROW_ELEMS, dtype=pto.i32))
+        row_vec = pto.vlds(ub_row, vec_offset)
+        row_vec = pto.vmuls(row_vec, _HELPER_SCALE, full_mask)
+        pto.vsts(row_vec, ub_row, vec_offset, full_mask)
 
-    pto.get_buf(pto.Pipe.MTE3, 0)
-    pto.mte_ub_gm(ub_row, row_gm, _ROW_BYTES, nburst=(1, _ROW_BYTES, _ROW_BYTES))
-    pto.rls_buf(pto.Pipe.MTE3, 0)
-    pto.pipe_barrier(pto.Pipe.ALL)
+        pto.get_buf(pto.Pipe.MTE3, 0)
+        pto.mte_ub_gm(ub_row, row_gm, _ROW_BYTES, nburst=(1, _ROW_BYTES, _ROW_BYTES))
+        pto.rls_buf(pto.Pipe.MTE3, 0)
+        pto.pipe_barrier(pto.Pipe.ALL)
 
 
 @pto.jit(target="a5", backend="emitc")
@@ -92,7 +97,7 @@ def emitc_entry_calls_vpto_module(
         pto.tile.load(x_part, x_row_tile)
         pto.tile.adds(x_row_tile, _ENTRY_BIAS, o_row_tile)
         pto.tile.store(o_row_tile, o_part)
-        scale_row_kernel_module(o_part.as_ptr())
+        scale_row_kernel_module(o_ptr, row)
 
 
 def emit_mlir() -> str:
