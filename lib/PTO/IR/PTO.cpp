@@ -243,6 +243,62 @@ static int64_t getPTOTypeRank(Type type) {
   return -1;
 }
 
+func::FuncOp mlir::pto::lookupPeerFuncAcrossContainer(Operation *op,
+                                                      FlatSymbolRefAttr peerAttr) {
+  if (!op || !peerAttr)
+    return {};
+
+  if (auto nearest =
+          SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(op, peerAttr)) {
+    return nearest;
+  }
+
+  auto currentFunc = op->getParentOfType<func::FuncOp>();
+  if (!currentFunc)
+    return {};
+
+  auto currentChildModule = currentFunc->getParentOfType<ModuleOp>();
+  if (!currentChildModule)
+    return {};
+
+  Operation *maybeOuter = currentChildModule->getParentOp();
+  auto outerModule = dyn_cast_or_null<ModuleOp>(maybeOuter);
+  if (!outerModule)
+    return {};
+
+  StringRef target = peerAttr.getValue();
+  SmallVector<func::FuncOp> fallbackMatches;
+  outerModule.walk([&](func::FuncOp funcOp) {
+    auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
+    if (visibility && visibility.getValue() == "private")
+      return WalkResult::advance();
+
+    StringRef symbolName = funcOp.getSymName();
+    if (symbolName == target) {
+      fallbackMatches.clear();
+      fallbackMatches.push_back(funcOp);
+      return WalkResult::interrupt();
+    }
+    if (symbolName.starts_with(target) && symbolName.contains("__ptodsl_"))
+      fallbackMatches.push_back(funcOp);
+    return WalkResult::advance();
+  });
+
+  if (fallbackMatches.size() == 1)
+    return fallbackMatches.front();
+  if (fallbackMatches.empty()) {
+    for (Operation &childOp : outerModule.getBodyRegion().front().getOperations()) {
+      auto childModule = dyn_cast<ModuleOp>(childOp);
+      if (!childModule || childModule == currentChildModule)
+        continue;
+      if (auto found = dyn_cast_or_null<func::FuncOp>(
+              SymbolTable::lookupSymbolIn(childModule, target)))
+        return found;
+    }
+  }
+  return {};
+}
+
 static bool isGmAddressSpaceAttr(Attribute memorySpace) {
   if (!memorySpace)
     return true;
@@ -12683,8 +12739,8 @@ void AivInitializePipeOp::print(OpAsmPrinter &p) {
   printFrontendInitializePipeOp(*this, p);
 }
 
-static ReserveBufferOp findReserveBufferByName(func::FuncOp funcOp,
-                                               StringRef name) {
+ReserveBufferOp mlir::pto::findReserveBufferByName(func::FuncOp funcOp,
+                                                   StringRef name) {
   ReserveBufferOp found;
   funcOp.walk([&](ReserveBufferOp reserveOp) {
     if (reserveOp.getName() != name)
@@ -12729,8 +12785,7 @@ LogicalResult ImportReservedBufferOp::verify() {
   if (!funcOp)
     return emitOpError("must be nested under a func.func");
 
-  auto peerFunc = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      getOperation(), getPeerFuncAttr());
+  auto peerFunc = lookupPeerFuncAcrossContainer(getOperation(), getPeerFuncAttr());
   if (!peerFunc)
     return emitOpError("expects 'peer_func' to reference an existing func.func");
 
