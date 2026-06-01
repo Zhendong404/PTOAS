@@ -15,8 +15,14 @@ module {
     %slot_desc = pto.make_tensor_view %fifo_mem,
       shape = [%c4, %c128, %c128], strides = [%c16384, %c128, %c1]
       : !pto.tensor_view<4x128x128xf32>
+    %c2v_local = pto.import_reserved_buffer {
+      name = "c2v_fifo",
+      peer_func = @vector_kernel
+    } -> i32
     pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 262144}
-      (gm_slot_tensor = %slot_desc : !pto.tensor_view<4x128x128xf32>)
+      (gm_slot_buffer = %fifo_mem : !pto.ptr<f32>,
+       gm_slot_tensor = %slot_desc : !pto.tensor_view<4x128x128xf32>,
+       c2v_consumer_buf = %c2v_local : i32)
 
     %push_global = pto.talloc_to_aiv {id = 0, split = 0}
       -> !pto.tensor_view<4x128x128xf32>
@@ -52,8 +58,16 @@ module {
     %slot_desc = pto.make_tensor_view %fifo_mem,
       shape = [%c4, %c128, %c128], strides = [%c16384, %c128, %c1]
       : !pto.tensor_view<4x128x128xf32>
+    %c2v_local = pto.reserve_buffer {
+      name = "c2v_fifo",
+      size = 4096,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
     pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 262144}
-      (gm_slot_tensor = %slot_desc : !pto.tensor_view<4x128x128xf32>)
+      (gm_slot_buffer = %fifo_mem : !pto.ptr<f32>,
+       gm_slot_tensor = %slot_desc : !pto.tensor_view<4x128x128xf32>,
+       c2v_consumer_buf = %c2v_local : i32)
 
     %out_desc = pto.make_tensor_view %out,
       shape = [%c4, %c128, %c128], strides = [%c128, %c512, %c1]

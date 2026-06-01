@@ -32,14 +32,14 @@ def _infer_global_slot_size(gm_slot_tensor) -> int:
     tensor_type = value.type
     if not _pto.TensorViewType.isinstance(tensor_type):
         raise TypeError(
-            "pipe.c2v_global/v2c_global expects gm_slot_tensor to be !pto.tensor_view"
+            "pipe.c2v/v2c expects gm_slot_tensor to be !pto.tensor_view"
         )
 
     tensor_view_type = _pto.TensorViewType(tensor_type)
     shape = tuple(surface_shape) if surface_shape is not None else tuple(tensor_view_type.shape)
     if any(dim < 0 for dim in shape):
         raise ValueError(
-            "pipe.c2v_global/v2c_global cannot infer slot_size from a dynamic gm_slot_tensor shape"
+            "pipe.c2v/v2c cannot infer slot_size from a dynamic gm_slot_tensor shape"
         )
     count = 1
     for dim in shape:
@@ -124,11 +124,10 @@ class _PipeSurface:
     @property
     def c2v(self):
         if self._descriptor.direction != "both":
-            raise TypeError("c2v endpoint is only available on bidirectional local pipes")
+            raise TypeError("c2v endpoint is only available on bidirectional pipes")
         return _PipeSurface(
             replace(
                 self._descriptor,
-                kind="c2v_local",
                 direction="c2v",
                 v2c_consumer_buf=None,
             )
@@ -137,11 +136,10 @@ class _PipeSurface:
     @property
     def v2c(self):
         if self._descriptor.direction != "both":
-            raise TypeError("v2c endpoint is only available on bidirectional local pipes")
+            raise TypeError("v2c endpoint is only available on bidirectional pipes")
         return _PipeSurface(
             replace(
                 self._descriptor,
-                kind="v2c_local",
                 direction="v2c",
                 c2v_consumer_buf=None,
             )
@@ -154,7 +152,7 @@ class _PipeSurface:
         self._emit_init("simd")
 
     def alloc(self, split=0):
-        if self._descriptor.kind != "global":
+        if self._descriptor.gm_slot_tensor is None:
             raise TypeError("alloc() is only available on global-entry pipes")
         split = _as_int(split, context="pipe.alloc(..., split=...)")
         entry_type = self.entry_type
@@ -202,7 +200,7 @@ class _PipeSurface:
         if self._descriptor.direction == "both":
             raise TypeError("bidirectional local pipes do not have an unambiguous free direction")
         split = _as_int(split, context="pipe.free(..., split=...)")
-        if self._descriptor.kind == "global" and entry is None:
+        if self._descriptor.gm_slot_tensor is not None and entry is None:
             raise TypeError("free() requires an entry value for global-entry pipes")
         entry_value = _normalize_entry_value(entry)
         if self._descriptor.direction == "c2v":
@@ -238,29 +236,13 @@ class _PipeSurface:
             "id": desc.id,
         }
 
-        if desc.kind == "global":
-            init_kwargs["gm_slot_tensor"] = desc.gm_slot_tensor
-            init_kwargs["nosplit"] = desc.nosplit
-        elif desc.kind == "c2v_local":
-            init_kwargs["local_slot_num"] = desc.local_slot_num
-            init_kwargs["nosplit"] = desc.nosplit
-            init_kwargs["gm_slot_buffer"] = desc.gm_slot_buffer
+        init_kwargs["local_slot_num"] = desc.local_slot_num
+        init_kwargs["nosplit"] = desc.nosplit
+        init_kwargs["gm_slot_buffer"] = desc.gm_slot_buffer
+        init_kwargs["gm_slot_tensor"] = desc.gm_slot_tensor
+        if desc.direction in ("c2v", "both"):
             init_kwargs["c2v_consumer_buf"] = desc.c2v_consumer_buf
-        elif desc.kind == "v2c_local":
-            init_kwargs["local_slot_num"] = desc.local_slot_num
-            init_kwargs["nosplit"] = desc.nosplit
-            init_kwargs["gm_slot_buffer"] = desc.gm_slot_buffer
-            init_kwargs["v2c_consumer_buf"] = desc.v2c_consumer_buf
-        else:
-            init_kwargs["local_slot_num"] = desc.local_slot_num
-            init_kwargs["nosplit"] = desc.nosplit
-            init_kwargs["gm_slot_buffer"] = desc.gm_slot_buffer
-
-        if desc.kind == "bidirectional_local":
-            init_kwargs["local_slot_num"] = desc.local_slot_num
-            init_kwargs["nosplit"] = desc.nosplit
-            init_kwargs["gm_slot_buffer"] = desc.gm_slot_buffer
-            init_kwargs["c2v_consumer_buf"] = desc.c2v_consumer_buf
+        if desc.direction in ("v2c", "both"):
             init_kwargs["v2c_consumer_buf"] = desc.v2c_consumer_buf
 
         init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}
@@ -281,85 +263,92 @@ class _PipeSurface:
 
 
 class _PipeNamespace:
-    def c2v_global(self, gm_slot_tensor, *, id=None, slot_size=None, nosplit=None):
-        id = _require_pipe_id(id, context="pipe.c2v_global(...)")
-        if slot_size is None:
-            slot_size = _infer_global_slot_size(gm_slot_tensor)
-        descriptor = _PipeDescriptor(
-            kind="global",
-            direction="c2v",
-            id=int(id),
-            slot_size=int(slot_size),
-            entry_type=unwrap_surface_value(gm_slot_tensor).type,
-            gm_slot_tensor=_normalize_entry_value(gm_slot_tensor),
-            nosplit=nosplit,
-        )
-        return _PipeSurface(descriptor)
-
-    def v2c_global(self, gm_slot_tensor, *, id=None, slot_size=None, nosplit=None):
-        id = _require_pipe_id(id, context="pipe.v2c_global(...)")
-        if slot_size is None:
-            slot_size = _infer_global_slot_size(gm_slot_tensor)
-        descriptor = _PipeDescriptor(
-            kind="global",
-            direction="v2c",
-            id=int(id),
-            slot_size=int(slot_size),
-            entry_type=unwrap_surface_value(gm_slot_tensor).type,
-            gm_slot_tensor=_normalize_entry_value(gm_slot_tensor),
-            nosplit=nosplit,
-        )
-        return _PipeSurface(descriptor)
-
-    def c2v_local(
+    def _directional_pipe(
         self,
         *,
-        slot_size,
-        consumer_buf,
+        direction,
+        slot_size=None,
+        consumer_buf=None,
         gm_slot_buffer=None,
+        gm_slot_tensor=None,
         id=None,
         local_slot_num=None,
         nosplit=None,
     ):
-        id = _require_pipe_id(id, context="pipe.c2v_local(...)")
+        id = _require_pipe_id(id, context=f"pipe.{direction}(...)")
+        if consumer_buf is None:
+            raise TypeError(f"pipe.{direction}(...) requires consumer_buf")
+        entry_type = None
+        if slot_size is None:
+            if gm_slot_tensor is None:
+                raise TypeError(f"pipe.{direction}(...) requires slot_size when gm_slot_tensor is not provided")
+            slot_size = _infer_global_slot_size(gm_slot_tensor)
+        if gm_slot_tensor is not None:
+            if gm_slot_buffer is None:
+                raise TypeError(f"pipe.{direction}(...) requires gm_slot_buffer when gm_slot_tensor is provided")
+            if local_slot_num is not None:
+                raise TypeError(f"pipe.{direction}(...) does not accept local_slot_num when gm_slot_tensor is provided")
+            entry_type = unwrap_surface_value(gm_slot_tensor).type
         descriptor = _PipeDescriptor(
-            kind="c2v_local",
-            direction="c2v",
+            kind="global" if gm_slot_tensor is not None else "local",
+            direction=direction,
             id=int(id),
             slot_size=int(slot_size),
-            entry_type=None,
+            entry_type=entry_type,
+            gm_slot_tensor=_normalize_entry_value(gm_slot_tensor),
             gm_slot_buffer=_normalize_entry_value(gm_slot_buffer),
-            c2v_consumer_buf=_normalize_entry_value(consumer_buf),
+            c2v_consumer_buf=_normalize_entry_value(consumer_buf) if direction == "c2v" else None,
+            v2c_consumer_buf=_normalize_entry_value(consumer_buf) if direction == "v2c" else None,
             local_slot_num=None if local_slot_num is None else int(local_slot_num),
             nosplit=nosplit,
         )
         return _PipeSurface(descriptor)
 
-    def v2c_local(
+    def c2v(
         self,
         *,
-        slot_size,
-        consumer_buf,
+        slot_size=None,
+        consumer_buf=None,
         gm_slot_buffer=None,
+        gm_slot_tensor=None,
         id=None,
         local_slot_num=None,
         nosplit=None,
     ):
-        id = _require_pipe_id(id, context="pipe.v2c_local(...)")
-        descriptor = _PipeDescriptor(
-            kind="v2c_local",
-            direction="v2c",
-            id=int(id),
-            slot_size=int(slot_size),
-            entry_type=None,
-            gm_slot_buffer=_normalize_entry_value(gm_slot_buffer),
-            v2c_consumer_buf=_normalize_entry_value(consumer_buf),
-            local_slot_num=None if local_slot_num is None else int(local_slot_num),
+        return self._directional_pipe(
+            direction="c2v",
+            slot_size=slot_size,
+            consumer_buf=consumer_buf,
+            gm_slot_buffer=gm_slot_buffer,
+            gm_slot_tensor=gm_slot_tensor,
+            id=id,
+            local_slot_num=local_slot_num,
             nosplit=nosplit,
         )
-        return _PipeSurface(descriptor)
 
-    def bidirectional_local(
+    def v2c(
+        self,
+        *,
+        slot_size=None,
+        consumer_buf=None,
+        gm_slot_buffer=None,
+        gm_slot_tensor=None,
+        id=None,
+        local_slot_num=None,
+        nosplit=None,
+    ):
+        return self._directional_pipe(
+            direction="v2c",
+            slot_size=slot_size,
+            consumer_buf=consumer_buf,
+            gm_slot_buffer=gm_slot_buffer,
+            gm_slot_tensor=gm_slot_tensor,
+            id=id,
+            local_slot_num=local_slot_num,
+            nosplit=nosplit,
+        )
+
+    def bidirectional(
         self,
         *,
         slot_size,
@@ -370,9 +359,9 @@ class _PipeNamespace:
         local_slot_num=None,
         nosplit=None,
     ):
-        id = _require_pipe_id(id, context="pipe.bidirectional_local(...)")
+        id = _require_pipe_id(id, context="pipe.bidirectional(...)")
         descriptor = _PipeDescriptor(
-            kind="bidirectional_local",
+            kind="local",
             direction="both",
             id=int(id),
             slot_size=int(slot_size),

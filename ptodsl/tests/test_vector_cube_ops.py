@@ -482,12 +482,18 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
     def test_pipe_namespace_and_buffer_helpers_are_exposed(self):
         names = [
-            "c2v_global", "v2c_global",
-            "c2v_local", "v2c_local", "bidirectional_local",
+            "c2v", "v2c", "bidirectional",
         ]
         for name in names:
             with self.subTest(name=name):
                 self.assertTrue(hasattr(pto.pipe, name), name)
+        old_names = [
+            "c2v_global", "v2c_global",
+            "c2v_local", "v2c_local", "bidirectional_local",
+        ]
+        for name in old_names:
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(pto.pipe, name), name)
 
         for name in ["reserve_buffer", "import_reserved_buffer"]:
             with self.subTest(name=name):
@@ -502,11 +508,18 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         with make_context():
             gm_slot_type = _pipe_namespace._pto.TensorViewType.get([16, 16], F32Type.get())
         gm_slot = SimpleNamespace(type=gm_slot_type)
+        gm_slot_buffer = object()
+        consumer_buf = object()
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
-            pipe = pto.pipe.c2v_global(gm_slot, id=7)
+            pipe = pto.pipe.c2v(
+                gm_slot_tensor=gm_slot,
+                gm_slot_buffer=gm_slot_buffer,
+                consumer_buf=consumer_buf,
+                id=7,
+            )
 
         self.assertEqual(pipe.id, 7)
         self.assertEqual(pipe.slot_size, 1024)
@@ -527,8 +540,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             pop_result = pipe.pop()
             pipe.free(pop_result, split=2)
 
-        aic_init.assert_called_once_with(1, 1024, id=7, gm_slot_tensor=gm_slot)
-        aiv_init.assert_called_once_with(1, 1024, id=7, gm_slot_tensor=gm_slot)
+        expected_init_kwargs = {
+            "id": 7,
+            "gm_slot_buffer": gm_slot_buffer,
+            "gm_slot_tensor": gm_slot,
+            "c2v_consumer_buf": consumer_buf,
+        }
+        aic_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
+        aiv_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
         alloc_op.assert_called_once_with(gm_slot_type, 0, id=7)
         push_op.assert_called_once_with(alloc_entry, 1, id=7)
         pop_op.assert_called_once_with(gm_slot_type, 0, id=7)
@@ -543,7 +562,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
-            c2v = pto.pipe.c2v_local(
+            c2v = pto.pipe.c2v(
                 slot_size=1024,
                 consumer_buf=c2v_buf,
                 gm_slot_buffer=gm_slot_buffer,
@@ -551,14 +570,14 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 local_slot_num=2,
                 nosplit=True,
             )
-            v2c = pto.pipe.v2c_local(
+            v2c = pto.pipe.v2c(
                 slot_size=2048,
                 consumer_buf=v2c_buf,
                 gm_slot_buffer=gm_slot_buffer,
                 id=4,
                 local_slot_num=5,
             )
-            bidi = pto.pipe.bidirectional_local(
+            bidi = pto.pipe.bidirectional(
                 slot_size=4096,
                 c2v_consumer_buf=c2v_buf,
                 v2c_consumer_buf=v2c_buf,
@@ -619,11 +638,11 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
             cases = [
-                lambda: pto.pipe.c2v_global(gm_slot),
-                lambda: pto.pipe.v2c_global(gm_slot),
-                lambda: pto.pipe.c2v_local(slot_size=1024, consumer_buf=buf),
-                lambda: pto.pipe.v2c_local(slot_size=1024, consumer_buf=buf),
-                lambda: pto.pipe.bidirectional_local(
+                lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot),
+                lambda: pto.pipe.v2c(gm_slot_tensor=gm_slot),
+                lambda: pto.pipe.c2v(slot_size=1024, consumer_buf=buf),
+                lambda: pto.pipe.v2c(slot_size=1024, consumer_buf=buf),
+                lambda: pto.pipe.bidirectional(
                     slot_size=1024,
                     c2v_consumer_buf=buf,
                     v2c_consumer_buf=buf,
@@ -647,8 +666,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
-            c2v = pto.pipe.c2v_local(slot_size=1024, consumer_buf=c2v_buf, id=6)
-            v2c = pto.pipe.v2c_local(slot_size=2048, consumer_buf=v2c_buf, id=7)
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=6)
+            v2c = pto.pipe.v2c(slot_size=2048, consumer_buf=v2c_buf, id=7)
 
         with patch.object(_pipe_namespace._pto, "TPushToAivOp") as c2v_push, \
              patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=c2v_result)) as c2v_pop, \
@@ -685,7 +704,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
-            c2v = pto.pipe.c2v_local(slot_size=1024, consumer_buf=c2v_buf, id=8)
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=8)
 
         with patch.object(_pipe_namespace._pto, "TPopFromAicOp", return_value=SimpleNamespace(result=result)) as pop_op, \
              patch.object(_pipe_namespace, "_coerce_index", side_effect=lambda value, *, context: value), \
@@ -707,8 +726,8 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
-            c2v = pto.pipe.c2v_local(slot_size=1024, consumer_buf=c2v_buf, id=9)
-            bidi = pto.pipe.bidirectional_local(
+            c2v = pto.pipe.c2v(slot_size=1024, consumer_buf=c2v_buf, id=9)
+            bidi = pto.pipe.bidirectional(
                 slot_size=1024,
                 c2v_consumer_buf=c2v_buf,
                 v2c_consumer_buf=v2c_buf,
@@ -736,7 +755,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
-            bidi = pto.pipe.bidirectional_local(
+            bidi = pto.pipe.bidirectional(
                 slot_size=1024,
                 c2v_consumer_buf=c2v_buf,
                 v2c_consumer_buf=v2c_buf,

@@ -12263,9 +12263,17 @@ static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
 static LogicalResult verifyFrontendKernelKind(Operation *op,
                                               FunctionKernelKind expected,
                                               StringRef kernelName) {
-  if ((expected == FunctionKernelKind::Cube && isInsideSectionCube(op)) ||
-      (expected == FunctionKernelKind::Vector && isInsideSectionVector(op))) {
-    return success();
+  if (isInsideSectionCube(op)) {
+    if (expected == FunctionKernelKind::Cube)
+      return success();
+    return op->emitOpError("must be inside a ")
+           << kernelName << " kernel function or section";
+  }
+  if (isInsideSectionVector(op)) {
+    if (expected == FunctionKernelKind::Vector)
+      return success();
+    return op->emitOpError("must be inside a ")
+           << kernelName << " kernel function or section";
   }
 
   std::optional<FunctionKernelKind> kernelKind =
@@ -12276,7 +12284,7 @@ static LogicalResult verifyFrontendKernelKind(Operation *op,
     return success();
   if (*kernelKind != expected) {
     return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function";
+           << kernelName << " kernel function or section";
   }
   return success();
 }
@@ -12592,20 +12600,31 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   PTOArch arch = getTargetArch(op.getOperation());
 
   bool hasGlobalSlotTensor = static_cast<bool>(op.getGmSlotTensor());
+  bool hasGmSlotBuffer = static_cast<bool>(op.getGmSlotBuffer());
   bool hasC2vConsumerBuf = static_cast<bool>(op.getC2vConsumerBuf());
   bool hasV2cConsumerBuf = static_cast<bool>(op.getV2cConsumerBuf());
   if (hasGlobalSlotTensor) {
-    if (op.getGmSlotBuffer() || hasC2vConsumerBuf || hasV2cConsumerBuf) {
-      return op.emitOpError(
-          "globaltensor pipe init expects only 'gm_slot_tensor' and no "
-          "'gm_slot_buffer', 'c2v_consumer_buf', or 'v2c_consumer_buf'");
-    }
     if (op.getLocalSlotNumAttr())
       return op.emitOpError(
           "globaltensor pipe init does not use 'local_slot_num'");
     if (arch == PTOArch::A5) {
       return op.emitOpError(
           "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
+    }
+    if (!hasGmSlotBuffer)
+      return op.emitOpError(
+          "globaltensor pipe init expects 'gm_slot_buffer' for a2/a3 l2g2l pipes");
+    if (dirMask == 1 && !hasC2vConsumerBuf) {
+      return op.emitOpError(
+          "expects 'c2v_consumer_buf' when dir_mask is 1");
+    }
+    if (dirMask == 2 && !hasV2cConsumerBuf) {
+      return op.emitOpError(
+          "expects 'v2c_consumer_buf' when dir_mask is 2");
+    }
+    if (dirMask == 3 && (!hasC2vConsumerBuf || !hasV2cConsumerBuf)) {
+      return op.emitOpError(
+          "expects both 'c2v_consumer_buf' and 'v2c_consumer_buf' when dir_mask is 3");
     }
     return verifyFrontendGlobalSlotTensor(
         op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
@@ -12979,7 +12998,11 @@ static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
            << "expects !pto.tensor_view pipe entry to use a pipe produced by "
               "pto.initialize_l2g2l_pipe";
   }
-  if (initOp.getLocalAddr()) {
+  Type slotTy = initOp.getGmAddr().getType();
+  if (auto entryTypeAttr =
+          initOp->getAttrOfType<TypeAttr>("__pto.globaltensor_entry_type")) {
+    slotTy = entryTypeAttr.getValue();
+  } else if (initOp.getLocalAddr()) {
     return op->emitOpError()
            << "expects !pto.tensor_view pipe entry to use global-only "
               "pto.initialize_l2g2l_pipe without local_addr";
@@ -12987,8 +13010,7 @@ static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
 
   Type slotElementType;
   ArrayRef<int64_t> slotShape;
-  if (!getTensorLikeElementAndShape(initOp.getGmAddr().getType(),
-                                    slotElementType, slotShape)) {
+  if (!getTensorLikeElementAndShape(slotTy, slotElementType, slotShape)) {
     return op->emitOpError()
            << "expects !pto.tensor_view pipe entry to use "
               "pto.initialize_l2g2l_pipe gm_addr with tensor/memref slot type";

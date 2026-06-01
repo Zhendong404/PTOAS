@@ -1072,62 +1072,46 @@ transactions.
 
 ### 7.6.1 Pipe Constructors
 
-#### `pto.pipe.c2v_global(gm_slot_tensor, *, id, slot_size=None, nosplit=None)`
+#### `pto.pipe.c2v(*, consumer_buf, id, slot_size=None, gm_slot_buffer=None, gm_slot_tensor=None, local_slot_num=None, nosplit=None)`
 
-Creates a logical Cube-to-Vector pipe whose entries are GlobalTensor-like GM
-FIFO slots.
+Creates a logical Cube-to-Vector pipe.
 
-Global-entry pipes model the A2/A3 L2G2L path. On A5, use a local FIFO pipe
-with `reserve_buffer` / `import_reserved_buffer` and tile-entry transactions.
+The constructor does not expose separate global/local names. A local tile-entry
+pipe is selected by passing `slot_size` and `consumer_buf`. An A2/A3
+global-entry L2G2L pipe is selected by additionally passing `gm_slot_buffer`
+and `gm_slot_tensor`; `gm_slot_tensor` describes the entry type/shape and
+`gm_slot_buffer` is the GM FIFO storage pointer. On A5, use the local tile-entry
+form and omit `gm_slot_tensor`.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `gm_slot_tensor` | `TensorView` | Required. Describes one FIFO slot entry. |
+| `consumer_buf` | varies | Required. Consumer-owned FIFO buffer. The consumer side reserves it with `pto.reserve_buffer`; the producer side imports it with `pto.import_reserved_buffer`. |
 | `id` | `int` | Required. Stable pipe identifier shared by the producer and consumer sides. |
-| `slot_size` | `int` | Optional. Defaults to the byte size of one slot of `gm_slot_tensor`. |
+| `slot_size` | `int` | Required for local tile-entry pipes. Optional for global-entry pipes; defaults to the byte size of one slot of `gm_slot_tensor`. |
+| `gm_slot_buffer` | `PtrType` | Required for A2/A3 global-entry pipes. Optional GM FIFO storage pointer for L2G2L local lowering. |
+| `gm_slot_tensor` | `TensorView` | Optional. When provided, the pipe uses GlobalTensor-like entries and `alloc/pop` infer the entry descriptor type. |
+| `local_slot_num` | `int` | Optional. Local FIFO slot count override for local tile-entry pipes. |
 | `nosplit` | `bool` | Optional. Override-only metadata; not required in the common path. |
 
 The returned pipe object exposes C2V-producer methods (`init_cube`, `alloc`,
 `push`) on the Cube side and C2V-consumer methods (`init_simd`, `pop`, `free`)
 on the Vector side.
 
-#### `pto.pipe.v2c_global(gm_slot_tensor, *, id, slot_size=None, nosplit=None)`
+#### `pto.pipe.v2c(*, consumer_buf, id, slot_size=None, gm_slot_buffer=None, gm_slot_tensor=None, local_slot_num=None, nosplit=None)`
 
-Creates a logical Vector-to-Cube pipe. Same contract as `c2v_global`, but
+Creates a logical Vector-to-Cube pipe. Same contract as `c2v`, but
 reversed direction: the Vector side is the producer and the Cube side is the
 consumer.
 
-#### `pto.pipe.c2v_local(*, slot_size, consumer_buf, id, gm_slot_buffer=None, local_slot_num=None, nosplit=None)`
+#### `pto.pipe.bidirectional(*, slot_size, c2v_consumer_buf, v2c_consumer_buf, id, gm_slot_buffer=None, local_slot_num=None, nosplit=None)`
 
-Creates a logical local-FIFO C2V pipe.
+Creates a bidirectional local tile-entry pipe. Accepts both `c2v_consumer_buf`
+and `v2c_consumer_buf` since the pipe carries traffic in both directions. Use
+the root pipe for `init_cube()` / `init_simd()`, and use directional endpoints
+for transactions:
 
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `slot_size` | `int` | Required. Logical slot size in bytes. |
-| `consumer_buf` | varies | Required. Consumer-owned FIFO buffer. The consumer side reserves it with `pto.reserve_buffer`; the producer side imports it with `pto.import_reserved_buffer`. |
-| `gm_slot_buffer` | `PtrType` | Optional. GM slot buffer pointer (A2/A3 path). |
-| `id` | `int` | Required. Stable pipe identifier shared by the producer and consumer sides. |
-| `local_slot_num` | `int` | Optional. Local FIFO slot count override. |
-| `nosplit` | `bool` | Optional. No-split pipe mode. |
-
-`consumer_buf` is singular because the direction is already fixed by the
-`c2v_local` constructor. The high-level surface does not require users to spell
-`c2v_consumer_buf` versus `v2c_consumer_buf`.
-
-#### `pto.pipe.v2c_local(*, slot_size, consumer_buf, id, gm_slot_buffer=None, local_slot_num=None, nosplit=None)`
-
-Same contract as `c2v_local`, but reversed direction.
-
-#### `pto.pipe.bidirectional_local(*, slot_size, c2v_consumer_buf, v2c_consumer_buf, id, gm_slot_buffer=None, local_slot_num=None, nosplit=None)`
-
-Creates a bidirectional local pipe. Accepts both `c2v_consumer_buf` and
-`v2c_consumer_buf` since the pipe carries traffic in both directions. Use the
-root pipe for `init_cube()` / `init_simd()`, and use directional endpoints for
-transactions:
 
 ```python
 # Cube side
@@ -1178,6 +1162,9 @@ Rules:
 
 - `split` is a compile-time integer: `0` = no split, `1` = up/down split,
   `2` = left/right split.
+- Pipe transactions are associated with their pipe by the stable `id`,
+  direction, and side. Python variable names are not part of the IR. Kernels
+  with multiple pipes must use distinct stable ids.
 - For global-entry pipes, `push` and `pop` do not implicitly perform
   `tstore`/`tload`; callers must move data explicitly before `push` or after
   `pop`.
@@ -1198,7 +1185,13 @@ Declaration (shared between Cube and Vector sides):
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_global_declaration","symbol":"pipe_communication_c2v_global_declaration_probe","compile":{}} -->
 ```python
-c2v = pto.pipe.c2v_global(gm_slots, id=0)
+c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+c2v = pto.pipe.c2v(
+    gm_slot_tensor=gm_slots,
+    gm_slot_buffer=gm_slot_buffer,
+    consumer_buf=c2v_buf,
+    id=0,
+)
 ```
 
 Cube (producer) side:
@@ -1238,7 +1231,13 @@ Declaration:
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.v2c_global_declaration","symbol":"pipe_communication_v2c_global_declaration_probe","compile":{}} -->
 ```python
-v2c = pto.pipe.v2c_global(gm_slots, id=0)
+v2c_buf = pto.reserve_buffer("v2c_fifo", size=8192, location="mat")
+v2c = pto.pipe.v2c(
+    gm_slot_tensor=gm_slots,
+    gm_slot_buffer=gm_slot_buffer,
+    consumer_buf=v2c_buf,
+    id=0,
+)
 ```
 
 Vector (producer) side:
@@ -1272,7 +1271,7 @@ Vector (consumer) side reserves the local buffer:
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_declaration","symbol":"pipe_communication_c2v_local_declaration_probe","compile":{}} -->
 ```python
 c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
-c2v = pto.pipe.c2v_local(
+c2v = pto.pipe.c2v(
     slot_size=1024,
     consumer_buf=c2v_buf,
     gm_slot_buffer=gm_slot_buffer,
@@ -1285,7 +1284,7 @@ Cube (producer) side imports the peer buffer:
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.c2v_local_import","symbol":"pipe_communication_c2v_local_import_probe","compile":{}} -->
 ```python
 c2v_buf = pto.import_reserved_buffer("c2v_fifo", peer_func="vector_kernel")
-c2v_peer = pto.pipe.c2v_local(
+c2v_peer = pto.pipe.c2v(
     slot_size=1024,
     consumer_buf=c2v_buf,
     gm_slot_buffer=gm_slot_buffer,
@@ -1324,7 +1323,7 @@ descriptor was allocated by the frontend.
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"pipe_communication.bidirectional_local_declaration","symbol":"pipe_communication_bidirectional_local_declaration_probe","compile":{}} -->
 ```python
-bidi = pto.pipe.bidirectional_local(
+bidi = pto.pipe.bidirectional(
     slot_size=1024,
     c2v_consumer_buf=c2v_buf,
     v2c_consumer_buf=v2c_buf,
@@ -1352,7 +1351,13 @@ def cube_producer(
     BLOCK: pto.constexpr = 128,
 ):
     gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-    c2v = pto.pipe.c2v_global(gm_view, id=0)
+    c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+    c2v = pto.pipe.c2v(
+        gm_slot_tensor=gm_view,
+        gm_slot_buffer=gm_slot_buffer,
+        consumer_buf=c2v_buf,
+        id=0,
+    )
 
     a_part = pto.partition_view(
         pto.make_tensor_view(src, shape=[16, 16], strides=[16, 1]),
@@ -1378,7 +1383,13 @@ def vector_consumer(
     BLOCK: pto.constexpr = 128,
 ):
     gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-    c2v = pto.pipe.c2v_global(gm_view, id=0)
+    c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+    c2v = pto.pipe.c2v(
+        gm_slot_tensor=gm_view,
+        gm_slot_buffer=gm_slot_buffer,
+        consumer_buf=c2v_buf,
+        id=0,
+    )
 
     b_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
     b_part = pto.partition_view(

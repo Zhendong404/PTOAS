@@ -58,7 +58,7 @@ def ptodsl_tpush_tpop_local_c2v_cube(
         "c2v_fifo",
         peer_func="ptodsl_tpush_tpop_local_c2v_cube",
     )
-    c2v = pto.pipe.c2v_local(
+    c2v = pto.pipe.c2v(
         slot_size=_SLOT_SIZE,
         consumer_buf=c2v_import,
         id=0,
@@ -82,7 +82,7 @@ def ptodsl_tpush_tpop_local_c2v_vector(
     o_part = pto.partition_view(o_view, offsets=[c0, c0], sizes=[c_rows, c_cols])
 
     c2v_buf = pto.reserve_buffer("c2v_fifo", size=_FIFO_SIZE, location="vec")
-    c2v = pto.pipe.c2v_local(
+    c2v = pto.pipe.c2v(
         slot_size=_SLOT_SIZE,
         consumer_buf=c2v_buf,
         id=0,

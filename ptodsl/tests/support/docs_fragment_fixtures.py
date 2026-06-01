@@ -1835,7 +1835,13 @@ FRAGMENT_FIXTURES = {
             src: pto.gm_ptr(pto.f32),
         ):
             gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-            c2v = pto.pipe.c2v_global(gm_view, id=0)
+            c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+            c2v = pto.pipe.c2v(
+                gm_slot_tensor=gm_view,
+                gm_slot_buffer=gm_slot_buffer,
+                consumer_buf=c2v_buf,
+                id=0,
+            )
 
             a_part = pto.partition_view(
                 pto.make_tensor_view(src, shape=[16, 16], strides=[16, 1]),
@@ -1853,7 +1859,13 @@ FRAGMENT_FIXTURES = {
             dst: pto.gm_ptr(pto.f32),
         ):
             gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-            c2v = pto.pipe.c2v_global(gm_view, id=0)
+            c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+            c2v = pto.pipe.c2v(
+                gm_slot_tensor=gm_view,
+                gm_slot_buffer=gm_slot_buffer,
+                consumer_buf=c2v_buf,
+                id=0,
+            )
 
             b_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
             b_part = pto.partition_view(
@@ -1881,7 +1893,13 @@ FRAGMENT_FIXTURES = {
             src: pto.gm_ptr(pto.f32),
         ):
             gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-            v2c = pto.pipe.v2c_global(gm_view, id=0)
+            v2c_buf = pto.reserve_buffer("v2c_fifo", size=8192, location="mat")
+            v2c = pto.pipe.v2c(
+                gm_slot_tensor=gm_view,
+                gm_slot_buffer=gm_slot_buffer,
+                consumer_buf=v2c_buf,
+                id=0,
+            )
 
             src_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
 
@@ -1896,7 +1914,13 @@ FRAGMENT_FIXTURES = {
             dst: pto.gm_ptr(pto.f32),
         ):
             gm_view = pto.make_tensor_view(gm_slot_buffer, shape=[16, 16], strides=[16, 1])
-            v2c = pto.pipe.v2c_global(gm_view, id=0)
+            v2c_buf = pto.reserve_buffer("v2c_fifo", size=8192, location="mat")
+            v2c = pto.pipe.v2c(
+                gm_slot_tensor=gm_view,
+                gm_slot_buffer=gm_slot_buffer,
+                consumer_buf=v2c_buf,
+                id=0,
+            )
 
             dst_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
 
@@ -1941,7 +1965,7 @@ FRAGMENT_FIXTURES = {
         ):
             vector_kernel()
             c2v_buf = pto.import_reserved_buffer("c2v_fifo", peer_func="vector_kernel")
-            c2v_peer = pto.pipe.c2v_local(
+            c2v_peer = pto.pipe.c2v(
                 slot_size=1024,
                 consumer_buf=c2v_buf,
                 id=0,
@@ -1958,7 +1982,7 @@ FRAGMENT_FIXTURES = {
             dst: pto.gm_ptr(pto.f32),
         ):
             c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
-            c2v = pto.pipe.c2v_local(
+            c2v = pto.pipe.c2v(
                 slot_size=1024,
                 consumer_buf=c2v_buf,
                 id=0,
