@@ -10,11 +10,13 @@
 
 #include "ObjectEmission.h"
 #include "PTO/IR/PTO.h"
+#include "PTO/Transforms/Passes.h"
 #include "VPTOHostStubEmission.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Parser/Parser.h"
 #include "ptobc/ptobc_decode.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -686,6 +688,16 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
 static LogicalResult runPTOASJobs(OwningOpRef<ModuleOp> &module,
                                   PTOASContext &context,
                                   mlir::pto::PTOASCompileResult &result) {
+  {
+    PassManager pm(module->getContext());
+    pm.enableVerifier();
+    pm.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+    if (failed(pm.run(module.get()))) {
+      llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
+      return failure();
+    }
+  }
+
   const mlir::pto::BackendInfo &backendInfo = context.getBackendInfo();
   if (backendInfo.singleBackend) {
     if (*backendInfo.singleBackend == mlir::pto::PTOBackend::EmitC) {

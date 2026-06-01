@@ -248,6 +248,26 @@ def PTOWrapFunctionsInSections : Pass<"pto-wrap-functions-in-sections", "func::F
   ];
 }
 
+def PTONormalizeUncoveredTileSections
+    : Pass<"pto-normalize-uncovered-tile-sections", "ModuleOp"> {
+  let summary = "Collect uncovered top-level PTO tile segments before section normalization";
+  let description = [{
+    Scans function top-level blocks for contiguous operation segments that are
+    not already covered by `pto.section.cube` / `pto.section.vector`.
+
+    This pass is the shared entry point for inferred-section normalization:
+    explicit sections remain in place, while uncovered top-level segments that
+    contain tile operations are identified for later wrapping.
+  }];
+
+  let constructor = "mlir::pto::createPTONormalizeUncoveredTileSectionsPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def VPTOSplitCVModule : Pass<"vpto-split-cv-module", "ModuleOp"> {
   let summary = "Split a VPTO module with cube/vector sections into kernel modules";
   let description = [{
