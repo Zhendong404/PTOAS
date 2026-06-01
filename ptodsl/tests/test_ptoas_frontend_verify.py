@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.util import module_from_spec, spec_from_file_location
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +57,14 @@ def emit_example_mlir(example_path: Path) -> str:
     )
     expect(result.stdout.strip(), f"{example_path.name} --emit-mlir should print non-empty MLIR text")
     return result.stdout
+
+
+def load_example_module(example_path: Path, module_name: str):
+    spec = spec_from_file_location(module_name, example_path)
+    expect(spec is not None and spec.loader is not None, f"unable to create import spec for {example_path}")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def extract_child_module_texts(container_text: str, label: str) -> list[str]:
@@ -129,6 +138,29 @@ def run_ptoas_frontend_verify(ptoas_bin: Path, mlir_text: str, label: str) -> li
     return frontend_texts
 
 
+def run_ptoas_frontend_verify_whole(ptoas_bin: Path, mlir_text: str, label: str) -> str:
+    with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False, encoding="utf-8") as handle:
+        handle.write(mlir_text)
+        input_path = Path(handle.name)
+
+    try:
+        result = subprocess.run(
+            [str(ptoas_bin), str(input_path), "--emit-pto-ir", "-o", "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        input_path.unlink(missing_ok=True)
+
+    expect(
+        result.returncode == 0,
+        f"{label} should pass PTOAS frontend verification as one container.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    expect(result.stdout.strip(), f"{label} should emit non-empty PTO IR after PTOAS frontend passes")
+    return result.stdout
+
+
 @pto.jit(target="a5")
 def host_vec_copy(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -194,6 +226,7 @@ def emitc_entry_calls_vpto_kernel_module_probe(
 def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
     mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
+    cv_split_example = REPO_ROOT / "ptodsl" / "examples" / "hw_native_flash_attention_cv_split.py"
 
     simple_text = host_vec_copy.compile().mlir_text()
     simple_frontend_texts = run_ptoas_frontend_verify(
@@ -322,6 +355,67 @@ def main() -> None:
     expect(
         example_frontend_texts[1] == "",
         "mixed_backend_kernel_module.py VPTO child should continue to compile through the fallback object path in frontend verification",
+    )
+
+    cv_split = load_example_module(
+        cv_split_example,
+        "ptodsl_hw_native_flash_attention_cv_split_example",
+    )
+    cv_split_text = cv_split.emit_flash_attention_mlir(
+        head_dim=128,
+        s1_tile=256,
+        qk_preload=3,
+        causal=False,
+        q_rows=128,
+    )
+    cv_split_frontend_text = run_ptoas_frontend_verify_whole(
+        ptoas_bin,
+        cv_split_text,
+        "hw_native_flash_attention_cv_split.py --emit-mlir output",
+    )
+    expect(
+        cv_split_frontend_text.count('module attributes {pto.backend = "vpto", pto.target_arch = "a5"}') >= 3,
+        "hw_native_flash_attention_cv_split.py frontend verification should preserve the outer entry child plus two VPTO helper children",
+    )
+    expect(
+        "func.func public @hw_native_flash_attention_cv_split_cube_h128_s1t256_qp3_qr128__ptodsl_"
+        in cv_split_frontend_text,
+        "cv-split frontend verification should preserve the cube helper public ABI-specialized symbol",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_qk_c2v_fifo", peer_func = @hw_native_flash_attention_cv_split_vector_h128_s1t256_qp3_qr128}'
+        in cv_split_frontend_text,
+        "cv-split frontend verification should keep the logical vector peer_func reference that now resolves across helper containers",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_pv_c2v_fifo", peer_func = @hw_native_flash_attention_cv_split_vector_h128_s1t256_qp3_qr128}'
+        in cv_split_frontend_text,
+        "cv-split frontend verification should preserve the second logical vector peer_func reference",
+    )
+    expect(
+        "pto.aic_initialize_pipe" in cv_split_frontend_text
+        and "pto.tpush_to_aiv" in cv_split_frontend_text,
+        "cv-split frontend verification should keep the cube helper pipe init and push path intact",
+    )
+    expect(
+        "func.func public @hw_native_flash_attention_cv_split_vector_h128_s1t256_qp3_qr128__ptodsl_"
+        in cv_split_frontend_text,
+        "cv-split frontend verification should preserve the vector helper public ABI-specialized symbol",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_p_v2c_fifo", peer_func = @hw_native_flash_attention_cv_split_cube_h128_s1t256_qp3_qr128}'
+        in cv_split_frontend_text,
+        "cv-split frontend verification should keep the logical cube peer_func reference that now resolves across helper containers",
+    )
+    expect(
+        "pto.reserve_buffer{name = \"fa_qk_c2v_fifo\"" in cv_split_frontend_text
+        and "pto.reserve_buffer{name = \"fa_pv_c2v_fifo\"" in cv_split_frontend_text,
+        "cv-split frontend verification should keep the local reserve_buffer owners for both imported cube peers",
+    )
+    expect(
+        "pto.aiv_initialize_pipe" in cv_split_frontend_text
+        and "pto.tpush_to_aic" in cv_split_frontend_text,
+        "cv-split frontend verification should keep the vector helper pipe init and push path intact",
     )
 
     print("ptodsl_ptoas_frontend_verify: PASS")

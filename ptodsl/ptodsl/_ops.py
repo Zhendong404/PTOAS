@@ -2221,6 +2221,27 @@ def tmov(src, dst):
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst))
 
 
+def tmatmul(lhs, rhs, dst):
+    """``pto.tmatmul ins(lhs, rhs) outs(dst)``."""
+    _pto.TMatmulOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+    )
+
+
+def tmatmul_acc(acc_in, lhs, rhs, dst):
+    """``pto.tmatmul.acc ins(acc_in, lhs, rhs) outs(dst)``."""
+    _pto.TMatmulAccOp(
+        None,
+        unwrap_surface_value(acc_in),
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+    )
+
+
 def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
     return _constant_like(scalar, infer_tile_element_type(wrap_surface_value(tile)))
 

@@ -17,6 +17,8 @@ def _resolve_row_reduction_tmp(src, tmp):
 
 class _TileNamespace:
     mov = staticmethod(_ops.tmov)
+    matmul = staticmethod(_ops.tmatmul)
+    matmul_acc = staticmethod(_ops.tmatmul_acc)
 
     @staticmethod
     def load(src, tile, *, offsets=None, sizes=None):
