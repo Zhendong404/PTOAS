@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from .active import activate_runtime, activate_session, require_active_session
+from .._control_flow import _ExplicitReturnSignal
 from .module_builder import create_kernel_module
 from .session import TraceSession
 from .._diagnostics import kernel_module_return_value_error
@@ -85,9 +86,14 @@ class TracingRuntime:
             with InsertionPoint(entry), activate_runtime(self), activate_session(session):
                 self.initialize_session(session, entry)
                 args = self.bind_entry_arguments(entry.arguments)
-                self.trace_entry(*args)
+                returned_early = False
+                try:
+                    self.trace_entry(*args)
+                except _ExplicitReturnSignal:
+                    returned_early = True
                 self.validate_trace_state()
-                self.emit_return()
+                if not returned_early:
+                    self.emit_return()
                 self.finalize_session(session)
                 session.validate_final_state()
             self.verify_module(module)

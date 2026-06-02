@@ -208,6 +208,15 @@ def kernel_module_return_probe(
     return rows
 
 
+@pto.jit(target="a5")
+def explicit_return_surface_probe(
+    ptr: pto.ptr(pto.f32, "gm"),
+):
+    _ = ptr
+    pto.return_()
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
 @pto.jit(target="a5", entry=False, backend="vpto")
 def process_tile_module(
     a_tile: pto.Tile,
@@ -2601,6 +2610,17 @@ def main() -> None:
     expect(
         "arith.addi" in branch_merge_text and "arith.subi" in branch_merge_text,
         "merged branch values should remain usable as ordinary runtime scalars after the conditional",
+    )
+
+    explicit_return_text = explicit_return_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(explicit_return_text, "explicit return surface specialization")
+    expect(
+        explicit_return_text.count("func.return") == 1,
+        "pto.return_() should suppress the tracing runtime's implicit trailing func.return",
+    )
+    expect(
+        "pto.barrier <PIPE_ALL>" not in explicit_return_text,
+        "ops authored after pto.return_() should not continue lowering into the function body",
     )
 
     runtime_scalar_text = runtime_scalar_operator_probe.compile(BLOCK=8).mlir_text()

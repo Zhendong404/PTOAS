@@ -17,6 +17,7 @@ Public API
                           – ``scf.for`` with optional named carry state via ``.carry(...)``
 ``if_(cond)``             – ``scf.if`` via explicit branch handle + automatic named merge
 ``yield_(*vals)``         – ``scf.yield``
+``return_()``            – explicit ``func.return`` + stop tracing current body
 """
 
 from ._bootstrap import make_context  # noqa: F401
@@ -24,8 +25,12 @@ from ._runtime_index_ops import coerce_runtime_index
 from ._tracing.active import current_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 
-from mlir.dialects import pto as _pto, scf
+from mlir.dialects import func, pto as _pto, scf
 from mlir.ir import InsertionPoint
+
+
+class _ExplicitReturnSignal(BaseException):
+    """Internal sentinel used to stop tracing after one explicit ``func.return``."""
 
 
 # ── vecscope ──────────────────────────────────────────────────────────────────
@@ -572,7 +577,13 @@ def yield_(*vals):
     scf.YieldOp([unwrap_surface_value(value) for value in vals])
 
 
+def return_():
+    """Emit ``func.return`` and stop tracing the current PTODSL function body."""
+    func.ReturnOp([])
+    raise _ExplicitReturnSignal()
+
+
 __all__ = [
     "vecscope", "LoopHandle", "BranchHandle",
-    "for_", "if_", "yield_",
+    "for_", "if_", "yield_", "return_",
 ]

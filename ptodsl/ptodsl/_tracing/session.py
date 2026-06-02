@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 
+from .._control_flow import _ExplicitReturnSignal
 from .control_flow import (
     build_carry_loop_frame,
     finish_carry_loop_frame,
@@ -262,8 +263,13 @@ class TraceSession:
                 for template, value in zip(arg_templates, entry_block.arguments)
             )
             with self.enter_function(helper_fn), self.enter_subkernel(subkernel), InsertionPoint(entry_block):
-                subkernel.emit_body(*wrapped_args, **kwargs)
-                func.ReturnOp([])
+                returned_early = False
+                try:
+                    subkernel.emit_body(*wrapped_args, **kwargs)
+                except _ExplicitReturnSignal:
+                    returned_early = True
+                if not returned_early:
+                    func.ReturnOp([])
 
         i32 = IntegerType.get_signless(32)
         dim_z = arith.ConstantOp(i32, 1).result
@@ -313,8 +319,13 @@ class TraceSession:
                 for template, value in zip(arg_templates, entry_block.arguments)
             )
             with self.enter_function(helper_fn), self.suspend_subkernel_scope(), InsertionPoint(entry_block):
-                compiler._callback(*wrapped_args)
-                func.ReturnOp([])
+                returned_early = False
+                try:
+                    compiler._callback(*wrapped_args)
+                except _ExplicitReturnSignal:
+                    returned_early = True
+                if not returned_early:
+                    func.ReturnOp([])
 
         caller_symbol_name = self.current_function_symbol_name
         import_fn, _ = self.get_or_create_kernel_module_import_declaration(
