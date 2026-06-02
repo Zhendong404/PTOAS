@@ -15,12 +15,14 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Parser/Parser.h"
 #include "ptobc/ptobc_decode.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Module.h"
@@ -240,19 +242,174 @@ parseDriverBackendAttr(Operation *op,
   return success();
 }
 
-static OwningOpRef<ModuleOp> detachBackendChildModule(ModuleOp outer,
-                                                      ModuleOp child) {
+static bool isBackendPartitionedContainer(ModuleOp module) {
+  return llvm::all_of(module.getOps<ModuleOp>(),
+                      [](ModuleOp) { return true; });
+}
+
+static SmallVector<StringRef> collectImportedPeerNames(ModuleOp module) {
+  SmallVector<StringRef> names;
+  module.walk([&](pto::ImportReservedBufferOp importOp) {
+    names.push_back(importOp.getPeerFuncAttr().getValue());
+  });
+  llvm::sort(names);
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  return names;
+}
+
+static StringRef logicalKernelName(StringRef symbolName) {
+  size_t suffixPos = symbolName.find("__ptodsl_");
+  if (suffixPos == StringRef::npos)
+    return symbolName;
+  return symbolName.take_front(suffixPos);
+}
+
+static SmallVector<StringRef> collectDirectCalleeNames(ModuleOp module) {
+  SmallVector<StringRef> names;
+  module.walk([&](func::CallOp callOp) {
+    names.push_back(callOp.getCalleeAttr().getLeafReference());
+  });
+  llvm::sort(names);
+  names.erase(std::unique(names.begin(), names.end()), names.end());
+  return names;
+}
+
+static void copyOuterAttrsToJobModule(ModuleOp outer, ModuleOp jobModule) {
   for (NamedAttribute attr : outer->getAttrs()) {
     StringRef attrName = attr.getName().getValue();
     if (attrName == SymbolTable::getSymbolAttrName() ||
         attrName == "pto.backend")
       continue;
-    if (!child->hasAttr(attr.getName()))
-      child->setAttr(attr.getName(), attr.getValue());
+    if (!jobModule->hasAttr(attr.getName()))
+      jobModule->setAttr(attr.getName(), attr.getValue());
+  }
+}
+
+static func::FuncOp findFunctionByLogicalName(ModuleOp module,
+                                              StringRef logicalName) {
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (funcOp.getSymName() == logicalName)
+      return funcOp;
+  }
+  return {};
+}
+
+static func::FuncOp findSiblingSourceFunction(ModuleOp outer,
+                                              ModuleOp targetChild,
+                                              StringRef symbolName,
+                                              bool allowLogicalNameMatch) {
+  for (ModuleOp child : outer.getOps<ModuleOp>()) {
+    if (child == targetChild)
+      continue;
+    for (func::FuncOp funcOp : child.getOps<func::FuncOp>()) {
+      auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
+      if (visibility && visibility.getValue() == "private")
+        continue;
+      if (funcOp.getSymName() == symbolName)
+        return funcOp;
+      if (allowLogicalNameMatch &&
+          logicalKernelName(funcOp.getSymName()) == symbolName)
+        return funcOp;
+    }
+  }
+  return {};
+}
+
+static func::FuncOp cloneFunctionIntoModule(ModuleOp jobModule,
+                                            func::FuncOp sourceFunc,
+                                            StringRef newName,
+                                            StringRef visibility) {
+  OpBuilder builder(jobModule.getContext());
+  builder.setInsertionPointToEnd(&jobModule.getBodyRegion().front());
+  auto cloned = cast<func::FuncOp>(sourceFunc->clone());
+  cloned.setSymName(newName);
+  cloned->setAttr("sym_visibility", StringAttr::get(jobModule.getContext(),
+                                                     visibility));
+  builder.insert(cloned);
+  return cloned;
+}
+
+static func::FuncOp cloneFunctionDeclarationIntoModule(ModuleOp jobModule,
+                                                       func::FuncOp sourceFunc,
+                                                       StringRef newName,
+                                                       StringRef visibility) {
+  func::FuncOp cloned =
+      cloneFunctionIntoModule(jobModule, sourceFunc, newName, visibility);
+  while (!cloned.getBody().empty())
+    cloned.getBody().front().erase();
+  return cloned;
+}
+
+static void rewriteExportedFunctionToLogicalWrapper(func::FuncOp exportedFunc,
+                                                    StringRef logicalName) {
+  if (logicalName == exportedFunc.getSymName())
+    return;
+
+  while (!exportedFunc.getBody().empty())
+    exportedFunc.getBody().front().erase();
+  Block *entry = exportedFunc.addEntryBlock();
+  OpBuilder builder(entry, entry->begin());
+
+  auto call = builder.create<func::CallOp>(
+      exportedFunc.getLoc(), logicalName, exportedFunc.getResultTypes(),
+      entry->getArguments());
+  builder.create<func::ReturnOp>(exportedFunc.getLoc(), call.getResults());
+}
+
+static FailureOr<OwningOpRef<ModuleOp>>
+buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
+  ModuleOp jobModule = ModuleOp::create(outer.getLoc());
+  copyOuterAttrsToJobModule(outer, jobModule);
+
+  for (Operation &op : targetChild.getBodyRegion().front().getOperations()) {
+    jobModule.push_back(op.clone());
   }
 
-  child.getOperation()->remove();
-  return OwningOpRef<ModuleOp>(child);
+  SmallVector<StringRef> directCalleeNames = collectDirectCalleeNames(targetChild);
+  for (StringRef calleeName : directCalleeNames) {
+    if (findFunctionByLogicalName(jobModule, calleeName))
+      continue;
+    func::FuncOp siblingSource =
+        findSiblingSourceFunction(outer, targetChild, calleeName,
+                                  /*allowLogicalNameMatch=*/false);
+    if (!siblingSource)
+      continue;
+    cloneFunctionDeclarationIntoModule(jobModule, siblingSource, calleeName,
+                                       "private");
+  }
+
+  SmallVector<StringRef> importedPeerNames = collectImportedPeerNames(targetChild);
+  SmallVector<func::FuncOp> exportedFuncs;
+  for (func::FuncOp funcOp : jobModule.getOps<func::FuncOp>()) {
+    auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
+    if (visibility && visibility.getValue() == "private")
+      continue;
+    if (funcOp.isExternal())
+      continue;
+    if (funcOp.getSymName().contains("__ptodsl_"))
+      exportedFuncs.push_back(funcOp);
+  }
+
+  for (func::FuncOp exportedFunc : exportedFuncs) {
+    StringRef logicalName = logicalKernelName(exportedFunc.getSymName());
+    if (!findFunctionByLogicalName(jobModule, logicalName)) {
+      cloneFunctionIntoModule(jobModule, exportedFunc, logicalName, "private");
+    }
+    rewriteExportedFunctionToLogicalWrapper(exportedFunc, logicalName);
+  }
+
+  for (StringRef logicalName : importedPeerNames) {
+    if (findFunctionByLogicalName(jobModule, logicalName))
+      continue;
+    func::FuncOp peerSource =
+        findSiblingSourceFunction(outer, targetChild, logicalName,
+                                  /*allowLogicalNameMatch=*/true);
+    if (!peerSource)
+      return failure();
+    cloneFunctionIntoModule(jobModule, peerSource, logicalName, "private");
+  }
+
+  return OwningOpRef<ModuleOp>(jobModule);
 }
 
 static constexpr llvm::StringLiteral kEmptyHostStubSource =
@@ -592,7 +749,16 @@ static LogicalResult collectChildJobs(
     if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
       return failure();
 
-    OwningOpRef<ModuleOp> jobModule = detachBackendChildModule(module, child);
+    FailureOr<OwningOpRef<ModuleOp>> jobModuleOr =
+        buildBackendChildCompileUnit(module, child);
+    if (failed(jobModuleOr))
+      return failure();
+    OwningOpRef<ModuleOp> jobModule = std::move(*jobModuleOr);
+    if (llvm::sys::Process::GetEnv("PTOAS_DEBUG_CHILD_UNIT")) {
+      llvm::errs() << "// ----- child compile unit ----- //\n";
+      jobModule->print(llvm::errs());
+      llvm::errs() << "\n";
+    }
     if (childBackend.value_or(defaultBackend) == mlir::pto::PTOBackend::VPTO)
       backendJobs.push_back(std::make_unique<VPTOBackendChildJob>(
           std::move(jobModule), context.allocModuleId(), fatobjPaths));
@@ -618,8 +784,16 @@ static LogicalResult resolveSingleBackend(
     return success();
   }
 
+  SmallVector<ModuleOp, 4> children(module.getOps<ModuleOp>());
+  bool debugIROutputRequested =
+      mlir::pto::emitMlirIR || mlir::pto::emitVPTO || mlir::pto::ptoPrintSeamIR ||
+      !mlir::pto::ptoSeamIRFile.empty();
+  if (!debugIROutputRequested && children.size() > 1 &&
+      isBackendPartitionedContainer(module))
+    return success();
+
   std::optional<mlir::pto::PTOBackend> firstChildBackend;
-  for (ModuleOp child : module.getOps<ModuleOp>()) {
+  for (ModuleOp child : children) {
     std::optional<mlir::pto::PTOBackend> childBackend;
     if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
       return failure();
