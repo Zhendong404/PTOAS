@@ -201,16 +201,16 @@ def _build_flash_attention_entry(
         qb_start, qb_end = _compute_qb_range(total_q_blocks)
 
         q_view = pto.make_tensor_view(gm_q, shape=[s0_index, head_dim], strides=[head_dim, 1])
-        k_view = pto.make_tensor_view(gm_k, shape=[head_dim, s1_index], strides=[1, head_dim])
+        k_view = pto.make_tensor_view(gm_k, shape=[head_dim, s1_index], strides=[1, head_dim], layout="DN")
         v_view = pto.make_tensor_view(gm_v, shape=[s1_index, head_dim], strides=[head_dim, 1])
 
         qk_slot_bytes = 32
         p_slot_bytes = 32
         pv_slot_bytes = 32
 
-        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[S0, s1_tile], strides=[s1_tile, 1])
-        p_slots = pto.make_tensor_view(gm_p_slots, shape=[S0, s1_tile], strides=[s1_tile, 1])
-        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[S0, head_dim], strides=[head_dim, 1])
+        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
+        p_slots = pto.make_tensor_view(gm_p_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
+        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[SLOT_NUM * S0, head_dim], strides=[head_dim, 1])
 
         qk_consumer_buf = pto.import_reserved_buffer("fa_qk_c2v_fifo", peer_func=vector_symbol)
         pv_consumer_buf = pto.import_reserved_buffer("fa_pv_c2v_fifo", peer_func=vector_symbol)
@@ -256,7 +256,7 @@ def _build_flash_attention_entry(
         qk_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
 
         p_recv = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="mat")
-        p_token = pto.alloc_tile(shape=[1, 16], dtype=pto.f16)
+        p_token = pto.alloc_tile(shape=[1, 16], dtype=pto.f16, memory_space="mat")
         p_left = pto.alloc_tile(
             shape=[S0, CUBE_S1],
             dtype=pto.f16,
@@ -281,14 +281,18 @@ def _build_flash_attention_entry(
         pv_tile = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f32)
         pv_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
 
+        def slot_row_base(tile_id):
+            return (tile_id % SLOT_NUM) * S0
+
         def emit_qk_tile(tile_id):
             tile_base = tile_id * s1_tile
+            slot_base = slot_row_base(tile_id)
             for sub in range(tile_factor):
                 s1_sub = tile_base + sub * CUBE_S1
                 k_part = pto.partition_view(k_view, offsets=[0, s1_sub], sizes=[head_dim, CUBE_S1])
                 qk_slot_part = pto.partition_view(
                     qk_slots,
-                    offsets=[0, sub * CUBE_S1],
+                    offsets=[slot_base, sub * CUBE_S1],
                     sizes=[S0, CUBE_S1],
                 )
                 pto.tile.load(k_part, k_mat)
@@ -299,13 +303,14 @@ def _build_flash_attention_entry(
 
         def emit_pv_tile(tile_id):
             tile_base = tile_id * s1_tile
+            slot_base = slot_row_base(tile_id)
             _ = p_pipe.pop(split=0, result_type=p_token)
             for sub in range(tile_factor):
                 s1_sub = tile_base + sub * CUBE_S1
                 v_part = pto.partition_view(v_view, offsets=[s1_sub, 0], sizes=[CUBE_S1, head_dim])
                 p_part = pto.partition_view(
                     p_slots,
-                    offsets=[0, sub * CUBE_S1],
+                    offsets=[slot_base, sub * CUBE_S1],
                     sizes=[S0, CUBE_S1],
                 )
                 pto.tile.load(p_part, p_recv)
@@ -317,7 +322,7 @@ def _build_flash_attention_entry(
                 else:
                     pto.tile.matmul_acc(pv_acc, p_left, v_right, pv_acc)
             p_pipe.free(split=0)
-            pv_part = pto.partition_view(pv_slots, offsets=[0, 0], sizes=[S0, head_dim])
+            pv_part = pto.partition_view(pv_slots, offsets=[slot_base, 0], sizes=[S0, head_dim])
             pto.tile.store(pv_acc, pv_part)
             pv_pipe.push(pv_token, split=0)
 
@@ -359,9 +364,9 @@ def _build_flash_attention_entry(
         p_slot_bytes = 32
         pv_slot_bytes = 32
 
-        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[S0, s1_tile], strides=[s1_tile, 1])
-        p_slots = pto.make_tensor_view(gm_p_slots, shape=[S0, s1_tile], strides=[s1_tile, 1])
-        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[S0, head_dim], strides=[head_dim, 1])
+        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
+        p_slots = pto.make_tensor_view(gm_p_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
+        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[SLOT_NUM * S0, head_dim], strides=[head_dim, 1])
 
         qk_consumer_buf = pto.reserve_buffer("fa_qk_c2v_fifo", size=qk_slot_bytes * 8, location="vec")
         pv_consumer_buf = pto.reserve_buffer("fa_pv_c2v_fifo", size=pv_slot_bytes * 8, location="vec")
@@ -415,10 +420,14 @@ def _build_flash_attention_entry(
             for _ in range(row_slice_count)
         ]
 
-        def emit_softmax_tile(exp_max_slots, *, is_init):
+        def slot_row_base(tile_id):
+            return (tile_id % SLOT_NUM) * S0
+
+        def emit_softmax_tile(tile_id, exp_max_slots, *, is_init):
             _ = qk_pipe.pop(split=0, result_type=qk_token)
+            slot_base = slot_row_base(tile_id)
             for row_slice in range(row_slice_count):
-                row_off = row_off_sb + row_slice * vec_s0
+                row_off = slot_base + row_off_sb + row_slice * vec_s0
                 qk_part = pto.partition_view(
                     qk_slots,
                     offsets=[row_off, 0],
@@ -430,6 +439,9 @@ def _build_flash_attention_entry(
                     sizes=[vec_s0, s1_tile],
                 )
                 pto.tile.load(qk_part, qk_vec)
+                # Row reductions only define the logical [rows, 1] column. Pre-fill
+                # the padded lanes so follow-on row-major tile ops do not read junk.
+                local_max[row_slice].fill(NEG_INF_F32)
                 pto.tile.rowmax(qk_vec, local_max[row_slice], tmp=tmp)
                 if is_init:
                     pto.tile.mov(local_max[row_slice], running_max[row_slice])
@@ -448,6 +460,7 @@ def _build_flash_attention_entry(
                     pto.tile.muls(p_fp32, scale, p_fp32)
                     pto.tile.exp(p_fp32, p_fp32)
                     pto.tile.mul(running_sum[row_slice], exp_max_slots[row_slice], running_sum[row_slice])
+                    local_sum[row_slice].fill(0.0)
                     pto.tile.rowsum(p_fp32, local_sum[row_slice], tmp=tmp)
                     pto.tile.add(running_sum[row_slice], local_sum[row_slice], running_sum[row_slice])
                 pto.tile.cvt(p_fp32, p_fp16)
@@ -455,10 +468,11 @@ def _build_flash_attention_entry(
             p_pipe.push(p_token, split=0)
             qk_pipe.free(split=0)
 
-        def emit_gu_tile(exp_max_slots, *, is_init):
+        def emit_gu_tile(tile_id, exp_max_slots, *, is_init):
             _ = pv_pipe.pop(split=0, result_type=pv_token)
+            slot_base = slot_row_base(tile_id)
             for row_slice in range(row_slice_count):
-                row_off = row_off_sb + row_slice * vec_s0
+                row_off = slot_base + row_off_sb + row_slice * vec_s0
                 pv_part = pto.partition_view(
                     pv_slots,
                     offsets=[row_off, 0],
@@ -477,14 +491,14 @@ def _build_flash_attention_entry(
             for ring in range(qk_preload):
                 with pto.if_(mod == ring) as branch:
                     with branch.then_:
-                        emit_softmax_tile(exp_max_ring[ring], is_init=False)
+                        emit_softmax_tile(tile_id, exp_max_ring[ring], is_init=False)
 
         def emit_gu_dispatch(tile_id):
             mod = tile_id % qk_preload
             for ring in range(qk_preload):
                 with pto.if_(mod == ring) as branch:
                     with branch.then_:
-                        emit_gu_tile(exp_max_ring[ring], is_init=False)
+                        emit_gu_tile(tile_id, exp_max_ring[ring], is_init=False)
 
         with pto.for_(qb_start, qb_end, step=1) as qb:
             for row_slice in range(row_slice_count):
@@ -493,12 +507,12 @@ def _build_flash_attention_entry(
                 o_tile[row_slice].fill(0.0)
 
             for kp in range(qk_preload):
-                emit_softmax_tile(exp_max_ring[kp], is_init=(kp == 0))
+                emit_softmax_tile(kp, exp_max_ring[kp], is_init=(kp == 0))
 
             with pto.if_(steady_tiles > 0) as branch:
                 with branch.then_:
-                    emit_gu_tile(exp_max_ring[0], is_init=True)
-                    emit_softmax_tile(exp_max_ring[0], is_init=False)
+                    emit_gu_tile(0, exp_max_ring[0], is_init=True)
+                    emit_softmax_tile(qk_preload, exp_max_ring[0], is_init=False)
                     with pto.for_(1, steady_tiles, step=1) as tile_id:
                         emit_gu_dispatch(tile_id)
                         emit_softmax_dispatch(tile_id + qk_preload)
@@ -507,7 +521,7 @@ def _build_flash_attention_entry(
                 tile_id = steady_tiles + k
                 with pto.if_(tile_id == 0) as init_branch:
                     with init_branch.then_:
-                        emit_gu_tile(exp_max_ring[0], is_init=True)
+                        emit_gu_tile(tile_id, exp_max_ring[0], is_init=True)
                     with init_branch.else_:
                         emit_gu_dispatch(tile_id)
 
@@ -605,7 +619,7 @@ def run_demo(
     host_q = rng.randn(q_rows, head_dim).astype(np.float16)
     host_k_tokens = rng.randn(s1, head_dim).astype(np.float16)
     host_v = rng.randn(s1, head_dim).astype(np.float16)
-    host_k = np.ascontiguousarray(host_k_tokens.T)
+    host_k = host_k_tokens
     host_ref = _reference_flash_attention(host_q, host_k_tokens, host_v)
 
     q_t = torch.from_numpy(host_q).to(_DEVICE)
