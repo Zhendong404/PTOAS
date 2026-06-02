@@ -38,6 +38,7 @@ helpers without changing the surrounding control skeleton.
 """
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 
@@ -111,10 +112,47 @@ def should_notify_consumption(sync_iter: int, fifo_size: int, sync_period: int) 
     return ((sync_iter + 1) % period) == 0
 
 
+def should_wait_consumption(sync_iter: int, fifo_size: int, sync_period: int) -> int:
+    assert fifo_size >= 1, "CV FIFO size must be >= 1"
+    period = sync_period if sync_period > 0 else 1
+    assert period >= 1, "CV FIFO consume sync period must be >= 1"
+    if sync_iter < fifo_size:
+        return False
+    return (sync_iter % period) == 0
+
+
 def allocate_cube_tile_buffers(qMatTile, kMatTile, pMatTile, vMatTile):
     # Structural mirror of ``fa_dn.cpp``: MAT-stage L1 tile groups are allocated
     # first as one bundle, then L0C accumulators are handled separately below.
     _ = (qMatTile, kMatTile, pMatTile, vMatTile)
+
+
+@dataclass(frozen=True)
+class PreBTExtOpReadyHook:
+    def __call__(self):
+        pto.wait_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=1)
+
+
+@dataclass(frozen=True)
+class PReadyHook:
+    sync: object
+    enable: object
+
+    def __call__(self):
+        with pto.if_(self.enable) as enable_br:
+            with enable_br.then_:
+                self.sync.wait()
+
+
+@dataclass(frozen=True)
+class Sm2PvFreeHook:
+    sync: object
+    enable: object
+
+    def __call__(self):
+        with pto.if_(self.enable) as enable_br:
+            with enable_br.then_:
+                self.sync.free()
 
 
 @pto.cube
@@ -153,6 +191,32 @@ def pv_matmul_stage(
     pto.mte_l1_l0b(vMatTile.as_ptr(), vL0BTile.as_ptr(), kv, head)
     pto.mad(pL0ATile.as_ptr(), vL0BTile.as_ptr(), pvAccCurrTile.as_ptr(), rows, head, kv)
     pto.mte_l0c_ub(pvAccCurrTile.as_ptr(), pvVecTileSub.as_ptr(), rows, head, head, head, 0)
+
+
+def pto_macro_matmul(
+    *,
+    Cube_M: int,
+    Tile_K: int,
+    Cube_N: int,
+    aMatTile: pto.Tile,
+    bMatTile: pto.Tile,
+    cAccTile: pto.Tile,
+    accMode,
+    preATExtOpHook,
+    preBTExtOpHook,
+    postTExtOpHook,
+    pL0ATile: pto.Tile,
+    vL0BTile: pto.Tile,
+    pvVecTileSub: pto.Tile,
+):
+    # Structural mirror of ``fa_dn_matmul.cpp``: keep the same authored call
+    # shape ``pto_macro_matmul(..., accMode, preA, preB, post)`` even though
+    # this PTODSL demo currently collapses the internal ping-pong K loop.
+    _ = (Cube_M, Tile_K, Cube_N, accMode)
+    preATExtOpHook()
+    preBTExtOpHook()
+    pv_matmul_stage(aMatTile, bMatTile, pL0ATile, vL0BTile, cAccTile, pvVecTileSub)
+    postTExtOpHook()
 
 
 @pto.simd
@@ -562,74 +626,147 @@ def compute_p(
 
 def compute_pv(
     *,
-    tile_id: int,
-    sub_tile_id: int,
-    logical_block_idx: int,
-    num_tiles_s1: int,
-    vGlobal,
-    pMatTileSub,
-    vMatTile,
-    pL0ATile,
-    vL0BTile,
-    pvAccCurrTile,
-    pvAccPendTile,
-    pvVecTileSub,
-    runningOTile,
-    pvPendTile,
-    pvVecTile,
-    sm2pvSync,
-    pv2guSync,
+    S0: int,
+    HEAD_SIZE: int,
+    S1: int,
     Cube_S0: int,
     Cube_S1: int,
     Tile_S1: int,
-    kTileFactor: int,
-    HEAD_SIZE: int,
+    QKP_CV_FIFO: int,
+    PV_CV_FIFO: int,
+    CV_FIFO_CONS_SYNC_PERIOD: int,
+    INTERMEDIATE_CHECK: bool,
     CAUSAL_MASK: bool,
+    OUT_O_TILE_NBUFFERS: int,
+    TileMatPData,
+    TileMatVData,
+    TilePVData,
+    TileOutT,
+    TSyncSM2PV,
+    TSyncPV2GU,
+    tile_id: int,
+    sub_tile_id: int,
+    pv_ub_buf_idx: int,
+    p_tile_fifo,
+    v,
+    pv_tile_fifo,
+    pv_pend_tile_fifo,
+    pMatTile,
+    vMatTile,
+    pvAccTile,
+    pvAccPendTile,
+    runningOTile,
+    pvPendTile,
+    pvVecTile,
+    svMatTileEventId,
+    accTileEvtID,
+    sm2pvSync,
+    pv2guSync,
+    blk_idx: int,
 ):
+    Cube_HEAD = HEAD_SIZE
+    assert QKP_CV_FIFO >= 1, "QKP_CV_FIFO must be >= 1"
+    assert Tile_S1 % Cube_S1 == 0, "TILE_S1 must be divisible by CUBE_S1"
+    kTileFactor = Tile_S1 // Cube_S1
+    s0_index = blk_idx * Cube_S0
     s1_index = tile_id * Tile_S1 + sub_tile_id * Cube_S1
-    s0_index = logical_block_idx * Cube_S0
-
-    if CAUSAL_MASK and s1_index > s0_index:
-        if sub_tile_id == 0:
-            sm2pvSync.wait()
-            pto.wait_flag(pto.Pipe.V, pto.Pipe.M, event_id=1)
-        if sub_tile_id == kTileFactor - 1:
-            sm2pvSync.free()
-            pv2guSync.record()
-        return
-
-    vPart = pto.partition_view(
-        vGlobal,
-        offsets=[s1_index, 0],
-        sizes=[Cube_S1, HEAD_SIZE],
+    sync_iter = tile_id
+    should_wait_consume = should_wait_consumption(
+        sync_iter, QKP_CV_FIFO, CV_FIFO_CONS_SYNC_PERIOD
     )
-    pto.tile.load(vPart, vMatTile)
-    if sub_tile_id == 0:
-        sm2pvSync.wait()
-        pto.wait_flag(pto.Pipe.V, pto.Pipe.M, event_id=1)
+    next_will_be_skipped = ((s1_index + Cube_S1) > s0_index) & CAUSAL_MASK
 
-    # ``fa_dn.cpp`` consumes one CUBE_S1 slice from the logical P tile at a
-    # time and accumulates PV across the sub-tile loop.
-    _ = (num_tiles_s1, pvAccPendTile, pvPendTile)
-    pv_matmul_stage(
-        pMatTileSub,
-        vMatTile,
-        pL0ATile,
-        vL0BTile,
-        pvAccCurrTile,
-        pvVecTileSub,
-    )
+    def emit_pv_main_path():
+        GlobalVT = lambda ptr: pto.make_tensor_view(ptr, shape=[Cube_S1, HEAD_SIZE], strides=[HEAD_SIZE, 1])
 
-    if sub_tile_id == kTileFactor - 1:
-        sm2pvSync.free()
-        pv2guSync.allocate()
-        if tile_id == 0:
-            pto.tile.mov(pvVecTileSub, runningOTile)
-        else:
-            pto.tile.mov(pvVecTileSub, pvVecTile)
+        pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.MTE2, event_id=svMatTileEventId)
 
-        pv2guSync.record()
-        pto.set_flag(pto.Pipe.M, pto.Pipe.V, event_id=2)
+        vLoad = GlobalVT(pto.addptr(v, s1_index * HEAD_SIZE))
+        pto.tile.load(vLoad, vMatTile)
+
+        pReadyHook = PReadyHook(sm2pvSync, sub_tile_id == 0)
+
+        pto.set_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=1)
+
+        with pto.if_(sub_tile_id == 0) as sub_tile_is_zero_br:
+            with sub_tile_is_zero_br.then_:
+                pto.wait_flag(pto.Pipe.FIX, pto.Pipe.M, event_id=accTileEvtID)
+
+        preBTExtOpReadyHook = PreBTExtOpReadyHook()
+        accMode = sub_tile_id == 0
+        sm2pvFreeHook = Sm2PvFreeHook(sm2pvSync, sub_tile_id == kTileFactor - 1)
+        pto_macro_matmul(
+            Cube_M=Cube_S0,
+            Tile_K=Cube_S1,
+            Cube_N=Cube_HEAD,
+            aMatTile=pMatTile,
+            bMatTile=vMatTile,
+            cAccTile=pvAccTile,
+            accMode=accMode,
+            preATExtOpHook=pReadyHook,
+            preBTExtOpHook=preBTExtOpReadyHook,
+            postTExtOpHook=sm2pvFreeHook,
+            pL0ATile=pL0ATile,
+            vL0BTile=vL0BTile,
+            pvVecTileSub=pvVecTile[pv_ub_buf_idx],
+        )
+        pto.set_flag(pto.Pipe.MTE1, pto.Pipe.MTE2, event_id=svMatTileEventId)
+
+        should_finalize_pv = (sub_tile_id == kTileFactor - 1) | next_will_be_skipped
+        with pto.if_(should_finalize_pv) as should_finalize_pv_br:
+            with should_finalize_pv_br.then_:
+                pto.set_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=0)
+                pto.wait_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=0)
+
+                with pto.if_(should_wait_consume) as should_wait_consume_br:
+                    with should_wait_consume_br.then_:
+                        pv2guSync.allocate()
+
+                with pto.if_(tile_id == 0) as tile_is_zero_br:
+                    with tile_is_zero_br.then_:
+                        pto.wait_intra_flag(pto.Pipe.FIX, RUNNING_O_AVALIABLE)
+                        pto.wait_intra_flag(pto.Pipe.FIX, RUNNING_O_AVALIABLE + 16)
+                        pto.tile.mov(pvAccTile, runningOTile)
+                    with tile_is_zero_br.else_:
+                        pto.tile.mov(pvAccTile, pvVecTile[pv_ub_buf_idx])
+
+                if INTERMEDIATE_CHECK:
+                    GlobalDataPV = lambda ptr: pto.make_tensor_view(
+                        ptr,
+                        shape=[Cube_S0, HEAD_SIZE],
+                        strides=[HEAD_SIZE, 1],
+                    )
+                    buf_idx_pv = tile_id % PV_CV_FIFO
+                    base_elems_pv = buf_idx_pv * Cube_S0 * HEAD_SIZE
+                    pvGlobalTile = GlobalDataPV(pto.addptr(pv_tile_fifo, base_elems_pv))
+                    pvGlobalTilePart = pto.partition_view(
+                        pvGlobalTile,
+                        offsets=[0, 0],
+                        sizes=[Cube_S0, HEAD_SIZE],
+                    )
+                    pto.tile.store(pvAccTile, pvGlobalTilePart)
+
+                pto.set_flag(pto.Pipe.FIX, pto.Pipe.M, event_id=accTileEvtID)
+                pv2guSync.record()
+
+    if CAUSAL_MASK:
+        with pto.if_(s1_index > s0_index) as s1_gt_s0_br:
+            with s1_gt_s0_br.then_:
+                should_notify_consume = should_notify_consumption(
+                    sync_iter, QKP_CV_FIFO, CV_FIFO_CONS_SYNC_PERIOD
+                )
+                with pto.if_(sub_tile_id == 0) as sub_tile_is_zero_br:
+                    with sub_tile_is_zero_br.then_:
+                        sm2pvSync.wait()
+                        pto.wait_flag(pto.Pipe.V, pto.Pipe.M, event_id=1)
+                should_free_sm2pv = (sub_tile_id == kTileFactor - 1) & should_notify_consume
+                with pto.if_(should_free_sm2pv) as should_free_sm2pv_br:
+                    with should_free_sm2pv_br.then_:
+                        sm2pvSync.free()
+            with s1_gt_s0_br.else_:
+                emit_pv_main_path()
+    else:
+        emit_pv_main_path()
 
 def compute_gu(
     *,
@@ -950,7 +1087,7 @@ def runTFA(
                 compute_qk(
                     tile_id=preload_tile,
                     sub_tile_id=sub_tile,
-                    logical_block_idx=logical_block_idx,
+                    blk_idx=logical_block_idx,
                     qGlobal=qGlobal,
                     kGlobal=kGlobal,
                     qMatTile=qMatTile[0],
@@ -1011,7 +1148,7 @@ def runTFA(
                     pTileEventId=p_gu_src_pingpong_id % xexpVecTNBuffers,
                     qk2smSync=qk2smSync,
                     sm2pvSync=sm2pvSync,
-                    logical_block_idx=logical_block_idx,
+                    blk_idx=logical_block_idx,
                     num_tiles=num_tiles_s1,
                 )
                 p_gu_src_pingpong_id += 1
@@ -1031,7 +1168,7 @@ def runTFA(
                 compute_qk(
                     tile_id=next_qk_tile,
                     sub_tile_id=sub_tile,
-                    logical_block_idx=logical_block_idx,
+                    blk_idx=logical_block_idx,
                     qGlobal=qGlobal,
                     kGlobal=kGlobal,
                     qMatTile=qMatTile[0],
@@ -1089,7 +1226,7 @@ def runTFA(
                     pTileEventId=p_gu_src_pingpong_id % xexpVecTNBuffers,
                     qk2smSync=qk2smSync,
                     sm2pvSync=sm2pvSync,
-                    logical_block_idx=logical_block_idx,
+                    blk_idx=logical_block_idx,
                     num_tiles=num_tiles_s1,
                 )
                 p_gu_src_pingpong_id += 1
@@ -1097,29 +1234,43 @@ def runTFA(
                 # if DAV_CUBE:
                 pvPendTile = pvVecTile[(tile_id + 1) % outOTileNBuffers]
                 compute_pv(
-                    tile_id=tile_id,
-                    sub_tile_id=sub_tile,
-                    logical_block_idx=logical_block_idx,
-                    num_tiles_s1=num_tiles_s1,
-                    vGlobal=vGlobal,
-                    pMatTileSub=pMatTileSub,
-                    vMatTile=vMatTile[pv_src_pingpong_id % vMatTNBuffers],
-                    pL0ATile=pL0ATile,
-                    vL0BTile=vL0BTile,
-                    pvAccCurrTile=pvAccCurrTile,
-                    pvAccPendTile=pvAccPendTile,
-                    pvVecTileSub=pvVecTileSub,
-                    runningOTile=runningOTile,
-                    pvPendTile=pvPendTile,
-                    pvVecTile=pvVecTile[tile_id % outOTileNBuffers],
-                    sm2pvSync=sm2pvSync,
-                    pv2guSync=pv2guSync,
+                    S0=S0,
+                    HEAD_SIZE=Cube_HEAD,
+                    S1=S1,
                     Cube_S0=Cube_S0,
                     Cube_S1=Cube_S1,
                     Tile_S1=Tile_S1,
-                    kTileFactor=kTileFactor,
-                    HEAD_SIZE=Cube_HEAD,
+                    QKP_CV_FIFO=qkp_tile_fifo_size,
+                    PV_CV_FIFO=pv_tile_fifo_size,
+                    CV_FIFO_CONS_SYNC_PERIOD=CV_FIFO_CONS_SYNC_PERIOD,
+                    INTERMEDIATE_CHECK=INTERMEDIATE_CHECK,
                     CAUSAL_MASK=CAUSAL_MASK,
+                    OUT_O_TILE_NBUFFERS=outOTileNBuffers,
+                    TileMatPData=TileMatPData,
+                    TileMatVData=TileMatVData,
+                    TilePVData=TilePVData,
+                    TileOutT=TileOutGuT,
+                    TSyncSM2PV=sm2pvSync,
+                    TSyncPV2GU=pv2guSync,
+                    tile_id=tile_id,
+                    sub_tile_id=sub_tile,
+                    pv_ub_buf_idx=tile_id % outOTileNBuffers,
+                    p_tile_fifo=p_tile_fifo_block,
+                    v=v,
+                    pv_tile_fifo=pv_tile_fifo_block,
+                    pv_pend_tile_fifo=pv_pend_tile_fifo_block,
+                    pMatTile=pMatTile[pv_src_pingpong_id % pMatTNBuffers],
+                    vMatTile=vMatTile[pv_src_pingpong_id % vMatTNBuffers],
+                    pvAccTile=pvAccCurrTile,
+                    pvAccPendTile=pvAccPendTile,
+                    runningOTile=runningOTile,
+                    pvPendTile=pvPendTile,
+                    pvVecTile=pvVecTile,
+                    svMatTileEventId=pv_src_pingpong_id % vMatTNBuffers,
+                    accTileEvtID=pvAccTileEvtID,
+                    sm2pvSync=sm2pvSync,
+                    pv2guSync=pv2guSync,
+                    blk_idx=logical_block_idx,
                 )
                 pv_src_pingpong_id += 1
 
@@ -1167,29 +1318,43 @@ def runTFA(
                 # if DAV_CUBE:
                 pvPendTile = pvVecTile[(tile_id + 1) % outOTileNBuffers]
                 compute_pv(
-                    tile_id=tile_id,
-                    sub_tile_id=sub_tile,
-                    logical_block_idx=logical_block_idx,
-                    num_tiles_s1=num_tiles_s1,
-                    vGlobal=vGlobal,
-                    pMatTileSub=pMatTileSub,
-                    vMatTile=vMatTile[pv_src_pingpong_id % vMatTNBuffers],
-                    pL0ATile=pL0ATile,
-                    vL0BTile=vL0BTile,
-                    pvAccCurrTile=pvAccCurrTile,
-                    pvAccPendTile=pvAccPendTile,
-                    pvVecTileSub=pvVecTileSub,
-                    runningOTile=runningOTile,
-                    pvPendTile=pvPendTile,
-                    pvVecTile=pvVecTile[tile_id % outOTileNBuffers],
-                    sm2pvSync=sm2pvSync,
-                    pv2guSync=pv2guSync,
+                    S0=S0,
+                    HEAD_SIZE=Cube_HEAD,
+                    S1=S1,
                     Cube_S0=Cube_S0,
                     Cube_S1=Cube_S1,
                     Tile_S1=Tile_S1,
-                    kTileFactor=kTileFactor,
-                    HEAD_SIZE=Cube_HEAD,
+                    QKP_CV_FIFO=qkp_tile_fifo_size,
+                    PV_CV_FIFO=pv_tile_fifo_size,
+                    CV_FIFO_CONS_SYNC_PERIOD=CV_FIFO_CONS_SYNC_PERIOD,
+                    INTERMEDIATE_CHECK=INTERMEDIATE_CHECK,
                     CAUSAL_MASK=CAUSAL_MASK,
+                    OUT_O_TILE_NBUFFERS=outOTileNBuffers,
+                    TileMatPData=TileMatPData,
+                    TileMatVData=TileMatVData,
+                    TilePVData=TilePVData,
+                    TileOutT=TileOutGuT,
+                    TSyncSM2PV=sm2pvSync,
+                    TSyncPV2GU=pv2guSync,
+                    tile_id=tile_id,
+                    sub_tile_id=sub_tile,
+                    pv_ub_buf_idx=tile_id % outOTileNBuffers,
+                    p_tile_fifo=p_tile_fifo_block,
+                    v=v,
+                    pv_tile_fifo=pv_tile_fifo_block,
+                    pv_pend_tile_fifo=pv_pend_tile_fifo_block,
+                    pMatTile=pMatTile[pv_src_pingpong_id % pMatTNBuffers],
+                    vMatTile=vMatTile[pv_src_pingpong_id % vMatTNBuffers],
+                    pvAccTile=pvAccCurrTile,
+                    pvAccPendTile=pvAccPendTile,
+                    runningOTile=runningOTile,
+                    pvPendTile=pvPendTile,
+                    pvVecTile=pvVecTile,
+                    svMatTileEventId=pv_src_pingpong_id % vMatTNBuffers,
+                    accTileEvtID=pvAccTileEvtID,
+                    sm2pvSync=sm2pvSync,
+                    pv2guSync=pv2guSync,
+                    blk_idx=logical_block_idx,
                 )
                 pv_src_pingpong_id += 1
 
