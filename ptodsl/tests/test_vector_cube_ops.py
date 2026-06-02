@@ -441,6 +441,21 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         self.assertEqual(tmov_op.call_args.args, (None, src, dst))
         self.assertEqual(tmov_op.call_args.kwargs, {"accToVecMode": parsed_mode})
 
+    def test_tile_extract_dispatches_row_and_col_indices(self):
+        src = object()
+        dst = object()
+
+        with patch.object(_ops, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_ops, "_coerce_index", side_effect=lambda value, *, context: f"idx:{context}:{value}") as coerce_index, \
+             patch.object(_ops._pto, "TExtractOp") as textract_op:
+            pto.tile.extract(src, dst, 7, 11)
+
+        self.assertEqual(
+            textract_op.call_args.args,
+            (None, src, "idx:textract(index_row):7", "idx:textract(index_col):11", dst),
+        )
+        self.assertEqual(coerce_index.call_count, 2)
+
     def test_sync_event_id_rejects_out_of_range_static_values(self):
         cases = [
             (_ops.set_flag, ("MTE2", "V"), {"event_id": 8}, "set_flag(..., event_id=...)"),

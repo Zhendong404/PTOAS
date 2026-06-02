@@ -2266,6 +2266,17 @@ def tmov(src, dst, *, mode=None):
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst), **kwargs)
 
 
+def textract(src, dst, index_row, index_col):
+    """``pto.textract ins(src, index_row, index_col) outs(dst)``."""
+    _pto.TExtractOp(
+        None,
+        unwrap_surface_value(src),
+        _coerce_index(index_row, context="textract(index_row)"),
+        _coerce_index(index_col, context="textract(index_col)"),
+        unwrap_surface_value(dst),
+    )
+
+
 def tinsert(src, dst, index_row, index_col):
     """``pto.tinsert ins(src, index_row, index_col) outs(dst)``."""
     _pto.TInsertOp(

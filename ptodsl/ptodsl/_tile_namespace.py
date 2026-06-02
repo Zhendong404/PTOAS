@@ -17,6 +17,7 @@ def _resolve_row_reduction_tmp(src, tmp):
 
 class _TileNamespace:
     mov = staticmethod(_ops.tmov)
+    extract = staticmethod(_ops.textract)
     insert = staticmethod(_ops.tinsert)
     matmul = staticmethod(_ops.tmatmul)
     matmul_acc = staticmethod(_ops.tmatmul_acc)
