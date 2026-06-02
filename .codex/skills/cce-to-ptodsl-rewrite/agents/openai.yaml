@@ -1,0 +1,4 @@
+interface:
+  display_name: "CCE to PTODSL"
+  short_description: "Translate Bisheng CCE kernels to PTODSL"
+  default_prompt: "Use $cce-to-ptodsl-rewrite to port this Bisheng CCE kernel to PTODSL while preserving structure, naming, and synchronization."
