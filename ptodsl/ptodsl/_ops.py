@@ -1596,6 +1596,29 @@ def _normalize_vdup_position_mode(position, *, context: str):
     return normalized
 
 
+def _normalize_acc_to_vec_mode(mode, *, context: str):
+    if mode is None:
+        return None
+    if isinstance(mode, str):
+        token = mode.strip().lower()
+        aliases = {
+            "vec0": "single_mode_vec0",
+            "vec1": "single_mode_vec1",
+            "split_m": "dual_mode_split_m",
+            "split_n": "dual_mode_split_n",
+            "single_mode_vec0": "single_mode_vec0",
+            "single_mode_vec1": "single_mode_vec1",
+            "dual_mode_split_m": "dual_mode_split_m",
+            "dual_mode_split_n": "dual_mode_split_n",
+        }
+        normalized = aliases.get(token)
+        if normalized is None:
+            expected = ", ".join(sorted(aliases))
+            raise ValueError(f"{context} expects mode to be one of {expected}, got {mode!r}")
+        return Attribute.parse(f"#pto<acc_to_vec_mode {normalized}>")
+    return mode
+
+
 def _mask_granularity_bits(mask_value, *, context: str) -> int:
     mask_bits, _ = _infer_mask_metadata(mask_value, context=context)
     return mask_bits
@@ -2235,9 +2258,12 @@ def tstore(tile, part):
     _pto.TStoreOp(None, unwrap_surface_value(tile), unwrap_surface_value(part))
 
 
-def tmov(src, dst):
+def tmov(src, dst, *, mode=None):
     """``pto.tmov ins(src) outs(dst)`` – move data between tile domains."""
-    _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst))
+    kwargs = {}
+    if mode is not None:
+        kwargs["accToVecMode"] = _normalize_acc_to_vec_mode(mode, context="tmov(..., mode=...)")
+    _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst), **kwargs)
 
 
 def tinsert(src, dst, index_row, index_col):
