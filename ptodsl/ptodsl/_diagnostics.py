@@ -191,6 +191,14 @@ def make_tensor_view_missing_metadata_error(ptr: object) -> TypeError:
     )
 
 
+def make_tensor_view_invalid_layout_error(layout: object) -> TypeError:
+    """Return one diagnostic for unsupported ``make_tensor_view(layout=...)`` spellings."""
+    return TypeError(
+        "make_tensor_view(..., layout=...) expects one of the public layout spellings "
+        f"'ND', 'DN', or 'NZ' (case-insensitive), or a raw PTO Layout enum/attr. Got {layout!r}."
+    )
+
+
 def subkernel_host_tensor_boundary_error(role: str, name: str) -> TypeError:
     """Return one diagnostic for host-tensor usage outside the JIT boundary."""
     return TypeError(

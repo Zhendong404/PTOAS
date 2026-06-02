@@ -27,6 +27,7 @@ from functools import wraps
 from ._bootstrap import make_context  # noqa: F401 – ensure MLIR on sys.path
 from ._diagnostics import (
     explicit_mode_required_with_context_error,
+    make_tensor_view_invalid_layout_error,
     make_tensor_view_missing_metadata_error,
     tile_row_alignment_error,
 )
@@ -1826,7 +1827,23 @@ def vsel(true_v, false_v, mask):
 
 # ── Tile-domain operations ────────────────────────────────────────────────────
 
-def make_tensor_view(ptr, *, shape=None, strides=None):
+def _coerce_tensor_view_layout_attr(layout):
+    if layout is None:
+        return None
+    if isinstance(layout, str):
+        canonical = layout.upper()
+        if canonical not in {"ND", "DN", "NZ"}:
+            raise make_tensor_view_invalid_layout_error(layout)
+        return _pto.LayoutAttr.get(getattr(_pto.Layout, canonical))
+    if isinstance(layout, Attribute):
+        return layout
+    try:
+        return _pto.LayoutAttr.get(layout)
+    except Exception as exc:  # pragma: no cover - defensive pybind fallback
+        raise make_tensor_view_invalid_layout_error(layout) from exc
+
+
+def make_tensor_view(ptr, *, shape=None, strides=None, layout=None):
     """
     ``pto.make_tensor_view`` – wrap a pointer as a tensor view.
 
@@ -1852,11 +1869,13 @@ def make_tensor_view(ptr, *, shape=None, strides=None):
         if static_dims is not None
         else tensor_view_type(rank, elem)
     )
+    layout_attr = _coerce_tensor_view_layout_attr(layout)
     value = _pto.MakeTensorViewOp(
         tv_type,
         raw_ptr,
         _unwrap_sequence(normalized_shape),
         _unwrap_sequence(normalized_strides),
+        layout=layout_attr,
     ).result
     return TensorViewValue(value, shape=tuple(shape), strides=tuple(strides))
 

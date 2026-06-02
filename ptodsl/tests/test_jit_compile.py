@@ -154,6 +154,17 @@ def non_entry_metadata_probe(
     _ = a_view
 
 
+
+@pto.jit(target="a5")
+def explicit_layout_tensor_view_probe(
+    K_ptr: pto.ptr(pto.f16, "gm"),
+    rows: pto.i32,
+    cols: pto.i32,
+):
+    k_view = pto.make_tensor_view(K_ptr, shape=[rows, cols], strides=[1, rows], layout="DN")
+    _ = k_view
+
+
 @pto.jit(target="a5", entry=False, backend="vpto")
 def helper_device_abi_surface_probe(
     tile: pto.Tile,
@@ -2327,6 +2338,16 @@ def main() -> None:
             runtime_metadata_text,
         ) is not None,
         "make_tensor_view should preserve explicitly authored runtime shape/stride metadata",
+    )
+
+    explicit_layout_text = explicit_layout_tensor_view_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(explicit_layout_text, "explicit tensor_view layout specialization")
+    expect(
+        re.search(
+            r'pto\.make_tensor_view %arg0, shape = \[%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\], strides = \[%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\] \{layout = #pto\.layout<dn>\}',
+            explicit_layout_text,
+        ) is not None,
+        "make_tensor_view(layout='DN') should preserve the explicit layout attribute in MLIR",
     )
 
     tile_surface_text = tile_surface_compute_probe.compile().mlir_text()
