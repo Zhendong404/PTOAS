@@ -2240,6 +2240,17 @@ def tmov(src, dst):
     _pto.TMovOp(None, unwrap_surface_value(src), unwrap_surface_value(dst))
 
 
+def tinsert(src, dst, index_row, index_col):
+    """``pto.tinsert ins(src, index_row, index_col) outs(dst)``."""
+    _pto.TInsertOp(
+        None,
+        unwrap_surface_value(src),
+        _coerce_index(index_row, context="tinsert(index_row)"),
+        _coerce_index(index_col, context="tinsert(index_col)"),
+        unwrap_surface_value(dst),
+    )
+
+
 def tmatmul(lhs, rhs, dst):
     """``pto.tmatmul ins(lhs, rhs) outs(dst)``."""
     _pto.TMatmulOp(
@@ -4533,7 +4544,7 @@ __all__ = [
     "vsel",
     "make_tensor_view", "partition_view",
     "alloc_tile",
-    "tload", "tstore", "tmov",
+    "tload", "tstore", "tmov", "tinsert",
     "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",

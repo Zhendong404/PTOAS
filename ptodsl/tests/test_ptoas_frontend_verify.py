@@ -227,6 +227,7 @@ def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
     mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
     cv_split_example = REPO_ROOT / "ptodsl" / "examples" / "hw_native_flash_attention_cv_split.py"
+    fa_dn_ptodsl_example = REPO_ROOT / "ptodsl" / "examples" / "fa_dn_ptodsl.py"
 
     simple_text = host_vec_copy.compile().mlir_text()
     simple_frontend_texts = run_ptoas_frontend_verify(
@@ -416,6 +417,52 @@ def main() -> None:
         "pto.aiv_initialize_pipe" in cv_split_frontend_text
         and "pto.tpush_to_aic" in cv_split_frontend_text,
         "cv-split frontend verification should keep the vector helper pipe init and push path intact",
+    )
+
+    fa_dn_ptodsl = load_example_module(
+        fa_dn_ptodsl_example,
+        "ptodsl_fa_dn_ptodsl_example",
+    )
+    fa_dn_ptodsl_text = fa_dn_ptodsl.emit_fa_dn_mlir(
+        head_dim=128,
+        s1_tile=256,
+        qk_preload=3,
+        causal=False,
+        q_rows=128,
+    )
+    fa_dn_ptodsl_frontend_text = run_ptoas_frontend_verify_whole(
+        ptoas_bin,
+        fa_dn_ptodsl_text,
+        "fa_dn_ptodsl.py --emit-mlir output",
+    )
+    expect(
+        fa_dn_ptodsl_frontend_text.count('module attributes {pto.backend = "emitc", pto.target_arch = "a5"}') >= 3,
+        "fa_dn_ptodsl.py frontend verification should preserve the outer entry child plus two EmitC helper children",
+    )
+    expect(
+        "func.func public @fa_dn_ptodsl_cube_h128_s1t256_qp3_qr128__ptodsl_"
+        in fa_dn_ptodsl_frontend_text,
+        "fa_dn_ptodsl frontend verification should preserve the cube helper public ABI-specialized symbol",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_dn_qk_c2v_fifo", peer_func = @fa_dn_ptodsl_vector_h128_s1t256_qp3_qr128}'
+        in fa_dn_ptodsl_frontend_text,
+        "fa_dn_ptodsl frontend verification should keep the QK logical vector peer reference",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_dn_pv_c2v_fifo", peer_func = @fa_dn_ptodsl_vector_h128_s1t256_qp3_qr128}'
+        in fa_dn_ptodsl_frontend_text,
+        "fa_dn_ptodsl frontend verification should keep the PV logical vector peer reference",
+    )
+    expect(
+        'pto.import_reserved_buffer{name = "fa_dn_p_v2c_fifo", peer_func = @fa_dn_ptodsl_cube_h128_s1t256_qp3_qr128}'
+        in fa_dn_ptodsl_frontend_text,
+        "fa_dn_ptodsl frontend verification should keep the P logical cube peer reference",
+    )
+    expect(
+        "pto.aic_initialize_pipe" in fa_dn_ptodsl_frontend_text
+        and "pto.aiv_initialize_pipe" in fa_dn_ptodsl_frontend_text,
+        "fa_dn_ptodsl frontend verification should keep both cube and vector pipe initialization paths",
     )
 
     print("ptodsl_ptoas_frontend_verify: PASS")
