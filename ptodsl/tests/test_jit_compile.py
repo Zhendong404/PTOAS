@@ -154,6 +154,26 @@ def non_entry_metadata_probe(
     _ = a_view
 
 
+@pto.jit(target="a5", entry=False, backend="emitc", kernel_kind="vector")
+def emitc_vector_kernel_module_metadata_probe(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    _ = src_gm
+    _ = dst_gm
+    _ = row
+
+
+@pto.jit(target="a5", backend="emitc")
+def emitc_entry_calls_emitc_vector_kernel_module_metadata_probe(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    with pto.for_(0, rows, step=1) as row:
+        emitc_vector_kernel_module_metadata_probe(src_gm, dst_gm, row)
+
 
 @pto.jit(target="a5")
 def explicit_layout_tensor_view_probe(
@@ -1962,6 +1982,18 @@ def main() -> None:
     expect(
         '#pto.kernel_kind<' not in emitc_entry_text,
         "EmitC-only child modules should not carry VPTO kernel-kind metadata",
+    )
+    emitc_helper_text = (
+        emitc_entry_calls_emitc_vector_kernel_module_metadata_probe.compile().mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        emitc_helper_text,
+        "emitc entry=False kernel-module specialization",
+    )
+    expect(
+        'module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"}'
+        in emitc_helper_text,
+        "EmitC entry=False helper child should preserve kernel-kind metadata for PTOAS child compilation",
     )
     expect(
         host_vec_copy.compile()._module_spec.backend == "vpto",

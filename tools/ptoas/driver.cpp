@@ -264,6 +264,9 @@ static StringRef logicalKernelName(StringRef symbolName) {
   return symbolName.take_front(suffixPos);
 }
 
+static constexpr llvm::StringLiteral kInternalPTOEntryAttrName =
+    "pto.internal.entry";
+
 static SmallVector<StringRef> collectDirectCalleeNames(ModuleOp module) {
   SmallVector<StringRef> names;
   module.walk([&](func::CallOp callOp) {
@@ -274,14 +277,13 @@ static SmallVector<StringRef> collectDirectCalleeNames(ModuleOp module) {
   return names;
 }
 
-static void copyOuterAttrsToJobModule(ModuleOp outer, ModuleOp jobModule) {
-  for (NamedAttribute attr : outer->getAttrs()) {
+static void copyModuleAttrsToJobModule(ModuleOp source, ModuleOp jobModule) {
+  for (NamedAttribute attr : source->getAttrs()) {
     StringRef attrName = attr.getName().getValue();
     if (attrName == SymbolTable::getSymbolAttrName() ||
         attrName == "pto.backend")
       continue;
-    if (!jobModule->hasAttr(attr.getName()))
-      jobModule->setAttr(attr.getName(), attr.getValue());
+    jobModule->setAttr(attr.getName(), attr.getValue());
   }
 }
 
@@ -292,6 +294,31 @@ static func::FuncOp findFunctionByLogicalName(ModuleOp module,
       return funcOp;
   }
   return {};
+}
+
+static func::FuncOp findFunctionBySymbolName(ModuleOp module,
+                                             StringRef symbolName) {
+  return dyn_cast_or_null<func::FuncOp>(
+      SymbolTable::lookupSymbolIn(module, symbolName));
+}
+
+static func::FuncOp findFunctionForPeerReference(ModuleOp module,
+                                                 StringRef peerRef) {
+  if (func::FuncOp exact = findFunctionBySymbolName(module, peerRef))
+    return exact;
+
+  func::FuncOp privateMatch;
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (logicalKernelName(funcOp.getSymName()) != peerRef)
+      continue;
+
+    auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
+    if (!visibility || visibility.getValue() != "private")
+      return funcOp;
+    if (!privateMatch)
+      privateMatch = funcOp;
+  }
+  return privateMatch;
 }
 
 static func::FuncOp findSiblingSourceFunction(ModuleOp outer,
@@ -340,6 +367,26 @@ static func::FuncOp cloneFunctionDeclarationIntoModule(ModuleOp jobModule,
   return cloned;
 }
 
+static void markKernelKindExportedFuncsAsNonEntry(
+    ModuleOp targetChild, ArrayRef<func::FuncOp> exportedFuncs) {
+  if (!targetChild || !targetChild->hasAttr("pto.kernel_kind"))
+    return;
+
+  MLIRContext *ctx = targetChild.getContext();
+  for (func::FuncOp exportedFunc : exportedFuncs) {
+    if (!exportedFunc || exportedFunc.isDeclaration())
+      continue;
+    if (pto::hasExplicitPTOEntryAttr(exportedFunc))
+      continue;
+    auto kernelKindAttr =
+        exportedFunc->getAttrOfType<mlir::pto::FunctionKernelKindAttr>(
+            mlir::pto::FunctionKernelKindAttr::name);
+    if (!kernelKindAttr)
+      continue;
+    exportedFunc->setAttr(kInternalPTOEntryAttrName, BoolAttr::get(ctx, false));
+  }
+}
+
 static void rewriteExportedFunctionToLogicalWrapper(func::FuncOp exportedFunc,
                                                     StringRef logicalName) {
   if (logicalName == exportedFunc.getSymName())
@@ -359,7 +406,8 @@ static void rewriteExportedFunctionToLogicalWrapper(func::FuncOp exportedFunc,
 static FailureOr<OwningOpRef<ModuleOp>>
 buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
   ModuleOp jobModule = ModuleOp::create(outer.getLoc());
-  copyOuterAttrsToJobModule(outer, jobModule);
+  copyModuleAttrsToJobModule(outer, jobModule);
+  copyModuleAttrsToJobModule(targetChild, jobModule);
 
   for (Operation &op : targetChild.getBodyRegion().front().getOperations()) {
     jobModule.push_back(op.clone());
@@ -386,12 +434,18 @@ buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
       continue;
     if (funcOp.isExternal())
       continue;
-    if (funcOp.getSymName().contains("__ptodsl_"))
-      exportedFuncs.push_back(funcOp);
+    exportedFuncs.push_back(funcOp);
   }
+
+  markKernelKindExportedFuncsAsNonEntry(targetChild, exportedFuncs);
 
   for (func::FuncOp exportedFunc : exportedFuncs) {
     StringRef logicalName = logicalKernelName(exportedFunc.getSymName());
+    auto kernelKindAttr =
+        exportedFunc->getAttrOfType<mlir::pto::FunctionKernelKindAttr>(
+            mlir::pto::FunctionKernelKindAttr::name);
+    if (kernelKindAttr)
+      continue;
     if (!findFunctionByLogicalName(jobModule, logicalName)) {
       cloneFunctionIntoModule(jobModule, exportedFunc, logicalName, "private");
     }
@@ -399,15 +453,34 @@ buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
   }
 
   for (StringRef logicalName : importedPeerNames) {
-    if (findFunctionByLogicalName(jobModule, logicalName))
-      continue;
     func::FuncOp peerSource =
         findSiblingSourceFunction(outer, targetChild, logicalName,
                                   /*allowLogicalNameMatch=*/true);
     if (!peerSource)
       return failure();
-    cloneFunctionIntoModule(jobModule, peerSource, logicalName, "private");
+
+    StringRef peerSymbolName = peerSource.getSymName();
+    if (!findFunctionBySymbolName(jobModule, peerSymbolName))
+      cloneFunctionIntoModule(jobModule, peerSource, peerSymbolName, "private");
+
+    jobModule.walk([&](pto::ImportReservedBufferOp importOp) {
+      if (importOp.getPeerFuncAttr().getValue() != logicalName)
+        return;
+      importOp.setPeerFuncAttr(
+          FlatSymbolRefAttr::get(jobModule.getContext(), peerSymbolName));
+    });
   }
+
+  jobModule.walk([&](pto::ImportReservedBufferOp importOp) {
+    StringRef peerRef = importOp.getPeerFuncAttr().getValue();
+    func::FuncOp localPeer = findFunctionForPeerReference(jobModule, peerRef);
+    if (!localPeer)
+      return;
+    if (localPeer.getSymName() == peerRef)
+      return;
+    importOp.setPeerFuncAttr(
+        FlatSymbolRefAttr::get(jobModule.getContext(), localPeer.getSymName()));
+  });
 
   return OwningOpRef<ModuleOp>(jobModule);
 }

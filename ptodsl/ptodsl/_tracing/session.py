@@ -25,7 +25,7 @@ from .._surface_values import unwrap_surface_value, wrap_like_surface_value
 
 from mlir.dialects import arith, func
 from mlir.dialects import pto as _pto
-from mlir.ir import InsertionPoint, IntegerType, StringAttr, UnitAttr
+from mlir.ir import Attribute, InsertionPoint, IntegerType, StringAttr, UnitAttr
 
 
 @dataclass(frozen=True)
@@ -361,6 +361,14 @@ class TraceSession:
         with InsertionPoint(symbol_table):
             helper = func.FuncOp(specialized_symbol_name, fn_ty)
             helper.attributes["sym_visibility"] = StringAttr.get("public")
+            if (
+                module_spec.backend == "emitc"
+                and not module_spec.entry
+                and module_spec.kernel_kind in {"cube", "vector"}
+            ):
+                helper.attributes["pto.kernel_kind"] = Attribute.parse(
+                    f"#pto.kernel_kind<{module_spec.kernel_kind}>"
+                )
             for attr_name, attr_value in spec.attributes:
                 helper.attributes[attr_name] = attr_value
         self._kernel_module_primary_functions[cache_key] = helper

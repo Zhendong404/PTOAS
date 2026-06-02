@@ -261,12 +261,21 @@ func::FuncOp mlir::pto::lookupPeerFuncAcrossContainer(Operation *op,
   if (!currentChildModule)
     return {};
 
+  StringRef target = peerAttr.getValue();
+  for (func::FuncOp funcOp : currentChildModule.getOps<func::FuncOp>()) {
+    if (funcOp.getSymName() == target)
+      return funcOp;
+  }
+  if (auto localPeer = dyn_cast_or_null<func::FuncOp>(
+          SymbolTable::lookupSymbolIn(currentChildModule, target))) {
+    return localPeer;
+  }
+
   Operation *maybeOuter = currentChildModule->getParentOp();
   auto outerModule = dyn_cast_or_null<ModuleOp>(maybeOuter);
   if (!outerModule)
     return {};
 
-  StringRef target = peerAttr.getValue();
   SmallVector<func::FuncOp> fallbackMatches;
   outerModule.walk([&](func::FuncOp funcOp) {
     auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
@@ -2439,6 +2448,18 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
     return;
 
   SmallVector<func::FuncOp> defs = getPTOFunctionDefinitions(module);
+  bool hasEffectiveOverride = llvm::any_of(defs, [](func::FuncOp func) {
+    return func->hasAttrOfType<BoolAttr>(kEffectivePTOEntryAttrName);
+  });
+
+  if (hasEffectiveOverride) {
+    for (auto func : module.getOps<func::FuncOp>()) {
+      if (func.isDeclaration())
+        func->removeAttr(kEffectivePTOEntryAttrName);
+    }
+    return;
+  }
+
   for (auto func : module.getOps<func::FuncOp>())
     func->removeAttr(kEffectivePTOEntryAttrName);
 

@@ -374,8 +374,8 @@ def main() -> None:
         "hw_native_flash_attention_cv_split.py --emit-mlir output",
     )
     expect(
-        cv_split_frontend_text.count('module attributes {pto.backend = "vpto", pto.target_arch = "a5"}') >= 3,
-        "hw_native_flash_attention_cv_split.py frontend verification should preserve the outer entry child plus two VPTO helper children",
+        cv_split_frontend_text.count('module attributes {pto.backend = "emitc", pto.target_arch = "a5"}') >= 3,
+        "hw_native_flash_attention_cv_split.py frontend verification should preserve the outer entry child plus two EmitC helper children",
     )
     expect(
         "func.func public @hw_native_flash_attention_cv_split_cube_h128_s1t256_qp3_qr128__ptodsl_"
