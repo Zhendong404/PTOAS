@@ -538,7 +538,6 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             gm_slot_type = _pipe_namespace._pto.TensorViewType.get([16, 16], F32Type.get())
         gm_slot = SimpleNamespace(type=gm_slot_type)
         gm_slot_buffer = object()
-        consumer_buf = object()
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity), \
@@ -546,7 +545,6 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             pipe = pto.pipe.c2v(
                 gm_slot_tensor=gm_slot,
                 gm_slot_buffer=gm_slot_buffer,
-                consumer_buf=consumer_buf,
                 id=7,
             )
 
@@ -573,7 +571,6 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "id": 7,
             "gm_slot_buffer": gm_slot_buffer,
             "gm_slot_tensor": gm_slot,
-            "c2v_consumer_buf": consumer_buf,
         }
         aic_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
         aiv_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
@@ -657,6 +654,15 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "c2v_consumer_buf": c2v_buf,
             "v2c_consumer_buf": v2c_buf,
         })
+
+    def test_local_pipe_constructors_still_require_consumer_buffers(self):
+        with self.assertRaises(TypeError) as c2v_exc:
+            pto.pipe.c2v(slot_size=1024, id=3)
+        self.assertIn("requires consumer_buf for local pipes", str(c2v_exc.exception))
+
+        with self.assertRaises(TypeError) as v2c_exc:
+            pto.pipe.v2c(slot_size=2048, id=4)
+        self.assertIn("requires consumer_buf for local pipes", str(v2c_exc.exception))
 
     def test_pipe_constructors_require_explicit_stable_ids(self):
         buf = object()

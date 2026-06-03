@@ -276,8 +276,6 @@ class _PipeNamespace:
         nosplit=None,
     ):
         id = _require_pipe_id(id, context=f"pipe.{direction}(...)")
-        if consumer_buf is None:
-            raise TypeError(f"pipe.{direction}(...) requires consumer_buf")
         entry_type = None
         if slot_size is None:
             if gm_slot_tensor is None:
@@ -289,6 +287,8 @@ class _PipeNamespace:
             if local_slot_num is not None:
                 raise TypeError(f"pipe.{direction}(...) does not accept local_slot_num when gm_slot_tensor is provided")
             entry_type = unwrap_surface_value(gm_slot_tensor).type
+        elif consumer_buf is None:
+            raise TypeError(f"pipe.{direction}(...) requires consumer_buf for local pipes")
         descriptor = _PipeDescriptor(
             kind="global" if gm_slot_tensor is not None else "local",
             direction=direction,
