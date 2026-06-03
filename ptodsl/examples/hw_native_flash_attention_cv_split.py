@@ -16,6 +16,7 @@ entry owns the host-visible ABI.
 """
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import time
@@ -35,13 +36,31 @@ from ptodsl import pto, scalar
 
 
 S0 = 128
+S0_HALF = S0 // 2
 HEAD = 128
 CUBE_S1 = 128
 VEC_CORES = 2
 SLOT_NUM = 8
-DEFAULT_S1_TILE = 256
-DEFAULT_QK_PRELOAD = 3
-DEFAULT_Q_ROWS = S0
+
+DEFAULT_S1_TILE = int(os.environ.get("FA_S1_TILE", "256"))
+if DEFAULT_S1_TILE not in (256, 512):
+    raise ValueError(f"FA_S1_TILE must be 256 or 512, got {DEFAULT_S1_TILE}")
+if DEFAULT_S1_TILE % CUBE_S1 != 0:
+    raise ValueError(f"FA_S1_TILE={DEFAULT_S1_TILE} must be a multiple of CUBE_S1={CUBE_S1}")
+
+DEFAULT_Q_ROWS = int(os.environ.get("FA_Q_ROWS", "128"))
+if DEFAULT_Q_ROWS % S0 != 0:
+    raise ValueError(f"FA_Q_ROWS={DEFAULT_Q_ROWS} must be a multiple of S0={S0}")
+
+DEFAULT_QK_PRELOAD = int(os.environ.get("FA_QK_PRELOAD", os.environ.get("FA_DSL_QK_PRELOAD", "3")))
+if DEFAULT_QK_PRELOAD not in (3, 4):
+    raise ValueError(f"FA_QK_PRELOAD must be 3 or 4, got {DEFAULT_QK_PRELOAD}")
+
+DEFAULT_EXP_RING = int(os.environ.get("FA_EXP_RING", os.environ.get("FA_DSL_EXP_RING", str(DEFAULT_QK_PRELOAD))))
+if DEFAULT_EXP_RING != DEFAULT_QK_PRELOAD:
+    raise ValueError(
+        f"FA_EXP_RING must currently equal FA_QK_PRELOAD ({DEFAULT_QK_PRELOAD}), got {DEFAULT_EXP_RING}"
+    )
 
 QK_C2V_PIPE_ID = 0
 P_V2C_PIPE_ID = 1
@@ -205,11 +224,10 @@ def _build_flash_attention_entry(
 
     tile_factor = s1_tile // CUBE_S1
     vec_gu_rows = S0 // VEC_CORES
-    vec_s0 = vec_gu_rows // tile_factor
-    row_slice_count = tile_factor
+    vec_s0 = S0 // VEC_CORES // tile_factor
     total_q_blocks = q_rows // S0
     scale_value = 1.0 / (head_dim ** 0.5)
-    exp_ring = qk_preload
+    exp_ring = DEFAULT_EXP_RING if qk_preload == DEFAULT_QK_PRELOAD else qk_preload
     qk_c2v_pipe_id = int(QK_C2V_PIPE_ID)
     p_v2c_pipe_id = int(P_V2C_PIPE_ID)
     pv_c2v_pipe_id = int(PV_C2V_PIPE_ID)
@@ -479,7 +497,7 @@ def _build_flash_attention_entry(
         c1 = pto.const(1)
         c2 = pto.const(2)
         cS0 = pto.const(S0)
-        cS0_HALF = pto.const(S0 // 2)
+        cS0_HALF = pto.const(S0_HALF)
         cVecGuRows = pto.const(vec_gu_rows)
         cVec_S0 = pto.const(vec_s0)
         cHEAD = pto.const(head_dim)
@@ -540,31 +558,31 @@ def _build_flash_attention_entry(
         tmp = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
         p_fp32 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
         p_fp16 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f16)
-        pv_vec = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(row_slice_count)]
-        o_tile = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(row_slice_count)]
+        pv_vec = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
+        o_tile = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
 
         running_max = [
             pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(row_slice_count)
+            for _ in range(tile_factor)
         ]
         running_sum = [
             pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(row_slice_count)
+            for _ in range(tile_factor)
         ]
         local_max = [
             pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(row_slice_count)
+            for _ in range(tile_factor)
         ]
         local_sum = [
             pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(row_slice_count)
+            for _ in range(tile_factor)
         ]
         # The shorter 140tflops-style preload only needs one exp_max slot per
         # preloaded logical S1 tile.
         exp_max_ring = [
             [
                 pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-                for _ in range(row_slice_count)
+                for _ in range(tile_factor)
             ]
             for _ in range(exp_ring)
         ]
@@ -583,7 +601,7 @@ def _build_flash_attention_entry(
         def emit_softmax(exp_max_slots, is_init):
             qk_entry = qk_pipe.pop(split=split_up_down)
             p_entry = p_pipe.alloc(split=split_up_down)
-            for row_slice in range(row_slice_count):
+            for row_slice in range(tile_factor):
                 row_off = row_slice * vec_s0
                 slot_part = pto.partition_view(
                     qk_entry,
@@ -639,7 +657,7 @@ def _build_flash_attention_entry(
         # pv_vec, indexed by the same exp_max_slots used during softmax.
         def emit_gu(exp_max_slots, is_init):
             pv_entry = pv_pipe.pop(split=split_up_down, result_type=pv_pipe.entry_type)
-            for row_slice in range(row_slice_count):
+            for row_slice in range(tile_factor):
                 row_off = row_slice * vec_s0
                 pv_part = pto.partition_view(
                     pv_entry,
@@ -721,7 +739,7 @@ def _build_flash_attention_entry(
                 emit_gu_any(tile_id)
 
             # Final divide + GM store, one row_slice at a time.
-            for row_slice in range(row_slice_count):
+            for row_slice in range(tile_factor):
                 row_off = row_off_sb + row_slice * vec_s0
                 pto.tile.rowexpanddiv(o_tile[row_slice], running_sum[row_slice], o_tile[row_slice])
                 o_part = pto.partition_view(
