@@ -295,7 +295,13 @@ def _build_flash_attention_entry(
         # K/P/V MAT tiles where L1 capacity allows it. RIGHT is single-buffered
         # because two 128x128 RIGHT tiles for both QK and PV overflow L0B.
         q_mat = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="MAT")
-        q_left = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="LEFT")
+        q_left = pto.alloc_tile(
+            shape=[S0, head_dim],
+            dtype=pto.f16,
+            memory_space="LEFT",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         k_mat_a = pto.alloc_tile(
             shape=[head_dim, CUBE_S1],
             dtype=pto.f16,
@@ -310,13 +316,43 @@ def _build_flash_attention_entry(
             blayout="RowMajor",
             slayout="ColMajor",
         )
-        k_right_a = pto.alloc_tile(shape=[head_dim, CUBE_S1], dtype=pto.f16, memory_space="RIGHT")
-        qk_acc_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f32, memory_space="ACC")
+        k_right_a = pto.alloc_tile(
+            shape=[head_dim, CUBE_S1],
+            dtype=pto.f16,
+            memory_space="RIGHT",
+            blayout="RowMajor",
+            slayout="ColMajor",
+        )
+        qk_acc_a = pto.alloc_tile(
+            shape=[S0, CUBE_S1],
+            dtype=pto.f32,
+            memory_space="ACC",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         p_recv_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="MAT")
-        p_left_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="LEFT")
+        p_left_a = pto.alloc_tile(
+            shape=[S0, CUBE_S1],
+            dtype=pto.f16,
+            memory_space="LEFT",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         v_mat_a = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="MAT")
-        v_right_a = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="RIGHT")
-        pv_acc_a = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f32, memory_space="ACC")
+        v_right_a = pto.alloc_tile(
+            shape=[CUBE_S1, head_dim],
+            dtype=pto.f16,
+            memory_space="RIGHT",
+            blayout="RowMajor",
+            slayout="ColMajor",
+        )
+        pv_acc_a = pto.alloc_tile(
+            shape=[S0, head_dim],
+            dtype=pto.f32,
+            memory_space="ACC",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         k_mat = [k_mat_a, k_mat_b]
         k_right = [k_right_a, k_right_a]
         qk_acc = [qk_acc_a, qk_acc_a]
