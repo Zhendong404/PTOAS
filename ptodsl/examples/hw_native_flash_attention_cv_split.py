@@ -91,16 +91,21 @@ def _validate_specialization(*, head_dim: int, s1_tile: int, qk_preload: int, ca
     if q_rows % S0 != 0:
         raise ValueError(f"q_rows={q_rows} must be a multiple of S0={S0}")
 
-
-def compute_qb_range(total_q_blocks):
+# -------------------------------------------------------------------------
+# Helper: even share of NUM_Q_BLOCKS across this core grid.
+# The C++ kernel uses one Q-row block per AIC core (block_idx -> Q rows);
+# in DSL we let the launcher choose blockDim and split inside.
+# -------------------------------------------------------------------------
+def compute_qb_range(c1):
+    cNUM_Q_BLOCKS = scalar.const(total_q_blocks)
     block_num = scalar.index_cast(pto.get_block_num())
     bid = scalar.index_cast(pto.get_block_idx())
-    floor_div = total_q_blocks // block_num
-    extra = total_q_blocks % block_num
-    fat_start = bid * (floor_div + 1)
-    thin_start = extra * (floor_div + 1) + (bid - extra) * floor_div
+    floor_div = cNUM_Q_BLOCKS // block_num
+    extra = cNUM_Q_BLOCKS % block_num
+    fat_start = bid * (floor_div + c1)
+    thin_start = extra * (floor_div + c1) + (bid - extra) * floor_div
     qb_start = scalar.select(bid < extra, fat_start, thin_start)
-    per_core = scalar.select(bid < extra, floor_div + 1, floor_div)
+    per_core = scalar.select(bid < extra, floor_div + c1, floor_div)
     return bid, qb_start, qb_start + per_core
 
 
@@ -216,177 +221,216 @@ def _build_flash_attention_entry(
         GM_P_OFF_F32,
     ) = _gm_slot_layout(head_dim=head_dim, s1_tile=s1_tile)
 
+    # =========================================================================
+    # Cube kernel
+    # =========================================================================
     @pto.jit(name=cube_symbol, target="a5", entry=False, kernel_kind="cube", mode="auto", backend="emitc")
-    def flash_attention_cube_kernel(
+    def cube_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
         gm_q: pto.ptr(pto.f16, "gm"),
         gm_k: pto.ptr(pto.f16, "gm"),
         gm_v: pto.ptr(pto.f16, "gm"),
-        s0: pto.i32,
-        s1: pto.i32,
+        s0_i64: pto.i64,
+        s1_i64: pto.i64,
     ):
-        s0_index = scalar.index_cast(s0)
-        s1_index = scalar.index_cast(s1)
-        num_tiles_s1 = s1_index // s1_tile
-        steady_tiles = num_tiles_s1 - qk_preload
-        bid, qb_start, qb_end = compute_qb_range(total_q_blocks)
+        c0 = scalar.const(0)
+        c1 = scalar.const(1)
+        cS0 = scalar.const(S0)
+        cHEAD = scalar.const(HEAD)
+        cCUBE_S1 = scalar.const(CUBE_S1)
+        cS1_TILE = scalar.const(s1_tile)
+        cPRELOAD = scalar.const(qk_preload)
+        s0 = scalar.index_cast(s0_i64)
+        s1 = scalar.index_cast(s1_i64)
+        num_tiles_s1 = s1 // cS1_TILE
+        steady_tiles = num_tiles_s1 - cPRELOAD
 
-        q_view = pto.make_tensor_view(gm_q, shape=[s0_index, head_dim], strides=[head_dim, 1])
-        k_view = pto.make_tensor_view(gm_k, shape=[head_dim, s1_index], strides=[1, head_dim], layout="DN")
-        v_view = pto.make_tensor_view(gm_v, shape=[s1_index, head_dim], strides=[head_dim, 1])
+        bid, qb_start, qb_end = compute_qb_range(c1)
 
         gm_blk = pto.add_ptr(gm_slot_buffer, bid * scalar.const(GM_ELEMS_PER_BLOCK))
         gm_qk = pto.add_ptr(gm_blk, scalar.const(GM_QK_OFF_F32))
         gm_pv = pto.add_ptr(gm_blk, scalar.const(GM_PV_OFF_F32))
+        # The P slot is fp16-typed, so address it via the fp16-cast slot buffer.
+        # GM_P_OFF_F32 is in fp32 elements; double for fp16 element stride.
         gm_blk_fp16 = pto.add_ptr(gm_slot_buffer_fp16, bid * scalar.const(2 * GM_ELEMS_PER_BLOCK))
         gm_p = pto.add_ptr(gm_blk_fp16, scalar.const(2 * GM_P_OFF_F32))
 
-        qk_slot_view = pto.make_tensor_view(gm_qk, shape=[S0, s1_tile], strides=[s1_tile, 1])
-        pv_slot_view = pto.make_tensor_view(gm_pv, shape=[S0, head_dim], strides=[head_dim, 1])
-        p_slot_view = pto.make_tensor_view(gm_p, shape=[S0, s1_tile], strides=[s1_tile, 1])
-
-        qk_consumer_buf = pto.import_reserved_buffer("fa_qk_c2v_fifo", peer_func=vector_symbol)
-        pv_consumer_buf = pto.import_reserved_buffer("fa_pv_c2v_fifo", peer_func=vector_symbol)
-        p_consumer_buf = pto.reserve_buffer("fa_p_v2c_fifo", size=SLOT_SIZE_P * SLOT_NUM, location="mat")
-
+        # ---- QK pipe (cube producer): l2g2l GM-staged slot ----
+        qk_slot_view = pto.make_tensor_view(gm_qk, shape=[cS0, cS1_TILE], strides=[cS1_TILE, c1])
         qk_pipe = pto.pipe.c2v(
-            consumer_buf=qk_consumer_buf,
             gm_slot_buffer=gm_qk,
             gm_slot_tensor=qk_slot_view,
             id=QK_C2V_PIPE_ID,
         )
-        p_pipe = pto.pipe.v2c(
-            consumer_buf=p_consumer_buf,
-            gm_slot_buffer=gm_p,
-            gm_slot_tensor=p_slot_view,
-            id=P_V2C_PIPE_ID,
-        )
+
+        # ---- PV pipe (cube producer): l2g2l GM-staged slot ----
+        pv_slot_view = pto.make_tensor_view(gm_pv, shape=[cS0, cHEAD], strides=[cHEAD, c1])
         pv_pipe = pto.pipe.c2v(
-            consumer_buf=pv_consumer_buf,
             gm_slot_buffer=gm_pv,
             gm_slot_tensor=pv_slot_view,
             id=PV_C2V_PIPE_ID,
         )
 
-        qk_pipe.init_cube()
-        p_pipe.init_cube()
-        pv_pipe.init_cube()
-
-        q_mat = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="mat")
-        q_left = pto.alloc_tile(
-            shape=[S0, head_dim],
-            dtype=pto.f16,
-            memory_space="left",
-            blayout="ColMajor",
-            slayout="RowMajor",
+        # ---- P pipe (cube consumer of vec output): l2g2l GM-staged slot ----
+        p_slot_view_cube = pto.make_tensor_view(gm_p, shape=[cS0, cS1_TILE], strides=[cS1_TILE, c1])
+        p_pipe = pto.pipe.v2c(
+            gm_slot_buffer=gm_p,
+            gm_slot_tensor=p_slot_view_cube,
+            id=P_V2C_PIPE_ID,
         )
-        k_mat = pto.alloc_tile(
+
+        qk_pipe.init_cube()
+        pv_pipe.init_cube()
+        p_pipe.init_cube()
+
+        # ---- Allocate cube tiles. Match the manual kernel's ping-pong for
+        # K/P/V MAT tiles where L1 capacity allows it. RIGHT is single-buffered
+        # because two 128x128 RIGHT tiles for both QK and PV overflow L0B.
+        q_mat = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="MAT")
+        q_left = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="LEFT")
+        k_mat_a = pto.alloc_tile(
             shape=[head_dim, CUBE_S1],
             dtype=pto.f16,
-            memory_space="mat",
+            memory_space="MAT",
             blayout="RowMajor",
             slayout="ColMajor",
         )
-        k_right = pto.alloc_tile(
+        k_mat_b = pto.alloc_tile(
             shape=[head_dim, CUBE_S1],
             dtype=pto.f16,
-            memory_space="right",
+            memory_space="MAT",
+            blayout="RowMajor",
             slayout="ColMajor",
         )
-        qk_acc = pto.alloc_tile(
-            shape=[S0, CUBE_S1],
-            dtype=pto.f32,
-            memory_space="acc",
-            blayout="ColMajor",
-            slayout="RowMajor",
-        )
-        p_recv = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="mat")
-        p_left = pto.alloc_tile(
-            shape=[S0, CUBE_S1],
-            dtype=pto.f16,
-            memory_space="left",
-            blayout="ColMajor",
-            slayout="RowMajor",
-        )
-        v_mat = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="mat")
-        v_right = pto.alloc_tile(
-            shape=[CUBE_S1, head_dim],
-            dtype=pto.f16,
-            memory_space="right",
-            slayout="ColMajor",
-        )
-        pv_acc = pto.alloc_tile(
-            shape=[S0, head_dim],
-            dtype=pto.f32,
-            memory_space="acc",
-            blayout="ColMajor",
-            slayout="RowMajor",
-        )
-        def emit_qk_tile(tile_id):
-            tile_base = tile_id * s1_tile
+        k_right_a = pto.alloc_tile(shape=[head_dim, CUBE_S1], dtype=pto.f16, memory_space="RIGHT")
+        qk_acc_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f32, memory_space="ACC")
+        p_recv_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="MAT")
+        p_left_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="LEFT")
+        v_mat_a = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="MAT")
+        v_right_a = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="RIGHT")
+        pv_acc_a = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f32, memory_space="ACC")
+        k_mat = [k_mat_a, k_mat_b]
+        k_right = [k_right_a, k_right_a]
+        qk_acc = [qk_acc_a, qk_acc_a]
+        p_recv = [p_recv_a, p_recv_a]
+        p_left = [p_left_a, p_left_a]
+        v_mat = [v_mat_a, v_mat_a]
+        v_right = [v_right_a, v_right_a]
+        pv_acc = [pv_acc_a, pv_acc_a]
+
+        tv_q = pto.make_tensor_view(gm_q, shape=[s0, cHEAD], strides=[cHEAD, c1])
+        tv_k = pto.make_tensor_view(gm_k, shape=[cHEAD, s1], strides=[c1, cHEAD], layout="DN")
+        tv_v = pto.make_tensor_view(gm_v, shape=[s1, cHEAD], strides=[cHEAD, c1])
+
+        # Closures over the shared tile state. The steady state overlaps PV for
+        # the current S1 tile with QK for the next S1 tile at CUBE_S1 granularity.
+        def emit_qk_sub(qk_entry, s1_tile_idx, sub, b):
+            kt_view = pto.partition_view(
+                tv_k,
+                offsets=[c0, s1_tile_idx * cS1_TILE + scalar.const(sub * CUBE_S1)],
+                sizes=[cHEAD, cCUBE_S1],
+            )
+            pto.tile.load(kt_view, k_mat[b])
+            pto.tile.mov(k_mat[b], k_right[b])
+            pto.tile.matmul(q_left, k_right[b], qk_acc[b])
+            slot_part = pto.partition_view(
+                qk_entry,
+                offsets=[c0, scalar.const(sub * CUBE_S1)],
+                sizes=[cS0, cCUBE_S1],
+            )
+            pto.tile.store(qk_acc[b], slot_part)
+
+        def emit_qk(s1_tile_idx, b):
             qk_entry = qk_pipe.alloc(split=SPLIT_UP_DOWN)
             for sub in range(tile_factor):
-                s1_sub = tile_base + sub * CUBE_S1
-                k_part = pto.partition_view(k_view, offsets=[0, s1_sub], sizes=[head_dim, CUBE_S1])
-                qk_slot_part = pto.partition_view(
-                    qk_entry,
-                    offsets=[0, sub * CUBE_S1],
-                    sizes=[S0, CUBE_S1],
-                )
-                pto.tile.load(k_part, k_mat)
-                pto.tile.mov(k_mat, k_right)
-                pto.tile.matmul(q_left, k_right, qk_acc)
-                pto.tile.store(qk_acc, qk_slot_part)
+                emit_qk_sub(qk_entry, s1_tile_idx, sub, b)
             qk_pipe.push(qk_entry, split=SPLIT_UP_DOWN)
 
-        def emit_pv_tile(tile_id):
-            tile_base = tile_id * s1_tile
-            p_entry = p_pipe.pop(split=SPLIT_UP_DOWN)
-            for sub in range(tile_factor):
-                s1_sub = tile_base + sub * CUBE_S1
-                v_part = pto.partition_view(v_view, offsets=[s1_sub, 0], sizes=[CUBE_S1, head_dim])
-                p_part = pto.partition_view(
-                    p_entry,
-                    offsets=[0, sub * CUBE_S1],
-                    sizes=[S0, CUBE_S1],
-                )
-                pto.tile.load(p_part, p_recv)
-                pto.tile.mov(p_recv, p_left)
-                pto.tile.load(v_part, v_mat)
-                pto.tile.mov(v_mat, v_right)
-                if sub == 0:
-                    pto.tile.matmul(p_left, v_right, pv_acc)
-                else:
-                    pto.tile.matmul_acc(pv_acc, p_left, v_right, pv_acc)
+        def emit_pv_sub(p_entry, t_idx, sub, b):
+            p_part = pto.partition_view(
+                p_entry,
+                offsets=[c0, scalar.const(sub * CUBE_S1)],
+                sizes=[cS0, cCUBE_S1],
+            )
+            pto.tile.load(p_part, p_recv[b])
+            pto.tile.mov(p_recv[b], p_left[b])
+            v_view = pto.partition_view(
+                tv_v,
+                offsets=[t_idx * cS1_TILE + scalar.const(sub * CUBE_S1), c0],
+                sizes=[cCUBE_S1, cHEAD],
+            )
+            pto.tile.load(v_view, v_mat[b])
+            pto.tile.mov(v_mat[b], v_right[b])
+            if sub == 0:
+                pto.tile.matmul(p_left[b], v_right[b], pv_acc[b])
+            else:
+                pto.tile.matmul_acc(pv_acc[b], p_left[b], v_right[b], pv_acc[b])
+
+        def push_pv(p_entry, b):
             p_pipe.free(p_entry, split=SPLIT_UP_DOWN)
             pv_entry = pv_pipe.alloc(split=SPLIT_UP_DOWN)
-            pv_part = pto.partition_view(pv_entry, offsets=[0, 0], sizes=[S0, head_dim])
-            pto.tile.store(pv_acc, pv_part)
+            pv_part = pto.partition_view(
+                pv_entry,
+                offsets=[c0, c0],
+                sizes=[cS0, cHEAD],
+            )
+            pto.tile.store(pv_acc[b], pv_part)
             pv_pipe.push(pv_entry, split=SPLIT_UP_DOWN)
 
+        def emit_pv(t_idx, b):
+            p_entry = p_pipe.pop(split=SPLIT_UP_DOWN)
+            for sub in range(tile_factor):
+                emit_pv_sub(p_entry, t_idx, sub, b)
+            push_pv(p_entry, b)
+
+        def emit_qk_pv_interleaved(next_idx, current_idx, b):
+            p_entry = p_pipe.pop(split=SPLIT_UP_DOWN)
+            for sub in range(tile_factor):
+                emit_pv_sub(p_entry, current_idx, sub, b)
+                if sub == 0:
+                    qk_entry = qk_pipe.alloc(split=SPLIT_UP_DOWN)
+                if sub == tile_factor - 1:
+                    push_pv(p_entry, b)
+                emit_qk_sub(qk_entry, next_idx, sub, b)
+                if sub == tile_factor - 1:
+                    qk_pipe.push(qk_entry, split=SPLIT_UP_DOWN)
+
+        # ---- Q-block loop ----
         with pto.for_(qb_start, qb_end, step=1) as qb:
-            q_part = pto.partition_view(q_view, offsets=[qb * S0, 0], sizes=[S0, head_dim])
-            pto.tile.load(q_part, q_mat)
+            q_view = pto.partition_view(
+                tv_q,
+                offsets=[qb * cS0, c0],
+                sizes=[cS0, cHEAD],
+            )
+            pto.tile.load(q_view, q_mat)
             pto.tile.mov(q_mat, q_left)
 
+            # ---- prologue: emit QK[0..QK_PRELOAD-1] -------------------------
+            # V loading is now inline in emit_pv (per-sub-tile), so no preload.
             for kp in range(qk_preload):
-                emit_qk_tile(kp)
+                emit_qk(scalar.const(kp), kp % 2)
 
-            with pto.for_(0, steady_tiles, step=1) as tile_id:
-                emit_pv_tile(tile_id)
-                emit_qk_tile(tile_id + qk_preload)
+            # ---- steady state ------------------------------------------------
+            # Match the 140tflops schedule: consume current P/PV and emit the
+            # next QK slot at CUBE_S1 sub-tile granularity.
+            with pto.for_(c0, steady_tiles, step=1) as tile_id:
+                next_tile = tile_id + cPRELOAD
+                emit_qk_pv_interleaved(next_tile, tile_id, 0)
 
+            # ---- epilogue: drain the last QK_PRELOAD PVs -------------------
             for k in range(qk_preload):
-                emit_pv_tile(steady_tiles + k)
+                b = 0
+                t_idx = steady_tiles + scalar.const(k)
+                emit_pv(t_idx, b)
 
     @pto.jit(name=vector_symbol, target="a5", entry=False, kernel_kind="vector", mode="auto", backend="emitc")
     def flash_attention_vector_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
         gm_o: pto.ptr(pto.f32, "gm"),
-        s0: pto.i32,
-        s1: pto.i32,
+        s0: pto.i64,
+        s1: pto.i64,
     ):
         c0 = scalar.const(0)
         c1 = scalar.const(1)
@@ -403,7 +447,7 @@ def _build_flash_attention_entry(
         num_tiles_s1 = s1_index // cS1_TILE
         steady_tiles = num_tiles_s1 - cPRELOAD
 
-        bid, qb_start, qb_end = compute_qb_range(total_q_blocks)
+        bid, qb_start, qb_end = compute_qb_range(c1)
 
         gm_blk = pto.add_ptr(gm_slot_buffer, bid * scalar.const(GM_ELEMS_PER_BLOCK))
         gm_qk = pto.add_ptr(gm_blk, scalar.const(GM_QK_OFF_F32))
@@ -411,14 +455,17 @@ def _build_flash_attention_entry(
         gm_blk_fp16 = pto.add_ptr(gm_slot_buffer_fp16, bid * scalar.const(2 * GM_ELEMS_PER_BLOCK))
         gm_p = pto.add_ptr(gm_blk_fp16, scalar.const(2 * GM_P_OFF_F32))
 
-        # ---- QK pipe (vec consumer): GM-staged slot ----
+        # ---- QK pipe (vec consumer): l2g2l GM-staged slot ----
+        # Vec sees one slot as [VecGuRows, S1_TILE] -- SPLIT_UP_DOWN halves
+        # the row count when crossing into the subblock; per row_slice we
+        # tload a [Vec_S0, S1_TILE] partition.
         qk_slot_view = pto.make_tensor_view(gm_qk, shape=[cVecGuRows, cS1_TILE], strides=[cS1_TILE, c1])
         qk_pipe = pto.pipe.c2v(
             gm_slot_buffer=gm_qk,
             gm_slot_tensor=qk_slot_view,
             id=QK_C2V_PIPE_ID,
         )
-        # ---- PV pipe (vec consumer): GM-staged slot ----
+        # ---- PV pipe (vec consumer): l2g2l GM-staged slot ----
         pv_slot_view = pto.make_tensor_view(gm_pv, shape=[cVecGuRows, cHEAD], strides=[cHEAD, c1])
         pv_pipe = pto.pipe.c2v(
             gm_slot_buffer=gm_pv,
@@ -426,7 +473,7 @@ def _build_flash_attention_entry(
             id=PV_C2V_PIPE_ID,
         )
 
-        # ---- P pipe (vec producer): GM-staged slot ----
+        # ---- P pipe (vec producer): l2g2l GM-staged slot ----
         p_slot_view = pto.make_tensor_view(gm_p, shape=[cVecGuRows, cS1_TILE], strides=[cS1_TILE, c1])
         p_pipe = pto.pipe.v2c(
             gm_slot_buffer=gm_p,
@@ -482,10 +529,6 @@ def _build_flash_attention_entry(
         row_off_sb = sb_idx * cS0_HALF
         tv_o = pto.make_tensor_view(gm_o, shape=[s0_index, cHEAD], strides=[cHEAD, c1])
 
-        # Legacy fa_builder.py declares qk_entry / p_entry / pv_entry once and
-        # reuses them via tpop_into/talloc/tfree. In current PTODSL surface,
-        # the equivalent global-entry descriptors are materialized by the pipe
-        # transactions themselves at the start of each helper.
         # ---- emit_softmax(exp_max_slots, is_init): one streaming softmax ------
         # Pop the wide QK slot (full subblock) and talloc one wide P slot;
         # iterate TILE_FACTOR row_slices, doing per-slice softmax math on
@@ -649,10 +692,10 @@ def _build_flash_attention_entry(
         gm_k: pto.ptr(pto.f16, "gm"),
         gm_v: pto.ptr(pto.f16, "gm"),
         gm_o: pto.ptr(pto.f32, "gm"),
-        s0: pto.i32,
-        s1: pto.i32,
+        s0: pto.i64,
+        s1: pto.i64,
     ):
-        flash_attention_cube_kernel(gm_slot_buffer, gm_slot_buffer_fp16, gm_q, gm_k, gm_v, s0, s1)
+        cube_kernel(gm_slot_buffer, gm_slot_buffer_fp16, gm_q, gm_k, gm_v, s0, s1)
         flash_attention_vector_kernel(gm_slot_buffer, gm_slot_buffer_fp16, gm_o, s0, s1)
 
     return flash_attention_entry
