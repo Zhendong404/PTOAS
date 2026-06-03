@@ -46,6 +46,7 @@ DEFAULT_Q_ROWS = S0
 QK_C2V_PIPE_ID = 0
 P_V2C_PIPE_ID = 1
 PV_C2V_PIPE_ID = 2
+SPLIT_UP_DOWN = 1
 
 _DEVICE = "npu:0"
 NEG_INF_F32 = -3.4028235e38
@@ -53,6 +54,27 @@ NEG_INF_F32 = -3.4028235e38
 _ENTRY_SYMBOL = "hw_native_flash_attention_cv_split"
 _CUBE_SYMBOL = "hw_native_flash_attention_cv_split_cube"
 _VECTOR_SYMBOL = "hw_native_flash_attention_cv_split_vector"
+
+
+def _gm_slot_layout(*, head_dim: int, s1_tile: int) -> tuple[int, int, int, int, int, int, int, int]:
+    SLOT_SIZE_QK = S0 * s1_tile * 4
+    SLOT_SIZE_PV = S0 * head_dim * 4
+    SLOT_SIZE_P = S0 * s1_tile * 2
+    GM_BYTES_PER_BLOCK = (SLOT_SIZE_QK + SLOT_SIZE_PV + SLOT_SIZE_P) * SLOT_NUM
+    GM_ELEMS_PER_BLOCK = GM_BYTES_PER_BLOCK // 4
+    GM_QK_OFF_F32 = 0
+    GM_PV_OFF_F32 = (SLOT_SIZE_QK * SLOT_NUM) // 4
+    GM_P_OFF_F32 = GM_PV_OFF_F32 + (SLOT_SIZE_PV * SLOT_NUM) // 4
+    return (
+        SLOT_SIZE_QK,
+        SLOT_SIZE_PV,
+        SLOT_SIZE_P,
+        GM_BYTES_PER_BLOCK,
+        GM_ELEMS_PER_BLOCK,
+        GM_QK_OFF_F32,
+        GM_PV_OFF_F32,
+        GM_P_OFF_F32,
+    )
 
 
 def _validate_specialization(*, head_dim: int, s1_tile: int, qk_preload: int, causal: bool, q_rows: int) -> None:
@@ -70,16 +92,16 @@ def _validate_specialization(*, head_dim: int, s1_tile: int, qk_preload: int, ca
         raise ValueError(f"q_rows={q_rows} must be a multiple of S0={S0}")
 
 
-def _compute_qb_range(total_q_blocks):
+def compute_qb_range(total_q_blocks):
     block_num = scalar.index_cast(pto.get_block_num())
-    block_idx = scalar.index_cast(pto.get_block_idx())
+    bid = scalar.index_cast(pto.get_block_idx())
     floor_div = total_q_blocks // block_num
     extra = total_q_blocks % block_num
-    fat_start = block_idx * (floor_div + 1)
-    thin_start = extra * (floor_div + 1) + (block_idx - extra) * floor_div
-    qb_start = scalar.select(block_idx < extra, fat_start, thin_start)
-    per_core = scalar.select(block_idx < extra, floor_div + 1, floor_div)
-    return qb_start, qb_start + per_core
+    fat_start = bid * (floor_div + 1)
+    thin_start = extra * (floor_div + 1) + (bid - extra) * floor_div
+    qb_start = scalar.select(bid < extra, fat_start, thin_start)
+    per_core = scalar.select(bid < extra, floor_div + 1, floor_div)
+    return bid, qb_start, qb_start + per_core
 
 
 def _specialized_symbol(base: str, *, head_dim: int, s1_tile: int, qk_preload: int, q_rows: int) -> str:
@@ -182,15 +204,25 @@ def _build_flash_attention_entry(
     row_slice_count = tile_factor
     total_q_blocks = q_rows // S0
     scale = 1.0 / (head_dim ** 0.5)
+    exp_ring = qk_preload
+    (
+        SLOT_SIZE_QK,
+        SLOT_SIZE_PV,
+        SLOT_SIZE_P,
+        _GM_BYTES_PER_BLOCK,
+        GM_ELEMS_PER_BLOCK,
+        GM_QK_OFF_F32,
+        GM_PV_OFF_F32,
+        GM_P_OFF_F32,
+    ) = _gm_slot_layout(head_dim=head_dim, s1_tile=s1_tile)
 
     @pto.jit(name=cube_symbol, target="a5", entry=False, kernel_kind="cube", mode="auto", backend="emitc")
     def flash_attention_cube_kernel(
+        gm_slot_buffer: pto.ptr(pto.f32, "gm"),
+        gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
         gm_q: pto.ptr(pto.f16, "gm"),
         gm_k: pto.ptr(pto.f16, "gm"),
         gm_v: pto.ptr(pto.f16, "gm"),
-        gm_qk_slots: pto.ptr(pto.f32, "gm"),
-        gm_p_slots: pto.ptr(pto.f16, "gm"),
-        gm_pv_slots: pto.ptr(pto.f32, "gm"),
         s0: pto.i32,
         s1: pto.i32,
     ):
@@ -198,27 +230,44 @@ def _build_flash_attention_entry(
         s1_index = scalar.index_cast(s1)
         num_tiles_s1 = s1_index // s1_tile
         steady_tiles = num_tiles_s1 - qk_preload
-        qb_start, qb_end = _compute_qb_range(total_q_blocks)
+        bid, qb_start, qb_end = compute_qb_range(total_q_blocks)
 
         q_view = pto.make_tensor_view(gm_q, shape=[s0_index, head_dim], strides=[head_dim, 1])
         k_view = pto.make_tensor_view(gm_k, shape=[head_dim, s1_index], strides=[1, head_dim], layout="DN")
         v_view = pto.make_tensor_view(gm_v, shape=[s1_index, head_dim], strides=[head_dim, 1])
 
-        qk_slot_bytes = 32
-        p_slot_bytes = 32
-        pv_slot_bytes = 32
+        gm_blk = pto.add_ptr(gm_slot_buffer, bid * scalar.const(GM_ELEMS_PER_BLOCK))
+        gm_qk = pto.add_ptr(gm_blk, scalar.const(GM_QK_OFF_F32))
+        gm_pv = pto.add_ptr(gm_blk, scalar.const(GM_PV_OFF_F32))
+        gm_blk_fp16 = pto.add_ptr(gm_slot_buffer_fp16, bid * scalar.const(2 * GM_ELEMS_PER_BLOCK))
+        gm_p = pto.add_ptr(gm_blk_fp16, scalar.const(2 * GM_P_OFF_F32))
 
-        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
-        p_slots = pto.make_tensor_view(gm_p_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
-        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[SLOT_NUM * S0, head_dim], strides=[head_dim, 1])
+        qk_slot_view = pto.make_tensor_view(gm_qk, shape=[S0, s1_tile], strides=[s1_tile, 1])
+        pv_slot_view = pto.make_tensor_view(gm_pv, shape=[S0, head_dim], strides=[head_dim, 1])
+        p_slot_view = pto.make_tensor_view(gm_p, shape=[S0, s1_tile], strides=[s1_tile, 1])
 
         qk_consumer_buf = pto.import_reserved_buffer("fa_qk_c2v_fifo", peer_func=vector_symbol)
         pv_consumer_buf = pto.import_reserved_buffer("fa_pv_c2v_fifo", peer_func=vector_symbol)
-        p_consumer_buf = pto.reserve_buffer("fa_p_v2c_fifo", size=p_slot_bytes * 8, location="mat")
+        p_consumer_buf = pto.reserve_buffer("fa_p_v2c_fifo", size=SLOT_SIZE_P * SLOT_NUM, location="mat")
 
-        qk_pipe = pto.pipe.c2v(slot_size=qk_slot_bytes, consumer_buf=qk_consumer_buf, id=QK_C2V_PIPE_ID)
-        p_pipe = pto.pipe.v2c(slot_size=p_slot_bytes, consumer_buf=p_consumer_buf, id=P_V2C_PIPE_ID)
-        pv_pipe = pto.pipe.c2v(slot_size=pv_slot_bytes, consumer_buf=pv_consumer_buf, id=PV_C2V_PIPE_ID)
+        qk_pipe = pto.pipe.c2v(
+            consumer_buf=qk_consumer_buf,
+            gm_slot_buffer=gm_qk,
+            gm_slot_tensor=qk_slot_view,
+            id=QK_C2V_PIPE_ID,
+        )
+        p_pipe = pto.pipe.v2c(
+            consumer_buf=p_consumer_buf,
+            gm_slot_buffer=gm_p,
+            gm_slot_tensor=p_slot_view,
+            id=P_V2C_PIPE_ID,
+        )
+        pv_pipe = pto.pipe.c2v(
+            consumer_buf=pv_consumer_buf,
+            gm_slot_buffer=gm_pv,
+            gm_slot_tensor=pv_slot_view,
+            id=PV_C2V_PIPE_ID,
+        )
 
         qk_pipe.init_cube()
         p_pipe.init_cube()
@@ -252,20 +301,7 @@ def _build_flash_attention_entry(
             blayout="ColMajor",
             slayout="RowMajor",
         )
-        qk_tile = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f32)
-        qk_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
-
         p_recv = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="mat")
-        # The V2C local pipe helper materializes a MAT-side companion tile when
-        # forwarding the producer token into the consumer FIFO. Using a 16x1
-        # ColMajor f16 token keeps the 32B payload while satisfying both the
-        # Vec producer and MAT consumer alignment constraints.
-        p_token = pto.alloc_tile(
-            shape=[16, 1],
-            dtype=pto.f16,
-            memory_space="mat",
-            blayout="ColMajor",
-        )
         p_left = pto.alloc_tile(
             shape=[S0, CUBE_S1],
             dtype=pto.f16,
@@ -287,39 +323,32 @@ def _build_flash_attention_entry(
             blayout="ColMajor",
             slayout="RowMajor",
         )
-        pv_tile = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f32)
-        pv_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
-
-        def slot_row_base(tile_id):
-            return (tile_id % SLOT_NUM) * S0
-
         def emit_qk_tile(tile_id):
             tile_base = tile_id * s1_tile
-            slot_base = slot_row_base(tile_id)
+            qk_entry = qk_pipe.alloc(split=SPLIT_UP_DOWN)
             for sub in range(tile_factor):
                 s1_sub = tile_base + sub * CUBE_S1
                 k_part = pto.partition_view(k_view, offsets=[0, s1_sub], sizes=[head_dim, CUBE_S1])
                 qk_slot_part = pto.partition_view(
-                    qk_slots,
-                    offsets=[slot_base, sub * CUBE_S1],
+                    qk_entry,
+                    offsets=[0, sub * CUBE_S1],
                     sizes=[S0, CUBE_S1],
                 )
                 pto.tile.load(k_part, k_mat)
                 pto.tile.mov(k_mat, k_right)
                 pto.tile.matmul(q_left, k_right, qk_acc)
                 pto.tile.store(qk_acc, qk_slot_part)
-            qk_pipe.push(qk_token, split=0)
+            qk_pipe.push(qk_entry, split=SPLIT_UP_DOWN)
 
         def emit_pv_tile(tile_id):
             tile_base = tile_id * s1_tile
-            slot_base = slot_row_base(tile_id)
-            _ = p_pipe.pop(split=0, result_type=p_token)
+            p_entry = p_pipe.pop(split=SPLIT_UP_DOWN)
             for sub in range(tile_factor):
                 s1_sub = tile_base + sub * CUBE_S1
                 v_part = pto.partition_view(v_view, offsets=[s1_sub, 0], sizes=[CUBE_S1, head_dim])
                 p_part = pto.partition_view(
-                    p_slots,
-                    offsets=[slot_base, sub * CUBE_S1],
+                    p_entry,
+                    offsets=[0, sub * CUBE_S1],
                     sizes=[S0, CUBE_S1],
                 )
                 pto.tile.load(p_part, p_recv)
@@ -330,10 +359,11 @@ def _build_flash_attention_entry(
                     pto.tile.matmul(p_left, v_right, pv_acc)
                 else:
                     pto.tile.matmul_acc(pv_acc, p_left, v_right, pv_acc)
-            p_pipe.free(split=0)
-            pv_part = pto.partition_view(pv_slots, offsets=[slot_base, 0], sizes=[S0, head_dim])
+            p_pipe.free(p_entry, split=SPLIT_UP_DOWN)
+            pv_entry = pv_pipe.alloc(split=SPLIT_UP_DOWN)
+            pv_part = pto.partition_view(pv_entry, offsets=[0, 0], sizes=[S0, head_dim])
             pto.tile.store(pv_acc, pv_part)
-            pv_pipe.push(pv_token, split=0)
+            pv_pipe.push(pv_entry, split=SPLIT_UP_DOWN)
 
         with pto.for_(qb_start, qb_end, step=1) as qb:
             q_part = pto.partition_view(q_view, offsets=[qb * S0, 0], sizes=[S0, head_dim])
@@ -352,58 +382,73 @@ def _build_flash_attention_entry(
 
     @pto.jit(name=vector_symbol, target="a5", entry=False, kernel_kind="vector", mode="auto", backend="emitc")
     def flash_attention_vector_kernel(
+        gm_slot_buffer: pto.ptr(pto.f32, "gm"),
+        gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
         gm_o: pto.ptr(pto.f32, "gm"),
-        gm_qk_slots: pto.ptr(pto.f32, "gm"),
-        gm_p_slots: pto.ptr(pto.f16, "gm"),
-        gm_pv_slots: pto.ptr(pto.f32, "gm"),
         s0: pto.i32,
         s1: pto.i32,
     ):
+        c0 = scalar.const(0)
+        c1 = scalar.const(1)
+        c2 = scalar.const(2)
+        cS0 = scalar.const(S0)
+        cS0_HALF = scalar.const(S0 // 2)
+        cVecGuRows = scalar.const(vec_gu_rows)
+        cVec_S0 = scalar.const(vec_s0)
+        cHEAD = scalar.const(head_dim)
+        cS1_TILE = scalar.const(s1_tile)
+        cPRELOAD = scalar.const(qk_preload)
         s0_index = scalar.index_cast(s0)
         s1_index = scalar.index_cast(s1)
-        subblock_idx = scalar.index_cast(pto.get_subblock_idx())
-        row_off_sb = subblock_idx * vec_gu_rows
-        num_tiles_s1 = s1_index // s1_tile
-        steady_tiles = num_tiles_s1 - qk_preload
-        qb_start, qb_end = _compute_qb_range(total_q_blocks)
+        num_tiles_s1 = s1_index // cS1_TILE
+        steady_tiles = num_tiles_s1 - cPRELOAD
 
-        o_view = pto.make_tensor_view(gm_o, shape=[s0_index, head_dim], strides=[head_dim, 1])
+        bid, qb_start, qb_end = compute_qb_range(total_q_blocks)
 
-        qk_slot_bytes = 32
-        p_slot_bytes = 32
-        pv_slot_bytes = 32
+        gm_blk = pto.add_ptr(gm_slot_buffer, bid * scalar.const(GM_ELEMS_PER_BLOCK))
+        gm_qk = pto.add_ptr(gm_blk, scalar.const(GM_QK_OFF_F32))
+        gm_pv = pto.add_ptr(gm_blk, scalar.const(GM_PV_OFF_F32))
+        gm_blk_fp16 = pto.add_ptr(gm_slot_buffer_fp16, bid * scalar.const(2 * GM_ELEMS_PER_BLOCK))
+        gm_p = pto.add_ptr(gm_blk_fp16, scalar.const(2 * GM_P_OFF_F32))
 
-        qk_slots = pto.make_tensor_view(gm_qk_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
-        p_slots = pto.make_tensor_view(gm_p_slots, shape=[SLOT_NUM * S0, s1_tile], strides=[s1_tile, 1])
-        pv_slots = pto.make_tensor_view(gm_pv_slots, shape=[SLOT_NUM * S0, head_dim], strides=[head_dim, 1])
+        # ---- QK pipe (vec consumer): GM-staged slot ----
+        qk_slot_view = pto.make_tensor_view(gm_qk, shape=[cVecGuRows, cS1_TILE], strides=[cS1_TILE, c1])
+        qk_pipe = pto.pipe.c2v(
+            gm_slot_buffer=gm_qk,
+            gm_slot_tensor=qk_slot_view,
+            id=QK_C2V_PIPE_ID,
+        )
+        # ---- PV pipe (vec consumer): GM-staged slot ----
+        pv_slot_view = pto.make_tensor_view(gm_pv, shape=[cVecGuRows, cHEAD], strides=[cHEAD, c1])
+        pv_pipe = pto.pipe.c2v(
+            gm_slot_buffer=gm_pv,
+            gm_slot_tensor=pv_slot_view,
+            id=PV_C2V_PIPE_ID,
+        )
 
-        qk_consumer_buf = pto.reserve_buffer("fa_qk_c2v_fifo", size=qk_slot_bytes * 8, location="vec")
-        pv_consumer_buf = pto.reserve_buffer("fa_pv_c2v_fifo", size=pv_slot_bytes * 8, location="vec")
-        p_consumer_buf = pto.import_reserved_buffer("fa_p_v2c_fifo", peer_func=cube_symbol)
-
-        qk_pipe = pto.pipe.c2v(slot_size=qk_slot_bytes, consumer_buf=qk_consumer_buf, id=QK_C2V_PIPE_ID)
-        p_pipe = pto.pipe.v2c(slot_size=p_slot_bytes, consumer_buf=p_consumer_buf, id=P_V2C_PIPE_ID)
-        pv_pipe = pto.pipe.c2v(slot_size=pv_slot_bytes, consumer_buf=pv_consumer_buf, id=PV_C2V_PIPE_ID)
+        # ---- P pipe (vec producer): GM-staged slot ----
+        p_slot_view = pto.make_tensor_view(gm_p, shape=[cVecGuRows, cS1_TILE], strides=[cS1_TILE, c1])
+        p_pipe = pto.pipe.v2c(
+            gm_slot_buffer=gm_p,
+            gm_slot_tensor=p_slot_view,
+            id=P_V2C_PIPE_ID,
+        )
 
         qk_pipe.init_simd()
         p_pipe.init_simd()
         pv_pipe.init_simd()
 
+        # ---- Vec tile allocations.
+        # Per-slice working tiles are reused across the row_slice loop (each
+        # iter overwrites the previous), so a single allocation per type is
+        # enough. Reduce/state tiles are per-row_slice arrays because each
+        # row_slice tracks its own running_max/running_sum independently.
         qk_vec = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
-        qk_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
+        tmp = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
         p_fp32 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
         p_fp16 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f16)
-        p_token = pto.alloc_tile(
-            shape=[16, 1],
-            dtype=pto.f16,
-            blayout="ColMajor",
-        )
-        pv_vec = [
-            pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32)
-            for _ in range(row_slice_count)
-        ]
-        pv_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
-        tmp = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
+        pv_vec = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(row_slice_count)]
+        o_tile = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(row_slice_count)]
 
         running_max = [
             pto.alloc_tile(shape=[vec_s0, 8], dtype=pto.f32, valid_shape=[vec_s0, 1])
@@ -421,73 +466,94 @@ def _build_flash_attention_entry(
             pto.alloc_tile(shape=[vec_s0, 8], dtype=pto.f32, valid_shape=[vec_s0, 1])
             for _ in range(row_slice_count)
         ]
+        # The shorter 140tflops-style preload only needs one exp_max slot per
+        # preloaded logical S1 tile.
         exp_max_ring = [
             [
                 pto.alloc_tile(shape=[vec_s0, 8], dtype=pto.f32, valid_shape=[vec_s0, 1])
                 for _ in range(row_slice_count)
             ]
-            for _ in range(qk_preload)
-        ]
-        o_tile = [
-            pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32)
-            for _ in range(row_slice_count)
+            for _ in range(exp_ring)
         ]
 
-        def slot_row_base(tile_id):
-            return (tile_id % SLOT_NUM) * S0
+        scale = scalar.const(scale)
+        cEXP_RING = scalar.const(exp_ring)
+        sb_idx = scalar.index_cast(pto.get_subblock_idx())
+        row_off_sb = sb_idx * cS0_HALF
+        tv_o = pto.make_tensor_view(gm_o, shape=[s0_index, cHEAD], strides=[cHEAD, c1])
 
-        def emit_softmax_tile(tile_id, exp_max_slots, *, is_init):
-            _ = qk_pipe.pop(split=0, result_type=qk_token)
-            slot_base = slot_row_base(tile_id)
+        # Legacy fa_builder.py declares qk_entry / p_entry / pv_entry once and
+        # reuses them via tpop_into/talloc/tfree. In current PTODSL surface,
+        # the equivalent global-entry descriptors are materialized by the pipe
+        # transactions themselves at the start of each helper.
+        # ---- emit_softmax(exp_max_slots, is_init): one streaming softmax ------
+        # Pop the wide QK slot (full subblock) and talloc one wide P slot;
+        # iterate TILE_FACTOR row_slices, doing per-slice softmax math on
+        # [Vec_S0, S1_TILE] tiles and per-slice reduce state. After all
+        # row_slices, push the wide P slot.
+        def emit_softmax(exp_max_slots, is_init):
+            qk_entry = qk_pipe.pop(split=SPLIT_UP_DOWN)
+            p_entry = p_pipe.alloc(split=SPLIT_UP_DOWN)
             for row_slice in range(row_slice_count):
-                row_off = slot_base + row_off_sb + row_slice * vec_s0
-                qk_part = pto.partition_view(
-                    qk_slots,
+                row_off = row_slice * vec_s0
+                slot_part = pto.partition_view(
+                    qk_entry,
                     offsets=[row_off, 0],
                     sizes=[vec_s0, s1_tile],
                 )
-                p_part = pto.partition_view(
-                    p_slots,
-                    offsets=[row_off, 0],
-                    sizes=[vec_s0, s1_tile],
-                )
-                pto.tile.load(qk_part, qk_vec)
-                # Row reductions only define the logical [rows, 1] column. Pre-fill
-                # the padded lanes so follow-on row-major tile ops do not read junk.
-                local_max[row_slice].fill(NEG_INF_F32)
-                pto.tile.rowmax(qk_vec, local_max[row_slice], tmp=tmp)
+                pto.tile.load(slot_part, qk_vec)
+                qk = qk_vec
+                lmax = local_max[row_slice]
+                lsum = local_sum[row_slice]
+                rmax = running_max[row_slice]
+                rsum = running_sum[row_slice]
+                exp_slot = exp_max_slots[row_slice]
+                pto.tile.rowmax(qk, lmax, tmp=tmp)
+                
+                # Reshape reductions to row-major so scalar broadcast helpers work.
+                local_max_r = pto.tile.reshape(lmax, shape=[1, vec_s0], blayout="RowMajor")
+                running_max_r = pto.tile.reshape(rmax, shape=[1, vec_s0], blayout="RowMajor")
+                running_sum_r = pto.tile.reshape(rsum, shape=[1, vec_s0], blayout="RowMajor")
+                local_sum_r = pto.tile.reshape(lsum, shape=[1, vec_s0], blayout="RowMajor")
+                exp_max_r = pto.tile.reshape(exp_slot, shape=[1, vec_s0], blayout="RowMajor")
+                
                 if is_init:
-                    pto.tile.mov(local_max[row_slice], running_max[row_slice])
-                    pto.tile.rowexpandsub(qk_vec, running_max[row_slice], p_fp32)
+                    pto.tile.rowexpandsub(qk, lmax, p_fp32)
+                    pto.tile.mov(local_max_r, running_max_r)
                     pto.tile.muls(p_fp32, scale, p_fp32)
                     pto.tile.exp(p_fp32, p_fp32)
-                    pto.tile.rowsum(p_fp32, running_sum[row_slice], tmp=tmp)
-                    exp_max_slots[row_slice].fill(1.0)
+                    pto.tile.rowsum(p_fp32, rsum, tmp=tmp)
                 else:
-                    pto.tile.max(local_max[row_slice], running_max[row_slice], local_max[row_slice])
-                    pto.tile.sub(running_max[row_slice], local_max[row_slice], exp_max_slots[row_slice])
-                    pto.tile.mov(local_max[row_slice], running_max[row_slice])
-                    pto.tile.muls(exp_max_slots[row_slice], scale, exp_max_slots[row_slice])
-                    pto.tile.exp(exp_max_slots[row_slice], exp_max_slots[row_slice])
-                    pto.tile.rowexpandsub(qk_vec, running_max[row_slice], p_fp32)
+                    pto.tile.max(local_max_r, running_max_r, local_max_r)
+                    pto.tile.sub(running_max_r, local_max_r, exp_max_r)
+                    pto.tile.mov(local_max_r, running_max_r)
+                    pto.tile.rowexpandsub(qk, lmax, p_fp32)
+                    pto.tile.muls(exp_max_r, scale, exp_max_r)
+                    pto.tile.exp(exp_max_r, exp_max_r)
                     pto.tile.muls(p_fp32, scale, p_fp32)
                     pto.tile.exp(p_fp32, p_fp32)
-                    pto.tile.mul(running_sum[row_slice], exp_max_slots[row_slice], running_sum[row_slice])
-                    local_sum[row_slice].fill(0.0)
-                    pto.tile.rowsum(p_fp32, local_sum[row_slice], tmp=tmp)
-                    pto.tile.add(running_sum[row_slice], local_sum[row_slice], running_sum[row_slice])
+                    pto.tile.mul(running_sum_r, exp_max_r, running_sum_r)
+                    pto.tile.rowsum(p_fp32, lsum, tmp=tmp)
+                    pto.tile.add(running_sum_r, local_sum_r, running_sum_r)
                 pto.tile.cvt(p_fp32, p_fp16)
+                p_part = pto.partition_view(
+                    p_entry,
+                    offsets=[row_off, 0],
+                    sizes=[vec_s0, s1_tile],
+                )
                 pto.tile.store(p_fp16, p_part)
-            p_pipe.push(p_token, split=0)
-            qk_pipe.free(split=0)
+            p_pipe.push(p_entry, split=SPLIT_UP_DOWN)
+            qk_pipe.free(qk_entry, split=SPLIT_UP_DOWN)
 
-        def emit_gu_tile(tile_id, exp_max_slots, *, is_init):
-            _ = pv_pipe.pop(split=0, result_type=pv_token)
-            slot_base = slot_row_base(tile_id)
+        # ---- emit_gu(exp_max_slots, is_init): rescale + add running O ------
+        # GU also runs per-row_slice: each row_slice owns its own o_tile and
+        # pv_vec, indexed by the same exp_max_slots used during softmax.
+        def emit_gu(exp_max_slots, is_init):
+            pv_entry = pv_pipe.pop(split=SPLIT_UP_DOWN, result_type=pv_pipe.entry_type)
             for row_slice in range(row_slice_count):
-                row_off = slot_base + row_off_sb + row_slice * vec_s0
+                row_off = row_slice * vec_s0
                 pv_part = pto.partition_view(
-                    pv_slots,
+                    pv_entry,
                     offsets=[row_off, 0],
                     sizes=[vec_s0, head_dim],
                 )
@@ -497,71 +563,97 @@ def _build_flash_attention_entry(
                 else:
                     pto.tile.rowexpandmul(o_tile[row_slice], exp_max_slots[row_slice], o_tile[row_slice])
                     pto.tile.add(o_tile[row_slice], pv_vec[row_slice], o_tile[row_slice])
-            pv_pipe.free(split=0)
+            pv_pipe.free(pv_entry, split=SPLIT_UP_DOWN)
 
         def emit_softmax_dispatch(tile_id):
-            mod = tile_id % qk_preload
-            for ring in range(qk_preload):
-                with pto.if_(mod == ring) as branch:
-                    with branch.then_:
-                        emit_softmax_tile(tile_id, exp_max_ring[ring], is_init=False)
+            mod = tile_id % cEXP_RING
+            with pto.if_(mod == c0) as branch0:
+                with branch0.then_:
+                    emit_softmax(exp_max_ring[0], is_init=False)
+                with branch0.else_:
+                    with pto.if_(mod == c1) as branch1:
+                        with branch1.then_:
+                            emit_softmax(exp_max_ring[1], is_init=False)
+                        with branch1.else_:
+                            if exp_ring > 3:
+                                with pto.if_(mod == c2) as branch2:
+                                    with branch2.then_:
+                                        emit_softmax(exp_max_ring[2], is_init=False)
+                                    with branch2.else_:
+                                        emit_softmax(exp_max_ring[3], is_init=False)
+                            else:
+                                emit_softmax(exp_max_ring[2], is_init=False)
 
-        def emit_gu_dispatch(tile_id):
-            mod = tile_id % qk_preload
-            for ring in range(qk_preload):
-                with pto.if_(mod == ring) as branch:
-                    with branch.then_:
-                        emit_gu_tile(tile_id, exp_max_ring[ring], is_init=False)
+        def emit_gu_update_dispatch(tile_id):
+            mod = tile_id % cEXP_RING
+            with pto.if_(mod == c0) as branch0:
+                with branch0.then_:
+                    emit_gu(exp_max_ring[0], is_init=False)
+                with branch0.else_:
+                    with pto.if_(mod == c1) as branch1:
+                        with branch1.then_:
+                            emit_gu(exp_max_ring[1], is_init=False)
+                        with branch1.else_:
+                            if exp_ring > 3:
+                                with pto.if_(mod == c2) as branch2:
+                                    with branch2.then_:
+                                        emit_gu(exp_max_ring[2], is_init=False)
+                                    with branch2.else_:
+                                        emit_gu(exp_max_ring[3], is_init=False)
+                            else:
+                                emit_gu(exp_max_ring[2], is_init=False)
+
+        def emit_gu_any(tile_id):
+            with pto.if_(tile_id == c0) as branch:
+                with branch.then_:
+                    emit_gu(exp_max_ring[0], is_init=True)
+                with branch.else_:
+                    emit_gu_update_dispatch(tile_id)
 
         with pto.for_(qb_start, qb_end, step=1) as qb:
-            for row_slice in range(row_slice_count):
-                running_max[row_slice].fill(NEG_INF_F32)
-                running_sum[row_slice].fill(0.0)
-                o_tile[row_slice].fill(0.0)
-
+            # ---- vec prologue: softmax(0..QK_PRELOAD-1) --------------------
             for kp in range(qk_preload):
-                emit_softmax_tile(kp, exp_max_ring[kp], is_init=(kp == 0))
+                emit_softmax(exp_max_ring[kp], is_init=(kp == 0))
 
+            # ---- vec steady state. Match the 140tflops order: drain the
+            # current PV/GU tile before producing the future P tile.
             with pto.if_(steady_tiles > 0) as branch:
                 with branch.then_:
-                    emit_gu_tile(0, exp_max_ring[0], is_init=True)
-                    emit_softmax_tile(qk_preload, exp_max_ring[0], is_init=False)
+                    emit_gu(exp_max_ring[0], is_init=True)
+                    emit_softmax(exp_max_ring[qk_preload % exp_ring], is_init=False)
                     with pto.for_(1, steady_tiles, step=1) as tile_id:
-                        emit_gu_dispatch(tile_id)
-                        emit_softmax_dispatch(tile_id + qk_preload)
+                        next_tile = tile_id + qk_preload
+                        emit_gu_update_dispatch(tile_id)
+                        emit_softmax_dispatch(next_tile)
 
+            # ---- vec epilogue: drain last QK_PRELOAD gus -------------------
             for k in range(qk_preload):
                 tile_id = steady_tiles + k
-                with pto.if_(tile_id == 0) as init_branch:
-                    with init_branch.then_:
-                        emit_gu_tile(tile_id, exp_max_ring[0], is_init=True)
-                    with init_branch.else_:
-                        emit_gu_dispatch(tile_id)
+                emit_gu_any(tile_id)
 
+            # Final divide + GM store, one row_slice at a time.
             for row_slice in range(row_slice_count):
                 row_off = row_off_sb + row_slice * vec_s0
                 pto.tile.rowexpanddiv(o_tile[row_slice], running_sum[row_slice], o_tile[row_slice])
                 o_part = pto.partition_view(
-                    o_view,
+                    tv_o,
                     offsets=[qb * S0 + row_off, 0],
                     sizes=[vec_s0, head_dim],
                 )
                 pto.tile.store(o_tile[row_slice], o_part)
-
     @pto.jit(name=entry_symbol, target="a5", mode="explicit", backend="emitc")
     def flash_attention_entry(
+        gm_slot_buffer: pto.ptr(pto.f32, "gm"),
+        gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
         gm_q: pto.ptr(pto.f16, "gm"),
         gm_k: pto.ptr(pto.f16, "gm"),
         gm_v: pto.ptr(pto.f16, "gm"),
         gm_o: pto.ptr(pto.f32, "gm"),
-        gm_qk_slots: pto.ptr(pto.f32, "gm"),
-        gm_p_slots: pto.ptr(pto.f16, "gm"),
-        gm_pv_slots: pto.ptr(pto.f32, "gm"),
         s0: pto.i32,
         s1: pto.i32,
     ):
-        flash_attention_cube_kernel(gm_q, gm_k, gm_v, gm_qk_slots, gm_p_slots, gm_pv_slots, s0, s1)
-        flash_attention_vector_kernel(gm_o, gm_qk_slots, gm_p_slots, gm_pv_slots, s0, s1)
+        flash_attention_cube_kernel(gm_slot_buffer, gm_slot_buffer_fp16, gm_q, gm_k, gm_v, s0, s1)
+        flash_attention_vector_kernel(gm_slot_buffer, gm_slot_buffer_fp16, gm_o, s0, s1)
 
     return flash_attention_entry
 
@@ -639,9 +731,19 @@ def run_demo(
     k_t = torch.from_numpy(host_k).to(_DEVICE)
     v_t = torch.from_numpy(host_v).to(_DEVICE)
     o_t = torch.empty((q_rows, head_dim), dtype=torch.float32, device=_DEVICE)
-    qk_slots_t = torch.empty((SLOT_NUM * S0, s1_tile), dtype=torch.float32, device=_DEVICE)
-    p_slots_t = torch.empty((SLOT_NUM * S0, s1_tile), dtype=torch.float16, device=_DEVICE)
-    pv_slots_t = torch.empty((SLOT_NUM * S0, head_dim), dtype=torch.float32, device=_DEVICE)
+    total_q_blocks = q_rows // S0
+    (
+        _SLOT_SIZE_QK,
+        _SLOT_SIZE_PV,
+        _SLOT_SIZE_P,
+        _GM_BYTES_PER_BLOCK,
+        GM_ELEMS_PER_BLOCK,
+        _GM_QK_OFF_F32,
+        _GM_PV_OFF_F32,
+        _GM_P_OFF_F32,
+    ) = _gm_slot_layout(head_dim=head_dim, s1_tile=s1_tile)
+    gm_slot_buffer_t = torch.empty(total_q_blocks * GM_ELEMS_PER_BLOCK, dtype=torch.float32, device=_DEVICE)
+    gm_slot_buffer_fp16_t = torch.empty(total_q_blocks * (2 * GM_ELEMS_PER_BLOCK), dtype=torch.float16, device=_DEVICE)
     stream = _current_stream(torch)
 
     t0 = time.perf_counter()
@@ -656,13 +758,12 @@ def run_demo(
 
     t0 = time.perf_counter()
     compiled[1, stream](
+        gm_slot_buffer_t.data_ptr(),
+        gm_slot_buffer_fp16_t.data_ptr(),
         q_t.data_ptr(),
         k_t.data_ptr(),
         v_t.data_ptr(),
         o_t.data_ptr(),
-        qk_slots_t.data_ptr(),
-        p_slots_t.data_ptr(),
-        pv_slots_t.data_ptr(),
         q_rows,
         s1,
     )
