@@ -56,6 +56,10 @@ if __package__ in {None, ""}:
 
 from ptodsl import pto, scalar
 try:
+    from .fa_dn_matmul import AccMode, pto_macro_matmul
+except ImportError:
+    from fa_dn_matmul import AccMode, pto_macro_matmul
+try:
     from .fa_dn_softmax import pto_macro_fa_softmax_dn
 except ImportError:
     from fa_dn_softmax import pto_macro_fa_softmax_dn
@@ -81,7 +85,11 @@ kFaCvFifoSize = 8
 kFaCvFifoConsSyncPeriod = kFaCvFifoSize // 2
 kFaCubeS1 = 128
 kFaTileS1 = 256
-kFaQkPreload = 4
+# ``fa_dn.cpp`` guards the current UB->L1 path with
+# ``qkPreloadNum <= pMatTNBuffers (2)``.
+# Keep the PTODSL demo default at 2 so ``emit_fa_dn_mlir()`` does not trip the
+# structural assert by default.
+kFaQkPreload = 2
 kFaLaunchCoreCount = 28
 kFaProfileBytesPerBlock = 1024 * 3
 kFaCvCommSlotBytes = 512
@@ -119,6 +127,22 @@ def should_wait_consumption(sync_iter: int, fifo_size: int, sync_period: int) ->
     if sync_iter < fifo_size:
         return False
     return (sync_iter % period) == 0
+
+
+def _is_runtime_scalar_value(value) -> bool:
+    return not isinstance(value, (bool, int, float)) and hasattr(value, "type")
+
+
+def _scalar_min_or_static(lhs, rhs):
+    if _is_runtime_scalar_value(lhs) or _is_runtime_scalar_value(rhs):
+        return scalar.min(lhs, rhs)
+    return min(lhs, rhs)
+
+
+def _scalar_max_or_static(lhs, rhs):
+    if _is_runtime_scalar_value(lhs) or _is_runtime_scalar_value(rhs):
+        return scalar.max(lhs, rhs)
+    return max(lhs, rhs)
 
 
 def allocate_cube_tile_buffers(qMatTile, kMatTile, pMatTile, vMatTile):
@@ -208,92 +232,6 @@ def pv_matmul_stage(
     pto.mad(pL0ATile.as_ptr(), vL0BTile.as_ptr(), pvAccCurrTile.as_ptr(), rows, head, kv)
     pto.mte_l0c_ub(pvAccCurrTile.as_ptr(), pvVecTileSub.as_ptr(), rows, head, head, head, 0)
 
-
-def pto_macro_matmul(
-    *,
-    Cube_M: int,
-    Tile_K: int,
-    Cube_N: int,
-    aMatTile: pto.Tile,
-    bMatTile: pto.Tile,
-    cAccTile: pto.Tile,
-    accMode,
-    preATExtOpHook,
-    preBTExtOpHook,
-    postTExtOpHook,
-    l0ATile: pto.Tile,
-    l0BTile: pto.Tile,
-    vecTileSub: pto.Tile,
-    stage,
-):
-    # Structural mirror of ``fa_dn_matmul.cpp``: keep the same authored call
-    # shape ``pto_macro_matmul(..., accMode, preA, preB, post)`` even though
-    # this PTODSL demo currently collapses the internal ping-pong K loop.
-    _ = (Cube_M, Tile_K, Cube_N, accMode)
-    preATExtOpHook()
-    preBTExtOpHook()
-    stage(aMatTile, bMatTile, l0ATile, l0BTile, cAccTile, vecTileSub)
-    postTExtOpHook()
-
-
-@pto.simd
-def softmax_init_stage(
-    qkVecTile: pto.Tile,
-    x_expT: pto.Tile,
-    m2_global_max: pto.Tile,
-    l2_global_sum: pto.Tile,
-):
-    rows = qkVecTile.shape[0]
-    cols = qkVecTile.shape[1]
-    for row in range(rows):
-        mask = pto.make_mask(pto.f32, cols)
-        qk_row = pto.vlds(qkVecTile[row, 0:])
-        row_max = pto.vcgmax(qk_row, mask)
-        shifted = pto.vsubs(qk_row, row_max, mask)
-        probs = pto.vexp(shifted, mask)
-        row_sum = pto.vcgadd(probs, mask)
-        pto.vsts(probs, x_expT[row, 0:], mask)
-        scalar.store(row_max, m2_global_max[row, 0])
-        scalar.store(row_sum, l2_global_sum[row, 0])
-
-
-@pto.simd
-def softmax_update_stage(
-    qkVecTile: pto.Tile,
-    x_expT: pto.Tile,
-    m1_local_max: pto.Tile,
-    l1_local_sum: pto.Tile,
-    m2_global_max: pto.Tile,
-    l2_global_sum: pto.Tile,
-    m2_new_max: pto.Tile,
-    l1_exp_max: pto.Tile,
-    l2_scaled_sum: pto.Tile,
-):
-    rows = qkVecTile.shape[0]
-    cols = qkVecTile.shape[1]
-    for row in range(rows):
-        mask = pto.make_mask(pto.f32, cols)
-        qk_row = pto.vlds(qkVecTile[row, 0:])
-        row_local_max = pto.vcgmax(qk_row, mask)
-        prev_max = scalar.load(m2_global_max[row, 0])
-        prev_sum = scalar.load(l2_global_sum[row, 0])
-        row_new_max = scalar.max(prev_max, row_local_max)
-        row_exp_max = scalar.exp(prev_max - row_new_max)
-        shifted = pto.vsubs(qk_row, row_new_max, mask)
-        probs = pto.vexp(shifted, mask)
-        row_local_sum = pto.vcgadd(probs, mask)
-        row_scaled_sum = prev_sum * row_exp_max
-        row_new_sum = row_scaled_sum + row_local_sum
-        pto.vsts(probs, x_expT[row, 0:], mask)
-        scalar.store(row_local_max, m1_local_max[row, 0])
-        scalar.store(row_local_sum, l1_local_sum[row, 0])
-        scalar.store(row_new_max, m2_new_max[row, 0])
-        scalar.store(row_exp_max, l1_exp_max[row, 0])
-        scalar.store(row_scaled_sum, l2_scaled_sum[row, 0])
-        scalar.store(row_new_max, m2_global_max[row, 0])
-        scalar.store(row_new_sum, l2_global_sum[row, 0])
-
-
 @pto.simt
 def gu_update_stage(
     runningOTile: pto.Tile,
@@ -371,10 +309,7 @@ def compute_qk(
     qk_tile_fifo,
     qMatTile,
     kMatTile,
-    qL0ATile,
-    kL0BTile,
     qkAccTile,
-    qkVecTileSub,
     qkVecTile,
     qkMatTileEventId,
     accTileEvtID,
@@ -446,18 +381,14 @@ def compute_qk(
             Cube_M=Cube_S1,
             Tile_K=Cube_HEAD,
             Cube_N=Cube_S0,
+            L1LoadBFirst=True,
             aMatTile=kMatTile,
             bMatTile=qMatTile,
             cAccTile=qkAccTile,
-            accMode=True,
+            accMode=AccMode.Init,
             preATExtOpHook=preATExtOpReadyHook,
             preBTExtOpHook=qReadyHook,
             postTExtOpHook=lambda: None,
-            l0ATile=kL0BTile,
-            l0BTile=qL0ATile,
-            vecTileSub=qkVecTileSub,
-            stage=lambda aMatTile, bMatTile, l0ATile, l0BTile, cAccTile, vecTileSub:
-                qk_matmul_stage(bMatTile, aMatTile, l0BTile, l0ATile, cAccTile, vecTileSub),
         )
 
         pto.set_flag(pto.Pipe.MTE1, pto.Pipe.MTE2, event_id=qkMatTileEventId)
@@ -680,9 +611,7 @@ def compute_p(
     )
     p_ptr = pto.addptr(p_tile_fifo, base_elems + row_offset)
 
-    sub_col_loop = pto.for_(0, kTileFactor, step=1)
-    with sub_col_loop:
-        sub_col = sub_col_loop.iv
+    with pto.for_(0, kTileFactor, step=1) as sub_col:
         if INTERMEDIATE_CHECK:
             NzBufRows = Cube_S1 + 1
             col_byte_offset = sub_col * NzBufRows * Vec_S0 * pto.bytewidth(pto.f16)
@@ -816,24 +745,34 @@ def compute_pv(
                 pto.wait_flag(pto.Pipe.FIX, pto.Pipe.M, event_id=accTileEvtID)
 
         preBTExtOpReadyHook = PreBTExtOpReadyHook()
-        accMode = sub_tile_id == 0
         sm2pvFreeHook = Sm2PvFreeHook(sm2pvSync, sub_tile_id == kTileFactor - 1)
-        pto_macro_matmul(
-            Cube_M=Cube_S0,
-            Tile_K=Cube_S1,
-            Cube_N=Cube_HEAD,
-            aMatTile=pMatTile,
-            bMatTile=vMatTile,
-            cAccTile=pvAccTile,
-            accMode=accMode,
-            preATExtOpHook=pReadyHook,
-            preBTExtOpHook=preBTExtOpReadyHook,
-            postTExtOpHook=sm2pvFreeHook,
-            l0ATile=pL0ATile,
-            l0BTile=vL0BTile,
-            vecTileSub=pvVecTile[pv_ub_buf_idx],
-            stage=pv_matmul_stage,
-        )
+        with pto.if_(sub_tile_id == 0) as sub_tile_is_zero_br:
+            with sub_tile_is_zero_br.then_:
+                pto_macro_matmul(
+                    Cube_M=Cube_S0,
+                    Tile_K=Cube_S1,
+                    Cube_N=Cube_HEAD,
+                    aMatTile=pMatTile,
+                    bMatTile=vMatTile,
+                    cAccTile=pvAccTile,
+                    accMode=AccMode.Init,
+                    preATExtOpHook=pReadyHook,
+                    preBTExtOpHook=preBTExtOpReadyHook,
+                    postTExtOpHook=sm2pvFreeHook,
+                )
+            with sub_tile_is_zero_br.else_:
+                pto_macro_matmul(
+                    Cube_M=Cube_S0,
+                    Tile_K=Cube_S1,
+                    Cube_N=Cube_HEAD,
+                    aMatTile=pMatTile,
+                    bMatTile=vMatTile,
+                    cAccTile=pvAccTile,
+                    accMode=AccMode.Acc,
+                    preATExtOpHook=pReadyHook,
+                    preBTExtOpHook=preBTExtOpReadyHook,
+                    postTExtOpHook=sm2pvFreeHook,
+                )
         pto.set_flag(pto.Pipe.MTE1, pto.Pipe.MTE2, event_id=svMatTileEventId)
 
         should_finalize_pv = (sub_tile_id == kTileFactor - 1) | next_will_be_skipped
@@ -985,7 +924,7 @@ def compute_gu(
 
 @pto.jit(target="a5", mode="explicit")
 def runTFA(
-    ffts_addr: pto.ptr(pto.u64, "gm"),
+    ffts_addr: pto.ptr(pto.ui64, "gm"),
     q: pto.ptr(pto.f16, "gm"),
     k: pto.ptr(pto.f16, "gm"),
     v: pto.ptr(pto.f16, "gm"),
@@ -996,8 +935,8 @@ def runTFA(
     qk_tile_fifo: pto.ptr(pto.f32, "gm"),
     pv_tile_fifo: pto.ptr(pto.f32, "gm"),
     pv_pend_tile_fifo: pto.ptr(pto.f32, "gm"),
-    cv_comm_buf: pto.ptr(pto.u8, "gm"),
-    profile_buf: pto.ptr(pto.u8, "gm"),
+    cv_comm_buf: pto.ptr(pto.ui8, "gm"),
+    profile_buf: pto.ptr(pto.ui8, "gm"),
     *,
     S0: pto.constexpr = 128,
     HEAD_SIZE: pto.constexpr = 128,
@@ -1150,13 +1089,11 @@ def runTFA(
         else physical_block_idx
     )
 
-    logical_block_loop = pto.for_(
+    with pto.for_(
         physical_block_idx,
         logical_block_count,
         step=launch_block_count,
-    )
-    with logical_block_loop:
-        logical_block_idx = logical_block_loop.iv
+    ) as logical_block_idx:
         # const uint64_t tStart = get_sys_cnt();
         # assign_running_acc_tile(qkAccTile, 0);
 
@@ -1196,14 +1133,10 @@ def runTFA(
         has_next_logical_block = (logical_block_idx + launch_block_count) < logical_block_count
 
         # QK and P pre-computation (tile_id based)
-        preload_limit = scalar.min(qkPreloadNum, num_tiles_s1)
-        preload_tile_loop = pto.for_(0, preload_limit, step=1)
-        with preload_tile_loop:
-            preload_tile = preload_tile_loop.iv
+        preload_limit = _scalar_min_or_static(qkPreloadNum, num_tiles_s1)
+        with pto.for_(0, preload_limit, step=1) as preload_tile:
             # if DAV_CUBE:
-            sub_tile_loop = pto.for_(0, kTileFactor, step=1)
-            with sub_tile_loop:
-                sub_tile = sub_tile_loop.iv
+            with pto.for_(0, kTileFactor, step=1) as sub_tile:
                 # ``fa_dn.cpp`` rotates the running ACC tile here via
                 # ``assign_running_acc_tile(qkAccTile)`` before each QK.
                 # qkAccTileEvtID = assign_running_acc_tile(qkAccTile);
@@ -1233,10 +1166,7 @@ def runTFA(
                     qk_tile_fifo=qk_tile_fifo_block,
                     qMatTile=qMatTile[0],
                     kMatTile=kMatTile[k_src_pingpong_id % kMatTNBuffers],
-                    qL0ATile=qL0ATile,
-                    kL0BTile=kL0BTile,
                     qkAccTile=qkAccTile,
-                    qkVecTileSub=qkVecTileSub,
                     qkVecTile=qkVecTile[tile_buf_idx],
                     qkMatTileEventId=k_src_pingpong_id % kMatTNBuffers,
                     accTileEvtID=qkAccTileEvtID,
@@ -1246,9 +1176,7 @@ def runTFA(
                 k_src_pingpong_id += 1
 
             # if DAV_VEC:
-            row_slice_loop = pto.for_(0, kTileFactor, step=1)
-            with row_slice_loop:
-                row_slice = row_slice_loop.iv
+            with pto.for_(0, kTileFactor, step=1) as row_slice:
                 tile_buf_idx = preload_tile % srcVecTNBuffers
                 compute_p(
                     S0=S0,
@@ -1291,15 +1219,11 @@ def runTFA(
                 )
                 p_gu_src_pingpong_id += 1
 
-        steady_tile_end = scalar.max(num_tiles_s1 - qkPreloadNum, 0)
-        steady_tile_loop = pto.for_(0, steady_tile_end, step=1)
-        with steady_tile_loop:
-            tile_id = steady_tile_loop.iv
+        steady_tile_end = _scalar_max_or_static(num_tiles_s1 - qkPreloadNum, 0)
+        with pto.for_(0, steady_tile_end, step=1) as tile_id:
             next_qk_tile = tile_id + qkPreloadNum
             # qkAccTileEvtID = assign_running_acc_tile(qkAccTile);
-            steady_sub_tile_loop = pto.for_(0, kTileFactor, step=1)
-            with steady_sub_tile_loop:
-                sub_tile = steady_sub_tile_loop.iv
+            with pto.for_(0, kTileFactor, step=1) as sub_tile:
 
                 # if DAV_CUBE:
                 tile_buf_idx = next_qk_tile % srcVecTNBuffers
@@ -1328,10 +1252,7 @@ def runTFA(
                     qk_tile_fifo=qk_tile_fifo_block,
                     qMatTile=qMatTile[0],
                     kMatTile=kMatTile[k_src_pingpong_id % kMatTNBuffers],
-                    qL0ATile=qL0ATile,
-                    kL0BTile=kL0BTile,
                     qkAccTile=qkAccTile,
-                    qkVecTileSub=qkVecTileSub,
                     qkVecTile=qkVecTile[tile_buf_idx],
                     qkMatTileEventId=k_src_pingpong_id % kMatTNBuffers,
                     accTileEvtID=qkAccTileEvtID,
@@ -1460,12 +1381,8 @@ def runTFA(
             )
             p_gu_src_pingpong_id += 1
 
-        epilogue_tile_loop = pto.for_(steady_tile_end, num_tiles_s1, step=1)
-        with epilogue_tile_loop:
-            tile_id = epilogue_tile_loop.iv
-            epilogue_sub_tile_loop = pto.for_(0, kTileFactor, step=1)
-            with epilogue_sub_tile_loop:
-                sub_tile = epilogue_sub_tile_loop.iv
+        with pto.for_(steady_tile_end, num_tiles_s1, step=1) as tile_id:
+            with pto.for_(0, kTileFactor, step=1) as sub_tile:
 
                 # if DAV_CUBE:
                 pvPendTile = pvVecTile[(tile_id + 1) % outOTileNBuffers]
@@ -1604,21 +1521,26 @@ def emit_fa_dn_mlir(
     head_dim: int = 128,
     s1: int = 1024,
     q_rows: int = 128,
-    s1_tile: int = kFaTileS1,
+    cube_s1: int = kFaCubeS1,
+    tile_s1: int = kFaTileS1,
     qk_preload: int = kFaQkPreload,
     cv_fifo_size: int = kFaCvFifoSize,
+    intermediate_check: bool = False,
     causal: bool = False,
+    cv_fifo_cons_sync_period: int = kFaCvFifoConsSyncPeriod,
 ) -> str:
     compiled = runTFA.compile(
         S0=s0,
         HEAD_SIZE=head_dim,
         S1=s1,
         CUBE_S0=q_rows,
-        CUBE_S1=s1_tile,
-        TILE_S1=s1_tile,
+        CUBE_S1=cube_s1,
+        TILE_S1=tile_s1,
         QK_PRELOAD=qk_preload,
         CV_FIFO_SIZE=cv_fifo_size,
+        INTERMEDIATE_CHECK=intermediate_check,
         CAUSAL_MASK=causal,
+        CV_FIFO_CONS_SYNC_PERIOD=cv_fifo_cons_sync_period,
     )
     return compiled.mlir_text()
 
@@ -1630,10 +1552,13 @@ def main(argv=None) -> int:
     parser.add_argument("--head-dim", type=int, default=128)
     parser.add_argument("--s1", type=int, default=1024)
     parser.add_argument("--q-rows", type=int, default=128)
-    parser.add_argument("--s1-tile", type=int, default=kFaTileS1)
+    parser.add_argument("--cube-s1", type=int, default=kFaCubeS1)
+    parser.add_argument("--tile-s1", type=int, default=kFaTileS1)
     parser.add_argument("--qk-preload", type=int, default=kFaQkPreload)
     parser.add_argument("--cv-fifo-size", type=int, default=kFaCvFifoSize)
+    parser.add_argument("--intermediate-check", action="store_true")
     parser.add_argument("--causal", action="store_true")
+    parser.add_argument("--cv-fifo-cons-sync-period", type=int, default=kFaCvFifoConsSyncPeriod)
     args = parser.parse_args(argv)
 
     if args.emit_mlir:
@@ -1643,10 +1568,13 @@ def main(argv=None) -> int:
                 head_dim=args.head_dim,
                 s1=args.s1,
                 q_rows=args.q_rows,
-                s1_tile=args.s1_tile,
+                cube_s1=args.cube_s1,
+                tile_s1=args.tile_s1,
                 qk_preload=args.qk_preload,
                 cv_fifo_size=args.cv_fifo_size,
+                intermediate_check=args.intermediate_check,
                 causal=args.causal,
+                cv_fifo_cons_sync_period=args.cv_fifo_cons_sync_period,
             )
         )
         return 0
