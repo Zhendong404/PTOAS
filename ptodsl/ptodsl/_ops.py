@@ -2651,7 +2651,6 @@ def treshape(src, *, shape, dtype=None, blayout=None):
     src_shape = getattr(src, "shape", None)
     src_dtype = getattr(src, "dtype", None)
     src_memory_space = getattr(src, "memory_space", None)
-    src_valid_shape = getattr(src, "static_valid_shape", None)
     src_metadata = parse_tile_type_metadata(src_value.type)
     if src_shape is None and src_metadata is not None:
         src_shape = tuple(src_metadata["shape_dims"])
@@ -2659,8 +2658,6 @@ def treshape(src, *, shape, dtype=None, blayout=None):
         src_dtype = src_metadata["element_type"]
     if src_memory_space is None and src_metadata is not None:
         src_memory_space = src_metadata["memory_space"]
-    if src_valid_shape is None and src_metadata is not None:
-        src_valid_shape = tuple(src_metadata["valid_dims"])
     if src_shape is None or src_dtype is None or src_memory_space is None:
         raise TypeError("treshape(...) expects a tile_buf-backed Tile value")
 
@@ -2677,10 +2674,6 @@ def treshape(src, *, shape, dtype=None, blayout=None):
             "treshape(src, shape=..., dtype=...) requires source and result to have the same total byte size"
         )
 
-    if src_valid_shape is None or len(src_valid_shape) != len(result_shape):
-        result_valid_shape = tuple(result_shape)
-    else:
-        result_valid_shape = tuple(src_valid_shape)
     result_memory_space = src_memory_space
     result_physical_shape = _authored_tile_physical_shape(result_shape)
     _validate_authored_tile_row_alignment(result_physical_shape, result_dtype, blayout=result_blayout, slayout="NoneBox")
@@ -2690,7 +2683,6 @@ def treshape(src, *, shape, dtype=None, blayout=None):
     result_type = tile_buf_type(
         result_physical_shape,
         result_dtype,
-        _authored_tile_physical_shape(result_valid_shape),
         blayout=result_blayout,
         address_space=result_memory_space,
     )
@@ -2702,7 +2694,6 @@ def treshape(src, *, shape, dtype=None, blayout=None):
             "physical_shape": result_physical_shape,
             "dtype": result_dtype,
             "memory_space": result_memory_space,
-            "valid_shape": result_valid_shape,
         },
     )
 
