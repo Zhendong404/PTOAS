@@ -139,17 +139,13 @@ static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
   auto noSplitAttr = initOp.getNosplitAttr();
 
   if (initOp.getGmSlotTensor()) {
-    if (arch == PTOArch::A5)
-      return initOp.emitOpError(
-          "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
     if (failed(requireFrontendGmSlotBuffer(initOp)))
       return failure();
-    if (!localAddr)
-      return initOp.emitOpError(
-          "requires local consumer buffer operands for globaltensor pipe lowering");
 
     IntegerAttr localSlotNumAttr = initOp.getLocalSlotNumAttr();
-    if (!localSlotNumAttr)
+    if (!localAddr)
+      localSlotNumAttr = IntegerAttr{};
+    else if (!localSlotNumAttr)
       localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
     auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
         loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,

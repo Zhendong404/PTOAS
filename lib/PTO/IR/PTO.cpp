@@ -12684,25 +12684,9 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
     if (op.getLocalSlotNumAttr())
       return op.emitOpError(
           "globaltensor pipe init does not use 'local_slot_num'");
-    if (arch == PTOArch::A5) {
-      return op.emitOpError(
-          "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
-    }
     if (!hasGmSlotBuffer)
       return op.emitOpError(
-          "globaltensor pipe init expects 'gm_slot_buffer' for a2/a3 l2g2l pipes");
-    if (dirMask == 1 && !hasC2vConsumerBuf) {
-      return op.emitOpError(
-          "expects 'c2v_consumer_buf' when dir_mask is 1");
-    }
-    if (dirMask == 2 && !hasV2cConsumerBuf) {
-      return op.emitOpError(
-          "expects 'v2c_consumer_buf' when dir_mask is 2");
-    }
-    if (dirMask == 3 && (!hasC2vConsumerBuf || !hasV2cConsumerBuf)) {
-      return op.emitOpError(
-          "expects both 'c2v_consumer_buf' and 'v2c_consumer_buf' when dir_mask is 3");
-    }
+          "globaltensor pipe init expects 'gm_slot_buffer'");
     return verifyFrontendGlobalSlotTensor(
         op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
   }
