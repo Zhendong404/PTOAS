@@ -256,7 +256,16 @@ def _build_flash_attention_entry(
         qk_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
 
         p_recv = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="mat")
-        p_token = pto.alloc_tile(shape=[1, 16], dtype=pto.f16, memory_space="mat")
+        # The V2C local pipe helper materializes a MAT-side companion tile when
+        # forwarding the producer token into the consumer FIFO. Using a 16x1
+        # ColMajor f16 token keeps the 32B payload while satisfying both the
+        # Vec producer and MAT consumer alignment constraints.
+        p_token = pto.alloc_tile(
+            shape=[16, 1],
+            dtype=pto.f16,
+            memory_space="mat",
+            blayout="ColMajor",
+        )
         p_left = pto.alloc_tile(
             shape=[S0, CUBE_S1],
             dtype=pto.f16,
@@ -384,7 +393,11 @@ def _build_flash_attention_entry(
         qk_token = pto.alloc_tile(shape=[1, 8], dtype=pto.f32)
         p_fp32 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
         p_fp16 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f16)
-        p_token = pto.alloc_tile(shape=[1, 16], dtype=pto.f16)
+        p_token = pto.alloc_tile(
+            shape=[16, 1],
+            dtype=pto.f16,
+            blayout="ColMajor",
+        )
         pv_vec = [
             pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32)
             for _ in range(row_slice_count)
