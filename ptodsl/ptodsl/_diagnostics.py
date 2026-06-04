@@ -216,6 +216,41 @@ def subkernel_signature_boundary_error(role: str, name: str) -> TypeError:
     )
 
 
+def subkernel_missing_annotation_error(role: str, name: str) -> TypeError:
+    """Return one diagnostic for missing subkernel ABI annotations."""
+    return TypeError(
+        f"@pto.{role} parameter '{name}' does not declare a subkernel ABI annotation. "
+        "Subkernel interfaces are explicit: use the role-specific PTODSL boundary types "
+        "instead of relying on implicit inference."
+    )
+
+
+def subkernel_illegal_parameter_kind_error(role: str, name: str, kind) -> TypeError:
+    """Return one diagnostic for unsupported subkernel parameter kinds."""
+    return TypeError(
+        f"@pto.{role} parameter '{name}' uses unsupported parameter kind {kind!r}. "
+        "Subkernel interfaces only accept positional parameters in this PTODSL surface."
+    )
+
+
+def subkernel_illegal_annotation_error(role: str, name: str, annotation: object, expected: str) -> TypeError:
+    """Return one diagnostic for unsupported subkernel ABI annotations."""
+    return TypeError(
+        f"@pto.{role} parameter '{name}' uses unsupported subkernel annotation {annotation!r}. "
+        f"Legal @pto.{role} interfaces are restricted to {expected}. If you need a different ABI, "
+        "use @pto.jit(entry=False) instead of a subkernel decorator."
+    )
+
+
+def subkernel_argument_type_error(role: str, name: str, expected: str, observed: object) -> TypeError:
+    """Return one diagnostic for runtime/callsite subkernel ABI mismatches."""
+    return TypeError(
+        f"@pto.{role} argument '{name}' violates the declared subkernel interface. "
+        f"Expected {expected}, got {observed!r}. Subkernel ABI checks are unconditional; "
+        "either pass a legal PTODSL boundary value or remove the subkernel decorator."
+    )
+
+
 def illegal_subkernel_placement_error(role: str, outer_role: str | None) -> RuntimeError:
     """Return one diagnostic for a subkernel call placed outside the supported layer graph."""
     if role == "simt":
@@ -234,6 +269,15 @@ def illegal_inline_subkernel_placement_error(role: str, outer_role: str | None) 
     return RuntimeError(
         f"inline pto.{role}() may only be used from the top-level @pto.jit body; "
         f"nested use inside @pto.{outer_role} is not part of the PTODSL layer contract."
+    )
+
+
+def inline_subkernel_value_escape_error(role: str, type_text: str) -> RuntimeError:
+    """Return one diagnostic for outlined inline-scope values escaping their helper boundary."""
+    return RuntimeError(
+        f"inline pto.{role}() cannot let values defined inside the outlined subkernel "
+        f"escape the scope boundary (got {type_text}). Write through a Tile/UB buffer "
+        "or keep the consumer inside the same inline subkernel."
     )
 
 
@@ -362,6 +406,7 @@ __all__ = [
     "jit_legacy_tensor_spec_entry_error",
     "jit_missing_annotation_error",
     "jit_non_gm_ptr_entry_error",
+    "inline_subkernel_value_escape_error",
     "make_tensor_view_missing_metadata_error",
     "illegal_inline_subkernel_placement_error",
     "illegal_subkernel_placement_error",
@@ -376,7 +421,11 @@ __all__ = [
     "jit_legacy_tensor_spec_helper_error",
     "native_python_control_flow_error",
     "simd_value_escape_error",
+    "subkernel_argument_type_error",
     "subkernel_host_tensor_boundary_error",
+    "subkernel_illegal_annotation_error",
+    "subkernel_illegal_parameter_kind_error",
+    "subkernel_missing_annotation_error",
     "subkernel_signature_boundary_error",
     "tile_row_alignment_error",
     "unsupported_public_surface_error",

@@ -333,11 +333,11 @@ def emitc_entry_calls_vpto_kernel_module_probe(
 
 @pto.simd
 def emitc_vpto_kernel_module_callsite_simd_helper(
-    src_gm: pto.ptr(pto.f32, "gm"),
-    dst_gm: pto.ptr(pto.f32, "gm"),
-    row: pto.i32,
+    src_tile: pto.Tile,
+    dst_tile: pto.Tile,
+    cols: pto.i32,
 ):
-    process_row_ptr_kernel_module(src_gm, dst_gm, row)
+    explicit_vpto_kernel_module(src_tile, dst_tile, cols)
 
 
 @pto.jit(target="a5", backend="emitc")
@@ -346,8 +346,17 @@ def emitc_entry_calls_vpto_kernel_module_via_decorated_simd_probe(
     O_ptr: pto.ptr(pto.f32, "gm"),
     rows: pto.i32,
 ):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, 16], strides=[16, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, 16], strides=[16, 1])
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+
     with pto.for_(0, rows, step=1) as row:
-        emitc_vpto_kernel_module_callsite_simd_helper(A_ptr, O_ptr, row)
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, 16])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, 16])
+        pto.tile.load(a_part, a_tile)
+        emitc_vpto_kernel_module_callsite_simd_helper(a_tile, o_tile, 16)
+        pto.tile.store(o_tile, o_part)
 
 
 @pto.jit(target="a5")
@@ -2188,8 +2197,16 @@ def main() -> None:
         "emitc entry calling vpto kernel-module through @pto.simd specialization",
     )
     expect(
+        re.search(
+            r"call @emitc_vpto_kernel_module_callsite_simd_helper__ptodsl_[0-9a-f]+"
+            r"\(%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\)",
+            decorated_mixed_backend_text,
+        ) is not None,
+        "@pto.simd helper callsites should lower to helper function calls in the caller body",
+    )
+    expect(
         "pto.section.vector {" in decorated_mixed_backend_text,
-        "@pto.simd helper callsites should also lower through one vector section",
+        "the outlined @pto.simd helper body should still materialize one vector section",
     )
     multi_abi_compiled = entry_calls_kernel_module_multiple_abi_probe.compile()
     multi_abi_text = multi_abi_compiled.mlir_text()
@@ -2543,8 +2560,14 @@ def main() -> None:
         f"unexpected shared subkernel lowering observations: {SUBKERNEL_OBSERVATIONS!r}",
     )
     expect(
-        "pto.section.cube {" in shared_subkernel_text and "pto.section.vector {" in shared_subkernel_text,
-        "@pto.cube/@pto.simd decorated helpers should materialize PTO section regions in the caller body",
+        re.search(r"call @top_level_cube_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None
+        and re.search(r"call @top_level_simd_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None
+        and re.search(r"call @nested_simd_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None,
+        "@pto.cube/@pto.simd decorated subkernels should lower to helper calls in the caller body",
+    )
+    expect(
+        shared_subkernel_text.count("pto.section.vector {") == 2 and "pto.section.cube {" in shared_subkernel_text,
+        "outlined decorated helper bodies should still preserve their PTO unit sections",
     )
 
     INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
@@ -2559,17 +2582,21 @@ def main() -> None:
         f"unexpected inline subkernel scope observations: {INLINE_SUBKERNEL_SCOPE_OBSERVATIONS!r}",
     )
     expect(
-        "pto.store" in inline_subkernel_scope_text,
-        "inline pto.simt() body should lower authored scalar ops inside the surrounding kernel trace",
+        inline_subkernel_scope_text.count("pto.store_vfsimt_info") == 1,
+        "inline pto.simt() should materialize one caller-side store_vfsimt_info before the helper call",
     )
     expect(
-        inline_subkernel_scope_text.count("pto.barrier <PIPE_ALL>") >= 2,
-        "inline pto.simd()/pto.cube() bodies should lower their authored operations in place",
+        re.search(r"call @inline_simt_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None
+        and re.search(r"call @inline_simd_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None
+        and re.search(r"call @inline_cube_[0-9]+__ptodsl_[0-9a-f]+\([^\\n]*\)", inline_subkernel_scope_text) is not None,
+        "inline pto.simt()/pto.simd()/pto.cube() scopes should each lower to one helper call",
     )
     expect(
-        "pto.section.vector {" in inline_subkernel_scope_text
-        and "pto.section.cube {" in inline_subkernel_scope_text,
-        "inline pto.simd()/pto.cube() scopes should materialize PTO section regions in place",
+        inline_subkernel_scope_text.count("pto.barrier <PIPE_ALL>") >= 2
+        and "pto.section.vector {" in inline_subkernel_scope_text
+        and "pto.section.cube {" in inline_subkernel_scope_text
+        and "pto.store" in inline_subkernel_scope_text,
+        "outlined inline helpers should preserve the authored SIMD/Cube sections and SIMT scalar ops",
     )
 
     simt_text = simt_helper_lowering_probe.compile(TRACE_TOKEN=1).mlir_text()
@@ -2579,11 +2606,17 @@ def main() -> None:
         "each @pto.simt callsite should materialize a caller-side store_vfsimt_info",
     )
     expect(
-        simt_text.count("call @simt_tid_probe()") == 2,
+        len(re.findall(r"call @simt_tid_probe__ptodsl_[0-9a-f]+\(\)", simt_text)) == 2,
         "each @pto.simt callsite should lower to a func.call of the helper symbol",
     )
     expect(
-        simt_text.count("func.func @simt_tid_probe() attributes {pto.simt_entry}") == 1,
+        len(
+            re.findall(
+                r"func\.func @simt_tid_probe__ptodsl_[0-9a-f]+\(\) attributes \{pto\.simt_entry\}",
+                simt_text,
+            )
+        )
+        == 1,
         "@pto.simt helper should materialize exactly one reusable pto.simt_entry function",
     )
     expect("pto.get_tid_x" in simt_text, "SIMT helper body should contain pto.get_tid_x")

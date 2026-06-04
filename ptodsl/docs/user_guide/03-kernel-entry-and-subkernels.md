@@ -404,9 +404,9 @@ are not replaced by module-to-module nesting.
 | | `@pto.jit(entry=False)` module | `@pto.simd` / `@pto.simt` / `@pto.cube` |
 |---|---|---|
 | Scope | Full device-side logic (orchestration, compute, data movement) | Hardware-bound compute unit |
-| ABI | Tile, TensorView, PartitionTensorView, ptr, PTO scalars | Tile, PTO scalars (VReg for simd) |
+| ABI | Tile, TensorView, PartitionTensorView, ptr, PTO scalars | Role-specific and strictly checked: `@pto.cube` = Tile only, `@pto.simd` = Tile + PTO scalars, `@pto.simt` = Tile + ptr + PTO scalars |
 | Backend | VPTO or EmitC | Always VPTO |
-| Compilation | Compiled separately, linked automatically | Inlined or nested in caller's module |
+| Compilation | Compiled separately, linked automatically | Outlined as helper functions inside the owning caller/module |
 | Callable from | Entries and other modules | Entries and modules |
 | Can call modules | Yes | No (go through UB tiles via the caller) |
 
@@ -570,8 +570,9 @@ preserves each one's compilation settings.
 ## 3.7 Sub-kernels
 
 Sub-kernels are functions decorated with `@pto.cube`, `@pto.simd`, or
-`@pto.simt` that execute on a specific NPU compute unit. They can be invoked
-in two ways:
+`@pto.simt` that execute on a specific NPU compute unit. PTODSL lowers both
+surface forms to real helper `func.func` bodies instead of flattening them
+directly into the surrounding caller. They can be authored in two ways:
 
 1. **As decorated functions** — reusable, named sub-kernels called from
    `@pto.jit`.
@@ -630,8 +631,13 @@ Cube-local state (LEFT, RIGHT, ACC, BIAS) never leaks into UB — it is the
 caller's responsibility to allocate scratch buffers and pass them in
 explicitly.
 
-**Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.cube():` (Section 3.8).
+**Lowering model**: a decorated `@pto.cube` function becomes one reusable
+helper function inside the owning PTODSL child module. Each callsite lowers to
+`func.call` of that helper; the helper body itself contains the `pto.section.cube`
+region.
+
+**Invocation modes**: can be called from `@pto.jit` in either mode, or authored
+as an anonymous inline helper with `with pto.cube():` (Section 3.8).
 
 ### 3.7.2 `@pto.simd` — SIMD unit
 
@@ -657,6 +663,10 @@ def my_simd_kernel(
 Parameters are UB `Tile` references and PTO scalar values (`pto.i32`,
 `pto.f32`, etc.). Scalar parameters may come from `lds` reads or compile-time
 constants.
+
+This interface contract is enforced unconditionally. A decorated `@pto.simd`
+function does not gain extra pointer-style ABI forms in explicit mode; if you
+need a broader boundary, use `@pto.jit(entry=False)` instead.
 
 **Typical body**:
 
@@ -684,8 +694,13 @@ The boundary contract: `vreg` values (`a_vec`, `b_vec`, `o_vec`) are local to
 the function. The only way to persist data across a `@pto.simd` call is to
 write it back to a UB tile via `vsts` (or `psts`, etc.).
 
-**Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.simd():` (Section 3.8).
+**Lowering model**: a decorated `@pto.simd` function becomes one reusable
+helper function inside the owning PTODSL child module. Each callsite lowers to
+`func.call` of that helper; the helper body itself contains the `pto.section.vector`
+region.
+
+**Invocation modes**: can be called from `@pto.jit` in either mode, or authored
+as an anonymous inline helper with `with pto.simd():` (Section 3.8).
 
 ### 3.7.3 `@pto.simt` — SIMT unit
 
@@ -735,17 +750,24 @@ SIMT kernels read and write individual scalar elements from tiles. The unit
 executes the same scalar instruction across many work-items in parallel, making
 it efficient for per-element operations.
 
-**Invocation modes**: can be called from `@pto.jit` in either mode, or used
-inline with `with pto.simt():` (Section 3.8).
+This interface contract is enforced unconditionally. `@pto.simt` may accept
+Tiles, typed pointers, and PTO scalars, but not broader module-only boundary
+types.
+
+**Lowering model**: a decorated `@pto.simt` function becomes one reusable
+helper function marked with `pto.simt_entry`. Each callsite lowers to
+`pto.store_vfsimt_info` plus `func.call` of that helper.
+
+**Invocation modes**: can be called from `@pto.jit` in either mode, or authored
+as an anonymous inline helper with `with pto.simt():` (Section 3.8).
 
 
 ## 3.8 Inline context manager syntax
 
 In addition to the decorator form, each sub-kernel unit provides a context
 manager: `with pto.cube():`, `with pto.simd():`, and `with pto.simt():`. These
-open inline blocks without requiring a separate named function — useful for
-quick prototyping, one-off hardware-unit snippets, or code that is too small to
-extract. Inline scopes are supported in top-level `@pto.jit` bodies.
+open one-off anonymous sub-kernel bodies without requiring a separate named
+Python function. Inline scopes are supported in top-level `@pto.jit` bodies.
 
 ### Syntax
 
@@ -780,20 +802,25 @@ with pto.cube():
 
 - Inside the `with` block, instructions execute on the corresponding hardware
   unit.
-- `vreg` values created inside `with pto.simd():` are scoped to the block —
-  they do not escape.
+- On block exit, PTODSL outlines the block into one anonymous helper
+  `func.func` and replaces the original region with a `func.call`.
+- `with pto.simd():` and `with pto.cube():` preserve their `pto.section.vector`
+  / `pto.section.cube` bodies inside the outlined helper.
+- `with pto.simt():` preserves its scalar body inside one outlined
+  `pto.simt_entry` helper, and the caller emits `pto.store_vfsimt_info`.
+- Values defined inside the inline sub-kernel cannot escape the block directly.
+  Use Tiles, typed pointers, or other mutable references to communicate results
+  back to the caller.
 - Cube-local scratch (`l0a`, `l0b`, `acc`) must be allocated by the caller
   before entering the block.
-- The context manager form is equivalent to an inline anonymous sub-kernel. The
-  compiler treats it identically to a named `@pto.simd` / `@pto.cube` /
-  `@pto.simt` function.
 
 ### Comparison
 
 | | Decorator form | Context manager form |
 |---|---|---|
-| Reuse | Named, callable from multiple sites | Inline, single-use |
+| Reuse | Named, callable from multiple sites | Anonymous helper, single-use |
 | Readability | Good for complex, multi-step logic | Good for short (3-10 line) snippets |
+| Lowering | Reusable helper `func.func` | Anonymous helper `func.func` created on block exit |
 | Testing | Can be unit-tested independently | Tested only through the enclosing kernel |
 | Cube-local args | Explicit parameters | Captured from enclosing scope |
 
@@ -812,8 +839,9 @@ pointers:
 | `@pto.jit(entry=False)` → another module | Same types as above |
 | `@pto.jit(entry=True, mode="auto")` → sub-kernel | `Tile`, PTO scalars (compiler handles staging + sync) |
 | `@pto.jit(entry=True, mode="explicit")` → sub-kernel | `Tile`, `PartitionTensorView`, `pto.ptr`, PTO scalars |
-| `@pto.jit` → `with pto.{cube,simd,simt}:` | `Tile` captured from enclosing scope |
+| `@pto.jit` → `with pto.{cube,simd,simt}:` | Captured `Tile` / ptr / scalar values from enclosing scope |
 | Sub-kernel → sub-kernel | Not allowed (go through UB tiles via the caller) |
+| Inline sub-kernel → caller | No direct SSA return path; write through Tile / ptr / mutable references |
 | `@pto.simd` → caller | Only via `vsts`/`psts` to UB tiles; `vreg` cannot escape |
 | Cube-local → UB | Only via `mte_l0c_ub`; LEFT/RIGHT/ACC/BIAS are private |
 | `entry=False` module → caller | No return values; data crosses only via mutable references |
