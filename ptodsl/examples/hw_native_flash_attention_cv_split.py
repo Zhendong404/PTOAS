@@ -246,7 +246,15 @@ def _build_flash_attention_entry(
     # =========================================================================
     # Cube kernel
     # =========================================================================
-    @pto.jit(name=cube_symbol, target="a5", entry=False, kernel_kind="cube", mode="auto", backend="emitc")
+    @pto.jit(
+        name=cube_symbol,
+        target="a5",
+        entry=False,
+        kernel_kind="cube",
+        mode="auto",
+        backend="emitc",
+        insert_sync=True,
+    )
     def cube_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
@@ -304,7 +312,6 @@ def _build_flash_attention_entry(
             gm_slot_tensor=p_slot_view_cube,
             id=p_v2c_pipe_id,
         )
-
         qk_pipe.init_cube()
         pv_pipe.init_cube()
         p_pipe.init_cube()
@@ -312,7 +319,13 @@ def _build_flash_attention_entry(
         # ---- Allocate cube tiles. Match the manual kernel's ping-pong for
         # K/P/V MAT tiles where L1 capacity allows it. RIGHT is single-buffered
         # because two 128x128 RIGHT tiles for both QK and PV overflow L0B.
-        q_mat = pto.alloc_tile(shape=[S0, head_dim], dtype=pto.f16, memory_space="MAT")
+        q_mat = pto.alloc_tile(
+            shape=[S0, head_dim],
+            dtype=pto.f16,
+            memory_space="MAT",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         q_left = pto.alloc_tile(
             shape=[S0, head_dim],
             dtype=pto.f16,
@@ -338,7 +351,6 @@ def _build_flash_attention_entry(
             shape=[head_dim, CUBE_S1],
             dtype=pto.f16,
             memory_space="RIGHT",
-            blayout="RowMajor",
             slayout="ColMajor",
         )
         qk_acc_a = pto.alloc_tile(
@@ -361,7 +373,6 @@ def _build_flash_attention_entry(
             shape=[CUBE_S1, head_dim],
             dtype=pto.f16,
             memory_space="RIGHT",
-            blayout="RowMajor",
             slayout="ColMajor",
         )
         pv_acc_a = pto.alloc_tile(
@@ -485,7 +496,15 @@ def _build_flash_attention_entry(
                 t_idx = steady_tiles + pto.const(k)
                 emit_pv(t_idx, b)
 
-    @pto.jit(name=vector_symbol, target="a5", entry=False, kernel_kind="vector", mode="auto", backend="emitc")
+    @pto.jit(
+        name=vector_symbol,
+        target="a5",
+        entry=False,
+        kernel_kind="vector",
+        mode="auto",
+        backend="emitc",
+        insert_sync=True,
+    )
     def flash_attention_vector_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
@@ -748,7 +767,7 @@ def _build_flash_attention_entry(
                     sizes=[vec_s0, head_dim],
                 )
                 pto.tile.store(o_tile[row_slice], o_part)
-    @pto.jit(name=entry_symbol, target="a5", mode="explicit", backend="emitc")
+    @pto.jit(name=entry_symbol, target="a5", mode="explicit", backend="emitc", insert_sync=True)
     def flash_attention_entry(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
