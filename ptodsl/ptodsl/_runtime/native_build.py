@@ -42,12 +42,15 @@ def _run_ptoas(
     kernel_object: Path,
     *,
     target_arch: str,
+    insert_sync: bool | None = None,
 ) -> None:
     ptoas = resolve_ptoas_binary()
     cmd = [
         str(ptoas),
         f"--pto-arch={target_arch}",
     ]
+    if insert_sync is True:
+        cmd.append("--enable-insert-sync")
     cmd.extend([
         "--enable-tile-op-expand",
         str(mlir_path),
@@ -178,6 +181,7 @@ def build_native_library(
         artifacts.mlir_path,
         artifacts.kernel_object,
         target_arch=module_spec.target_arch,
+        insert_sync=module_spec.insert_sync,
     )
 
     launch_object = artifacts.cache_dir / "launch.o"

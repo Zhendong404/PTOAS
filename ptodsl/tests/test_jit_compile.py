@@ -2239,12 +2239,13 @@ def main() -> None:
                 manifest_path=cache_dir / "manifest.json",
             )
 
-        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch):
+        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None):
             native_build_observations.append(
                 {
                     "mlir_path": mlir_path,
                     "kernel_object": kernel_object,
                     "target_arch": target_arch,
+                    "insert_sync": insert_sync,
                     "mlir_text": mlir_path.read_text(encoding="utf-8"),
                 }
             )
@@ -2291,6 +2292,10 @@ def main() -> None:
             f"{label} native build should still pass the target arch to ptoas",
         )
         expect(
+            observation["insert_sync"] == compiled._module_spec.insert_sync,
+            f"{label} native build should forward the authored insert_sync policy to ptoas",
+        )
+        expect(
             observation["mlir_text"] == compiled.mlir_text(),
             f"{label} native build should hand the backend-partitioned container MLIR to ptoas unchanged",
         )
@@ -2333,11 +2338,26 @@ def main() -> None:
         )
         expect(
             "--enable-insert-sync" not in ptoas_cmd,
-            "native build should no longer reconstruct insert-sync policy through global ptoas flags",
+            "native build should keep the default insert-sync policy unset at the ptoas command line",
         )
         expect(
             "--enable-tile-op-expand" in ptoas_cmd and str(mlir_path) in ptoas_cmd and str(kernel_object) in ptoas_cmd,
             "native build should still pass the shared PTOAS compile inputs and output path",
+        )
+        ptoas_cmds.clear()
+        with mock.patch.object(native_build_runtime, "resolve_ptoas_binary", return_value=Path("/tmp/fake-ptoas")), mock.patch.object(
+            native_build_runtime, "_run", side_effect=fake_run_ptoas_cmd
+        ):
+            native_build_runtime._run_ptoas(
+                mlir_path,
+                kernel_object,
+                target_arch="a5",
+                insert_sync=True,
+            )
+        expect(len(ptoas_cmds) == 1, "native build should issue exactly one ptoas command when insert_sync is forced on")
+        expect(
+            "--enable-insert-sync" in ptoas_cmds[0],
+            "native build should pass --enable-insert-sync when the compiled module explicitly requests it",
         )
     expect("valid=?" not in default_text, "default alloc_tile() should keep full static valid-shape when valid_shape= is omitted")
     auto_mode_violation = expect_raises(
