@@ -360,7 +360,13 @@ def _build_flash_attention_entry(
             blayout="ColMajor",
             slayout="RowMajor",
         )
-        p_recv_a = pto.alloc_tile(shape=[S0, CUBE_S1], dtype=pto.f16, memory_space="MAT")
+        p_recv_a = pto.alloc_tile(
+            shape=[S0, CUBE_S1],
+            dtype=pto.f16,
+            memory_space="MAT",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         p_left_a = pto.alloc_tile(
             shape=[S0, CUBE_S1],
             dtype=pto.f16,
@@ -368,7 +374,13 @@ def _build_flash_attention_entry(
             blayout="ColMajor",
             slayout="RowMajor",
         )
-        v_mat_a = pto.alloc_tile(shape=[CUBE_S1, head_dim], dtype=pto.f16, memory_space="MAT")
+        v_mat_a = pto.alloc_tile(
+            shape=[CUBE_S1, head_dim],
+            dtype=pto.f16,
+            memory_space="MAT",
+            blayout="ColMajor",
+            slayout="RowMajor",
+        )
         v_right_a = pto.alloc_tile(
             shape=[CUBE_S1, head_dim],
             dtype=pto.f16,
