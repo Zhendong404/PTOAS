@@ -918,16 +918,16 @@ static FailureOr<std::string>
 getTPipeDirectionToken(bool isL2G2L, int8_t dirMask, PTOArch targetArch) {
   if (dirMask == 1) {
     if (isL2G2L && targetArch == PTOArch::A5)
-      return std::string("Direction::DIR_C2V_GM");
-    return std::string("Direction::DIR_C2V");
+      return std::string("DIR_C2V_GM");
+    return std::string("DIR_C2V");
   }
   if (dirMask == 2) {
     if (isL2G2L && targetArch == PTOArch::A5)
-      return std::string("Direction::DIR_V2C_GM");
-    return std::string("Direction::DIR_V2C");
+      return std::string("DIR_V2C_GM");
+    return std::string("DIR_V2C");
   }
   if (dirMask == 3)
-    return std::string("Direction::DIR_BOTH");
+    return std::string("DIR_BOTH");
   return failure();
 }
 
@@ -12881,6 +12881,14 @@ struct EmitPTOManualPass
 	    auto loc = mop->getLoc();
 	    OpBuilder builder(ctx);
 	    builder.setInsertionPointToStart(mop.getBody());
+	    if (targetArch == PTOArch::A5) {
+	      builder.create<emitc::VerbatimOp>(
+	          loc, builder.getStringAttr(R"cpp(
+#ifndef PTO_NPU_ARCH_A5
+#define PTO_NPU_ARCH_A5
+#endif
+)cpp"));
+	    }
 	    builder.create<emitc::IncludeOp>(
 	        loc, "pto/pto-inst.hpp", /*is_standard_include=*/false);
         if (needsCommInclude) {
