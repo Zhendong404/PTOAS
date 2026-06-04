@@ -84,6 +84,7 @@ struct PipeComponent {
   bool globalOnly = false;
   unsigned flagWidth = 0;
   std::optional<int32_t> explicitFlagBase;
+  size_t creationOrder = 0;
 };
 
 struct FlagInterval {
@@ -220,6 +221,12 @@ static void setFlagBaseAttr(Operation *op, IntegerAttr attr) {
     setFlagBaseAttr(initOp, attr);
 }
 
+static std::optional<int32_t> getFrontendPipeId(Operation *op) {
+  if (auto attr = op->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+    return attr.getInt();
+  return std::nullopt;
+}
+
 static bool samePipeInitSignature(const PipeInitInfo &lhs,
                                   const PipeInitInfo &rhs) {
   return std::tie(lhs.dirMask, lhs.slotSize, lhs.slotNum, lhs.localSlotNum,
@@ -289,6 +296,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
     component.slotNum = lhs.slotNum;
     component.localSlotNum = lhs.localSlotNum;
     component.globalOnly = lhs.globalOnly;
+    component.creationOrder = components.size();
     component.flagWidth = component.dirMask == kBidirectionalDirMask
                               ? kBidirectionalFlagWidth
                               : kSingleDirectionFlagWidth;
@@ -314,6 +322,19 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
 
     components.push_back(std::move(component));
   }
+
+  llvm::stable_sort(components, [](const PipeComponent &lhs,
+                                   const PipeComponent &rhs) {
+    auto lhsFrontendId =
+        lhs.globalOnly ? getFrontendPipeId(lhs.ops.front()) : std::nullopt;
+    auto rhsFrontendId =
+        rhs.globalOnly ? getFrontendPipeId(rhs.ops.front()) : std::nullopt;
+    if (lhsFrontendId && rhsFrontendId) {
+      return std::tie(*lhsFrontendId, lhs.dirMask, lhs.creationOrder) <
+             std::tie(*rhsFrontendId, rhs.dirMask, rhs.creationOrder);
+    }
+    return lhs.creationOrder < rhs.creationOrder;
+  });
 
   return components;
 }
