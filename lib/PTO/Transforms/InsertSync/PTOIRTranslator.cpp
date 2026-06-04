@@ -610,6 +610,21 @@ void PTOIRTranslator::UpdateMacroOpInfo(Operation *op) {
 // 6. [P0 修改] 获取 Op 的 Pipeline 类型
 // ============================================================================
 pto::PipelineType PTOIRTranslator::getOpPipeline(Operation *op) {
+  // Frontend GM-slot pipe ops lower to unified tpush/tpop over TensorView
+  // entries. Their ODS getPipe() helpers only classify tilebuf/memref payloads,
+  // so the global-tensor entry form falls back to PIPE_UNASSIGNED and drops out
+  // of InsertSync completely. Model these entry-handshake ops as scalar control
+  // steps so InsertSync can recover the required S<->MTE ordering around
+  // tpush/tpop <-> tload/tstore on GM-staged slots.
+  if (auto pushOp = dyn_cast<pto::TPushOp>(op)) {
+    if (isa<pto::TensorViewType>(pushOp.getTile().getType()))
+      return pto::PipelineType::PIPE_S;
+  }
+  if (auto popOp = dyn_cast<pto::TPopOp>(op)) {
+    if (isa<pto::TensorViewType>(popOp.getTile().getType()))
+      return pto::PipelineType::PIPE_S;
+  }
+
   // 1. 优先尝试通过接口获取
   if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
     // 注意：假设 pto::Pipe (ODS Enum) 和 pto::PipelineType (C++ Enum) 的数值定义是一致的
