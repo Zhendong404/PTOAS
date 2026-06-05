@@ -33,6 +33,10 @@ if __package__ in {None, ""}:
         raise RuntimeError("Unable to locate the PTODSL Python package root")
 
 from ptodsl import pto, scalar
+try:
+    from .softmax import fa_softmax_init_vpto, fa_softmax_update_vpto
+except ImportError:
+    from softmax import fa_softmax_init_vpto, fa_softmax_update_vpto
 
 
 S0 = 128
@@ -586,9 +590,7 @@ def _build_flash_attention_entry(
         # enough. Reduce/state tiles are per-row_slice arrays because each
         # row_slice tracks its own running_max/running_sum independently.
         qk_vec = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
-        tmp = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
-        p_fp32 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
-        p_fp16 = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f16)
+        p_nz = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.ui16)
         pv_vec = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
         o_tile = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
 
@@ -597,14 +599,6 @@ def _build_flash_attention_entry(
             for _ in range(tile_factor)
         ]
         running_sum = [
-            pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(tile_factor)
-        ]
-        local_max = [
-            pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
-            for _ in range(tile_factor)
-        ]
-        local_sum = [
             pto.alloc_tile(shape=[vec_s0, 1], dtype=pto.f32, valid_shape=[vec_s0, 1], blayout="ColMajor")
             for _ in range(tile_factor)
         ]
@@ -641,39 +635,27 @@ def _build_flash_attention_entry(
                 )
                 pto.tile.load(slot_part, qk_vec)
                 qk = qk_vec
-                lmax = local_max[row_slice]
-                lsum = local_sum[row_slice]
                 rmax = running_max[row_slice]
                 rsum = running_sum[row_slice]
                 exp_slot = exp_max_slots[row_slice]
-                pto.tile.rowmax(qk, lmax, tmp=tmp)
-                
-                # Reshape reductions to row-major so scalar broadcast helpers work.
-                local_max_r = pto.tile.reshape(lmax, shape=[1, vec_s0], blayout="RowMajor")
-                running_max_r = pto.tile.reshape(rmax, shape=[1, vec_s0], blayout="RowMajor")
-                running_sum_r = pto.tile.reshape(rsum, shape=[1, vec_s0], blayout="RowMajor")
-                local_sum_r = pto.tile.reshape(lsum, shape=[1, vec_s0], blayout="RowMajor")
-                exp_max_r = pto.tile.reshape(exp_slot, shape=[1, vec_s0], blayout="RowMajor")
-                
                 if is_init:
-                    pto.tile.rowexpandsub(qk, lmax, p_fp32)
-                    pto.tile.mov(local_max_r, running_max_r)
-                    pto.tile.muls(p_fp32, scale_const, p_fp32)
-                    pto.tile.exp(p_fp32, p_fp32)
-                    pto.tile.rowsum(p_fp32, rsum, tmp=tmp)
+                    fa_softmax_init_vpto(
+                        qk,
+                        p_nz,
+                        rmax,
+                        rsum,
+                        scale_const,
+                    )
                 else:
-                    pto.tile.max(local_max_r, running_max_r, local_max_r)
-                    pto.tile.sub(running_max_r, local_max_r, exp_max_r)
-                    pto.tile.mov(local_max_r, running_max_r)
-                    pto.tile.rowexpandsub(qk, lmax, p_fp32)
-                    pto.tile.muls(exp_max_r, scale_const, exp_max_r)
-                    pto.tile.exp(exp_max_r, exp_max_r)
-                    pto.tile.muls(p_fp32, scale_const, p_fp32)
-                    pto.tile.exp(p_fp32, p_fp32)
-                    pto.tile.mul(running_sum_r, exp_max_r, running_sum_r)
-                    pto.tile.rowsum(p_fp32, lsum, tmp=tmp)
-                    pto.tile.add(running_sum_r, local_sum_r, running_sum_r)
-                pto.tile.cvt(p_fp32, p_fp16)
+                    fa_softmax_update_vpto(
+                        qk,
+                        p_nz,
+                        rmax,
+                        rsum,
+                        exp_slot,
+                        scale_const,
+                    )
+                p_fp16 = pto.tile.reshape(p_nz, shape=[vec_s0, s1_tile], dtype=pto.f16)
                 p_part = pto.partition_view(
                     p_entry,
                     offsets=[row_off, 0],
