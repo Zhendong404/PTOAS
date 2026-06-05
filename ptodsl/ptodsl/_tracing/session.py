@@ -15,13 +15,9 @@ import hashlib
 
 from .._control_flow import _ExplicitReturnSignal
 from .._diagnostics import inline_subkernel_value_escape_error
-from .._kernel_signature import DeviceParameterSpec
 from .._kernel_signature import RuntimeScalarParameterSpec
 from .._ops import const
-from .._scalar_coercion import coerce_scalar_to_type
 from .._surface_values import unwrap_surface_value, wrap_like_surface_value
-from .._surface_values import wrap_surface_value
-from .._types import _PtrDescriptor, _resolve
 from .control_flow import (
     build_carry_loop_frame,
     finish_carry_loop_frame,
@@ -489,14 +485,13 @@ class TraceSession:
                 f"{len(positional_params)} argument(s), got {len(args)}"
             )
         arg_templates = tuple(
-            self._normalize_kernel_module_argument(kernel_handle._py_name, param, arg)
+            const(arg, dtype=param.annotation)
+            if isinstance(param, RuntimeScalarParameterSpec) and not hasattr(unwrap_surface_value(arg), "type")
+            else arg
             for param, arg in zip(positional_params, args)
         )
 
-        arg_types = tuple(
-            self._kernel_module_parameter_abi_type(param, arg)
-            for param, arg in zip(positional_params, arg_templates)
-        )
+        arg_types = tuple(unwrap_surface_value(arg).type for arg in arg_templates)
         helper_spec = HelperFunctionSpec(
             symbol_name=compiler._module_spec.function_name,
             arg_types=arg_types,
@@ -533,35 +528,6 @@ class TraceSession:
         self.record_kernel_module_dependency(caller_symbol_name, helper_spec.symbol_name)
         call_args = [unwrap_surface_value(arg) for arg in arg_templates]
         func.CallOp(import_fn, call_args)
-
-    def _normalize_kernel_module_argument(self, kernel_name: str, param, arg):
-        if isinstance(param, RuntimeScalarParameterSpec):
-            target_type = _resolve(param.annotation)
-            if isinstance(arg, (bool, int, float)) or hasattr(unwrap_surface_value(arg), "type"):
-                return wrap_surface_value(
-                    coerce_scalar_to_type(
-                        arg,
-                        target_type,
-                        context=f"@pto.jit(entry=False) kernel module {kernel_name!r} argument '{param.name}'",
-                    )
-                )
-        if isinstance(param, DeviceParameterSpec) and isinstance(param.annotation, _PtrDescriptor):
-            expected_type = _resolve(param.annotation)
-            raw_arg = unwrap_surface_value(arg)
-            observed_type = getattr(raw_arg, "type", None)
-            if observed_type != expected_type:
-                raise TypeError(
-                    f"@pto.jit(entry=False) kernel module {kernel_name!r} argument '{param.name}' "
-                    f"expects {expected_type}, got {observed_type}"
-                )
-        return arg
-
-    def _kernel_module_parameter_abi_type(self, param, arg):
-        if isinstance(param, RuntimeScalarParameterSpec):
-            return _resolve(param.annotation)
-        if isinstance(param, DeviceParameterSpec) and isinstance(param.annotation, _PtrDescriptor):
-            return _resolve(param.annotation)
-        return unwrap_surface_value(arg).type
 
     def lookup_helper(self, symbol_name: str):
         """Return a previously declared helper function, or ``None``."""
