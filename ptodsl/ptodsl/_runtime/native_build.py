@@ -140,6 +140,7 @@ def _link_shared_library(
             "-fPIC",
             "-shared",
             "--cce-fatobj-link",
+            "-Wl,--no-undefined",
             f"-Wl,-soname,{soname}",
             "-o",
             str(shared_library),

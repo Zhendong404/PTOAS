@@ -489,6 +489,56 @@ static constexpr llvm::StringLiteral kEmptyHostStubSource =
     "#ifndef __global__\n#define __global__\n#endif\n\n"
     "#ifndef __gm__\n#define __gm__\n#endif\n\n";
 
+static std::string summarizeMixedChildModule(ModuleOp module) {
+  std::string summary;
+  llvm::raw_string_ostream os(summary);
+
+  if (auto backendAttr = module->getAttrOfType<StringAttr>("pto.backend"))
+    os << "backend=" << backendAttr.getValue() << " ";
+  if (auto kindAttr = module->getAttrOfType<StringAttr>("pto.kernel_kind"))
+    os << "kernel_kind=" << kindAttr.getValue() << " ";
+
+  SmallVector<std::string, 4> exportedNames;
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
+    if (visibility && visibility.getValue() == "private")
+      continue;
+    if (funcOp.isExternal())
+      continue;
+    exportedNames.push_back(funcOp.getSymName().str());
+  }
+
+  if (!exportedNames.empty()) {
+    os << "exports=[";
+    for (size_t i = 0; i < exportedNames.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << exportedNames[i];
+    }
+    os << "]";
+  } else {
+    os << "exports=[]";
+  }
+
+  os.flush();
+  return summary;
+}
+
+static void dumpFailedMixedChildCompileUnit(llvm::StringRef backendName,
+                                            llvm::StringRef summary,
+                                            ModuleOp module) {
+  llvm::errs() << "Error: mixed-backend child module compilation failed"
+               << " [" << backendName << "]";
+  if (!summary.empty())
+    llvm::errs() << " {" << summary << "}";
+  llvm::errs() << "\n";
+  llvm::errs() << "// ----- failed mixed-backend child compile unit ----- //\n";
+  module.print(llvm::errs());
+  llvm::errs() << "\n";
+}
+
+class PTOASContext;
+
 static LogicalResult emitVPTOLLVMFatobj(
     const mlir::pto::PTOASCompileResult &jobResult, PTOASContext &context,
     llvm::StringRef moduleId, llvm::StringRef outputPath);
@@ -639,8 +689,10 @@ public:
 class EmitCBackendChildJob final : public BackendChildJob {
 public:
   EmitCBackendChildJob(OwningOpRef<ModuleOp> &&module,
+                       std::string summary,
                        SmallVectorImpl<std::string> &fatobjPaths)
-      : module(std::move(module)), fatobjPaths(fatobjPaths) {}
+      : module(std::move(module)), summary(std::move(summary)),
+        fatobjPaths(fatobjPaths) {}
 
   LogicalResult run(PTOASContext &context) override {
     ModuleOp op = module.get();
@@ -649,11 +701,14 @@ public:
     mlir::pto::PTOASCompileResult jobResult;
     if (mlir::pto::compilePTOASModule(module, context,
                                       mlir::pto::PTOBackend::EmitC, jobResult,
-                                      /*emitVPTOHostStub=*/false) != 0)
+                                      /*emitVPTOHostStub=*/false) != 0) {
+      dumpFailedMixedChildCompileUnit("emitc", summary, op);
       return failure();
+    }
     if (jobResult.kind != mlir::pto::PTOASCompileResultKind::Text) {
       llvm::errs() << "Error: EmitC backend child job produced non-text "
                       "output.\n";
+      dumpFailedMixedChildCompileUnit("emitc", summary, op);
       return failure();
     }
 
@@ -666,8 +721,10 @@ public:
       return failure();
     if (failed(mlir::pto::emitFatobjCCE(
             jobResult.textOutput, fatobjPath, *toolchain,
-            context.getTempFiles(), llvm::errs())))
+            context.getTempFiles(), llvm::errs()))) {
+      dumpFailedMixedChildCompileUnit("emitc", summary, op);
       return failure();
+    }
 
     fatobjPaths.push_back(std::move(fatobjPath));
     return success();
@@ -675,14 +732,17 @@ public:
 
 private:
   OwningOpRef<ModuleOp> module;
+  std::string summary;
   SmallVectorImpl<std::string> &fatobjPaths;
 };
 
 class VPTOBackendChildJob final : public BackendChildJob {
 public:
-  VPTOBackendChildJob(OwningOpRef<ModuleOp> &&module, std::string moduleId,
+  VPTOBackendChildJob(OwningOpRef<ModuleOp> &&module, std::string summary,
+                      std::string moduleId,
                       SmallVectorImpl<std::string> &fatobjPaths)
-      : module(std::move(module)), moduleId(std::move(moduleId)),
+      : module(std::move(module)), summary(std::move(summary)),
+        moduleId(std::move(moduleId)),
         fatobjPaths(fatobjPaths) {}
 
   LogicalResult run(PTOASContext &context) override {
@@ -693,11 +753,14 @@ public:
     mlir::pto::PTOASCompileResult jobResult;
     if (mlir::pto::compilePTOASModule(
             module, context, mlir::pto::PTOBackend::VPTO, jobResult,
-            emitHostStub) != 0)
+            emitHostStub) != 0) {
+      dumpFailedMixedChildCompileUnit("vpto", summary, op);
       return failure();
+    }
     if (jobResult.kind != mlir::pto::PTOASCompileResultKind::VPTOObject) {
       llvm::errs() << "Error: VPTO backend child job produced non-object "
                       "output.\n";
+      dumpFailedMixedChildCompileUnit("vpto", summary, op);
       return failure();
     }
 
@@ -705,8 +768,10 @@ public:
     if (failed(context.createTempPath("ptoas-vpto-fatobj", ".o", fatobjPath)))
       return failure();
 
-    if (failed(emitVPTOLLVMFatobj(jobResult, context, moduleId, fatobjPath)))
+    if (failed(emitVPTOLLVMFatobj(jobResult, context, moduleId, fatobjPath))) {
+      dumpFailedMixedChildCompileUnit("vpto", summary, op);
       return failure();
+    }
 
     fatobjPaths.push_back(std::move(fatobjPath));
     return success();
@@ -714,6 +779,7 @@ public:
 
 private:
   OwningOpRef<ModuleOp> module;
+  std::string summary;
   std::string moduleId;
   SmallVectorImpl<std::string> &fatobjPaths;
 };
@@ -832,12 +898,14 @@ static LogicalResult collectChildJobs(
       jobModule->print(llvm::errs());
       llvm::errs() << "\n";
     }
+    std::string summary = summarizeMixedChildModule(jobModule.get());
     if (childBackend.value_or(defaultBackend) == mlir::pto::PTOBackend::VPTO)
       backendJobs.push_back(std::make_unique<VPTOBackendChildJob>(
-          std::move(jobModule), context.allocModuleId(), fatobjPaths));
+          std::move(jobModule), std::move(summary), context.allocModuleId(),
+          fatobjPaths));
     else
       backendJobs.push_back(std::make_unique<EmitCBackendChildJob>(
-          std::move(jobModule), fatobjPaths));
+          std::move(jobModule), std::move(summary), fatobjPaths));
   }
   return success();
 }
