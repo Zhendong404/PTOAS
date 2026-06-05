@@ -27,9 +27,10 @@ from ._diagnostics import (
 )
 from ._host_tensors import TensorSpec, looks_like_host_tensor
 from ._surface_types import Tile
-from ._surface_values import unwrap_surface_value
+from ._surface_values import unwrap_surface_value, wrap_surface_value
 from ._tracing import current_runtime, current_session
-from ._types import _DType, _MaskDescriptor, _PtrDescriptor, _VRegDescriptor
+from ._scalar_coercion import coerce_scalar_to_type
+from ._types import _DType, _MaskDescriptor, _PtrDescriptor, _VRegDescriptor, _resolve
 
 
 class KernelRole(str, Enum):
@@ -181,7 +182,7 @@ def _is_pto_ptr_like(value) -> bool:
     if type_obj is None:
         return False
     type_text = str(type_obj)
-    return type_text.startswith("!pto.ptr<") or type_text.startswith("memref<")
+    return type_text.startswith("!pto.ptr<")
 
 
 def _is_runtime_scalar_value(value) -> bool:
@@ -208,12 +209,15 @@ def _normalize_subkernel_argument(role: KernelRole, name: str, annotation, value
         raise subkernel_argument_type_error(role.value, name, "a pto.Tile value", type(value).__name__)
 
     if _is_supported_runtime_scalar_annotation(annotation):
-        if isinstance(value, (bool, int, float)):
-            from ._ops import const
-
-            return const(value, dtype=annotation)
-        if _is_runtime_scalar_value(value):
-            return value
+        scalar_type = _resolve(annotation)
+        if isinstance(value, (bool, int, float)) or _is_runtime_scalar_value(value):
+            return wrap_surface_value(
+                coerce_scalar_to_type(
+                    value,
+                    scalar_type,
+                    context=f"@pto.{role.value} argument '{name}'",
+                )
+            )
         raise subkernel_argument_type_error(
             role.value,
             name,
