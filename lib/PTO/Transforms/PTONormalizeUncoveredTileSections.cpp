@@ -10,7 +10,10 @@
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 namespace mlir {
 namespace pto {
@@ -51,6 +54,40 @@ static bool isTileLikeOp(Operation *op) {
          op->getName().getStringRef().starts_with("pto.t");
 }
 
+static bool isPipeLikeOp(Operation *op) {
+  return op && isa<OpPipeInterface>(op);
+}
+
+static bool isRawVPTOVectorTransientType(Type type) {
+  return isa<VRegType, MaskType, AlignType>(type);
+}
+
+static bool isRawVPTOVectorLikeOp(Operation *op) {
+  if (!op)
+    return false;
+  for (Value operand : op->getOperands()) {
+    if (isRawVPTOVectorTransientType(operand.getType()))
+      return true;
+  }
+  for (Value result : op->getResults()) {
+    if (isRawVPTOVectorTransientType(result.getType()))
+      return true;
+  }
+  return false;
+}
+
+static bool hasAnySection(func::FuncOp funcOp) {
+  bool found = false;
+  funcOp.walk([&](Operation *op) {
+    if (isa<SectionCubeOp, SectionVectorOp>(op)) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
 static bool isInsideKernelKindModule(func::FuncOp funcOp) {
   if (!funcOp)
     return false;
@@ -83,8 +120,6 @@ static void collectTileAddressSpaces(Type type,
 static std::optional<InferredSectionKind> classifyTileOpByName(Operation *op) {
   StringRef name = op->getName().getStringRef();
   if (name.starts_with("pto.tmatmul") || name.starts_with("pto.tgemv"))
-    return InferredSectionKind::Cube;
-  if (name.ends_with("_to_aic") || name.ends_with("_from_aic"))
     return InferredSectionKind::Cube;
   if (name.ends_with("_to_aiv") || name.ends_with("_from_aiv"))
     return InferredSectionKind::Vector;
@@ -156,6 +191,181 @@ static std::optional<InferredSectionKind> classifyTileOp(Operation *op) {
   if (std::optional<InferredSectionKind> kind = classifyTileOpByAddressSpace(op))
     return kind;
   return classifyTileOpByPipe(op);
+}
+
+struct ModuleKindSummary {
+  unsigned vectorCount = 0;
+  unsigned cubeCount = 0;
+  SmallVector<Operation *, 4> ambiguousOps;
+};
+
+enum class FunctionKindCacheState : uint8_t {
+  Unknown = 0,
+  Vector = 1,
+  Cube = 2,
+  InProgress = 3,
+};
+
+static void inspectModuleKindOperation(Operation *op, ModuleKindSummary &summary) {
+  if (!op)
+    return;
+  if (isExplicitSection(op))
+    return;
+
+  if (isPipeLikeOp(op)) {
+    if (std::optional<InferredSectionKind> kind = classifyTileOp(op)) {
+      if (*kind == InferredSectionKind::Vector)
+        ++summary.vectorCount;
+      else
+        ++summary.cubeCount;
+    } else if (isTileLikeOp(op)) {
+      summary.ambiguousOps.push_back(op);
+    }
+  } else if (isRawVPTOVectorLikeOp(op)) {
+    ++summary.vectorCount;
+  }
+
+  for (Region &region : op->getRegions()) {
+    for (Block &block : region.getBlocks()) {
+      for (Operation &nested : block.getOperations())
+        inspectModuleKindOperation(&nested, summary);
+    }
+  }
+}
+
+static FunctionKindCacheState
+encodeFunctionKind(std::optional<InferredSectionKind> kind) {
+  if (!kind)
+    return FunctionKindCacheState::Unknown;
+  return *kind == InferredSectionKind::Vector ? FunctionKindCacheState::Vector
+                                              : FunctionKindCacheState::Cube;
+}
+
+static std::optional<InferredSectionKind>
+decodeFunctionKind(FunctionKindCacheState state) {
+  switch (state) {
+  case FunctionKindCacheState::Vector:
+    return InferredSectionKind::Vector;
+  case FunctionKindCacheState::Cube:
+    return InferredSectionKind::Cube;
+  case FunctionKindCacheState::Unknown:
+  case FunctionKindCacheState::InProgress:
+    return std::nullopt;
+  }
+  llvm_unreachable("unexpected function kind cache state");
+}
+
+static func::CallOp getTransparentWrapperCall(func::FuncOp funcOp) {
+  if (!funcOp || funcOp.isDeclaration() || !funcOp.getBody().hasOneBlock())
+    return nullptr;
+
+  Block &entryBlock = funcOp.getBody().front();
+  func::CallOp callOp;
+  func::ReturnOp returnOp;
+  for (Operation &op : entryBlock.getOperations()) {
+    if (auto ret = dyn_cast<func::ReturnOp>(op)) {
+      returnOp = ret;
+      continue;
+    }
+    if (callOp)
+      return nullptr;
+    callOp = dyn_cast<func::CallOp>(op);
+    if (!callOp)
+      return nullptr;
+  }
+
+  if (!callOp || !returnOp)
+    return nullptr;
+  if (returnOp.getNumOperands() != callOp.getNumResults())
+    return nullptr;
+  for (auto [returned, forwarded] :
+       llvm::zip(returnOp.getOperands(), callOp.getResults())) {
+    if (returned != forwarded)
+      return nullptr;
+  }
+  return callOp;
+}
+
+static std::optional<InferredSectionKind>
+inferWholeFunctionKind(func::FuncOp funcOp,
+                       llvm::DenseMap<Operation *, FunctionKindCacheState> &cache) {
+  if (!funcOp || funcOp.isDeclaration())
+    return std::nullopt;
+  if (hasExplicitPTOEntryAttr(funcOp) || hasPTOKernelAttr(funcOp.getOperation()))
+    return std::nullopt;
+
+  auto cacheIt = cache.find(funcOp.getOperation());
+  if (cacheIt != cache.end()) {
+    if (cacheIt->second == FunctionKindCacheState::InProgress)
+      return std::nullopt;
+    return decodeFunctionKind(cacheIt->second);
+  }
+  cache[funcOp.getOperation()] = FunctionKindCacheState::InProgress;
+
+  ModuleKindSummary summary;
+  inspectModuleKindOperation(funcOp.getOperation(), summary);
+  std::optional<InferredSectionKind> inferredKind;
+  if (summary.ambiguousOps.empty() && !(summary.vectorCount && summary.cubeCount)) {
+    if (summary.vectorCount)
+      inferredKind = InferredSectionKind::Vector;
+    else if (summary.cubeCount)
+      inferredKind = InferredSectionKind::Cube;
+  }
+
+  if (!inferredKind) {
+    if (func::CallOp callOp = getTransparentWrapperCall(funcOp)) {
+      auto callee =
+          SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(funcOp, callOp.getCalleeAttr());
+      if (callee && callee != funcOp)
+        inferredKind = inferWholeFunctionKind(callee, cache);
+    }
+  }
+
+  cache[funcOp.getOperation()] = encodeFunctionKind(inferredKind);
+  return inferredKind;
+}
+
+static void assignModuleKernelKind(ModuleOp module, InferredSectionKind kind) {
+  FunctionKernelKind kernelKind =
+      kind == InferredSectionKind::Vector ? FunctionKernelKind::Vector
+                                          : FunctionKernelKind::Cube;
+  module->setAttr(FunctionKernelKindAttr::name,
+                  FunctionKernelKindAttr::get(module.getContext(), kernelKind));
+}
+
+static LogicalResult tryAssignWholeModuleKernelKind(ModuleOp module) {
+  if (!module || module->hasAttr(FunctionKernelKindAttr::name))
+    return success();
+
+  SmallVector<func::FuncOp> defs;
+  for (auto funcOp : module.getOps<func::FuncOp>()) {
+    if (!funcOp.isDeclaration())
+      defs.push_back(funcOp);
+  }
+  if (defs.empty())
+    return success();
+
+  llvm::DenseMap<Operation *, FunctionKindCacheState> cache;
+  std::optional<InferredSectionKind> commonKind;
+  for (func::FuncOp funcOp : defs) {
+    if (hasAnySection(funcOp))
+      return success();
+    std::optional<InferredSectionKind> funcKind =
+        inferWholeFunctionKind(funcOp, cache);
+    if (!funcKind)
+      return success();
+    if (!commonKind) {
+      commonKind = funcKind;
+      continue;
+    }
+    if (*commonKind != *funcKind)
+      return success();
+  }
+
+  if (!commonKind)
+    return success();
+  assignModuleKernelKind(module, *commonKind);
+  return success();
 }
 
 static void inspectSegmentOperation(Operation *op,
@@ -338,6 +548,12 @@ static LogicalResult verifyFunctionHasNoResidualUncoveredTileSegments(
 
 static LogicalResult scanModuleForUncoveredTileSegments(ModuleOp module) {
   LogicalResult status = success();
+  if (failed(tryAssignWholeModuleKernelKind(module)))
+    return failure();
+  for (ModuleOp child : module.getOps<ModuleOp>()) {
+    if (failed(scanModuleForUncoveredTileSegments(child)))
+      return failure();
+  }
   module.walk([&](func::FuncOp funcOp) {
     if (failed(status))
       return WalkResult::interrupt();

@@ -1558,6 +1558,7 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             bool hasTilelangHelpers) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
+  pm.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
   if (!hasTileOpsToExpand && hasTilelangHelpers)
