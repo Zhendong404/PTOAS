@@ -580,18 +580,6 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   return found;
 }
 
-static bool hasBackendInlineHelpers(ModuleOp module) {
-  bool found = false;
-  module.walk([&](func::FuncOp func) {
-    if (found)
-      return;
-    if (func->hasAttr("pto.tilelang.inline_proc") ||
-        func->hasAttr("pto.ptodsl.subkernel_helper"))
-      found = true;
-  });
-  return found;
-}
-
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 // We emit marker calls in EmitC IR because EmitC currently does not provide a
@@ -1701,7 +1689,6 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
-  const bool hasBackendHelpersToInline = hasBackendInlineHelpers(*module);
 
   if (effectiveBackend == PTOBackend::VPTO && !hasTileOpsToExpand) {
     if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
@@ -1789,11 +1776,12 @@ int mlir::pto::compilePTOASModule(
   // backends consume the same post-planning seam IR.
   pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
-  if (hasBackendHelpersToInline) {
-    pm.addPass(pto::createPTOInlineBackendHelpersPass());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-  }
+  // Inline PTODSL backend helpers only after the shared mainline has
+  // materialized tile-native handles, so helper arguments are restored to the
+  // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
+  pm.addPass(pto::createPTOInlineBackendHelpersPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 

@@ -751,10 +751,11 @@ public:
         return std::nullopt;
       }
 
-      std::string qualifier = "__gm__";
+      std::string qualifier =
+          addrSpaceQualifier(type.getMemorySpace().getAddressSpace());
 
-      std::string finalTypeStr = qualifier + " " + elemTypeStr;
-      return getEmitCPointerType(Ctx, finalTypeStr);
+      std::string finalTypeStr = qualifier + " " + elemTypeStr + "*";
+      return emitc::OpaqueType::get(Ctx, finalTypeStr);
     });
 
     addConversion([Ctx](pto::PipeType type) -> Type {
@@ -7756,6 +7757,17 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
     return success();
   }
 };
+
+struct MemRefCastToEmitC : public OpConversionPattern<memref::CastOp> {
+  using OpConversionPattern<memref::CastOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(memref::CastOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, peelUnrealized(adaptor.getSource()));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // pto.taddc lowering -> TADDC(dst, src0, src1, src2)
 //===----------------------------------------------------------------------===//
@@ -12824,6 +12836,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOTMatmulAccToTMATMULACC>(typeConverter, ctx);
   patterns.add<PTOTGemvToTGEMV>(typeConverter, ctx);
   patterns.add<PTOTGemvAccToTGEMVACC>(typeConverter, ctx);
+  patterns.add<MemRefCastToEmitC>(typeConverter, ctx);
   patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
