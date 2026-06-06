@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .codegen import generate_launch_cpp, launch_symbol_name
 from .toolchain import (
     aicore_arch_for_kernel_kind,
     common_include_flags,
+    runtime_library_flags,
     resolve_bisheng,
     resolve_ptoas_binary,
 )
@@ -134,6 +136,7 @@ def _link_shared_library(
 ) -> None:
     bisheng = resolve_bisheng()
     soname = shared_library.name
+    sim_mode = bool(os.environ.get("MSPROF_SIMULATOR_MODE"))
     _run(
         [
             bisheng,
@@ -146,6 +149,7 @@ def _link_shared_library(
             str(shared_library),
             str(launch_object),
             str(kernel_object),
+            *runtime_library_flags(sim_mode=sim_mode),
         ]
     )
 
@@ -166,11 +170,14 @@ def build_native_library(
         ir_function_name=ir_function_name,
         kernel_signature=kernel_signature,
     )
+    sim_mode = bool(os.environ.get("MSPROF_SIMULATOR_MODE"))
+    link_config_text = "\n".join(runtime_library_flags(sim_mode=sim_mode))
 
     if is_native_build_current(
         artifacts,
         mlir_text=mlir_text,
         launch_cpp_text=launch_cpp_text,
+        link_config_text=link_config_text,
     ):
         return artifacts.shared_library, launch_symbol
 
@@ -205,6 +212,7 @@ def build_native_library(
         launch_symbol=launch_symbol,
         mlir_digest=_content_digest(mlir_text),
         launch_cpp_digest=_content_digest(launch_cpp_text),
+        link_config_digest=_content_digest(link_config_text),
     )
     return artifacts.shared_library, launch_symbol
 
