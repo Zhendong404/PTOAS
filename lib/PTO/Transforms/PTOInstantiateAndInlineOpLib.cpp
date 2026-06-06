@@ -48,14 +48,19 @@ static bool isTilelangInlineProcFunc(func::FuncOp fn) {
   return fn->hasAttr("pto.tilelang.inline_proc");
 }
 
+static bool isPTODSLSubkernelHelperFunc(func::FuncOp fn) {
+  return fn->hasAttr("pto.ptodsl.subkernel_helper");
+}
+
 static bool isTilelangTemplateFunc(func::FuncOp fn) {
   return fn->hasAttr("pto.tilelang.instance") && fn.isPrivate();
 }
 
 static bool isInlineableLibFunc(func::FuncOp fn) {
   // Keep OP-Lib behavior unchanged while force-inlining TileLang helpers
-  // (inline_proc + private template helper).
-  if (isInstanceFunc(fn) || isTilelangInlineProcFunc(fn))
+  // (inline_proc + private template helper) and PTODSL subkernel helpers.
+  if (isInstanceFunc(fn) || isTilelangInlineProcFunc(fn) ||
+      isPTODSLSubkernelHelperFunc(fn))
     return true;
   return isTilelangTemplateFunc(fn);
 }
