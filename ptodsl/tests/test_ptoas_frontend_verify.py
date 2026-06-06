@@ -223,6 +223,19 @@ def emitc_entry_calls_vpto_kernel_module_probe(
         process_row_ptr_kernel_module(A_ptr, O_ptr, row)
 
 
+PTR_LIKE_TILE_BUF_ADDR_MLIR = """
+module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+  func.func private @consume(%arg0: !pto.ptr<f32, ub>)
+  func.func @ptr_like_tile_buf_addr_probe() attributes {pto.aicore} {
+    %tile = pto.alloc_tile : !pto.tile_buf<vec, 1x16xf32>
+    %ptr = pto.tile_buf_addr %tile : !pto.tile_buf<vec, 1x16xf32> -> !pto.ptr<f32, ub>
+    func.call @consume(%ptr) : (!pto.ptr<f32, ub>) -> ()
+    return
+  }
+}
+"""
+
+
 def main() -> None:
     ptoas_bin = resolve_ptoas_binary()
     mixed_backend_example = REPO_ROOT / "ptodsl" / "examples" / "mixed_backend_kernel_module.py"
@@ -292,6 +305,30 @@ def main() -> None:
     expect(
         mixed_backend_frontend_texts[1] == "",
         "mixed-backend VPTO callee child should continue to compile through the fallback object path when --emit-pto-ir is unavailable",
+    )
+
+    ptr_like_addr_text = PTR_LIKE_TILE_BUF_ADDR_MLIR
+    ptr_like_addr_frontend_texts = run_ptoas_frontend_verify(
+        ptoas_bin,
+        ptr_like_addr_text,
+        "ptr_like_tile_buf_addr_probe IR artifact",
+    )
+    expect(
+        len(ptr_like_addr_frontend_texts) == 1,
+        "ptr_like_tile_buf_addr_probe should lower to exactly one backend child module",
+    )
+    ptr_like_addr_frontend_text = ptr_like_addr_frontend_texts[0]
+    expect(
+        "func.func @ptr_like_tile_buf_addr_probe" in ptr_like_addr_frontend_text,
+        "ptr_like_tile_buf_addr_probe frontend verification output should preserve the kernel symbol",
+    )
+    expect(
+        "memref<?xf32" in ptr_like_addr_frontend_text,
+        "ptr-like tile_buf_addr lowering should materialize one memref<?xf32> address view during PTOViewToMemref",
+    )
+    expect(
+        "call @consume" in ptr_like_addr_frontend_text,
+        "ptr-like tile_buf_addr lowering should preserve call users after converting pointer-like operands",
     )
 
     example_mlir_text = emit_example_mlir(mixed_backend_example)
