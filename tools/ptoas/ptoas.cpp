@@ -1555,15 +1555,12 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
 
 static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             int argc, char **argv,
-                                            bool hasTileOpsToExpand,
-                                            bool hasBackendHelpersToInline) {
+                                            bool hasTileOpsToExpand) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
   pm.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
-  if (!hasTileOpsToExpand && hasBackendHelpersToInline)
-    inlineBackendHelpersOnVPTOInput(pm);
   if (hasTileOpsToExpand)
     lowerPTOToVPTOBackend(pm, argc, argv);
   prepareVPTOForEmission(pm);
@@ -1712,8 +1709,7 @@ int mlir::pto::compilePTOASModule(
                       "skipping the shared PTO-to-VPTO lowering pipeline.\n";
       return 1;
     }
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
-                                      hasBackendHelpersToInline)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());
@@ -1793,6 +1789,11 @@ int mlir::pto::compilePTOASModule(
   // backends consume the same post-planning seam IR.
   pm.addPass(pto::createPTOMaterializeTileHandlesPass());
   pm.addPass(createCSEPass());
+  if (hasBackendHelpersToInline) {
+    pm.addPass(pto::createPTOInlineBackendHelpersPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+  }
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 
@@ -1812,8 +1813,7 @@ int mlir::pto::compilePTOASModule(
     if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
       return 1;
 
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand,
-                                      hasBackendHelpersToInline)))
+    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());
