@@ -2391,6 +2391,8 @@ bool mlir::pto::hasExplicitPTOEntryAttr(func::FuncOp func) {
 
 static constexpr StringLiteral kEffectivePTOEntryAttrName =
     "pto.internal.entry";
+static constexpr StringLiteral kEffectivePTONonEntryAttrName =
+    "pto.internal.non_entry";
 
 static SmallVector<func::FuncOp> getPTOFunctionDefinitions(ModuleOp module) {
   SmallVector<func::FuncOp> defs;
@@ -2403,8 +2405,29 @@ static SmallVector<func::FuncOp> getPTOFunctionDefinitions(ModuleOp module) {
   return defs;
 }
 
+static bool isMarkedPTONonEntry(func::FuncOp func) {
+  if (!func)
+    return false;
+  if (auto attr = func->getAttrOfType<BoolAttr>(kEffectivePTONonEntryAttrName))
+    return attr.getValue();
+  return false;
+}
+
+static SmallVector<func::FuncOp>
+getDefaultPTOEntryCandidates(ArrayRef<func::FuncOp> defs) {
+  SmallVector<func::FuncOp> candidates;
+  for (func::FuncOp func : defs) {
+    if (isMarkedPTONonEntry(func))
+      continue;
+    candidates.push_back(func);
+  }
+  return candidates;
+}
+
 bool mlir::pto::isPTOEntryFunction(func::FuncOp func) {
   if (!func || func.isDeclaration())
+    return false;
+  if (isMarkedPTONonEntry(func))
     return false;
   if (auto attr = func->getAttrOfType<BoolAttr>(kEffectivePTOEntryAttrName))
     return attr.getValue();
@@ -2415,7 +2438,11 @@ bool mlir::pto::isPTOEntryFunction(func::FuncOp func) {
   if (!module)
     return false;
   SmallVector<func::FuncOp> defs = getPTOFunctionDefinitions(module);
-  return defs.size() == 1 && defs.front() == func;
+  if (defs.size() == 1)
+    return defs.front() == func;
+
+  SmallVector<func::FuncOp> candidates = getDefaultPTOEntryCandidates(defs);
+  return candidates.size() == 1 && candidates.front() == func;
 }
 
 LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
@@ -2449,19 +2476,24 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
 
   SmallVector<func::FuncOp> defs = getPTOFunctionDefinitions(module);
   bool hasEffectiveOverride = llvm::any_of(defs, [](func::FuncOp func) {
-    return func->hasAttrOfType<BoolAttr>(kEffectivePTOEntryAttrName);
+    return func->hasAttrOfType<BoolAttr>(kEffectivePTOEntryAttrName) ||
+           func->hasAttrOfType<BoolAttr>(kEffectivePTONonEntryAttrName);
   });
 
   if (hasEffectiveOverride) {
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (func.isDeclaration())
+      if (func.isDeclaration()) {
         func->removeAttr(kEffectivePTOEntryAttrName);
+        func->removeAttr(kEffectivePTONonEntryAttrName);
+      }
     }
     return;
   }
 
-  for (auto func : module.getOps<func::FuncOp>())
+  for (auto func : module.getOps<func::FuncOp>()) {
     func->removeAttr(kEffectivePTOEntryAttrName);
+    func->removeAttr(kEffectivePTONonEntryAttrName);
+  }
 
   if (defs.empty())
     return;
@@ -2471,10 +2503,24 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
     return;
   }
 
+  SmallVector<func::FuncOp> candidates = getDefaultPTOEntryCandidates(defs);
+  if (!llvm::any_of(defs, hasExplicitPTOEntryAttr) && candidates.size() == 1) {
+    for (auto func : defs) {
+      bool isEntry = func == candidates.front();
+      func->setAttr(kEffectivePTOEntryAttrName,
+                    BoolAttr::get(module.getContext(), isEntry));
+      func->setAttr(kEffectivePTONonEntryAttrName,
+                    BoolAttr::get(module.getContext(), !isEntry));
+    }
+    return;
+  }
+
   for (auto func : defs) {
+    bool isEntry = hasExplicitPTOEntryAttr(func);
     func->setAttr(kEffectivePTOEntryAttrName,
-                  BoolAttr::get(module.getContext(),
-                                hasExplicitPTOEntryAttr(func)));
+                  BoolAttr::get(module.getContext(), isEntry));
+    func->setAttr(kEffectivePTONonEntryAttrName,
+                  BoolAttr::get(module.getContext(), !isEntry));
   }
 }
 

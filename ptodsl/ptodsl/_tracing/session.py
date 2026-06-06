@@ -27,7 +27,7 @@ from .module_builder import create_container_child_module
 
 from mlir.dialects import arith, func
 from mlir.dialects import pto as _pto
-from mlir.ir import Attribute, InsertionPoint, IntegerType, StringAttr, UnitAttr
+from mlir.ir import Attribute, BoolAttr, InsertionPoint, IntegerType, StringAttr, UnitAttr
 
 
 @dataclass(frozen=True)
@@ -215,9 +215,10 @@ class TraceSession:
         return wrapper_op, body_block
 
     def _subkernel_helper_attributes(self, role: str) -> tuple[tuple[str, object], ...]:
+        attrs: list[tuple[str, object]] = [("pto.ptodsl.subkernel_helper", StringAttr.get(role))]
         if role == "simt":
-            return (("pto.simt_entry", UnitAttr.get()),)
-        return ()
+            attrs.append(("pto.simt_entry", UnitAttr.get()))
+        return tuple(attrs)
 
     def _emit_simt_helper_launch_metadata(self) -> None:
         i32 = IntegerType.get_signless(32)
@@ -559,6 +560,7 @@ class TraceSession:
         )
         with InsertionPoint(symbol_table):
             helper = func.FuncOp(specialized_symbol_name, fn_ty)
+            helper.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
             for attr_name, attr_value in spec.attributes:
                 helper.attributes[attr_name] = attr_value
         self._helpers[cache_key] = helper
@@ -577,6 +579,7 @@ class TraceSession:
         with InsertionPoint(symbol_table):
             helper = func.FuncOp(specialized_symbol_name, fn_ty)
             helper.attributes["sym_visibility"] = StringAttr.get("public")
+            helper.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
             if (
                 module_spec.backend == "emitc"
                 and not module_spec.entry
@@ -616,6 +619,7 @@ class TraceSession:
         with InsertionPoint(caller_symbol_table):
             helper = func.FuncOp(import_symbol_name, fn_ty)
             helper.attributes["sym_visibility"] = StringAttr.get("private")
+            helper.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
         self._kernel_module_private_imports[key] = helper
         return helper, True
 

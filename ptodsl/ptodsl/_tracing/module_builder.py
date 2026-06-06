@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from mlir.dialects import func
-from mlir.ir import Attribute, InsertionPoint, Module, Operation, StringAttr, UnitAttr
+from mlir.ir import Attribute, BoolAttr, InsertionPoint, Module, Operation, StringAttr, UnitAttr
 
 
 class ModuleStyle(str, Enum):
@@ -47,7 +47,10 @@ def _build_flat_aicore_module(spec: KernelModuleSpec, arg_types):
     fn_ty = func.FunctionType.get(arg_types, [])
     with InsertionPoint(module.body):
         ir_fn = func.FuncOp(spec.function_name, fn_ty)
-        ir_fn.attributes["pto.aicore"] = UnitAttr.get()
+        if spec.entry:
+            ir_fn.attributes["pto.aicore"] = UnitAttr.get()
+        else:
+            ir_fn.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
     return module, ir_fn
 
 
@@ -65,6 +68,8 @@ def _build_nested_module(spec: KernelModuleSpec, arg_types):
         with InsertionPoint(inner_body):
             fn_ty = func.FunctionType.get(arg_types, [])
             ir_fn = func.FuncOp(spec.function_name, fn_ty)
+            if not spec.entry:
+                ir_fn.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
 
     return outer, ir_fn
 
@@ -98,7 +103,9 @@ def _build_backend_partitioned_module(spec: KernelModuleSpec, arg_types):
         ir_fn = func.FuncOp(spec.function_name, fn_ty)
         if spec.entry:
             ir_fn.attributes["pto.aicore"] = UnitAttr.get()
-        elif spec.backend == "emitc" and spec.kernel_kind in {"cube", "vector"}:
+        else:
+            ir_fn.attributes["pto.internal.non_entry"] = BoolAttr.get(True)
+        if not spec.entry and spec.backend == "emitc" and spec.kernel_kind in {"cube", "vector"}:
             ir_fn.attributes["pto.kernel_kind"] = Attribute.parse(
                 f"#pto.kernel_kind<{spec.kernel_kind}>"
             )
