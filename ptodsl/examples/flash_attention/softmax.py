@@ -24,8 +24,12 @@ The intended structure is:
 - the explicit VPTO kernel module owns the micro-instruction body
 """
 
+import argparse
 from pathlib import Path
 import sys
+import time
+
+import numpy as np
 
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
@@ -47,6 +51,73 @@ def _inv_sqrt(head_size: int) -> float:
     return float(head_size) ** -0.5
 
 
+def softmax_init_reference(
+    qk: np.ndarray,
+    *,
+    scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return ``(p_nz_f16, running_max, running_sum)`` for the init pass."""
+    qk_f32 = np.asarray(qk, dtype=np.float32)
+    if qk_f32.ndim != 2:
+        raise ValueError(f"qk must be 2D, got shape {qk_f32.shape}")
+    running_max = np.max(qk_f32, axis=1, keepdims=True)
+    shifted = qk_f32 * np.float32(scale) - running_max * np.float32(scale)
+    probs = np.exp(shifted, dtype=np.float32)
+    running_sum = np.sum(probs, axis=1, keepdims=True, dtype=np.float32)
+    p_nz_f16 = probs.astype(np.float16)
+    return p_nz_f16.copy(), running_max.astype(np.float32), running_sum.astype(np.float32)
+
+
+def softmax_update_reference(
+    qk: np.ndarray,
+    running_max: np.ndarray,
+    running_sum: np.ndarray,
+    *,
+    scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return ``(p_nz_f16, new_running_max, new_running_sum, exp_scale)``."""
+    qk_f32 = np.asarray(qk, dtype=np.float32)
+    if qk_f32.ndim != 2:
+        raise ValueError(f"qk must be 2D, got shape {qk_f32.shape}")
+    rows = qk_f32.shape[0]
+    running_max_f32 = np.asarray(running_max, dtype=np.float32).reshape(rows, 1)
+    running_sum_f32 = np.asarray(running_sum, dtype=np.float32).reshape(rows, 1)
+
+    local_max = np.max(qk_f32, axis=1, keepdims=True)
+    new_running_max = np.maximum(local_max, running_max_f32)
+    shifted = qk_f32 * np.float32(scale) - new_running_max * np.float32(scale)
+    probs = np.exp(shifted, dtype=np.float32)
+    exp_scale = np.exp(
+        running_max_f32 * np.float32(scale) - new_running_max * np.float32(scale),
+        dtype=np.float32,
+    )
+    new_running_sum = running_sum_f32 * exp_scale + np.sum(
+        probs,
+        axis=1,
+        keepdims=True,
+        dtype=np.float32,
+    )
+    p_nz_f16 = probs.astype(np.float16)
+    return (
+        p_nz_f16.copy(),
+        new_running_max.astype(np.float32),
+        new_running_sum.astype(np.float32),
+        exp_scale.astype(np.float32),
+    )
+
+
+def _softmax_pointer_plan():
+    return {
+        "f32_lanes": pto.elements_per_vreg(pto.f32),
+        "f16_lanes": pto.elements_per_vreg(pto.f16),
+    }
+
+
+def _pack_f32_chunk_to_u16(chunk, mask32):
+    packed_f16 = pto.vcvt(chunk, pto.f16, mask32, rnd="R", sat="SAT", part="EVEN")
+    return pto.vpack(pto.vbitcast(packed_f16, pto.ui32), pto.VPackPart.LOWER)
+
+
 @pto.jit(
     name="fa_softmax_init_vpto_kernel",
     target="a5",
@@ -58,184 +129,61 @@ def _inv_sqrt(head_size: int) -> float:
 )
 def fa_softmax_init_vpto_kernel(
     qk_ptr: pto.ptr(pto.f32, "ub"),
-    p_nz_ptr: pto.ptr(pto.ui16, "ub"),
+    p_nz_ptr: pto.ptr(pto.f16, "ub"),
     running_max_ptr: pto.ptr(pto.f32, "ub"),
     running_sum_ptr: pto.ptr(pto.f32, "ub"),
     rows: pto.i32,
     cols: pto.i32,
     scale: pto.f32,
 ):
-    ubN = rows
-    ubM = cols
+    ptr_plan = _softmax_pointer_plan()
+    f32_lanes = ptr_plan["f32_lanes"]
+    active32 = pto.pset_b32(pto.MaskPattern.ALL)
+    active16, _ = pto.make_mask(pto.f16, f32_lanes)
+    one32, _ = pto.make_mask(pto.f32, 1)
+    p_nz_u16_ptr = pto.castptr(p_nz_ptr, pto.ptr(pto.ui16, "ub"))
 
-    nz_buffer_ptr1 = p_nz_ptr
-    nz_buffer_ptr2 = pto.addptr(nz_buffer_ptr1, 16)
-    nz_buffer_ptr3 = pto.addptr(nz_buffer_ptr1, ubN // 2 * 16)
-    nz_buffer_ptr4 = pto.addptr(nz_buffer_ptr1, ubN // 2 * 16 + 16)
+    with pto.for_(0, rows, step=1) as row:
+        row_base = row * cols
+        row_max = pto.vdup(pto.f32(-3.4028235e38), active32)
 
-    block_stride = ubN + 1
-    repeat_stride = 2
+        max_loop = pto.for_(0, cols, step=f32_lanes).carry(row_max=row_max)
+        with max_loop:
+            col = max_loop.iv
+            row_max = max_loop.row_max
+            vec = pto.vlds(qk_ptr, row_base + col, dist="NORM")
+            chunk_max = pto.vcmax(vec, active32)
+            chunk_max = pto.vdup(chunk_max, active32)
+            row_max = pto.vmax(row_max, chunk_max, active32)
+            max_loop.update(row_max=row_max)
 
-    src0_ub = qk_ptr
+        row_max = max_loop.final("row_max")
+        row_max_scaled = pto.vmuls(row_max, scale, active32)
+        row_sum = pto.vdup(pto.f32(0.0), active32)
 
-    preg_134 = pto.make_mask(pto.i8, pto.MaskPattern.ALL)
-    preg_f32_all = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
-    preg_108 = pto.make_mask(pto.f16, pto.MaskPattern.ALL)
-    preg_low_half = pto.make_mask(pto.f16, pto.MaskPattern.VL64)
+        pair_loop = pto.for_(0, cols, step=2 * f32_lanes).carry(row_sum=row_sum)
+        with pair_loop:
+            col = pair_loop.iv
+            row_sum = pair_loop.row_sum
+            vec0 = pto.vlds(qk_ptr, row_base + col, dist="NORM")
+            vec1 = pto.vlds(qk_ptr, row_base + col + f32_lanes, dist="NORM")
+            vec0_scaled = pto.vmuls(vec0, scale, active32)
+            vec1_scaled = pto.vmuls(vec1, scale, active32)
+            exp0 = pto.vexpdif(vec0_scaled, row_max_scaled, active32, part="ODD")
+            exp1 = pto.vexpdif(vec1_scaled, row_max_scaled, active32, part="ODD")
+            sum0 = pto.vdup(pto.vcadd(exp0, active32), active32)
+            sum1 = pto.vdup(pto.vcadd(exp1, active32), active32)
+            row_sum = pto.vadd(row_sum, sum0, active32)
+            row_sum = pto.vadd(row_sum, sum1, active32)
+            packed0 = _pack_f32_chunk_to_u16(exp0, active32)
+            packed1 = _pack_f32_chunk_to_u16(exp1, active32)
+            pto.vsts(packed0, p_nz_u16_ptr, row_base + col, active16, dist="NORM_B16")
+            pto.vsts(packed1, p_nz_u16_ptr, row_base + col + f32_lanes, active16, dist="NORM_B16")
+            pair_loop.update(row_sum=row_sum)
 
-    p0 = pto.addptr(src0_ub, 4 * 64)
-    p1 = pto.addptr(src0_ub, 5 * 64)
-    p2 = pto.addptr(src0_ub, 6 * 64)
-    p3 = pto.addptr(src0_ub, 7 * 64)
-
-    max_0a = pto.vlds(src0_ub, 0 * 64, dist="NORM")
-    max_1a = pto.vlds(src0_ub, 1 * 64, dist="NORM")
-    max_2a = pto.vlds(src0_ub, 2 * 64, dist="NORM")
-    max_3a = pto.vlds(src0_ub, 3 * 64, dist="NORM")
-
-    row_loop = pto.for_(4, ubN, step=4).carry(
-        p0=p0,
-        p1=p1,
-        p2=p2,
-        p3=p3,
-        max_0a=max_0a,
-        max_1a=max_1a,
-        max_2a=max_2a,
-        max_3a=max_3a,
-    )
-    with row_loop:
-        p0 = row_loop.p0
-        p1 = row_loop.p1
-        p2 = row_loop.p2
-        p3 = row_loop.p3
-        max_0a = row_loop.max_0a
-        max_1a = row_loop.max_1a
-        max_2a = row_loop.max_2a
-        max_3a = row_loop.max_3a
-
-        v_row, p0 = pto.vlds(p0, 4 * 64, dist="NORM", post_update="ON")
-        max_0a = pto.vmax(max_0a, v_row, preg_f32_all)
-
-        v_row, p1 = pto.vlds(p1, 4 * 64, dist="NORM", post_update="ON")
-        max_1a = pto.vmax(max_1a, v_row, preg_f32_all)
-
-        v_row, p2 = pto.vlds(p2, 4 * 64, dist="NORM", post_update="ON")
-        max_2a = pto.vmax(max_2a, v_row, preg_f32_all)
-
-        v_row, p3 = pto.vlds(p3, 4 * 64, dist="NORM", post_update="ON")
-        max_3a = pto.vmax(max_3a, v_row, preg_f32_all)
-        row_loop.update(
-            p0=p0,
-            p1=p1,
-            p2=p2,
-            p3=p3,
-            max_0a=max_0a,
-            max_1a=max_1a,
-            max_2a=max_2a,
-            max_3a=max_3a,
-        )
-
-    max_0a = row_loop.final("max_0a")
-    max_1a = row_loop.final("max_1a")
-    max_2a = row_loop.final("max_2a")
-    max_3a = row_loop.final("max_3a")
-
-    max_0a = pto.vmax(max_0a, max_1a, preg_f32_all)
-    max_2a = pto.vmax(max_2a, max_3a, preg_f32_all)
-    max_0a = pto.vmax(max_0a, max_2a, preg_f32_all)
-
-    pto.vsts(max_0a, running_max_ptr, 0, preg_f32_all, dist="NORM_B16")
-    max_0a = pto.vmuls(max_0a, scale, preg_f32_all)
-
-    vreg_x_sum_even = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_odd = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_1_even = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_1_odd = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-
-    preg_100 = preg_108
-    preg_101 = preg_108
-    preg_135 = preg_f32_all
-    sreg_92: pto.i32 = 128
-    preg_136, sreg_92 = pto.make_mask(pto.f16, sreg_92)
-
-    input_x_half_ptr = pto.addptr(qk_ptr, ubN * ubM // 2)
-
-    sum_loop = pto.for_(0, ubN // 4, step=1).carry(
-        nz_buffer_ptr1=nz_buffer_ptr1,
-        nz_buffer_ptr2=nz_buffer_ptr2,
-        nz_buffer_ptr3=nz_buffer_ptr3,
-        nz_buffer_ptr4=nz_buffer_ptr4,
-        vreg_x_sum_even=vreg_x_sum_even,
-        vreg_x_sum_odd=vreg_x_sum_odd,
-        vreg_x_sum_1_even=vreg_x_sum_1_even,
-        vreg_x_sum_1_odd=vreg_x_sum_1_odd,
-    )
-    with sum_loop:
-        i0 = sum_loop.iv
-        nz_buffer_ptr1 = sum_loop.nz_buffer_ptr1
-        nz_buffer_ptr2 = sum_loop.nz_buffer_ptr2
-        nz_buffer_ptr3 = sum_loop.nz_buffer_ptr3
-        nz_buffer_ptr4 = sum_loop.nz_buffer_ptr4
-        vreg_x_sum_even = sum_loop.vreg_x_sum_even
-        vreg_x_sum_odd = sum_loop.vreg_x_sum_odd
-        vreg_x_sum_1_even = sum_loop.vreg_x_sum_1_even
-        vreg_x_sum_1_odd = sum_loop.vreg_x_sum_1_odd
-
-        vreg_x_f32_a = pto.vlds(qk_ptr, i0 * 128, dist="NORM")
-        vreg_x_f32_b = pto.vlds(pto.addptr(qk_ptr, 64), i0 * 128, dist="NORM")
-        vreg_x_f32_1_a = pto.vlds(input_x_half_ptr, i0 * 128, dist="NORM")
-        vreg_x_f32_1_b = pto.vlds(pto.addptr(input_x_half_ptr, 64), i0 * 128, dist="NORM")
-
-        vreg_x_f32_a = pto.vmuls(vreg_x_f32_a, scale, preg_f32_all)
-        vreg_x_f32_b = pto.vmuls(vreg_x_f32_b, scale, preg_f32_all)
-        vreg_x_exp_even = pto.vexpdif(vreg_x_f32_a, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-        vreg_x_exp_odd = pto.vexpdif(vreg_x_f32_b, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-
-        vreg_x_f32_1_a = pto.vmuls(vreg_x_f32_1_a, scale, preg_f32_all)
-        vreg_x_f32_1_b = pto.vmuls(vreg_x_f32_1_b, scale, preg_f32_all)
-        vreg_x_exp_even_1 = pto.vexpdif(vreg_x_f32_1_a, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-        vreg_x_exp_odd_1 = pto.vexpdif(vreg_x_f32_1_b, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-
-        vreg_x_exp_even_f16 = pto.vmulscvt(vreg_x_exp_even, 1.0, pto.pbitcast(preg_100, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_odd_f16 = pto.vmulscvt(vreg_x_exp_odd, 1.0, pto.pbitcast(preg_101, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_even_f16_1 = pto.vmulscvt(vreg_x_exp_even_1, 1.0, pto.pbitcast(preg_135, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_odd_f16_1 = pto.vmulscvt(vreg_x_exp_odd_1, 1.0, pto.pbitcast(preg_136, pto.mask_b32), rnd="A", part="EVEN")
-
-        vreg_x_exp_even_u16 = pto.vpack(pto.vbitcast(vreg_x_exp_even_f16, pto.ui32), "LOWER")
-        vreg_x_exp_odd_u16 = pto.vpack(pto.vbitcast(vreg_x_exp_odd_f16, pto.ui32), "LOWER")
-        vreg_x_exp_even_u16_1 = pto.vpack(pto.vbitcast(vreg_x_exp_even_f16_1, pto.ui32), "LOWER")
-        vreg_x_exp_odd_u16_1 = pto.vpack(pto.vbitcast(vreg_x_exp_odd_f16_1, pto.ui32), "LOWER")
-
-        nz_buffer_ptr1 = pto.vsstb(vreg_x_exp_even_u16, nz_buffer_ptr1, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr2 = pto.vsstb(vreg_x_exp_odd_u16, nz_buffer_ptr2, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr3 = pto.vsstb(vreg_x_exp_even_u16_1, nz_buffer_ptr3, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr4 = pto.vsstb(vreg_x_exp_odd_u16_1, nz_buffer_ptr4, block_stride, repeat_stride, preg_low_half, post_update="ON")
-
-        vreg_x_sum_even = pto.vadd(vreg_x_sum_even, vreg_x_exp_even, preg_f32_all)
-        vreg_x_sum_odd = pto.vadd(vreg_x_sum_odd, vreg_x_exp_odd, preg_f32_all)
-        vreg_x_sum_1_even = pto.vadd(vreg_x_sum_1_even, vreg_x_exp_even_1, preg_f32_all)
-        vreg_x_sum_1_odd = pto.vadd(vreg_x_sum_1_odd, vreg_x_exp_odd_1, preg_f32_all)
-
-        sum_loop.update(
-            nz_buffer_ptr1=nz_buffer_ptr1,
-            nz_buffer_ptr2=nz_buffer_ptr2,
-            nz_buffer_ptr3=nz_buffer_ptr3,
-            nz_buffer_ptr4=nz_buffer_ptr4,
-            vreg_x_sum_even=vreg_x_sum_even,
-            vreg_x_sum_odd=vreg_x_sum_odd,
-            vreg_x_sum_1_even=vreg_x_sum_1_even,
-            vreg_x_sum_1_odd=vreg_x_sum_1_odd,
-        )
-
-    vreg_x_sum_even = sum_loop.final("vreg_x_sum_even")
-    vreg_x_sum_odd = sum_loop.final("vreg_x_sum_odd")
-    vreg_x_sum_1_even = sum_loop.final("vreg_x_sum_1_even")
-    vreg_x_sum_1_odd = sum_loop.final("vreg_x_sum_1_odd")
-
-    vreg_x_sum0 = pto.vadd(vreg_x_sum_odd, vreg_x_sum_even, preg_f32_all)
-    vreg_x_sum1 = pto.vadd(vreg_x_sum_1_odd, vreg_x_sum_1_even, preg_f32_all)
-    vreg_x_sum0 = pto.vadd(vreg_x_sum0, vreg_x_sum1, preg_f32_all)
-    pto.vsts(vreg_x_sum0, running_sum_ptr, 0, preg_f32_all, dist="NORM_B32")
+        row_sum = pair_loop.final("row_sum")
+        pto.vsts(row_max, running_max_ptr, row, one32, dist="1PT_B32")
+        pto.vsts(row_sum, running_sum_ptr, row, one32, dist="1PT_B32")
 
 
 @pto.jit(
@@ -249,7 +197,7 @@ def fa_softmax_init_vpto_kernel(
 )
 def fa_softmax_update_vpto_kernel(
     qk_ptr: pto.ptr(pto.f32, "ub"),
-    p_nz_ptr: pto.ptr(pto.ui16, "ub"),
+    p_nz_ptr: pto.ptr(pto.f16, "ub"),
     running_max_ptr: pto.ptr(pto.f32, "ub"),
     running_sum_ptr: pto.ptr(pto.f32, "ub"),
     exp_scale_ptr: pto.ptr(pto.f32, "ub"),
@@ -257,183 +205,60 @@ def fa_softmax_update_vpto_kernel(
     cols: pto.i32,
     scale: pto.f32,
 ):
-    ubN = rows
-    ubM = cols
+    ptr_plan = _softmax_pointer_plan()
+    f32_lanes = ptr_plan["f32_lanes"]
+    active32 = pto.pset_b32(pto.MaskPattern.ALL)
+    active16, _ = pto.make_mask(pto.f16, f32_lanes)
+    one32, _ = pto.make_mask(pto.f32, 1)
+    p_nz_u16_ptr = pto.castptr(p_nz_ptr, pto.ptr(pto.ui16, "ub"))
 
-    nz_buffer_ptr1 = p_nz_ptr
-    nz_buffer_ptr2 = pto.addptr(nz_buffer_ptr1, 16)
-    nz_buffer_ptr3 = pto.addptr(nz_buffer_ptr1, ubN // 2 * 16)
-    nz_buffer_ptr4 = pto.addptr(nz_buffer_ptr1, ubN // 2 * 16 + 16)
+    with pto.for_(0, rows, step=1) as row:
+        row_base = row * cols
+        old_max = pto.vlds(running_max_ptr, row, dist="BRC_B32")
+        old_sum = pto.vlds(running_sum_ptr, row, dist="BRC_B32")
+        local_max = pto.vdup(pto.f32(-3.4028235e38), active32)
 
-    block_stride = ubN + 1
-    repeat_stride = 2
+        max_loop = pto.for_(0, cols, step=f32_lanes).carry(local_max=local_max)
+        with max_loop:
+            col = max_loop.iv
+            local_max = max_loop.local_max
+            vec = pto.vlds(qk_ptr, row_base + col, dist="NORM")
+            chunk_max = pto.vcmax(vec, active32)
+            chunk_max = pto.vdup(chunk_max, active32)
+            local_max = pto.vmax(local_max, chunk_max, active32)
+            max_loop.update(local_max=local_max)
 
-    src0_ub = qk_ptr
+        local_max = max_loop.final("local_max")
+        final_max = pto.vmax(local_max, old_max, active32)
+        scaled_old_max = pto.vmuls(old_max, scale, active32)
+        scaled_final_max = pto.vmuls(final_max, scale, active32)
+        exp_scale = pto.vexpdif(scaled_old_max, scaled_final_max, active32, part="ODD")
+        row_sum = pto.vmul(old_sum, exp_scale, active32)
 
-    preg_134 = pto.make_mask(pto.i8, pto.MaskPattern.ALL)
-    preg_f32_all = pto.make_mask(pto.f32, pto.MaskPattern.ALL)
-    preg_108 = pto.make_mask(pto.f16, pto.MaskPattern.ALL)
-    preg_low_half = pto.make_mask(pto.f16, pto.MaskPattern.VL64)
-    vreg_x_max_f32_b = pto.vlds(running_max_ptr, 0, dist="NORM")
+        pair_loop = pto.for_(0, cols, step=2 * f32_lanes).carry(row_sum=row_sum)
+        with pair_loop:
+            col = pair_loop.iv
+            row_sum = pair_loop.row_sum
+            vec0 = pto.vlds(qk_ptr, row_base + col, dist="NORM")
+            vec1 = pto.vlds(qk_ptr, row_base + col + f32_lanes, dist="NORM")
+            vec0_scaled = pto.vmuls(vec0, scale, active32)
+            vec1_scaled = pto.vmuls(vec1, scale, active32)
+            exp0 = pto.vexpdif(vec0_scaled, scaled_final_max, active32, part="ODD")
+            exp1 = pto.vexpdif(vec1_scaled, scaled_final_max, active32, part="ODD")
+            sum0 = pto.vdup(pto.vcadd(exp0, active32), active32)
+            sum1 = pto.vdup(pto.vcadd(exp1, active32), active32)
+            row_sum = pto.vadd(row_sum, sum0, active32)
+            row_sum = pto.vadd(row_sum, sum1, active32)
+            packed0 = _pack_f32_chunk_to_u16(exp0, active32)
+            packed1 = _pack_f32_chunk_to_u16(exp1, active32)
+            pto.vsts(packed0, p_nz_u16_ptr, row_base + col, active16, dist="NORM_B16")
+            pto.vsts(packed1, p_nz_u16_ptr, row_base + col + f32_lanes, active16, dist="NORM_B16")
+            pair_loop.update(row_sum=row_sum)
 
-    p0 = pto.addptr(src0_ub, 4 * 64)
-    p1 = pto.addptr(src0_ub, 5 * 64)
-    p2 = pto.addptr(src0_ub, 6 * 64)
-    p3 = pto.addptr(src0_ub, 7 * 64)
-
-    max_0a = pto.vlds(src0_ub, 0 * 64, dist="NORM")
-    max_1a = pto.vlds(src0_ub, 1 * 64, dist="NORM")
-    max_2a = pto.vlds(src0_ub, 2 * 64, dist="NORM")
-    max_3a = pto.vlds(src0_ub, 3 * 64, dist="NORM")
-
-    row_loop = pto.for_(4, ubN, step=4).carry(
-        p0=p0,
-        p1=p1,
-        p2=p2,
-        p3=p3,
-        max_0a=max_0a,
-        max_1a=max_1a,
-        max_2a=max_2a,
-        max_3a=max_3a,
-    )
-    with row_loop:
-        p0 = row_loop.p0
-        p1 = row_loop.p1
-        p2 = row_loop.p2
-        p3 = row_loop.p3
-        max_0a = row_loop.max_0a
-        max_1a = row_loop.max_1a
-        max_2a = row_loop.max_2a
-        max_3a = row_loop.max_3a
-
-        v_row, p0 = pto.vlds(p0, 4 * 64, dist="NORM", post_update="ON")
-        max_0a = pto.vmax(max_0a, v_row, preg_f32_all)
-
-        v_row, p1 = pto.vlds(p1, 4 * 64, dist="NORM", post_update="ON")
-        max_1a = pto.vmax(max_1a, v_row, preg_f32_all)
-
-        v_row, p2 = pto.vlds(p2, 4 * 64, dist="NORM", post_update="ON")
-        max_2a = pto.vmax(max_2a, v_row, preg_f32_all)
-
-        v_row, p3 = pto.vlds(p3, 4 * 64, dist="NORM", post_update="ON")
-        max_3a = pto.vmax(max_3a, v_row, preg_f32_all)
-        row_loop.update(
-            p0=p0,
-            p1=p1,
-            p2=p2,
-            p3=p3,
-            max_0a=max_0a,
-            max_1a=max_1a,
-            max_2a=max_2a,
-            max_3a=max_3a,
-        )
-
-    max_0a = row_loop.final("max_0a")
-    max_1a = row_loop.final("max_1a")
-    max_2a = row_loop.final("max_2a")
-    max_3a = row_loop.final("max_3a")
-
-    max_0a = pto.vmax(max_0a, max_1a, preg_f32_all)
-    max_2a = pto.vmax(max_2a, max_3a, preg_f32_all)
-    max_0a = pto.vmax(max_0a, max_2a, preg_f32_all)
-
-    max_0a = pto.vmax(max_0a, vreg_x_max_f32_b, preg_f32_all)
-
-    pto.vsts(max_0a, running_max_ptr, 0, preg_f32_all, dist="NORM_B16")
-    max_0a = pto.vmuls(max_0a, scale, preg_f32_all)
-    vreg_x_max_f32_b = pto.vexpdif(vreg_x_max_f32_b, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-
-    pto.vsts(vreg_x_max_f32_b, exp_scale_ptr, 0, preg_f32_all, dist="NORM_B16")
-
-    vreg_x_sum_even = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_odd = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_1_even = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-    vreg_x_sum_1_odd = pto.vdup(pto.f32(0), pto.pbitcast(preg_134, pto.mask_b32))
-
-    preg_100 = preg_108
-    preg_101 = preg_108
-    preg_135 = preg_f32_all
-    sreg_92: pto.i32 = 128
-    preg_136, sreg_92 = pto.make_mask(pto.f16, sreg_92)
-
-    input_x_half_ptr = pto.addptr(qk_ptr, ubN * ubM // 2)
-
-    sum_loop = pto.for_(0, ubN // 4, step=1).carry(
-        nz_buffer_ptr1=nz_buffer_ptr1,
-        nz_buffer_ptr2=nz_buffer_ptr2,
-        nz_buffer_ptr3=nz_buffer_ptr3,
-        nz_buffer_ptr4=nz_buffer_ptr4,
-        vreg_x_sum_even=vreg_x_sum_even,
-        vreg_x_sum_odd=vreg_x_sum_odd,
-        vreg_x_sum_1_even=vreg_x_sum_1_even,
-        vreg_x_sum_1_odd=vreg_x_sum_1_odd,
-    )
-    with sum_loop:
-        i0 = sum_loop.iv
-        nz_buffer_ptr1 = sum_loop.nz_buffer_ptr1
-        nz_buffer_ptr2 = sum_loop.nz_buffer_ptr2
-        nz_buffer_ptr3 = sum_loop.nz_buffer_ptr3
-        nz_buffer_ptr4 = sum_loop.nz_buffer_ptr4
-        vreg_x_sum_even = sum_loop.vreg_x_sum_even
-        vreg_x_sum_odd = sum_loop.vreg_x_sum_odd
-        vreg_x_sum_1_even = sum_loop.vreg_x_sum_1_even
-        vreg_x_sum_1_odd = sum_loop.vreg_x_sum_1_odd
-
-        vreg_x_f32_a = pto.vlds(qk_ptr, i0 * 128, dist="NORM")
-        vreg_x_f32_b = pto.vlds(pto.addptr(qk_ptr, 64), i0 * 128, dist="NORM")
-        vreg_x_f32_1_a = pto.vlds(input_x_half_ptr, i0 * 128, dist="NORM")
-        vreg_x_f32_1_b = pto.vlds(pto.addptr(input_x_half_ptr, 64), i0 * 128, dist="NORM")
-
-        vreg_x_f32_a = pto.vmuls(vreg_x_f32_a, scale, preg_f32_all)
-        vreg_x_f32_b = pto.vmuls(vreg_x_f32_b, scale, preg_f32_all)
-        vreg_x_exp_even = pto.vexpdif(vreg_x_f32_a, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-        vreg_x_exp_odd = pto.vexpdif(vreg_x_f32_b, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-
-        vreg_x_f32_1_a = pto.vmuls(vreg_x_f32_1_a, scale, preg_f32_all)
-        vreg_x_f32_1_b = pto.vmuls(vreg_x_f32_1_b, scale, preg_f32_all)
-        vreg_x_exp_even_1 = pto.vexpdif(vreg_x_f32_1_a, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-        vreg_x_exp_odd_1 = pto.vexpdif(vreg_x_f32_1_b, max_0a, pto.pbitcast(preg_134, pto.mask_b32), part="ODD")
-
-        vreg_x_exp_even_f16 = pto.vmulscvt(vreg_x_exp_even, 1.0, pto.pbitcast(preg_100, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_odd_f16 = pto.vmulscvt(vreg_x_exp_odd, 1.0, pto.pbitcast(preg_101, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_even_f16_1 = pto.vmulscvt(vreg_x_exp_even_1, 1.0, pto.pbitcast(preg_135, pto.mask_b32), rnd="A", part="EVEN")
-        vreg_x_exp_odd_f16_1 = pto.vmulscvt(vreg_x_exp_odd_1, 1.0, pto.pbitcast(preg_136, pto.mask_b32), rnd="A", part="EVEN")
-
-        vreg_x_exp_even_u16 = pto.vpack(pto.vbitcast(vreg_x_exp_even_f16, pto.ui32), "LOWER")
-        vreg_x_exp_odd_u16 = pto.vpack(pto.vbitcast(vreg_x_exp_odd_f16, pto.ui32), "LOWER")
-        vreg_x_exp_even_u16_1 = pto.vpack(pto.vbitcast(vreg_x_exp_even_f16_1, pto.ui32), "LOWER")
-        vreg_x_exp_odd_u16_1 = pto.vpack(pto.vbitcast(vreg_x_exp_odd_f16_1, pto.ui32), "LOWER")
-
-        nz_buffer_ptr1 = pto.vsstb(vreg_x_exp_even_u16, nz_buffer_ptr1, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr2 = pto.vsstb(vreg_x_exp_odd_u16, nz_buffer_ptr2, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr3 = pto.vsstb(vreg_x_exp_even_u16_1, nz_buffer_ptr3, block_stride, repeat_stride, preg_low_half, post_update="ON")
-        nz_buffer_ptr4 = pto.vsstb(vreg_x_exp_odd_u16_1, nz_buffer_ptr4, block_stride, repeat_stride, preg_low_half, post_update="ON")
-
-        vreg_x_sum_even = pto.vadd(vreg_x_sum_even, vreg_x_exp_even, preg_f32_all)
-        vreg_x_sum_odd = pto.vadd(vreg_x_sum_odd, vreg_x_exp_odd, preg_f32_all)
-        vreg_x_sum_1_even = pto.vadd(vreg_x_sum_1_even, vreg_x_exp_even_1, preg_f32_all)
-        vreg_x_sum_1_odd = pto.vadd(vreg_x_sum_1_odd, vreg_x_exp_odd_1, preg_f32_all)
-
-        sum_loop.update(
-            nz_buffer_ptr1=nz_buffer_ptr1,
-            nz_buffer_ptr2=nz_buffer_ptr2,
-            nz_buffer_ptr3=nz_buffer_ptr3,
-            nz_buffer_ptr4=nz_buffer_ptr4,
-            vreg_x_sum_even=vreg_x_sum_even,
-            vreg_x_sum_odd=vreg_x_sum_odd,
-            vreg_x_sum_1_even=vreg_x_sum_1_even,
-            vreg_x_sum_1_odd=vreg_x_sum_1_odd,
-        )
-
-    vreg_x_sum_even = sum_loop.final("vreg_x_sum_even")
-    vreg_x_sum_odd = sum_loop.final("vreg_x_sum_odd")
-    vreg_x_sum_1_even = sum_loop.final("vreg_x_sum_1_even")
-    vreg_x_sum_1_odd = sum_loop.final("vreg_x_sum_1_odd")
-
-    vreg_x_sum0 = pto.vadd(vreg_x_sum_odd, vreg_x_sum_even, preg_f32_all)
-    vreg_x_sum1 = pto.vadd(vreg_x_sum_1_odd, vreg_x_sum_1_even, preg_f32_all)
-    vreg_x_sum0 = pto.vadd(vreg_x_sum0, vreg_x_sum1, preg_f32_all)
-    pto.vsts(vreg_x_sum0, running_sum_ptr, 0, preg_f32_all, dist="NORM_B32")
+        row_sum = pair_loop.final("row_sum")
+        pto.vsts(final_max, running_max_ptr, row, one32, dist="1PT_B32")
+        pto.vsts(row_sum, running_sum_ptr, row, one32, dist="1PT_B32")
+        pto.vsts(exp_scale, exp_scale_ptr, row, one32, dist="1PT_B32")
 
 
 @pto.simd
@@ -444,7 +269,7 @@ def fa_softmax_init_vpto(
     running_sum: pto.Tile,
     scale: pto.f32,
 ):
-    rows, cols = qk.shape
+    rows, cols = qk.valid_shape
     fa_softmax_init_vpto_kernel(
         qk.as_ptr(),
         p_nz.as_ptr(),
@@ -465,7 +290,7 @@ def fa_softmax_update_vpto(
     exp_scale: pto.Tile,
     scale: pto.f32,
 ):
-    rows, cols = qk.shape
+    rows, cols = qk.valid_shape
     fa_softmax_update_vpto_kernel(
         qk.as_ptr(),
         p_nz.as_ptr(),
@@ -475,6 +300,137 @@ def fa_softmax_update_vpto(
         rows,
         cols,
         scale,
+    )
+
+
+@pto.jit(entry=True, target="a5", backend="emitc", mode="auto", insert_sync=True)
+def fa_softmax_init_vpto_validate(
+    qk_gm: pto.ptr(pto.f32, "gm"),
+    p_nz_gm: pto.ptr(pto.f16, "gm"),
+    running_max_gm: pto.ptr(pto.f32, "gm"),
+    running_sum_gm: pto.ptr(pto.f32, "gm"),
+    scale: pto.f32,
+    *,
+    BR: pto.constexpr = 32,
+    BC: pto.constexpr = 256,
+):
+    qk_view = pto.make_tensor_view(
+        qk_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    p_nz_view = pto.make_tensor_view(
+        p_nz_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    running_max_view = pto.make_tensor_view(
+        running_max_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+    running_sum_view = pto.make_tensor_view(
+        running_sum_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+
+    qk = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    p_nz = pto.alloc_tile(shape=[BR, BC], dtype=pto.f16, valid_shape=[BR, BC])
+    running_max = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+    running_sum = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+
+    pto.tile.load(
+        pto.partition_view(qk_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+        qk,
+    )
+    fa_softmax_init_vpto(qk, p_nz, running_max, running_sum, scale)
+    pto.tile.store(
+        p_nz,
+        pto.partition_view(p_nz_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+    )
+    pto.tile.store(
+        running_max,
+        pto.partition_view(running_max_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+    )
+    pto.tile.store(
+        running_sum,
+        pto.partition_view(running_sum_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+    )
+
+
+@pto.jit(entry=True, target="a5", backend="emitc", mode="auto", insert_sync=True)
+def fa_softmax_update_vpto_validate(
+    qk_gm: pto.ptr(pto.f32, "gm"),
+    p_nz_gm: pto.ptr(pto.f16, "gm"),
+    running_max_gm: pto.ptr(pto.f32, "gm"),
+    running_sum_gm: pto.ptr(pto.f32, "gm"),
+    exp_scale_gm: pto.ptr(pto.f32, "gm"),
+    scale: pto.f32,
+    *,
+    BR: pto.constexpr = 32,
+    BC: pto.constexpr = 256,
+):
+    qk_view = pto.make_tensor_view(
+        qk_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    p_nz_view = pto.make_tensor_view(
+        p_nz_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    running_max_view = pto.make_tensor_view(
+        running_max_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+    running_sum_view = pto.make_tensor_view(
+        running_sum_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+    exp_scale_view = pto.make_tensor_view(
+        exp_scale_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+
+    qk = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    p_nz = pto.alloc_tile(shape=[BR, BC], dtype=pto.f16, valid_shape=[BR, BC])
+    running_max = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+    running_sum = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+    exp_scale = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+
+    pto.tile.load(
+        pto.partition_view(qk_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+        qk,
+    )
+    pto.tile.load(
+        pto.partition_view(running_max_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+        running_max,
+    )
+    pto.tile.load(
+        pto.partition_view(running_sum_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+        running_sum,
+    )
+    fa_softmax_update_vpto(qk, p_nz, running_max, running_sum, exp_scale, scale)
+    pto.tile.store(
+        p_nz,
+        pto.partition_view(p_nz_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+    )
+    pto.tile.store(
+        running_max,
+        pto.partition_view(running_max_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+    )
+    pto.tile.store(
+        running_sum,
+        pto.partition_view(running_sum_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+    )
+    pto.tile.store(
+        exp_scale,
+        pto.partition_view(exp_scale_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
     )
 
 
@@ -491,7 +447,7 @@ def fa_softmax_vpto_probe(
     scale_const = pto.const(_inv_sqrt(HEAD_SIZE), dtype=pto.f32)
 
     qk = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
-    p_nz = pto.alloc_tile(shape=[BR, BC], dtype=pto.ui16, valid_shape=[BR, BC])
+    p_nz = pto.alloc_tile(shape=[BR, BC], dtype=pto.f16, valid_shape=[BR, BC])
     running_max = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
     running_sum = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
 
@@ -519,19 +475,233 @@ __all__ = [
     "fa_softmax_update_vpto_kernel",
     "fa_softmax_init_vpto",
     "fa_softmax_update_vpto",
+    "fa_softmax_init_vpto_validate",
+    "fa_softmax_update_vpto_validate",
+    "softmax_init_reference",
+    "softmax_update_reference",
     "fa_softmax_vpto_probe",
 ]
 
 
-def main() -> None:
-    compiled = fa_softmax_vpto_probe.compile(
-        BR=8,
-        BC=64,
-        INIT=False,
-        HEAD_SIZE=64,
+_DEVICE = "npu:0"
+
+
+def emit_softmax_mlir(*, init: bool, br: int, bc: int) -> str:
+    compiled = (
+        fa_softmax_init_vpto_validate.compile(BR=br, BC=bc)
+        if init
+        else fa_softmax_update_vpto_validate.compile(BR=br, BC=bc)
     )
-    print(compiled.mlir_text())
+    return compiled.mlir_text()
+
+
+def compile_softmax_kernel(*, init: bool, br: int, bc: int):
+    return (
+        fa_softmax_init_vpto_validate.compile(BR=br, BC=bc)
+        if init
+        else fa_softmax_update_vpto_validate.compile(BR=br, BC=bc)
+    )
+
+
+def init_runtime():
+    try:
+        import torch
+        import torch_npu  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "softmax launch validation requires a Python environment with both "
+            "`torch` and `torch_npu` installed"
+        ) from exc
+
+    torch.npu.config.allow_internal_format = False
+    torch_npu.npu.set_compile_mode(jit_compile=False)
+    torch.npu.set_device(_DEVICE)
+    return torch
+
+
+def npu_stream(torch):
+    return torch.npu.current_stream()._as_parameter_  # noqa: SLF001
+
+
+def _to_device(torch, array: np.ndarray):
+    return torch.from_numpy(np.ascontiguousarray(array)).to(_DEVICE)
+
+
+def _assert_close(name: str, got: np.ndarray, ref: np.ndarray, *, rtol: float, atol: float) -> None:
+    try:
+        np.testing.assert_allclose(got, ref, rtol=rtol, atol=atol)
+    except AssertionError as exc:
+        diff = np.max(np.abs(got - ref))
+        raise AssertionError(f"{name} mismatch, max_abs_diff={diff}\n{exc}") from exc
+
+
+def run_demo(
+    *,
+    init: bool,
+    br: int,
+    bc: int,
+    head_size: int,
+    seed: int = 20260605,
+) -> None:
+    torch = init_runtime()
+    rng = np.random.RandomState(seed)
+    scale = np.float32(_inv_sqrt(head_size))
+    stream = npu_stream(torch)
+
+    t0 = time.perf_counter()
+    compiled = compile_softmax_kernel(init=init, br=br, bc=bc)
+    compile_s = time.perf_counter() - t0
+
+    if init:
+        qk = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+        ref_p_nz, ref_running_max, ref_running_sum = softmax_init_reference(qk, scale=scale)
+
+        qk_t = _to_device(torch, qk)
+        p_nz_t = _to_device(torch, np.zeros((br, bc), dtype=np.float16))
+        running_max_t = _to_device(torch, np.zeros((br, 1), dtype=np.float32))
+        running_sum_t = _to_device(torch, np.zeros((br, 1), dtype=np.float32))
+
+        t0 = time.perf_counter()
+        compiled[1, stream](
+            qk_t.data_ptr(),
+            p_nz_t.data_ptr(),
+            running_max_t.data_ptr(),
+            running_sum_t.data_ptr(),
+            float(scale),
+        )
+        torch.npu.synchronize()
+        launch_s = time.perf_counter() - t0
+
+        got_p_nz = p_nz_t.cpu().numpy()
+        got_running_max = running_max_t.cpu().numpy()
+        got_running_sum = running_sum_t.cpu().numpy()
+
+        _assert_close(
+            "init.p_nz",
+            got_p_nz.astype(np.float32),
+            ref_p_nz.astype(np.float32),
+            rtol=2e-3,
+            atol=2e-3,
+        )
+        _assert_close("init.running_max", got_running_max, ref_running_max, rtol=1e-6, atol=1e-6)
+        _assert_close("init.running_sum", got_running_sum, ref_running_sum, rtol=2e-3, atol=2e-3)
+        print(f"PASS softmax-init br={br} bc={bc} compile={compile_s:.3f}s launch={launch_s:.3f}s")
+        return
+
+    prev_qk = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+    qk = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+    _, running_max, running_sum = softmax_init_reference(prev_qk, scale=scale)
+    ref_p_nz, ref_running_max, ref_running_sum, ref_exp_scale = softmax_update_reference(
+        qk,
+        running_max,
+        running_sum,
+        scale=scale,
+    )
+
+    qk_t = _to_device(torch, qk)
+    p_nz_t = _to_device(torch, np.zeros((br, bc), dtype=np.float16))
+    running_max_t = _to_device(torch, running_max)
+    running_sum_t = _to_device(torch, running_sum)
+    exp_scale_t = _to_device(torch, np.zeros((br, 1), dtype=np.float32))
+
+    t0 = time.perf_counter()
+    compiled[1, stream](
+        qk_t.data_ptr(),
+        p_nz_t.data_ptr(),
+        running_max_t.data_ptr(),
+        running_sum_t.data_ptr(),
+        exp_scale_t.data_ptr(),
+        float(scale),
+    )
+    torch.npu.synchronize()
+    launch_s = time.perf_counter() - t0
+
+    got_p_nz = p_nz_t.cpu().numpy()
+    got_running_max = running_max_t.cpu().numpy()
+    got_running_sum = running_sum_t.cpu().numpy()
+    got_exp_scale = exp_scale_t.cpu().numpy()
+
+    _assert_close(
+        "update.p_nz",
+        got_p_nz.astype(np.float32),
+        ref_p_nz.astype(np.float32),
+        rtol=2e-3,
+        atol=2e-3,
+    )
+    _assert_close("update.running_max", got_running_max, ref_running_max, rtol=1e-6, atol=1e-6)
+    _assert_close("update.running_sum", got_running_sum, ref_running_sum, rtol=2e-3, atol=2e-3)
+    _assert_close("update.exp_scale", got_exp_scale, ref_exp_scale, rtol=2e-3, atol=2e-3)
+    print(f"PASS softmax-update br={br} bc={bc} compile={compile_s:.3f}s launch={launch_s:.3f}s")
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--emit-mlir",
+        action="store_true",
+        help="print the probe MLIR and exit",
+    )
+    parser.add_argument(
+        "--init",
+        action="store_true",
+        help="emit init probe MLIR when used with --emit-mlir; otherwise only run init validation",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="emit update probe MLIR when used with --emit-mlir; otherwise only run update validation",
+    )
+    parser.add_argument("--br", type=int, default=32)
+    parser.add_argument("--bc", type=int, default=256)
+    parser.add_argument("--head-size", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=20260605)
+    parser.add_argument("-o", "--output", default="-", help="output MLIR path, or '-' for stdout")
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    run_init = args.init or not args.update
+    run_update = args.update or not args.init
+
+    if args.emit_mlir:
+        if run_init:
+            mlir_text = emit_softmax_mlir(init=True, br=args.br, bc=args.bc)
+            if args.output == "-":
+                print(mlir_text)
+            else:
+                Path(args.output).write_text(mlir_text, encoding="utf-8")
+        if run_update:
+            mlir_text = emit_softmax_mlir(init=False, br=args.br, bc=args.bc)
+            if args.output == "-":
+                print(mlir_text)
+            else:
+                suffix = ".update" if run_init and args.output != "-" else ""
+                out_path = Path(args.output + suffix) if suffix else Path(args.output)
+                out_path.write_text(mlir_text, encoding="utf-8")
+        return 0
+
+    if run_init:
+        run_demo(
+            init=True,
+            br=args.br,
+            bc=args.bc,
+            head_size=args.head_size,
+            seed=args.seed,
+        )
+    if run_update:
+        run_demo(
+            init=False,
+            br=args.br,
+            bc=args.bc,
+            head_size=args.head_size,
+            seed=args.seed + 1,
+        )
+    print("All requested softmax validation cases passed.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

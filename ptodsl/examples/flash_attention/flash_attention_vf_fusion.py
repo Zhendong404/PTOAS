@@ -590,7 +590,7 @@ def _build_flash_attention_entry(
         # enough. Reduce/state tiles are per-row_slice arrays because each
         # row_slice tracks its own running_max/running_sum independently.
         qk_vec = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f32)
-        p_nz = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.ui16)
+        p_nz = pto.alloc_tile(shape=[vec_s0, s1_tile], dtype=pto.f16)
         pv_vec = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
         o_tile = [pto.alloc_tile(shape=[vec_s0, head_dim], dtype=pto.f32) for _ in range(tile_factor)]
 
@@ -655,13 +655,12 @@ def _build_flash_attention_entry(
                         exp_slot,
                         scale_const,
                     )
-                p_fp16 = pto.tile.reshape(p_nz, shape=[vec_s0, s1_tile], dtype=pto.f16)
                 p_part = pto.partition_view(
                     p_entry,
                     offsets=[row_off, 0],
                     sizes=[vec_s0, s1_tile],
                 )
-                pto.tile.store(p_fp16, p_part)
+                pto.tile.store(p_nz, p_part)
             p_pipe.push(p_entry, split=split_up_down)
             qk_pipe.free(qk_entry, split=split_up_down)
 
