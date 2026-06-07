@@ -39,6 +39,7 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
@@ -537,6 +538,10 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
                                  ModuleOp sourceModule) {
   constexpr uint32_t kDefaultSimtMaxThreads = 1024;
   constexpr uint32_t kDefaultSimtMaxRegisters = 32;
+  constexpr llvm::StringLiteral kEffectivePTOEntryAttrName =
+      "pto.internal.entry";
+  constexpr llvm::StringLiteral kEffectivePTONonEntryAttrName =
+      "pto.internal.non_entry";
 
   llvm::NamedMDNode *annotations =
       llvmModule.getOrInsertNamedMetadata("hivm.annotations");
@@ -545,7 +550,28 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
   llvm::Constant *one = llvm::ConstantInt::get(i32Ty, 1);
 
   llvm::StringMap<std::pair<uint32_t, uint32_t>> simtConfigByName;
-  sourceModule.walk([&](func::FuncOp funcOp) {
+  llvm::StringSet<llvm::MallocAllocator> ptoEntryFunctions;
+  llvm::StringSet<llvm::MallocAllocator> ptoNonEntryFunctions;
+  bool sawPTOEntrySelection = false;
+
+  sourceModule.walk([&](LLVM::LLVMFuncOp funcOp) {
+    StringRef symName = funcOp.getSymName();
+
+    if (auto entryAttr =
+            funcOp->getAttrOfType<BoolAttr>(kEffectivePTOEntryAttrName)) {
+      sawPTOEntrySelection = true;
+      if (entryAttr.getValue())
+        ptoEntryFunctions.insert(symName);
+      else
+        ptoNonEntryFunctions.insert(symName);
+    }
+    if (auto nonEntryAttr =
+            funcOp->getAttrOfType<BoolAttr>(kEffectivePTONonEntryAttrName)) {
+      sawPTOEntrySelection = true;
+      if (nonEntryAttr.getValue())
+        ptoNonEntryFunctions.insert(symName);
+    }
+
     if (!funcOp->hasAttr(pto::kPTOSimtEntryAttrName))
       return;
 
@@ -558,7 +584,7 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
             pto::kPTOSimtMaxRegistersAttrName))
       maxRegisters = static_cast<uint32_t>(attr.getInt());
 
-    simtConfigByName[funcOp.getSymName()] = {maxThreads, maxRegisters};
+    simtConfigByName[symName] = {maxThreads, maxRegisters};
   });
 
   auto hasInModuleCaller = [](llvm::Function &function) {
@@ -633,9 +659,21 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
       continue;
 
     llvm::StringRef name = function.getName();
+    if (sawPTOEntrySelection && ptoEntryFunctions.contains(name)) {
+      // Explicitly selected entries are always kernel candidates, even if they
+      // have in-module helper callers after lowering.
+    } else {
+      if (ptoNonEntryFunctions.contains(name))
+        continue;
+      if (sawPTOEntrySelection && !ptoEntryFunctions.empty())
+        continue;
+      if (!sawPTOEntrySelection && hasInModuleCaller(function))
+        continue;
+      if (sawPTOEntrySelection && ptoEntryFunctions.empty() &&
+          hasInModuleCaller(function))
+        continue;
+    }
     if (name.contains(".extracted") || name.contains(".vector.thread"))
-      continue;
-    if (hasInModuleCaller(function))
       continue;
 
     addAnnotation(function, "kernel");
