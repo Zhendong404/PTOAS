@@ -7,27 +7,24 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 """
-PTODSL translation of ``ptodsl/examples/fa_dn_gu.cpp``.
+PTODSL GU helper for Flash Attention vector kernels.
 
-This file keeps the C++ helper split:
+This file mirrors the launchable shape used by ``softmax.py``:
 
-- ``pto_macro_fa_gu``: running update ``O = O * exp_max + est_sv_tile``
-- ``pto_macro_fa_gu_last``: running update followed by row-wise normalization
-- ``pto_macro_fa_gu_single_and_last_tile``: final normalization only
-
-The current PTODSL version is intentionally close to the C++ structure while
-staying on the public DSL surface. A couple of low-level details are still
-approximated:
-
-- The C++ ``TRESHAPE(... ColMajor ...)`` step is represented by assuming the
-  reduced tiles are already authored as row-reduced ``[BR, 1]`` PTODSL tiles.
-- The C++ pointer choreography that relies on post-update addressing is lowered
-  here with explicit row/column offsets, which preserves the math and emitted
-  vector ops without depending on the exact micro-address contract.
+- ``fa_gu_init_vpto_kernel`` / ``fa_gu_update_vpto_kernel`` are ptr-ABI VPTO
+  child modules.
+- ``fa_gu_init_vpto`` / ``fa_gu_update_vpto`` are Tile-ABI ``@pto.simd``
+  adapters for callers such as ``flash_attention_vf_fusion.py``.
+- ``fa_gu_init_vpto_validate`` / ``fa_gu_update_vpto_validate`` are host-visible
+  launch wrappers for standalone validation.
 """
 
+import argparse
 from pathlib import Path
 import sys
+import time
+
+import numpy as np
 
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
@@ -36,181 +33,393 @@ if __package__ in {None, ""}:
             sys.path.insert(0, str(candidate))
             break
     else:
-        raise RuntimeError(
-            "Unable to locate the PTODSL Python package root from fa_dn_gu.py"
-        )
+        raise RuntimeError("Unable to locate the PTODSL Python package root from gu.py")
 
 from ptodsl import pto
 
-DIST = {
-    1: "NORM_B8",
-    2: "NORM_B16",
-    4: "NORM_B32",
-}
+
+def gu_init_reference(pv: np.ndarray) -> np.ndarray:
+    """Return ``O`` for the init GU pass: ``O = PV``."""
+    pv_f32 = np.asarray(pv, dtype=np.float32)
+    if pv_f32.ndim != 2:
+        raise ValueError(f"pv must be 2D, got shape {pv_f32.shape}")
+    return pv_f32.copy()
 
 
-def _repeat_plan(tile: pto.Tile) -> tuple[int, int, int]:
-    rows, cols = tile.shape
-    lanes = pto.elements_per_vreg(tile.dtype)
-    repeats = (cols + lanes - 1) // lanes
-    return rows, cols, lanes * 4 if tile.dtype == pto.f32 else lanes, repeats
+def gu_update_reference(o_prev: np.ndarray, pv: np.ndarray, exp_max: np.ndarray) -> np.ndarray:
+    """Return ``O`` for the update GU pass: ``O = O * exp_max + PV``."""
+    o_prev_f32 = np.asarray(o_prev, dtype=np.float32)
+    pv_f32 = np.asarray(pv, dtype=np.float32)
+    if o_prev_f32.ndim != 2:
+        raise ValueError(f"o_prev must be 2D, got shape {o_prev_f32.shape}")
+    if pv_f32.shape != o_prev_f32.shape:
+        raise ValueError(f"pv shape {pv_f32.shape} must match o_prev shape {o_prev_f32.shape}")
+    rows = o_prev_f32.shape[0]
+    exp_f32 = np.asarray(exp_max, dtype=np.float32).reshape(rows, 1)
+    return o_prev_f32 * exp_f32 + pv_f32
 
 
-def _reshape_reduced_tile_to_col(tile: pto.Tile) -> pto.Tile:
-    rows, cols = tile.shape
-    if cols == 1:
-        return pto.tile.reshape(tile, shape=[rows, 1], blayout="ColMajor")
-    return pto.tile.reshape(tile, shape=[cols, 1], blayout="ColMajor")
-
-def pto_macro_fa_gu(
-    prev_sv_tile: pto.Tile,
-    est_sv_tile: pto.Tile,
-    exp_max: pto.Tile,
+@pto.jit(
+    name="fa_gu_init_vpto_kernel",
+    target="a5",
+    entry=False,
+    backend="vpto",
+    mode="explicit",
+    kernel_kind="vector",
+    insert_sync=False,
+)
+def fa_gu_init_vpto_kernel(
+    pv_ptr: pto.ptr(pto.f32, "ub"),
+    o_ptr: pto.ptr(pto.f32, "ub"),
+    rows: pto.i32,
+    cols: pto.i32,
 ):
-    exp_max_col = _reshape_reduced_tile_to_col(exp_max)
+    lanes = pto.elements_per_vreg(pto.f32)
 
-    ubM, ubN = prev_sv_tile.shape
-    lanes = pto.elements_per_vreg(prev_sv_tile.dtype)
-    _, stride = exp_max_col.shape
-
-    prev_ptr = prev_sv_tile.as_ptr()
-    est_ptr = est_sv_tile.as_ptr()
-    exp_max_ptr = exp_max_col.as_ptr()
-
-    with pto.for_(0, ubM, step=1) as row:
-        exp_row = pto.vlds(exp_max_ptr, row * stride, dist="BRC_B32")
-        col_loop = pto.for_(0, ubN, step=lanes).carry(
-            prev_ptr=prev_ptr,
-            est_ptr=est_ptr,
-            remained=ubN,
-        )
+    with pto.for_(0, rows, step=1) as row:
+        row_base = row * cols
+        col_loop = pto.for_(0, cols, step=lanes).carry(remained=cols)
         with col_loop:
-            prev_ptr = col_loop.prev_ptr
-            est_ptr = col_loop.est_ptr
+            col = col_loop.iv
             remained = col_loop.remained
-            mask, remained = pto.make_mask(prev_sv_tile.dtype, remained)
-            prev_vec, prev_ptr = pto.vlds(prev_ptr, 0, dist="NORM", post_update="ON")
-            est_vec, est_ptr = pto.vlds(est_ptr, lanes, dist="NORM", post_update="ON")
-            out_vec = pto.vadd(pto.vmul(prev_vec, exp_row, mask), est_vec, mask)
-            prev_ptr = pto.vsts(out_vec, prev_ptr, lanes, mask, dist=DIST[pto.bytewidth(prev_sv_tile.dtype)], post_update="ON")
-            col_loop.update(
-                prev_ptr=prev_ptr,
-                est_ptr=est_ptr,
-                remained=remained,
-            )
+            mask, remained = pto.make_mask(pto.f32, remained)
+            pv_vec = pto.vlds(pv_ptr, row_base + col, dist="NORM")
+            pto.vsts(pv_vec, o_ptr, row_base + col, mask, dist="NORM_B32")
+            col_loop.update(remained=remained)
+
+
+@pto.jit(
+    name="fa_gu_update_vpto_kernel",
+    target="a5",
+    entry=False,
+    backend="vpto",
+    mode="explicit",
+    kernel_kind="vector",
+    insert_sync=False,
+)
+def fa_gu_update_vpto_kernel(
+    o_ptr: pto.ptr(pto.f32, "ub"),
+    pv_ptr: pto.ptr(pto.f32, "ub"),
+    exp_max_ptr: pto.ptr(pto.f32, "ub"),
+    rows: pto.i32,
+    cols: pto.i32,
+):
+    lanes = pto.elements_per_vreg(pto.f32)
+
+    with pto.for_(0, rows, step=1) as row:
+        row_base = row * cols
+        exp_row = pto.vlds(exp_max_ptr, row, dist="BRC_B32")
+        col_loop = pto.for_(0, cols, step=lanes).carry(remained=cols)
+        with col_loop:
+            col = col_loop.iv
+            remained = col_loop.remained
+            mask, remained = pto.make_mask(pto.f32, remained)
+            o_vec = pto.vlds(o_ptr, row_base + col, dist="NORM")
+            pv_vec = pto.vlds(pv_ptr, row_base + col, dist="NORM")
+            out_vec = pto.vadd(pto.vmul(o_vec, exp_row, mask), pv_vec, mask)
+            pto.vsts(out_vec, o_ptr, row_base + col, mask, dist="NORM_B32")
+            col_loop.update(remained=remained)
 
 
 @pto.simd
-def pto_macro_fa_gu_last(
-    prev_sv_tile: pto.Tile,
-    est_sv_tile: pto.Tile,
-    exp_max: pto.Tile,
-    new_global_sum: pto.Tile,
+def fa_gu_init_vpto(
+    pv_tile: pto.Tile,
+    o_tile: pto.Tile,
 ):
-    exp_max_col = _reshape_reduced_tile_to_col(exp_max)
-    new_global_sum_col = _reshape_reduced_tile_to_col(new_global_sum)
-
-    ubM, ubN = prev_sv_tile.shape
-    lanes = pto.elements_per_vreg(prev_sv_tile.dtype)
-    _, stride = exp_max_col.shape
-
-    prev_ptr = prev_sv_tile.as_ptr()
-    est_ptr = est_sv_tile.as_ptr()
-    exp_max_ptr = exp_max_col.as_ptr()
-    new_global_sum_ptr = new_global_sum_col.as_ptr()
-
-    with pto.for_(0, ubM, step=1) as row:
-        exp_row = pto.vlds(exp_max_ptr, row * stride, dist="BRC_B32")
-        sum_row = pto.vlds(new_global_sum_ptr, row * stride, dist="BRC_B32")
-        col_loop = pto.for_(0, ubN, step=lanes).carry(
-            prev_ptr=prev_ptr,
-            est_ptr=est_ptr,
-            remained=ubN,
-        )
-        with col_loop:
-            prev_ptr = col_loop.prev_ptr
-            est_ptr = col_loop.est_ptr
-            remained = col_loop.remained
-            mask, remained = pto.make_mask(prev_sv_tile.dtype, remained)
-            prev_vec, prev_ptr = pto.vlds(prev_ptr, 0, dist="NORM", post_update="ON")
-            est_vec, est_ptr = pto.vlds(est_ptr, lanes, dist="NORM", post_update="ON")
-            out_vec = pto.vadd(pto.vmul(prev_vec, exp_row, mask), est_vec, mask)
-            out_vec = pto.vdiv(out_vec, sum_row, mask)
-            prev_ptr = pto.vsts(out_vec, prev_ptr, lanes, mask, dist=DIST[pto.bytewidth(prev_sv_tile.dtype)], post_update="ON")
-            col_loop.update(
-                prev_ptr=prev_ptr,
-                est_ptr=est_ptr,
-                remained=remained,
-            )
+    rows, cols = o_tile.valid_shape
+    fa_gu_init_vpto_kernel(
+        pv_tile.as_ptr(),
+        o_tile.as_ptr(),
+        rows,
+        cols,
+    )
 
 
 @pto.simd
-def pto_macro_fa_gu_single_and_last_tile(
-    sv_tile: pto.Tile,
-    new_global_sum: pto.Tile,
-):
-    new_global_sum_col = _reshape_reduced_tile_to_col(new_global_sum)
-    pto.tile.rowexpanddiv(sv_tile, new_global_sum_col, sv_tile)
-
-
-def pto_macro_fa_gu_dispatch(
-    prev_sv_tile: pto.Tile,
-    est_sv_tile: pto.Tile,
+def fa_gu_update_vpto(
+    o_tile: pto.Tile,
+    pv_tile: pto.Tile,
     exp_max: pto.Tile,
-    new_global_sum: pto.Tile,
+):
+    rows, cols = o_tile.valid_shape
+    fa_gu_update_vpto_kernel(
+        o_tile.as_ptr(),
+        pv_tile.as_ptr(),
+        exp_max.as_ptr(),
+        rows,
+        cols,
+    )
+
+
+@pto.jit(entry=True, target="a5", backend="emitc", mode="auto", insert_sync=True)
+def fa_gu_init_vpto_validate(
+    pv_gm: pto.ptr(pto.f32, "gm"),
+    o_gm: pto.ptr(pto.f32, "gm"),
     *,
-    last_tile: pto.constexpr = False,
-    single_last_tile: pto.constexpr = False,
+    BR: pto.constexpr = 32,
+    BC: pto.constexpr = 128,
 ):
-    if single_last_tile:
-        pto_macro_fa_gu_single_and_last_tile(prev_sv_tile, new_global_sum)
-    elif last_tile:
-        pto_macro_fa_gu_last(prev_sv_tile, est_sv_tile, exp_max, new_global_sum)
-    else:
-        pto_macro_fa_gu(prev_sv_tile, est_sv_tile, exp_max)
+    pv_view = pto.make_tensor_view(
+        pv_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    o_view = pto.make_tensor_view(
+        o_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+
+    pv_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    o_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+
+    pto.tile.load(
+        pto.partition_view(pv_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+        pv_tile,
+    )
+    fa_gu_init_vpto(pv_tile, o_tile)
+    pto.tile.store(
+        o_tile,
+        pto.partition_view(o_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+    )
+
+
+@pto.jit(entry=True, target="a5", backend="emitc", mode="auto", insert_sync=True)
+def fa_gu_update_vpto_validate(
+    o_gm: pto.ptr(pto.f32, "gm"),
+    pv_gm: pto.ptr(pto.f32, "gm"),
+    exp_max_gm: pto.ptr(pto.f32, "gm"),
+    *,
+    BR: pto.constexpr = 32,
+    BC: pto.constexpr = 128,
+):
+    o_view = pto.make_tensor_view(
+        o_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    pv_view = pto.make_tensor_view(
+        pv_gm,
+        shape=[1, 1, 1, BR, BC],
+        strides=[BR * BC, BR * BC, BR * BC, BC, 1],
+    )
+    exp_max_view = pto.make_tensor_view(
+        exp_max_gm,
+        shape=[1, 1, 1, BR, 1],
+        strides=[BR, BR, BR, 1, 1],
+    )
+
+    o_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    pv_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    exp_max = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
+
+    pto.tile.load(
+        pto.partition_view(o_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+        o_tile,
+    )
+    pto.tile.load(
+        pto.partition_view(pv_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+        pv_tile,
+    )
+    pto.tile.load(
+        pto.partition_view(exp_max_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, 1]),
+        exp_max,
+    )
+    fa_gu_update_vpto(o_tile, pv_tile, exp_max)
+    pto.tile.store(
+        o_tile,
+        pto.partition_view(o_view, offsets=[0, 0, 0, 0, 0], sizes=[1, 1, 1, BR, BC]),
+    )
 
 
 @pto.jit(target="a5", mode="explicit")
-def fa_dn_gu_wrapper(
+def fa_gu_vpto_probe(
     *,
     BR: pto.constexpr = 8,
     BC: pto.constexpr = 64,
-    LAST_TILE: pto.constexpr = False,
-    SINGLE_LAST_TILE: pto.constexpr = False,
+    INIT: pto.constexpr = False,
 ):
-    prev_sv_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
-    est_sv_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    pv_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
+    o_tile = pto.alloc_tile(shape=[BR, BC], dtype=pto.f32, valid_shape=[BR, BC])
     exp_max = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
-    new_global_sum = pto.alloc_tile(shape=[BR, 1], dtype=pto.f32, valid_shape=[BR, 1], blayout="ColMajor")
 
-    pto_macro_fa_gu_dispatch(
-        prev_sv_tile,
-        est_sv_tile,
-        exp_max,
-        new_global_sum,
-        last_tile=LAST_TILE,
-        single_last_tile=SINGLE_LAST_TILE,
-    )
+    if INIT:
+        fa_gu_init_vpto(pv_tile, o_tile)
+    else:
+        fa_gu_update_vpto(o_tile, pv_tile, exp_max)
 
 
 __all__ = [
-    "pto_macro_fa_gu",
-    "pto_macro_fa_gu_last",
-    "pto_macro_fa_gu_single_and_last_tile",
-    "pto_macro_fa_gu_dispatch",
-    "fa_dn_gu_wrapper",
+    "fa_gu_init_vpto_kernel",
+    "fa_gu_update_vpto_kernel",
+    "fa_gu_init_vpto",
+    "fa_gu_update_vpto",
+    "fa_gu_init_vpto_validate",
+    "fa_gu_update_vpto_validate",
+    "gu_init_reference",
+    "gu_update_reference",
+    "fa_gu_vpto_probe",
 ]
 
 
-def main() -> None:
-    compiled = fa_dn_gu_wrapper.compile(
-        BR=8,
-        BC=64,
-        LAST_TILE=False,
-        SINGLE_LAST_TILE=False,
+_DEVICE = "npu:0"
+
+
+def emit_gu_mlir(*, init: bool, br: int, bc: int) -> str:
+    compiled = (
+        fa_gu_init_vpto_validate.compile(BR=br, BC=bc)
+        if init
+        else fa_gu_update_vpto_validate.compile(BR=br, BC=bc)
     )
-    print(compiled.mlir_text())
+    return compiled.mlir_text()
+
+
+def compile_gu_kernel(*, init: bool, br: int, bc: int):
+    return (
+        fa_gu_init_vpto_validate.compile(BR=br, BC=bc)
+        if init
+        else fa_gu_update_vpto_validate.compile(BR=br, BC=bc)
+    )
+
+
+def init_runtime():
+    try:
+        import torch
+        import torch_npu  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "GU launch validation requires a Python environment with both "
+            "`torch` and `torch_npu` installed"
+        ) from exc
+
+    torch.npu.config.allow_internal_format = False
+    torch_npu.npu.set_compile_mode(jit_compile=False)
+    torch.npu.set_device(_DEVICE)
+    return torch
+
+
+def npu_stream(torch):
+    return torch.npu.current_stream()._as_parameter_  # noqa: SLF001
+
+
+def _to_device(torch, array: np.ndarray):
+    return torch.from_numpy(np.ascontiguousarray(array)).to(_DEVICE)
+
+
+def _assert_close(name: str, got: np.ndarray, ref: np.ndarray, *, rtol: float, atol: float) -> None:
+    try:
+        np.testing.assert_allclose(got, ref, rtol=rtol, atol=atol)
+    except AssertionError as exc:
+        diff = np.max(np.abs(got - ref))
+        raise AssertionError(f"{name} mismatch, max_abs_diff={diff}\n{exc}") from exc
+
+
+def run_demo(
+    *,
+    init: bool,
+    br: int,
+    bc: int,
+    seed: int = 20260606,
+) -> None:
+    torch = init_runtime()
+    rng = np.random.RandomState(seed)
+    stream = npu_stream(torch)
+
+    t0 = time.perf_counter()
+    compiled = compile_gu_kernel(init=init, br=br, bc=bc)
+    compile_s = time.perf_counter() - t0
+
+    if init:
+        pv = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+        ref_o = gu_init_reference(pv)
+
+        pv_t = _to_device(torch, pv)
+        o_t = _to_device(torch, np.zeros((br, bc), dtype=np.float32))
+
+        t0 = time.perf_counter()
+        compiled[1, stream](pv_t.data_ptr(), o_t.data_ptr())
+        torch.npu.synchronize()
+        launch_s = time.perf_counter() - t0
+
+        got_o = o_t.cpu().numpy()
+        _assert_close("init.o", got_o, ref_o, rtol=1e-6, atol=1e-6)
+        print(f"PASS gu-init br={br} bc={bc} compile={compile_s:.3f}s launch={launch_s:.3f}s")
+        return
+
+    o_prev = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+    pv = rng.uniform(-4.0, 4.0, size=(br, bc)).astype(np.float32)
+    exp_max = rng.uniform(0.25, 1.25, size=(br, 1)).astype(np.float32)
+    ref_o = gu_update_reference(o_prev, pv, exp_max)
+
+    o_t = _to_device(torch, o_prev)
+    pv_t = _to_device(torch, pv)
+    exp_max_t = _to_device(torch, exp_max)
+
+    t0 = time.perf_counter()
+    compiled[1, stream](o_t.data_ptr(), pv_t.data_ptr(), exp_max_t.data_ptr())
+    torch.npu.synchronize()
+    launch_s = time.perf_counter() - t0
+
+    got_o = o_t.cpu().numpy()
+    _assert_close("update.o", got_o, ref_o, rtol=2e-5, atol=2e-5)
+    print(f"PASS gu-update br={br} bc={bc} compile={compile_s:.3f}s launch={launch_s:.3f}s")
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--emit-mlir",
+        action="store_true",
+        help="print compiled MLIR and exit",
+    )
+    parser.add_argument(
+        "--init",
+        action="store_true",
+        help="emit or run init validation; default runs both init and update unless --update is set",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="emit or run update validation; default runs both init and update unless --init is set",
+    )
+    parser.add_argument("--br", type=int, default=32)
+    parser.add_argument("--bc", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=20260606)
+    parser.add_argument("-o", "--output", default="-", help="output MLIR path, or '-' for stdout")
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    run_init = args.init or not args.update
+    run_update = args.update or not args.init
+
+    if args.emit_mlir:
+        if run_init:
+            mlir_text = emit_gu_mlir(init=True, br=args.br, bc=args.bc)
+            if args.output == "-":
+                print(mlir_text)
+            else:
+                Path(args.output).write_text(mlir_text, encoding="utf-8")
+        if run_update:
+            mlir_text = emit_gu_mlir(init=False, br=args.br, bc=args.bc)
+            if args.output == "-":
+                print(mlir_text)
+            else:
+                suffix = ".update" if run_init and args.output != "-" else ""
+                out_path = Path(args.output + suffix) if suffix else Path(args.output)
+                out_path.write_text(mlir_text, encoding="utf-8")
+        return 0
+
+    # if run_init:
+    #     run_demo(init=True, br=args.br, bc=args.bc, seed=args.seed)
+    if run_update:
+        run_demo(init=False, br=args.br, bc=args.bc, seed=args.seed + 1)
+    print("All requested GU validation cases passed.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

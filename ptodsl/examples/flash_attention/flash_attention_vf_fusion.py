@@ -34,8 +34,10 @@ if __package__ in {None, ""}:
 
 from ptodsl import pto, scalar
 try:
+    from .gu import fa_gu_init_vpto, fa_gu_update_vpto
     from .softmax import fa_softmax_init_vpto, fa_softmax_update_vpto
 except ImportError:
+    from gu import fa_gu_init_vpto, fa_gu_update_vpto
     from softmax import fa_softmax_init_vpto, fa_softmax_update_vpto
 
 
@@ -678,10 +680,9 @@ def _build_flash_attention_entry(
                 )
                 pto.tile.load(pv_part, pv_vec[row_slice])
                 if is_init:
-                    pto.tile.mov(pv_vec[row_slice], o_tile[row_slice])
+                    fa_gu_init_vpto(pv_vec[row_slice], o_tile[row_slice])
                 else:
-                    pto.tile.rowexpandmul(o_tile[row_slice], exp_max_slots[row_slice], o_tile[row_slice])
-                    pto.tile.add(o_tile[row_slice], pv_vec[row_slice], o_tile[row_slice])
+                    fa_gu_update_vpto(o_tile[row_slice], pv_vec[row_slice], exp_max_slots[row_slice])
             pv_pipe.free(pv_entry, split=split_up_down)
 
         def emit_softmax_dispatch(tile_id):
