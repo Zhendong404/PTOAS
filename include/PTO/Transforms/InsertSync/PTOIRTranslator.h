@@ -91,6 +91,7 @@ private:
   void UpdateMacroOpInfo(Operation *op);
   void MakeMacroCompound(Operation *op, PipelineType pipe, ValueRange defValues,
                          ValueRange useValues, int macroPhaseId);
+  void UpdatePTODSLSubkernelCallInfo(func::CallOp callOp);
  
   // --- 辅助函数 ---
   
