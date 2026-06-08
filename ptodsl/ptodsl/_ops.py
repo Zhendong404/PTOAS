@@ -2890,11 +2890,15 @@ def tsels(mask, src, scalar, dst, *, tmp=None):
 
 
 def tcvt(src, dst, *, tmp=None, rmode=None, sat_mode=None):
-    """``pto.tcvt ins(src, tmp?) outs(dst)``."""
+    """``pto.tcvt ins(src) outs(dst)`` with optional legacy ``tmp`` validation."""
+    if tmp is not None:
+        raise TypeError(
+            "ptodsl.tcvt(..., tmp=...) is no longer supported because "
+            "the canonical PTO tcvt op only accepts src/dst plus attributes"
+        )
     _pto.tcvt(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        tmp=None if tmp is None else unwrap_surface_value(tmp),
         rmode=rmode,
         sat_mode=sat_mode,
     )
