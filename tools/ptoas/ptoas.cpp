@@ -1490,7 +1490,7 @@ static void lowerPTOToVPTOBackend(PassManager &pm, int argc, char **argv) {
   kernelModulePM.addPass(mlir::createCanonicalizerPass());
 }
 
-static void inlineBackendHelpersOnVPTOInput(PassManager &pm) {
+[[maybe_unused]] static void inlineBackendHelpersOnVPTOInput(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
   kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
   kernelModulePM.addPass(mlir::createSCCPPass());
