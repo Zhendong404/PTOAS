@@ -416,20 +416,20 @@ def _build_flash_attention_entry(
         # Closures over the shared tile state. The steady state overlaps PV for
         # the current S1 tile with QK for the next S1 tile at CUBE_S1 granularity.
         def emit_qk_sub(qk_entry, s1_tile_idx, sub, b):
-            kt_view = pto.partition_view(
+            pto.tile.load(
                 tv_k,
+                k_mat[b],
                 offsets=[c0, s1_tile_idx * cS1_TILE + pto.const(sub * CUBE_S1)],
                 sizes=[cHEAD, cCUBE_S1],
             )
-            pto.tile.load(kt_view, k_mat[b])
             pto.tile.mov(k_mat[b], k_right[b])
             pto.tile.matmul(q_left, k_right[b], qk_acc[b])
-            slot_part = pto.partition_view(
+            pto.tile.store(
+                qk_acc[b],
                 qk_entry,
                 offsets=[c0, pto.const(sub * CUBE_S1)],
                 sizes=[cS0, cCUBE_S1],
             )
-            pto.tile.store(qk_acc[b], slot_part)
 
         def emit_qk(s1_tile_idx, b):
             qk_entry = qk_pipe.alloc(split=split_up_down)
@@ -438,19 +438,19 @@ def _build_flash_attention_entry(
             qk_pipe.push(qk_entry, split=split_up_down)
 
         def emit_pv_sub(p_entry, t_idx, sub, b):
-            p_part = pto.partition_view(
+            pto.tile.load(
                 p_entry,
+                p_recv[b],
                 offsets=[c0, pto.const(sub * CUBE_S1)],
                 sizes=[cS0, cCUBE_S1],
             )
-            pto.tile.load(p_part, p_recv[b])
             pto.tile.mov(p_recv[b], p_left[b])
-            v_view = pto.partition_view(
+            pto.tile.load(
                 tv_v,
+                v_mat[b],
                 offsets=[t_idx * cS1_TILE + pto.const(sub * CUBE_S1), c0],
                 sizes=[cCUBE_S1, cHEAD],
             )
-            pto.tile.load(v_view, v_mat[b])
             pto.tile.mov(v_mat[b], v_right[b])
             if sub == 0:
                 pto.tile.matmul(p_left[b], v_right[b], pv_acc[b])
@@ -460,12 +460,12 @@ def _build_flash_attention_entry(
         def push_pv(p_entry, b):
             p_pipe.free(p_entry, split=split_up_down)
             pv_entry = pv_pipe.alloc(split=split_up_down)
-            pv_part = pto.partition_view(
+            pto.tile.store(
+                pv_acc[b],
                 pv_entry,
                 offsets=[c0, c0],
                 sizes=[cS0, cHEAD],
             )
-            pto.tile.store(pv_acc[b], pv_part)
             pv_pipe.push(pv_entry, split=split_up_down)
 
         def emit_pv(t_idx, b):
@@ -488,12 +488,12 @@ def _build_flash_attention_entry(
 
         # ---- Q-block loop ----
         with pto.for_(qb_start, qb_end, step=1) as qb:
-            q_view = pto.partition_view(
+            pto.tile.load(
                 tv_q,
+                q_mat,
                 offsets=[qb * cS0, c0],
                 sizes=[cS0, cHEAD],
             )
-            pto.tile.load(q_view, q_mat)
             pto.tile.mov(q_mat, q_left)
 
             # ---- prologue: emit QK[0..QK_PRELOAD-1] -------------------------
@@ -630,12 +630,12 @@ def _build_flash_attention_entry(
             p_entry = p_pipe.alloc(split=split_up_down)
             for row_slice in range(tile_factor):
                 row_off = row_slice * vec_s0
-                slot_part = pto.partition_view(
+                pto.tile.load(
                     qk_entry,
+                    qk_vec,
                     offsets=[row_off, 0],
                     sizes=[vec_s0, s1_tile],
                 )
-                pto.tile.load(slot_part, qk_vec)
                 qk = qk_vec
                 rmax = running_max[row_slice]
                 rsum = running_sum[row_slice]
@@ -657,12 +657,12 @@ def _build_flash_attention_entry(
                         exp_slot,
                         scale_const,
                     )
-                p_part = pto.partition_view(
+                pto.tile.store(
+                    p_nz,
                     p_entry,
                     offsets=[row_off, 0],
                     sizes=[vec_s0, s1_tile],
                 )
-                pto.tile.store(p_nz, p_part)
             p_pipe.push(p_entry, split=split_up_down)
             qk_pipe.free(qk_entry, split=split_up_down)
 
@@ -673,12 +673,12 @@ def _build_flash_attention_entry(
             pv_entry = pv_pipe.pop(split=split_up_down, result_type=pv_pipe.entry_type)
             for row_slice in range(tile_factor):
                 row_off = row_slice * vec_s0
-                pv_part = pto.partition_view(
+                pto.tile.load(
                     pv_entry,
+                    pv_vec[row_slice],
                     offsets=[row_off, 0],
                     sizes=[vec_s0, head_dim],
                 )
-                pto.tile.load(pv_part, pv_vec[row_slice])
                 if is_init:
                     fa_gu_init_vpto(pv_vec[row_slice], o_tile[row_slice])
                 else:
@@ -755,12 +755,12 @@ def _build_flash_attention_entry(
             for row_slice in range(tile_factor):
                 row_off = row_off_sb + row_slice * vec_s0
                 pto.tile.rowexpanddiv(o_tile[row_slice], running_sum[row_slice], o_tile[row_slice])
-                o_part = pto.partition_view(
+                pto.tile.store(
+                    o_tile[row_slice],
                     tv_o,
                     offsets=[qb * S0 + row_off, 0],
                     sizes=[vec_s0, head_dim],
                 )
-                pto.tile.store(o_tile[row_slice], o_part)
     @pto.jit(name=entry_symbol, target="a5", mode="explicit", backend="emitc", insert_sync=True)
     def flash_attention_entry(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
