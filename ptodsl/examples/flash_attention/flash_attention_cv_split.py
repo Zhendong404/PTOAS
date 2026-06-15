@@ -8,11 +8,11 @@
 """
 CV-split PTODSL port of the hw-native Python Flash Attention example.
 
-This variant preserves the legacy ``cube kernel`` + ``vector kernel`` split and
-adapts the cross-kernel communication to the current A5 PTODSL local-pipe
-surface. Unlike the previous draft, the Cube and Vector pieces are authored as
-``@pto.jit(entry=False)`` kernel modules, and a single outer ``@pto.jit``
-entry owns the host-visible ABI.
+This variant preserves the legacy ``cube kernel`` + ``vector kernel`` logical
+split and adapts the cross-kernel communication to the current A5 PTODSL
+local-pipe surface. The Cube and Vector pieces are plain Python helpers reached
+from a single outer ``@pto.jit`` entry, so the entry owns the host-visible ABI
+and recursive AST rewrite handles helper-local control flow.
 """
 
 import argparse
@@ -20,8 +20,6 @@ import os
 from pathlib import Path
 import sys
 import time
-
-import numpy as np
 
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
@@ -71,8 +69,6 @@ _DEVICE = "npu:0"
 NEG_INF_F32 = -3.4028235e38
 
 _ENTRY_SYMBOL = "hw_native_flash_attention_cv_split"
-_CUBE_SYMBOL = "hw_native_flash_attention_cv_split_cube"
-_VECTOR_SYMBOL = "hw_native_flash_attention_cv_split_vector"
 
 
 def _gm_slot_layout(*, head_dim: int, s1_tile: int) -> tuple[int, int, int, int, int, int, int, int]:
@@ -145,7 +141,9 @@ def _validate_runtime_problem(*, q_rows: int, s1: int, s1_tile: int, qk_preload:
         )
 
 
-def _reference_flash_attention(q: np.ndarray, k_tokens: np.ndarray, v_tokens: np.ndarray) -> np.ndarray:
+def _reference_flash_attention(q: "np.ndarray", k_tokens: "np.ndarray", v_tokens: "np.ndarray") -> "np.ndarray":
+    import numpy as np
+
     q_f32 = q.astype(np.float32, copy=False)
     k_f32 = k_tokens.astype(np.float32, copy=False)
     v_f32 = v_tokens.astype(np.float32, copy=False)
@@ -199,20 +197,6 @@ def _build_flash_attention_entry(
         q_rows=q_rows,
     )
 
-    cube_symbol = _specialized_symbol(
-        _CUBE_SYMBOL,
-        head_dim=head_dim,
-        s1_tile=s1_tile,
-        qk_preload=qk_preload,
-        q_rows=q_rows,
-    )
-    vector_symbol = _specialized_symbol(
-        _VECTOR_SYMBOL,
-        head_dim=head_dim,
-        s1_tile=s1_tile,
-        qk_preload=qk_preload,
-        q_rows=q_rows,
-    )
     entry_symbol = _specialized_symbol(
         _ENTRY_SYMBOL,
         head_dim=head_dim,
@@ -245,15 +229,6 @@ def _build_flash_attention_entry(
     # =========================================================================
     # Cube kernel
     # =========================================================================
-    @pto.jit(
-        name=cube_symbol,
-        target="a5",
-        entry=False,
-        kernel_kind="cube",
-        mode="auto",
-        backend="emitc",
-        insert_sync=True,
-    )
     def cube_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
@@ -497,15 +472,6 @@ def _build_flash_attention_entry(
                 t_idx = steady_tiles + k
                 accumulate_pv_tile(t_idx, b)
 
-    @pto.jit(
-        name=vector_symbol,
-        target="a5",
-        entry=False,
-        kernel_kind="vector",
-        mode="auto",
-        backend="emitc",
-        insert_sync=True,
-    )
     def vector_kernel(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
@@ -814,6 +780,8 @@ def run_demo(
     )
 
     torch = _init_runtime()
+    import numpy as np
+
     rng = np.random.RandomState(seed)
 
     host_q = rng.randn(q_rows, head_dim).astype(np.float16)
