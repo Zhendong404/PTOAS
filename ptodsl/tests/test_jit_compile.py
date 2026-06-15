@@ -1326,6 +1326,30 @@ ast_mutable_closure_cache_kernel_probe, set_ast_mutable_closure_cache_limit = (
 )
 
 
+def make_ast_plain_helper_mutable_closure_cache_kernel():
+    limit = 2
+
+    def helper():
+        for _ in pto.static_range(limit):
+            pto.pipe_barrier(pto.Pipe.ALL)
+
+    @pto.jit(target="a5")
+    def ast_plain_helper_mutable_closure_cache_kernel():
+        helper()
+
+    def set_limit(value: int):
+        nonlocal limit
+        limit = value
+
+    return ast_plain_helper_mutable_closure_cache_kernel, set_limit
+
+
+(
+    ast_plain_helper_mutable_closure_cache_kernel_probe,
+    set_ast_plain_helper_mutable_closure_cache_limit,
+) = make_ast_plain_helper_mutable_closure_cache_kernel()
+
+
 def make_ast_signature_closure_default_kernel(limit: int):
     @pto.jit(target="a5")
     def ast_signature_closure_default_kernel(*, BLOCK: pto.const_expr = limit):
@@ -4514,6 +4538,32 @@ def main() -> None:
     expect(
         ast_mutable_closure_cache_second_text.count("pto.barrier <PIPE_ALL>") == 2,
         "changed mutable closure specialization should keep the function's captured nonlocal value stable",
+    )
+
+    ast_plain_helper_mutable_closure_cache_first = ast_plain_helper_mutable_closure_cache_kernel_probe.compile()
+    ast_plain_helper_mutable_closure_cache_first_text = ast_plain_helper_mutable_closure_cache_first.mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_plain_helper_mutable_closure_cache_first_text,
+        "AST-rewritten plain helper mutable closure cache first specialization",
+    )
+    expect(
+        ast_plain_helper_mutable_closure_cache_first_text.count("pto.barrier <PIPE_ALL>") == 2,
+        "first recursive helper closure specialization should use the initial helper nonlocal value",
+    )
+    set_ast_plain_helper_mutable_closure_cache_limit(4)
+    ast_plain_helper_mutable_closure_cache_second = ast_plain_helper_mutable_closure_cache_kernel_probe.compile()
+    ast_plain_helper_mutable_closure_cache_second_text = ast_plain_helper_mutable_closure_cache_second.mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_plain_helper_mutable_closure_cache_second_text,
+        "AST-rewritten plain helper mutable closure cache second specialization",
+    )
+    expect(
+        ast_plain_helper_mutable_closure_cache_second is not ast_plain_helper_mutable_closure_cache_first,
+        "recursive helper closure changes should participate in the specialization cache key",
+    )
+    expect(
+        ast_plain_helper_mutable_closure_cache_second_text.count("pto.barrier <PIPE_ALL>") == 4,
+        "changed recursive helper closure specialization should retrace with the updated helper nonlocal value",
     )
 
     ast_signature_closure_default_text = ast_signature_closure_default_kernel_probe.compile().mlir_text()

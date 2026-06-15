@@ -77,6 +77,7 @@ class KernelCompiler:
         self._kernel_identity = id(callback)
         self._ast_rewrite = ast_rewrite
         self._trace_callback = None
+        self._trace_callback_signature = None
         self._compiled_cache = {}
 
     def tracing_callback(self):
@@ -89,10 +90,12 @@ class KernelCompiler:
             raise kernel_module_compile_error(self._py_name)
         normalized_bindings = self._kernel_signature.bind_constexpr_bindings(constexpr_bindings)
         kernel_identity = self._kernel_identity
+        rewrite_signature = None
         if self._ast_rewrite:
+            rewrite_signature = rewrite_cache_signature(self._callback)
             kernel_identity = (
                 kernel_identity,
-                rewrite_cache_signature(self._callback),
+                rewrite_signature,
             )
         specialization_key = self._kernel_signature.specialization_key(
             kernel_identity,
@@ -103,6 +106,9 @@ class KernelCompiler:
         if cached is not None:
             return cached
 
+        if self._ast_rewrite and self._trace_callback_signature != rewrite_signature:
+            self._trace_callback = None
+            self._trace_callback_signature = rewrite_signature
         callback = self.tracing_callback()
         runtime = SignatureTracingRuntime(
             self._module_spec,
