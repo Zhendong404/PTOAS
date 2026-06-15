@@ -1418,6 +1418,18 @@ def sourceless_plain_helper_ast_rewrite_kernel(rows: pto.i32):
 sourceless_plain_helper_ast_rewrite_kernel_probe = make_sourceless_plain_helper_ast_rewrite_kernel()
 
 
+def unsupported_plain_helper_with_for_else(limit):
+    for _ in range(limit):
+        pto.pipe_barrier(pto.Pipe.ALL)
+    else:
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5")
+def unsupported_plain_helper_entry_probe(rows: pto.i32):
+    unsupported_plain_helper_with_for_else(rows)
+
+
 def make_entry_closure_kernel_module_probe():
     @pto.jit(target="a5", entry=False)
     def closure_helper():
@@ -4551,6 +4563,15 @@ def main() -> None:
     expect(
         "range()/loop bound" in str(sourceless_plain_helper_error),
         "source-less plain helper fallback should preserve the existing misuse diagnostic rather than introducing a new error mode",
+    )
+    unsupported_plain_helper_error = expect_raises(
+        TypeError,
+        unsupported_plain_helper_entry_probe.compile,
+        "native Python range()/loop bound",
+    )
+    expect(
+        "for-else" not in str(unsupported_plain_helper_error),
+        "unsupported plain helper rewrite failures should fall back to native Python execution instead of surfacing AST rewrite internals",
     )
 
     ast_python_bool_guard_enabled_text = ast_python_bool_guard_probe.compile().mlir_text()

@@ -28,7 +28,7 @@ class _RewriteSession:
     cache: dict[object, object]
     in_progress: set[int]
 
-    def rewrite(self, fn):
+    def rewrite(self, fn, *, fallback_on_error: bool = False):
         if _is_rewritten_function(fn):
             return fn
         if not inspect.isfunction(fn):
@@ -44,14 +44,27 @@ class _RewriteSession:
 
         self.in_progress.add(fn_id)
         try:
-            rewritten = _rewrite_jit_function_impl(fn, session=self)
+            try:
+                rewritten = _rewrite_jit_function_impl(fn, session=self)
+            except PTODSLAstRewriteError:
+                if not fallback_on_error:
+                    raise
+                rewritten = fn
         finally:
             self.in_progress.discard(fn_id)
         self.cache[fn] = rewritten
         return rewritten
 
     def dispatch_call(self, callee, *args, **kwargs):
-        return self.rewrite(callee)(*args, **kwargs)
+        return self.rewrite(callee, fallback_on_error=True)(*args, **kwargs)
+
+
+def rewrite_cache_signature(fn):
+    """Return AST-rewrite state that can affect traced specialization output."""
+    return (
+        ("closure", _closure_cache_signature(fn)),
+        ("plain-helpers", _plain_helper_cache_signature(fn)),
+    )
 
 
 def rewrite_jit_function(fn, *, _session=None):
@@ -136,6 +149,162 @@ def _find_function_def(tree, name: str):
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def _closure_cache_signature(fn, *, _seen=None):
+    try:
+        closure_vars = inspect.getclosurevars(fn)
+    except TypeError:
+        return ()
+    return tuple(
+        (name, _cache_signature_atom(value, _seen=_seen))
+        for name, value in sorted(closure_vars.nonlocals.items())
+    )
+
+
+def _cache_signature_atom(value, *, _seen=None):
+    cache_signature = getattr(value, "__ptodsl_cache_signature__", None)
+    if callable(cache_signature):
+        return (
+            "ptodsl-cache-signature",
+            _cache_signature_atom(cache_signature(), _seen=_seen),
+        )
+    if inspect.isfunction(value):
+        seen = set() if _seen is None else _seen
+        value_id = id(value)
+        if value_id in seen:
+            return ("function-cycle", value_id)
+        seen.add(value_id)
+        try:
+            return (
+                "function",
+                _function_identity(value),
+                _closure_cache_signature(value, _seen=seen),
+                _plain_helper_cache_signature(value, _seen=seen),
+            )
+        finally:
+            seen.discard(value_id)
+    try:
+        hash(value)
+    except TypeError:
+        if isinstance(value, dict):
+            items = (
+                (
+                    _cache_signature_atom(key, _seen=_seen),
+                    _cache_signature_atom(item, _seen=_seen),
+                )
+                for key, item in value.items()
+            )
+            return (
+                "dict",
+                tuple(sorted(items, key=repr)),
+            )
+        if isinstance(value, (list, tuple)):
+            return (
+                type(value).__name__,
+                tuple(_cache_signature_atom(item, _seen=_seen) for item in value),
+            )
+        if isinstance(value, set):
+            return (
+                "set",
+                tuple(
+                    sorted(
+                        (_cache_signature_atom(item, _seen=_seen) for item in value),
+                        key=repr,
+                    )
+                ),
+            )
+        return (type(value).__name__, repr(value))
+    return value
+
+
+def _plain_helper_cache_signature(fn, *, _seen=None):
+    if not inspect.isfunction(fn):
+        return ()
+    seen = set() if _seen is None else _seen
+    fn_id = id(fn)
+    if fn_id in seen:
+        return (("function-cycle", fn_id),)
+    seen.add(fn_id)
+    try:
+        function_def = _source_function_def(fn)
+        if function_def is None:
+            return ()
+        closure_vars = inspect.getclosurevars(fn)
+        helper_signatures = []
+        for name in sorted(_called_plain_helper_names(function_def)):
+            callee = _resolve_closure_name(closure_vars, name)
+            if not inspect.isfunction(callee):
+                continue
+            callee_id = id(callee)
+            if callee_id in seen:
+                helper_signatures.append((name, ("function-cycle", callee_id)))
+                continue
+            helper_signatures.append(
+                (
+                    name,
+                    _function_identity(callee),
+                    _closure_cache_signature(callee, _seen=seen),
+                    _plain_helper_cache_signature(callee, _seen=seen),
+                )
+            )
+        return tuple(helper_signatures)
+    finally:
+        seen.discard(fn_id)
+
+
+def _source_function_def(fn):
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return None
+    tree = ast.parse(textwrap.dedent(source))
+    return _find_function_def(tree, fn.__name__)
+
+
+def _function_identity(fn):
+    code = getattr(fn, "__code__", None)
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except (OSError, TypeError):
+        source_file = None
+    return (
+        id(fn),
+        getattr(fn, "__module__", None),
+        getattr(fn, "__qualname__", None),
+        source_file,
+        getattr(code, "co_firstlineno", None),
+    )
+
+
+def _resolve_closure_name(closure_vars, name: str):
+    if name in closure_vars.nonlocals:
+        return closure_vars.nonlocals[name]
+    if name in closure_vars.globals:
+        return closure_vars.globals[name]
+    if name in closure_vars.builtins:
+        return closure_vars.builtins[name]
+    return None
+
+
+class _PlainHelperNameCollector(ast.NodeVisitor):
+    def __init__(self):
+        self.names = set()
+
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        if not isinstance(node.func, ast.Name):
+            return
+        if node.func.id in _CallDispatchRewriter._builtin_passthrough:
+            return
+        self.names.add(node.func.id)
+
+
+def _called_plain_helper_names(function_def) -> set[str]:
+    collector = _PlainHelperNameCollector()
+    for stmt in function_def.body:
+        collector.visit(stmt)
+    return collector.names
 
 
 _MISSING_GLOBAL = object()
@@ -869,5 +1038,6 @@ class _ControlFlowRewriter:
 
 __all__ = [
     "PTODSLAstRewriteError",
+    "rewrite_cache_signature",
     "rewrite_jit_function",
 ]
