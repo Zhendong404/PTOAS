@@ -519,36 +519,26 @@ def main() -> None:
         "hw_native_flash_attention_cv_split.py --emit-mlir output",
     )
     expect(
-        cv_split_frontend_text.count('module attributes {pto.backend = "emitc"') >= 2,
-        "hw_native_flash_attention_cv_split.py frontend verification should preserve the cube and vector EmitC helper children",
+        "func.func @hw_native_flash_attention_cv_split_" in cv_split_frontend_text,
+        "hw_native_flash_attention_cv_split.py frontend verification should preserve the single entry symbol",
     )
     expect(
-        'pto.kernel_kind = #pto.kernel_kind<cube>' in cv_split_frontend_text
-        and 'pto.visibility = "external"' in cv_split_frontend_text
-        and "func.func public @hw_native_flash_attention_cv_split_cube_h128_s1t256_qp3_qr128__ptodsl_"
-        in cv_split_frontend_text,
-        "cv-split frontend verification should preserve the cube helper public ABI-specialized symbol and kernel_kind",
+        "pto.section.cube {" in cv_split_frontend_text and "pto.section.vector {" in cv_split_frontend_text,
+        "cv-split frontend verification should preserve both cube and vector sections in the single-entry artifact",
+    )
+    expect(
+        "func.func public @hw_native_flash_attention_cv_split_cube_" not in cv_split_frontend_text
+        and "func.func public @hw_native_flash_attention_cv_split_vector_" not in cv_split_frontend_text,
+        "cv-split frontend verification should not materialize separate cube/vector helper children",
     )
     expect(
         cv_split_frontend_text.count("pto.aic_initialize_pipe") >= 3
         and cv_split_frontend_text.count("pto.tpush_to_aiv") >= 2
-        and "pto.tpop_from_aiv" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the cube helper pipe init, push, and receive paths intact",
-    )
-    expect(
-        'pto.kernel_kind = #pto.kernel_kind<vector>' in cv_split_frontend_text
-        and
-        'pto.visibility = "external"' in cv_split_frontend_text
-        and
-        "func.func public @hw_native_flash_attention_cv_split_vector_h128_s1t256_qp3_qr128__ptodsl_"
-        in cv_split_frontend_text,
-        "cv-split frontend verification should preserve the vector helper public ABI-specialized symbol and kernel_kind",
-    )
-    expect(
-        cv_split_frontend_text.count("pto.aiv_initialize_pipe") >= 3
+        and "pto.tpop_from_aiv" in cv_split_frontend_text
+        and cv_split_frontend_text.count("pto.aiv_initialize_pipe") >= 3
         and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
         and "pto.tpop_from_aic" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the vector helper pipe init, push, and receive paths intact",
+        "cv-split frontend verification should keep the cube/vector pipe init, push, and receive paths intact",
     )
 
     lowp_text = low_precision_vcvt_frontend.compile().mlir_text()

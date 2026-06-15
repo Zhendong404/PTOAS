@@ -4536,8 +4536,8 @@ def main() -> None:
         "AST rewrite closure changes should participate in the specialization cache key",
     )
     expect(
-        ast_mutable_closure_cache_second_text.count("pto.barrier <PIPE_ALL>") == 2,
-        "changed mutable closure specialization should keep the function's captured nonlocal value stable",
+        ast_mutable_closure_cache_second_text.count("pto.barrier <PIPE_ALL>") == 4,
+        "changed mutable closure specialization should recompile with the updated captured nonlocal value",
     )
 
     ast_plain_helper_mutable_closure_cache_first = ast_plain_helper_mutable_closure_cache_kernel_probe.compile()

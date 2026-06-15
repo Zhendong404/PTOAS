@@ -713,10 +713,10 @@ FRAGMENT_FIXTURES = {
             b_tile: pto.Tile,
             o_tile: pto.Tile,
         ):
-            for r in range(0, 1, 1):
-                c = pto.const(0, dtype=pto.index)
-                mask, _ = pto.make_mask(pto.f32, pto.const(16, dtype=pto.i32))
-                {SNIPPET_PLACEHOLDER}
+            r = pto.const(0, dtype=pto.index)
+            c = pto.const(0, dtype=pto.index)
+            mask, _ = pto.make_mask(pto.f32, pto.const(16, dtype=pto.i32))
+            {SNIPPET_PLACEHOLDER}
 
 
         @pto.jit(target="a5")
@@ -740,6 +740,9 @@ FRAGMENT_FIXTURES = {
                 col = pto.const(0, dtype=pto.index)
                 o_prev = scalar.load(o_prev_tile[row, col])
                 pv_val = scalar.load(pv_tile[row, col])
+                alpha = scalar.load(alpha_tile[row, col])
+                beta = scalar.load(beta_tile[row, col])
+                o_next = alpha * o_prev + beta * pv_val
                 {SNIPPET_PLACEHOLDER}
 
 
