@@ -20,8 +20,49 @@ class PTODSLAstRewriteError(SyntaxError):
     """Raised when AST rewrite sees unsupported Python control flow."""
 
 
-def rewrite_jit_function(fn):
+_REWRITE_CALL_DISPATCH_NAME = "__ptodsl_rewrite_call__"
+
+
+@dataclass
+class _RewriteSession:
+    cache: dict[object, object]
+    in_progress: set[int]
+
+    def rewrite(self, fn):
+        if _is_rewritten_function(fn):
+            return fn
+        if not inspect.isfunction(fn):
+            return fn
+
+        cached = self.cache.get(fn)
+        if cached is not None:
+            return cached
+
+        fn_id = id(fn)
+        if fn_id in self.in_progress:
+            return fn
+
+        self.in_progress.add(fn_id)
+        try:
+            rewritten = _rewrite_jit_function_impl(fn, session=self)
+        finally:
+            self.in_progress.discard(fn_id)
+        self.cache[fn] = rewritten
+        return rewritten
+
+    def dispatch_call(self, callee, *args, **kwargs):
+        return self.rewrite(callee)(*args, **kwargs)
+
+
+def rewrite_jit_function(fn, *, _session=None):
     """Return a function whose Python if/for control flow lowers to PTODSL APIs."""
+    session = _session or _RewriteSession(cache={}, in_progress=set())
+    if _session is None:
+        return session.rewrite(fn)
+    return _rewrite_jit_function_impl(fn, session=session)
+
+
+def _rewrite_jit_function_impl(fn, *, session: _RewriteSession):
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError) as exc:
@@ -41,6 +82,7 @@ def rewrite_jit_function(fn):
     function_def.decorator_list = []
     closure_vars = inspect.getclosurevars(fn)
     _inject_closure_defaults(function_def, closure_vars.nonlocals)
+    _inject_dispatch_default(function_def)
     _sanitize_signature_for_exec(function_def)
     rewriter = _ControlFlowRewriter()
     function_def.body = rewriter.rewrite_block(function_def.body, live_after=set())
@@ -70,7 +112,19 @@ def rewrite_jit_function(fn):
     rewritten.__doc__ = fn.__doc__
     rewritten.__module__ = fn.__module__
     rewritten.__qualname__ = fn.__qualname__
+    rewritten.__kwdefaults__ = dict(rewritten.__kwdefaults__ or {})
+    rewritten.__kwdefaults__[_REWRITE_CALL_DISPATCH_NAME] = session.dispatch_call
+    _mark_rewritten_function(rewritten, original=fn)
     return rewritten
+
+
+def _mark_rewritten_function(rewritten, *, original):
+    rewritten.__ptodsl_rewritten_function__ = True
+    rewritten.__ptodsl_rewritten_original__ = original
+
+
+def _is_rewritten_function(fn) -> bool:
+    return bool(getattr(fn, "__ptodsl_rewritten_function__", False))
 
 
 def _find_function_def(tree, name: str):
@@ -144,6 +198,14 @@ def _sanitize_signature_for_exec(function_def):
     if args.kwarg is not None:
         args.kwarg.annotation = None
     function_def.returns = None
+
+
+def _inject_dispatch_default(function_def):
+    existing = _argument_names(function_def.args)
+    if _REWRITE_CALL_DISPATCH_NAME in existing:
+        return
+    function_def.args.kwonlyargs.append(ast.arg(arg=_REWRITE_CALL_DISPATCH_NAME))
+    function_def.args.kw_defaults.append(ast.Constant(None))
 
 
 @dataclass(frozen=True)
@@ -370,9 +432,71 @@ def _name(name: str, ctx=ast.Load()):
     return ast.Name(id=name, ctx=ctx)
 
 
+def _is_pto_attr_expr(node) -> bool:
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "pto"
+
+
+def _is_dispatch_call(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == _REWRITE_CALL_DISPATCH_NAME
+
+
+class _CallDispatchRewriter(ast.NodeTransformer):
+    _builtin_passthrough = {
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "enumerate",
+        "float",
+        "int",
+        "isinstance",
+        "len",
+        "list",
+        "max",
+        "min",
+        "range",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+        "zip",
+    }
+
+    def visit_FunctionDef(self, node):
+        return node
+
+    def visit_AsyncFunctionDef(self, node):
+        return node
+
+    def visit_Lambda(self, node):
+        return node
+
+    def visit_ClassDef(self, node):
+        return node
+
+    def visit_Call(self, node):
+        node = self.generic_visit(node)
+        if _is_dispatch_call(node):
+            return node
+        if not isinstance(node.func, ast.Name):
+            return node
+        if node.func.id in self._builtin_passthrough:
+            return node
+        return ast.copy_location(
+            ast.Call(
+                func=_name(_REWRITE_CALL_DISPATCH_NAME),
+                args=[node.func, *node.args],
+                keywords=node.keywords,
+            ),
+            node,
+        )
+
+
 class _ControlFlowRewriter:
     def __init__(self):
         self._counter = 0
+        self._call_rewriter = _CallDispatchRewriter()
 
     def _fresh(self, prefix: str) -> str:
         value = f"__pto_ast_{prefix}_{self._counter}"
@@ -439,20 +563,30 @@ class _ControlFlowRewriter:
                     ),
                 )
             elif isinstance(value, ast.AST):
-                self._rewrite_nested(
-                    value,
-                    live_after=live_after,
-                    allow_loop_control=allow_loop_control,
+                setattr(
+                    stmt,
+                    field,
+                    self._rewrite_nested(
+                        value,
+                        live_after=live_after,
+                        allow_loop_control=allow_loop_control,
+                    ),
                 )
             elif isinstance(value, list):
+                rewritten_items = []
                 for item in value:
                     if isinstance(item, ast.AST):
-                        self._rewrite_nested(
-                            item,
-                            live_after=live_after,
-                            allow_loop_control=allow_loop_control,
+                        rewritten_items.append(
+                            self._rewrite_nested(
+                                item,
+                                live_after=live_after,
+                                allow_loop_control=allow_loop_control,
+                            )
                         )
-        return stmt
+                    else:
+                        rewritten_items.append(item)
+                setattr(stmt, field, rewritten_items)
+        return self._call_rewriter.visit(stmt)
 
     def _rewrite_if(self, stmt, *, live_after, allow_loop_control=False):
         if _is_pto_attr_call(stmt.test, "const_expr"):

@@ -311,6 +311,27 @@ def ast_rewrite_kernel_module_probe(
             pto.vsts(vec, dst_ptr, row_base + col, mask, dist="NORM_B32")
 
 
+def ast_kernel_module_plain_helper(src_ptr, dst_ptr, row_base, cols, lanes):
+    remained = cols
+    for col in range(0, cols, lanes):
+        mask, remained = pto.make_mask(pto.f32, remained)
+        vec = pto.vlds(src_ptr, row_base + col, dist="NORM")
+        pto.vsts(vec, dst_ptr, row_base + col, mask, dist="NORM_B32")
+
+
+@pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
+def ast_rewrite_plain_helper_kernel_module_probe(
+    src_ptr: pto.ptr(pto.f32, "ub"),
+    dst_ptr: pto.ptr(pto.f32, "ub"),
+    rows: pto.i32,
+    cols: pto.i32,
+):
+    lanes = pto.elements_per_vreg(pto.f32)
+    for row in range(0, rows, 1):
+        row_base = row * cols
+        ast_kernel_module_plain_helper(src_ptr, dst_ptr, row_base, cols, lanes)
+
+
 @pto.jit(target="a5")
 def entry_calls_kernel_module_probe(
     A_ptr: pto.ptr(pto.f32, "gm"),
@@ -403,6 +424,24 @@ def entry_calls_ast_rewrite_kernel_module_probe(
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
     ast_rewrite_kernel_module_probe(a_tile.as_ptr(), o_tile.as_ptr(), rows, cols)
+    pto.tile.store(o_tile, out)
+
+
+@pto.jit(target="a5", backend="emitc")
+def entry_calls_plain_helper_kernel_module_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+    cols: pto.i32,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
+    a_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 128], dtype=pto.f32)
+    part = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
+    out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
+    pto.tile.load(part, a_tile)
+    ast_rewrite_plain_helper_kernel_module_probe(a_tile.as_ptr(), o_tile.as_ptr(), rows, cols)
     pto.tile.store(o_tile, out)
 
 
@@ -858,6 +897,17 @@ def ast_subkernel_runtime_for_helper(rows: pto.i32):
         pto.pipe_barrier(pto.Pipe.ALL)
 
 
+def ast_subkernel_plain_helper(limit):
+    for row in range(0, limit, 1):
+        _ = row
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.simd
+def ast_subkernel_plain_helper_probe(rows: pto.i32):
+    ast_subkernel_plain_helper(rows)
+
+
 @pto.jit(target="a5")
 def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     simt_tid_probe()
@@ -935,6 +985,11 @@ def simt_invalid_atomic_signedness_launch(
 @pto.jit(target="a5")
 def ast_subkernel_runtime_for_probe(rows: pto.i32):
     ast_subkernel_runtime_for_helper(rows)
+
+
+@pto.jit(target="a5")
+def ast_subkernel_plain_helper_entry_probe(rows: pto.i32):
+    ast_subkernel_plain_helper_probe(rows)
 
 
 @pto.jit(target="a5")
@@ -1115,6 +1170,16 @@ def ast_rewrite_disabled_nested_helper_python_control_probe():
     helper(True)
 
 
+def ast_module_level_plain_helper(limit, enabled):
+    one = pto.const(1, dtype=pto.i32)
+    acc = pto.const(0, dtype=pto.i32)
+    for _ in range(limit):
+        acc += one
+    if enabled:
+        acc = acc + one
+    return acc
+
+
 @pto.jit(target="a5")
 def ast_nested_helper_ast_rewrite_probe(rows: pto.i32):
     cond = pto.const(1, dtype=pto.i1)
@@ -1129,6 +1194,13 @@ def ast_nested_helper_ast_rewrite_probe(rows: pto.i32):
         return acc
 
     value = helper(rows, cond)
+    _ = value
+
+
+@pto.jit(target="a5")
+def ast_plain_helper_ast_rewrite_probe(rows: pto.i32):
+    cond = pto.const(1, dtype=pto.i1)
+    value = ast_module_level_plain_helper(rows, cond)
     _ = value
 
 
@@ -1324,6 +1396,26 @@ def sourceless_subkernel_helper():
 
 
 sourceless_subkernel_entry_probe = make_sourceless_subkernel_entry()
+
+
+def make_sourceless_plain_helper_ast_rewrite_kernel():
+    namespace = {"pto": pto}
+    exec(
+        """
+def sourceless_plain_helper(limit):
+    for _ in range(limit):
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+@pto.jit(target="a5")
+def sourceless_plain_helper_ast_rewrite_kernel(rows: pto.i32):
+    sourceless_plain_helper(rows)
+""",
+        namespace,
+    )
+    return namespace["sourceless_plain_helper_ast_rewrite_kernel"]
+
+
+sourceless_plain_helper_ast_rewrite_kernel_probe = make_sourceless_plain_helper_ast_rewrite_kernel()
 
 
 def make_entry_closure_kernel_module_probe():
@@ -3362,6 +3454,20 @@ def main() -> None:
         ast_rewrite_kernel_module_text.count("scf.for") >= 2,
         "entry=False kernel modules should rewrite Python range(...) loops before helper lowering",
     )
+    ast_plain_helper_kernel_module_text = entry_calls_plain_helper_kernel_module_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_plain_helper_kernel_module_text,
+        "entry calling entry=False kernel-module with plain helper AST rewrite specialization",
+    )
+    expect(
+        "func.func public @ast_rewrite_plain_helper_kernel_module_probe__ptodsl_"
+        in ast_plain_helper_kernel_module_text,
+        "recursive AST helper rewrite should still materialize the entry=False kernel-module callee definition",
+    )
+    expect(
+        ast_plain_helper_kernel_module_text.count("scf.for") >= 2,
+        "entry=False kernel modules should recursively rewrite Python range(...) loops inside plain helper callees",
+    )
     kernel_module_graph = kernel_module_compiled.kernel_module_graph
     expect(
         kernel_module_graph is not None,
@@ -4123,6 +4229,19 @@ def main() -> None:
         "pto.barrier <PIPE_ALL>" in ast_subkernel_runtime_for_text,
         "rewritten @pto.simd helper body should lower inside the caller trace",
     )
+    ast_subkernel_plain_helper_text = ast_subkernel_plain_helper_entry_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_subkernel_plain_helper_text,
+        "AST-rewritten plain helper inside subkernel specialization",
+    )
+    expect(
+        ast_subkernel_plain_helper_text.count("scf.for") == 1,
+        "decorated subkernels should recursively rewrite range(...) loops in plain Python helper callees",
+    )
+    expect(
+        "pto.barrier <PIPE_ALL>" in ast_subkernel_plain_helper_text,
+        "recursive helper rewrite inside decorated subkernels should still emit helper body ops",
+    )
 
     carry_text = carry_loop_lowering_probe.compile(BLOCK=32).mlir_text()
     expect_parse_roundtrip_and_verify(carry_text, "carry loop specialization")
@@ -4284,6 +4403,23 @@ def main() -> None:
         "iter_args(" in ast_nested_helper_ast_rewrite_text and "scf.yield" in ast_nested_helper_ast_rewrite_text,
         "rewritten nested helpers should preserve loop-carried and branch live-out values",
     )
+    ast_plain_helper_ast_rewrite_text = ast_plain_helper_ast_rewrite_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        ast_plain_helper_ast_rewrite_text,
+        "AST-rewritten plain helper function specialization",
+    )
+    expect(
+        ast_plain_helper_ast_rewrite_text.count("scf.for") == 1,
+        "module-level plain helper range(...) loops should rewrite through recursive AST helper dispatch",
+    )
+    expect(
+        ast_plain_helper_ast_rewrite_text.count("scf.if") == 1,
+        "module-level plain helper runtime if statements should rewrite through recursive AST helper dispatch",
+    )
+    expect(
+        "iter_args(" in ast_plain_helper_ast_rewrite_text and "scf.yield" in ast_plain_helper_ast_rewrite_text,
+        "recursive AST helper rewrite should preserve helper loop-carried and branch live-out values",
+    )
 
     ast_nested_helper_freevar_if_merge_text = ast_nested_helper_freevar_if_merge_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
@@ -4406,6 +4542,15 @@ def main() -> None:
     expect(
         sourceless_subkernel_text.count("pto.barrier <PIPE_ALL>") == 1,
         "source-less subkernels should fall back to original trace-time Python execution",
+    )
+    sourceless_plain_helper_error = expect_raises(
+        TypeError,
+        sourceless_plain_helper_ast_rewrite_kernel_probe.compile,
+        "native Python range()/loop bound",
+    )
+    expect(
+        "range()/loop bound" in str(sourceless_plain_helper_error),
+        "source-less plain helper fallback should preserve the existing misuse diagnostic rather than introducing a new error mode",
     )
 
     ast_python_bool_guard_enabled_text = ast_python_bool_guard_probe.compile().mlir_text()
