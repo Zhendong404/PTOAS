@@ -203,7 +203,7 @@ PTO 指令在 Davinci 架构上以 Unified Buffer（UB）中驻留的数据块�
 
 - `--pto-backend=vpto`
 - `--pto-arch=a5`
-- 显式传入 `--enable-op-fusion`
+- `--enable-op-fusion` 未显式设置时默认开启；可通过 `--enable-op-fusion=false` 关闭
 
 #### 4.2.2 输入层级支持
 
@@ -255,7 +255,7 @@ PTO 指令在 Davinci 架构上以 Unified Buffer（UB）中驻留的数据块�
 #### 4.2.4 非目标路径
 
 - EmitC 后端会忽略 `--enable-op-fusion`。
-- 未开启 `--enable-op-fusion` 时，普通 VPTO 路径不会形成 `pto.fusion_region`，也不会进入 post-lowering 融合生命周期。
+- 显式传入 `--enable-op-fusion=false` 时，普通 VPTO 路径不会形成 `pto.fusion_region`，也不会进入 post-lowering 融合生命周期。
 - 后端分界线已固定为 `ExpandTileOp`；原有的 `View2Memref` / `PTOToA5VM` 主线已移除。
 
 ---
