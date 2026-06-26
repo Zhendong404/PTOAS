@@ -13970,9 +13970,10 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
 
   unsigned sameIdInitCount = 0;
   funcOp.walk([&](Operation *candidate) {
-    if (auto aic = dyn_cast<AicInitializePipeOp>(candidate)) {
-      if (aic.getId() == op.getId())
-        ++sameIdInitCount;
+    if (expected == FunctionKernelKind::Cube) {
+      if (auto aic = dyn_cast<AicInitializePipeOp>(candidate))
+        if (aic.getId() == op.getId())
+          ++sameIdInitCount;
       return;
     }
     if (auto aiv = dyn_cast<AivInitializePipeOp>(candidate))
@@ -13981,7 +13982,7 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   });
   if (sameIdInitCount > 1) {
     return op.emitOpError(
-        "requires 'id' to be unique across frontend initialize_pipe ops in the function");
+        "requires 'id' to be unique across frontend initialize_pipe ops for the same kernel side");
   }
 
   int8_t dirMask = op.getDirMask();
@@ -14135,37 +14136,36 @@ LogicalResult ImportReservedBufferOp::verify() {
   return success();
 }
 
-static FailureOr<Operation *> lookupFrontendInitOpById(Operation *op,
-                                                       func::FuncOp funcOp,
-                                                       int32_t id) {
+static FailureOr<Operation *>
+lookupFrontendInitOpById(Operation *op, func::FuncOp funcOp, int32_t id,
+                         FunctionKernelKind expected) {
   Operation *matchedInit = nullptr;
   unsigned matchedInitCount = 0;
   funcOp.walk([&](Operation *candidate) {
-    if (auto aic = dyn_cast<AicInitializePipeOp>(candidate)) {
-      if (aic.getId() == static_cast<uint32_t>(id)) {
-        matchedInit = candidate;
-        ++matchedInitCount;
-      }
+    if (expected == FunctionKernelKind::Cube) {
+      if (auto aic = dyn_cast<AicInitializePipeOp>(candidate))
+        if (aic.getId() == static_cast<uint32_t>(id)) {
+          matchedInit = candidate;
+          ++matchedInitCount;
+        }
       return WalkResult::advance();
     }
-    if (auto aiv = dyn_cast<AivInitializePipeOp>(candidate)) {
+    if (auto aiv = dyn_cast<AivInitializePipeOp>(candidate))
       if (aiv.getId() == static_cast<uint32_t>(id)) {
         matchedInit = candidate;
         ++matchedInitCount;
       }
-      return WalkResult::advance();
-    }
     return WalkResult::advance();
   });
 
   if (matchedInitCount == 0) {
     op->emitOpError() << "expects 'id' = " << id
-                      << " to match a frontend initialize_pipe op in the same function";
+                      << " to match a frontend initialize_pipe op on the same kernel side";
     return failure();
   }
   if (matchedInitCount > 1) {
     op->emitOpError() << "expects 'id' = " << id
-                      << " to match exactly one frontend initialize_pipe op in the same function";
+                      << " to match exactly one frontend initialize_pipe op on the same kernel side";
     return failure();
   }
   return matchedInit;
@@ -14183,10 +14183,10 @@ static LogicalResult verifyFrontendSplitOp(Operation *op,
   return verifySplitAttr(op, split);
 }
 
-static FailureOr<int8_t> lookupFrontendInitDirMaskById(Operation *op,
-                                                       func::FuncOp funcOp,
-                                                       int32_t id) {
-  auto initOr = lookupFrontendInitOpById(op, funcOp, id);
+static FailureOr<int8_t>
+lookupFrontendInitDirMaskById(Operation *op, func::FuncOp funcOp, int32_t id,
+                              FunctionKernelKind expected) {
+  auto initOr = lookupFrontendInitOpById(op, funcOp, id, expected);
   if (failed(initOr))
     return failure();
   if (auto aic = dyn_cast<AicInitializePipeOp>(*initOr))
@@ -14195,12 +14195,13 @@ static FailureOr<int8_t> lookupFrontendInitDirMaskById(Operation *op,
 }
 
 static LogicalResult verifyFrontendDataOpDirection(Operation *op, int32_t id,
-                                                   bool expectC2V) {
+                                                   bool expectC2V,
+                                                   FunctionKernelKind expected) {
   auto funcOp = op->getParentOfType<func::FuncOp>();
   if (!funcOp)
     return op->emitOpError("must be nested under a func.func");
 
-  auto dirMaskOr = lookupFrontendInitDirMaskById(op, funcOp, id);
+  auto dirMaskOr = lookupFrontendInitDirMaskById(op, funcOp, id, expected);
   if (failed(dirMaskOr))
     return failure();
 
@@ -14224,9 +14225,8 @@ static Value getFrontendInitGmSlotTensor(Operation *initOp) {
   return cast<AivInitializePipeOp>(initOp).getGmSlotTensor();
 }
 
-static LogicalResult verifyFrontendTensorEntryMatchesInit(Operation *op,
-                                                          int32_t id,
-                                                          Type entryTy) {
+static LogicalResult verifyFrontendTensorEntryMatchesInit(
+    Operation *op, int32_t id, Type entryTy, FunctionKernelKind expected) {
   auto entryViewTy = dyn_cast<TensorViewType>(entryTy);
   if (!entryViewTy)
     return success();
@@ -14235,7 +14235,7 @@ static LogicalResult verifyFrontendTensorEntryMatchesInit(Operation *op,
   if (!funcOp)
     return op->emitOpError("must be nested under a func.func");
 
-  auto initOr = lookupFrontendInitOpById(op, funcOp, id);
+  auto initOr = lookupFrontendInitOpById(op, funcOp, id, expected);
   if (failed(initOr))
     return failure();
   Value gmSlotTensor = getFrontendInitGmSlotTensor(*initOr);
@@ -14282,10 +14282,10 @@ static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
                                    op.getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(op.getOperation(), op.getId(),
-                                           expectC2V)))
+                                           expectC2V, expected)))
     return failure();
-  if (failed(verifyFrontendTensorEntryMatchesInit(op.getOperation(), op.getId(),
-                                                  op.getTile().getType())))
+  if (failed(verifyFrontendTensorEntryMatchesInit(
+          op.getOperation(), op.getId(), op.getTile().getType(), expected)))
     return failure();
 
   bool hasValidRow = static_cast<bool>(op.getValidRow());
@@ -14814,10 +14814,12 @@ LogicalResult TAllocToAivOp::verify() {
                                    "cube", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/true)))
+                                           /*expectC2V=*/true,
+                                           FunctionKernelKind::Cube)))
     return failure();
   return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                              getEntry().getType());
+                                              getEntry().getType(),
+                                              FunctionKernelKind::Cube);
 }
 
 LogicalResult TAllocToAicOp::verify() {
@@ -14825,10 +14827,12 @@ LogicalResult TAllocToAicOp::verify() {
                                    "vector", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/false)))
+                                           /*expectC2V=*/false,
+                                           FunctionKernelKind::Vector)))
     return failure();
   return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                              getEntry().getType());
+                                              getEntry().getType(),
+                                              FunctionKernelKind::Vector);
 }
 
 LogicalResult TPushToAivOp::verify() {
@@ -14836,10 +14840,12 @@ LogicalResult TPushToAivOp::verify() {
                                    "cube", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/true)))
+                                           /*expectC2V=*/true,
+                                           FunctionKernelKind::Cube)))
     return failure();
   return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                              getTile().getType());
+                                              getTile().getType(),
+                                              FunctionKernelKind::Cube);
 }
 
 LogicalResult TPushToAicOp::verify() {
@@ -14847,10 +14853,12 @@ LogicalResult TPushToAicOp::verify() {
                                    "vector", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/false)))
+                                           /*expectC2V=*/false,
+                                           FunctionKernelKind::Vector)))
     return failure();
   return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                              getTile().getType());
+                                              getTile().getType(),
+                                              FunctionKernelKind::Vector);
 }
 
 LogicalResult TPopFromAicOp::verify() {
@@ -14868,11 +14876,13 @@ LogicalResult TFreeFromAicOp::verify() {
                                    "vector", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/true)))
+                                           /*expectC2V=*/true,
+                                           FunctionKernelKind::Vector)))
     return failure();
   if (getEntry())
     return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                                getEntry().getType());
+                                                getEntry().getType(),
+                                                FunctionKernelKind::Vector);
   return success();
 }
 
@@ -14881,11 +14891,13 @@ LogicalResult TFreeFromAivOp::verify() {
                                    "cube", getId(), getSplit())))
     return failure();
   if (failed(verifyFrontendDataOpDirection(getOperation(), getId(),
-                                           /*expectC2V=*/false)))
+                                           /*expectC2V=*/false,
+                                           FunctionKernelKind::Cube)))
     return failure();
   if (getEntry())
     return verifyFrontendTensorEntryMatchesInit(getOperation(), getId(),
-                                                getEntry().getType());
+                                                getEntry().getType(),
+                                                FunctionKernelKind::Cube);
   return success();
 }
 

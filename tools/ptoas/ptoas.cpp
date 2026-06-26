@@ -17,6 +17,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
@@ -1796,10 +1797,14 @@ int mlir::pto::compilePTOASModule(
 
   {
     PassManager preBackendPM(module->getContext());
-    preBackendPM.enableVerifier();
+    preBackendPM.enableVerifier(false);
     preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
     if (failed(preBackendPM.run(module.get()))) {
       llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
+      return 1;
+    }
+    if (failed(verify(module.get()))) {
+      llvm::errs() << "Error: normalized PTO tile sections failed verification.\n";
       return 1;
     }
   }

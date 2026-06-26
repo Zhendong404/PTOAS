@@ -513,6 +513,19 @@ def main() -> None:
         causal=False,
         q_rows=128,
     )
+    expect(
+        'sym_name = "hw_native_flash_attention_cv_split_' in cv_split_text,
+        "hw_native_flash_attention_cv_split.py source MLIR should keep one logical entry symbol before PTOAS normalization",
+    )
+    expect(
+        'hw_native_flash_attention_cv_split_cube_' not in cv_split_text
+        and 'hw_native_flash_attention_cv_split_vector_' not in cv_split_text,
+        "hw_native_flash_attention_cv_split.py source MLIR should not materialize user-authored cube/vector helper kernels",
+    )
+    expect(
+        "pto.section.cube {" not in cv_split_text and "pto.section.vector {" not in cv_split_text,
+        "hw_native_flash_attention_cv_split.py source MLIR should leave mixed-kernel section materialization to PTOAS",
+    )
     cv_split_frontend_text = run_ptoas_frontend_verify_whole(
         ptoas_bin,
         cv_split_text,
@@ -524,12 +537,12 @@ def main() -> None:
     )
     expect(
         "pto.section.cube {" in cv_split_frontend_text and "pto.section.vector {" in cv_split_frontend_text,
-        "cv-split frontend verification should preserve both cube and vector sections in the single-entry artifact",
+        "hw_native_flash_attention_cv_split.py frontend verification should materialize inferred cube/vector sections inside one logical kernel artifact",
     )
     expect(
         "func.func public @hw_native_flash_attention_cv_split_cube_" not in cv_split_frontend_text
         and "func.func public @hw_native_flash_attention_cv_split_vector_" not in cv_split_frontend_text,
-        "cv-split frontend verification should not materialize separate cube/vector helper children",
+        "hw_native_flash_attention_cv_split.py frontend verification should keep hidden-section lowering in one logical kernel instead of emitting user-visible cube/vector helper children",
     )
     expect(
         cv_split_frontend_text.count("pto.aic_initialize_pipe") >= 3
@@ -538,7 +551,7 @@ def main() -> None:
         and cv_split_frontend_text.count("pto.aiv_initialize_pipe") >= 3
         and cv_split_frontend_text.count("pto.tpush_to_aic") >= 2
         and "pto.tpop_from_aic" in cv_split_frontend_text,
-        "cv-split frontend verification should keep the cube/vector pipe init, push, and receive paths intact",
+        "hw_native_flash_attention_cv_split.py frontend verification should preserve the mixed-kernel pipe init, push, and receive paths after inferred section normalization",
     )
 
     lowp_text = low_precision_vcvt_frontend.compile().mlir_text()
