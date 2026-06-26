@@ -14,7 +14,7 @@
 
 namespace mlir {
 namespace pto {
-#define GEN_PASS_DEF_VPTONORMALIZECONTAINER
+#define GEN_PASS_DEF_PTONORMALIZEKERNELKINDCONTAINER
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -24,23 +24,23 @@ using namespace mlir::pto;
 
 namespace {
 
-static bool isVPTOKernelSubmodule(ModuleOp module) {
+static bool isKernelKindSubmodule(ModuleOp module) {
   return module->hasAttr(FunctionKernelKindAttr::name);
 }
 
-static LogicalResult verifyNormalizedVPTOContainer(ModuleOp module) {
+static LogicalResult verifyNormalizedKernelKindContainer(ModuleOp module) {
   bool hasChildModules = false;
   for (Operation &op : module.getBodyRegion().front().getOperations()) {
     auto child = dyn_cast<ModuleOp>(op);
     if (!child) {
       return op.emitError()
-             << "expected VPTO container top level to contain only kernel "
+             << "expected kernel-kind container top level to contain only "
                 "submodules";
     }
     hasChildModules = true;
-    if (!isVPTOKernelSubmodule(child)) {
+    if (!isKernelKindSubmodule(child)) {
       return child.emitError()
-             << "expected VPTO kernel submodule to carry 'pto.kernel_kind'";
+             << "expected kernel-kind submodule to carry 'pto.kernel_kind'";
     }
   }
 
@@ -48,16 +48,16 @@ static LogicalResult verifyNormalizedVPTOContainer(ModuleOp module) {
     return success();
 
   return module.emitError()
-         << "expected VPTO input to be a kernel submodule with "
+         << "expected kernel-kind input to be a submodule with "
             "'pto.kernel_kind' or a container of kernel submodules";
 }
 
-struct VPTONormalizeContainerPass
-    : public mlir::pto::impl::VPTONormalizeContainerBase<
-          VPTONormalizeContainerPass> {
+struct PTONormalizeKernelKindContainerPass
+    : public mlir::pto::impl::PTONormalizeKernelKindContainerBase<
+          PTONormalizeKernelKindContainerPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (isVPTOKernelSubmodule(module)) {
+    if (isKernelKindSubmodule(module)) {
       MLIRContext *context = module.getContext();
       SmallVector<NamedAttribute> outerAttrs;
       for (NamedAttribute attr : module->getAttrs())
@@ -74,13 +74,13 @@ struct VPTONormalizeContainerPass
       module.getBodyRegion().front().push_back(child.getOperation());
     }
 
-    if (failed(verifyNormalizedVPTOContainer(module)))
+    if (failed(verifyNormalizedKernelKindContainer(module)))
       signalPassFailure();
   }
 };
 
 } // namespace
 
-std::unique_ptr<Pass> mlir::pto::createVPTONormalizeContainerPass() {
-  return std::make_unique<VPTONormalizeContainerPass>();
+std::unique_ptr<Pass> mlir::pto::createPTONormalizeKernelKindContainerPass() {
+  return std::make_unique<PTONormalizeKernelKindContainerPass>();
 }

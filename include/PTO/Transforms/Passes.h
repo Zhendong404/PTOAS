@@ -41,7 +41,7 @@ std::unique_ptr<Pass> createPTOResolveReservedBuffersPass();
 std::unique_ptr<Pass> createPTOWrapFunctionsInSectionsPass();
 std::unique_ptr<Pass> createPTONormalizeUncoveredTileSectionsPass();
 std::unique_ptr<Pass> createPTOSplitCVModulePass();
-std::unique_ptr<Pass> createVPTONormalizeContainerPass();
+std::unique_ptr<Pass> createPTONormalizeKernelKindContainerPass();
 std::unique_ptr<Pass> createPTOVerifyTFreePass();
 std::unique_ptr<Pass> createPTOVerifySubkernelPipeContractPass();
 

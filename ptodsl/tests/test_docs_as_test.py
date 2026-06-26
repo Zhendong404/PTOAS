@@ -191,7 +191,7 @@ def run_ptoas_frontend_verify(ptoas_bin: Path, mlir_text: str, label: str) -> No
         if result.returncode == 0 and result.stdout.strip():
             continue
 
-        if "expected VPTO container top level to contain only kernel submodules" in result.stderr:
+        if "expected kernel-kind container top level to contain only submodules" in result.stderr:
             continue
 
         if "VPTO LLVM emission failed" in result.stderr:

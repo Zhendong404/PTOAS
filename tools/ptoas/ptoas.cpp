@@ -1629,13 +1629,27 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
   return 0;
 }
 
+static LogicalResult partitionKernelKindCompileUnits(
+    OwningOpRef<ModuleOp> &module) {
+  PassManager pm(module->getContext());
+  pm.enableVerifier();
+  pm.addPass(pto::createPTOSplitCVModulePass());
+  pm.addPass(pto::createPTONormalizeKernelKindContainerPass());
+  if (failed(applyConfiguredPassManagerCLOptions(
+          pm, "PTO kernel-kind partition pipeline")))
+    return failure();
+  if (failed(pm.run(module.get()))) {
+    llvm::errs() << "Error: PTO kernel-kind partition pipeline failed.\n";
+    return failure();
+  }
+  return success();
+}
+
 static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             int argc, char **argv,
                                             bool hasTileOpsToExpand) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
-  pm.addPass(pto::createPTOSplitCVModulePass());
-  pm.addPass(pto::createVPTONormalizeContainerPass());
   if (hasTileOpsToExpand)
     lowerPTOToVPTOBackend(pm, module.get(), argc, argv);
   prepareVPTOForEmission(pm);
@@ -1798,7 +1812,8 @@ int mlir::pto::compilePTOASModule(
                       "skipping the shared PTO-to-VPTO lowering pipeline.\n";
       return 1;
     }
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
+    if (failed(partitionKernelKindCompileUnits(module)) ||
+        failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());
@@ -1917,7 +1932,8 @@ int mlir::pto::compilePTOASModule(
     if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
       return 1;
 
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
+    if (failed(partitionKernelKindCompileUnits(module)) ||
+        failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());

@@ -66,7 +66,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOResolveReservedBuffersPass.cpp
   PTOWrapFunctionsInSectionsPass.cpp
   PTONormalizeUncoveredTileSections.cpp
-  VPTONormalizeContainer.cpp
+  PTONormalizeKernelKindContainer.cpp
   PTOSplitCVModule.cpp
   InsertSync/PTOIRTranslator.cpp
   InsertSync/SyncMacroModel.cpp

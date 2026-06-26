@@ -329,16 +329,16 @@ def PTOSplitCVModule : Pass<"pto-split-cv-module", "ModuleOp"> {
   ];
 }
 
-def VPTONormalizeContainer : Pass<"vpto-normalize-container", "ModuleOp"> {
-  let summary = "Normalize and verify VPTO kernel container shape";
+def PTONormalizeKernelKindContainer : Pass<"pto-normalize-kernel-kind-container", "ModuleOp"> {
+  let summary = "Normalize and verify PTO kernel-kind container shape";
   let description = [{
-    Normalizes a VPTO kernel module carrying `pto.kernel_kind` into the canonical
+    Normalizes a PTO kernel-kind module carrying `pto.kernel_kind` into the canonical
     outer container form. Existing containers are left in place. The pass
     verifies that the resulting top-level module contains only child modules and
     that every child module carries `pto.kernel_kind`.
   }];
 
-  let constructor = "mlir::pto::createVPTONormalizeContainerPass()";
+  let constructor = "mlir::pto::createPTONormalizeKernelKindContainerPass()";
 
   let dependentDialects = [
     "mlir::pto::PTODialect"
