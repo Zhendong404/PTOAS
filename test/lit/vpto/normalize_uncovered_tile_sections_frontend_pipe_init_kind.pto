@@ -1,0 +1,41 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guard: uncovered frontend pipe init ops under a logical `pto.kernel`
+// function should survive verifier, participate in early kind inference, and
+// let VPTO normalize mixed function kinds into legal child modules.
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %s -o - | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s --check-prefix=VPTO
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @auto_cube_init(%consumer_buf: i32) attributes {pto.kernel} {
+    pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %consumer_buf : i32)
+    return
+  }
+
+  func.func @auto_vector_init(%consumer_buf: i32) attributes {pto.kernel} {
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %consumer_buf : i32)
+    return
+  }
+}
+
+// IR: func.func @auto_cube_init
+// IR-SAME: pto.kernel_kind = #pto.kernel_kind<cube>
+// IR: pto.aic_initialize_pipe
+// IR: func.func @auto_vector_init
+// IR-SAME: pto.kernel_kind = #pto.kernel_kind<vector>
+// IR: pto.aiv_initialize_pipe
+
+// VPTO-LABEL: module attributes {pto.backend = "vpto", pto.target_arch = "a5"} {
+// VPTO: module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+// VPTO: func.func @auto_vector_init
+// VPTO-NOT: func.func @auto_cube_init
+// VPTO: module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<cube>, pto.target_arch = "a5"} {
+// VPTO: func.func @auto_cube_init

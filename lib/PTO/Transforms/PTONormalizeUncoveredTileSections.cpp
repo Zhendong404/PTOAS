@@ -67,6 +67,8 @@ static bool isExplicitSection(Operation *op) {
 static bool isTileLikeOp(Operation *op) {
   if (!op)
     return false;
+  if (isa<AicInitializePipeOp, AivInitializePipeOp>(op))
+    return true;
   return isa<OpPipeInterface>(op) &&
          op->getName().getStringRef().starts_with("pto.t");
 }
@@ -354,7 +356,21 @@ classifyTStoreBySourceAddressSpace(Operation *op) {
   }
 }
 
+/// Classify frontend pipe-initialization ops that create cube/vector-side pipes.
+/// - AicInitializePipeOp: initializes from the AIC (cube) side  --> Cube section
+/// - AivInitializePipeOp: initializes from the AIV (vector) side --> Vector section
+static std::optional<InferredSectionKind>
+classifyInitializePipeOp(Operation *op) {
+  if (isa<AicInitializePipeOp>(op))
+    return InferredSectionKind::Cube;
+  if (isa<AivInitializePipeOp>(op))
+    return InferredSectionKind::Vector;
+  return std::nullopt;
+}
+
 static std::optional<InferredSectionKind> classifyTileOp(Operation *op) {
+  if (std::optional<InferredSectionKind> kind = classifyInitializePipeOp(op))
+    return kind;
   if (std::optional<InferredSectionKind> kind = classifyTileOpByName(op))
     return kind;
   if (std::optional<InferredSectionKind> kind = classifyInternalPipeTileOp(op))
@@ -388,6 +404,18 @@ static void inspectModuleKindOperation(Operation *op, ModuleKindSummary &summary
     return;
   if (isExplicitSection(op))
     return;
+
+  // Frontend pipe-initialization ops (aic/aiv_initialize_pipe) implement
+  // neither OpPipeInterface nor raw VPTO vector-like types; handle them
+  // explicitly for module-level kernel kind inference.
+  if (std::optional<InferredSectionKind> kind = classifyInitializePipeOp(op)) {
+    if (*kind == InferredSectionKind::Vector)
+      ++summary.vectorCount;
+    else
+      ++summary.cubeCount;
+    // These ops have ZeroRegions — no need to recurse.
+    return;
+  }
 
   if (isPipeLikeOp(op)) {
     if (std::optional<InferredSectionKind> kind = classifyTileOp(op)) {

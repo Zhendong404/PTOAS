@@ -45,10 +45,6 @@ class TracingRuntime:
         """Emit the function return terminator."""
         func.ReturnOp([])
 
-    def verify_module(self, module):
-        """Verify the completed module."""
-        module.operation.verify()
-
     def create_session(self, module, entry_function):
         """Create the shared trace session for this build."""
         return TraceSession(self.module_spec, module, entry_function)
@@ -88,7 +84,6 @@ class TracingRuntime:
                 self.emit_return()
                 self.finalize_session(session)
                 session.validate_final_state()
-            self.verify_module(module)
             return module, {"kernel_module_graph": session.snapshot_kernel_module_graph()}
 
 

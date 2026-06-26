@@ -175,10 +175,20 @@ parseTextualModule(std::unique_ptr<llvm::MemoryBuffer> inputBuffer,
   mlir::pto::ScopedPTOParserTargetArch scopedParserArch(
       &context, arch == "a5" ? mlir::pto::PTOParserTargetArch::A5
                              : mlir::pto::PTOParserTargetArch::A3);
-  OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
-  if (!module)
+  ParserConfig parserConfig(&context, /*verifyAfterParse=*/false);
+  LocationAttr sourceFileLoc;
+  Block parsedBlock;
+  if (failed(parseSourceFile(sourceMgr, &parsedBlock, parserConfig,
+                             &sourceFileLoc))) {
     llvm::errs() << "Error: Failed to parse MLIR.\n";
-  return module;
+    return {};
+  }
+
+  ModuleOp module = ModuleOp::create(sourceFileLoc);
+  Block *moduleBlock = module.getBody();
+  moduleBlock->getOperations().splice(moduleBlock->begin(),
+                                      parsedBlock.getOperations());
+  return OwningOpRef<ModuleOp>(module);
 }
 
 static OwningOpRef<ModuleOp>
@@ -225,10 +235,6 @@ loadInputModule(std::unique_ptr<llvm::MemoryBuffer> inputBuffer,
                       mlir::StringAttr::get(moduleOp->getContext(), arch));
   }
 
-  if (failed(mlir::verify(*module))) {
-    llvm::errs() << "Error: input module verification failed.\n";
-    return {};
-  }
   return module;
 }
 

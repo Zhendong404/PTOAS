@@ -13636,6 +13636,16 @@ static bool isInsideSectionOrAttributedKernel(Operation *op) {
          getEnclosingFunctionKernelKind(op).has_value();
 }
 
+static bool isInsideLogicalKernelAwaitingSectionInference(Operation *op) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return false;
+  if (isInsideSectionOrAttributedKernel(op))
+    return false;
+  return funcOp->hasAttrOfType<UnitAttr>(kPTOKernelAttrName) ||
+         funcOp->hasAttrOfType<UnitAttr>(kLegacyPTOAICoreAttrName);
+}
+
 static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
   if (split < 0 || split > 2)
     return op->emitOpError("expects 'split' to be 0, 1, or 2");
@@ -13657,6 +13667,12 @@ static LogicalResult verifyFrontendKernelKind(Operation *op,
     return op->emitOpError("must be inside a ")
            << kernelName << " kernel function or section";
   }
+
+  // Hidden-section mixed kernels may carry frontend pipe ops directly under a
+  // logical `pto.kernel` function. Section inference will materialize the
+  // physical cube/vector ownership before lowering.
+  if (isInsideLogicalKernelAwaitingSectionInference(op))
+    return success();
 
   std::optional<FunctionKernelKind> kernelKind =
       getEnclosingFunctionKernelKind(op);

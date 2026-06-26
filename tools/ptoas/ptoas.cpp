@@ -1634,7 +1634,7 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             bool hasTileOpsToExpand) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
-  pm.addPass(pto::createVPTOSplitCVModulePass());
+  pm.addPass(pto::createPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
   if (hasTileOpsToExpand)
     lowerPTOToVPTOBackend(pm, module.get(), argc, argv);

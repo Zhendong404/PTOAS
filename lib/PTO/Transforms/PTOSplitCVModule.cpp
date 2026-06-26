@@ -16,7 +16,7 @@
 
 namespace mlir {
 namespace pto {
-#define GEN_PASS_DEF_VPTOSPLITCVMODULE
+#define GEN_PASS_DEF_PTOSPLITCVMODULE
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -30,9 +30,163 @@ static bool hasKernelKind(ModuleOp module) {
   return module->hasAttr(FunctionKernelKindAttr::name);
 }
 
+static bool hasKernelKindChildModule(ModuleOp module);
+static ModuleOp getSinglePayloadChildModule(ModuleOp module);
+
+static std::optional<FunctionKernelKind>
+getTopLevelFunctionKernelKind(func::FuncOp funcOp) {
+  if (!funcOp)
+    return std::nullopt;
+  auto attr =
+      funcOp->getAttrOfType<FunctionKernelKindAttr>(FunctionKernelKindAttr::name);
+  if (!attr)
+    return std::nullopt;
+  return attr.getKernelKind();
+}
+
+static SmallVector<FunctionKernelKind, 2>
+collectMixedTopLevelFunctionKernelKinds(ModuleOp module) {
+  if (!module || hasKernelKind(module) || hasKernelKindChildModule(module))
+    return {};
+
+  bool sawVector = false;
+  bool sawCube = false;
+  bool sawAnyDefinition = false;
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (funcOp.isDeclaration())
+      continue;
+    sawAnyDefinition = true;
+    std::optional<FunctionKernelKind> kind = getTopLevelFunctionKernelKind(funcOp);
+    if (!kind)
+      return {};
+    if (*kind == FunctionKernelKind::Vector)
+      sawVector = true;
+    else
+      sawCube = true;
+  }
+
+  if (!sawAnyDefinition || !sawVector || !sawCube)
+    return {};
+
+  SmallVector<FunctionKernelKind, 2> kinds;
+  kinds.push_back(FunctionKernelKind::Vector);
+  kinds.push_back(FunctionKernelKind::Cube);
+  return kinds;
+}
+
+static void eraseMismatchedTopLevelFunctions(ModuleOp module,
+                                             FunctionKernelKind kind) {
+  SmallVector<func::FuncOp> eraseFuncs;
+  for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+    if (funcOp.isDeclaration())
+      continue;
+    std::optional<FunctionKernelKind> funcKind = getTopLevelFunctionKernelKind(funcOp);
+    if (!funcKind || *funcKind != kind)
+      eraseFuncs.push_back(funcOp);
+  }
+
+  for (func::FuncOp funcOp : eraseFuncs)
+    funcOp.erase();
+}
+
+static ModuleOp cloneModuleForFunctionKernelKind(ModuleOp source,
+                                                 FunctionKernelKind kind,
+                                                 OpBuilder &builder) {
+  auto cloned = cast<ModuleOp>(source->clone());
+  cloned->setAttr(FunctionKernelKindAttr::name,
+                  FunctionKernelKindAttr::get(cloned.getContext(), kind));
+  eraseMismatchedTopLevelFunctions(cloned, kind);
+  builder.insert(cloned);
+  return cloned;
+}
+
+static LogicalResult splitMixedFunctionKernelKinds(ModuleOp module) {
+  SmallVector<FunctionKernelKind, 2> kinds =
+      collectMixedTopLevelFunctionKernelKinds(module);
+  if (kinds.empty())
+    return success();
+
+  SmallVector<NamedAttribute> outerAttrs;
+  outerAttrs.reserve(module->getAttrs().size());
+  for (NamedAttribute attr : module->getAttrs())
+    if (attr.getName() != SymbolTable::getSymbolAttrName())
+      outerAttrs.push_back(attr);
+
+  auto outer = ModuleOp::create(module.getLoc());
+  outer->setAttrs(DictionaryAttr::get(module.getContext(), outerAttrs));
+  OpBuilder builder(outer.getBody(), outer.getBody()->end());
+  for (FunctionKernelKind kind : kinds)
+    cloneModuleForFunctionKernelKind(module, kind, builder);
+
+  module.getBodyRegion().takeBody(outer.getBodyRegion());
+  module->setAttrs(outer->getAttrs());
+  return success();
+}
+
+static void flattenSinglePayloadChildIfKernelKindContainer(ModuleOp module) {
+  ModuleOp payload = getSinglePayloadChildModule(module);
+  if (!payload || !hasKernelKindChildModule(payload))
+    return;
+
+  SmallVector<Operation *> nestedChildren;
+  for (Operation &op : payload.getBodyRegion().front().getOperations())
+    nestedChildren.push_back(&op);
+
+  Block &parentBlock = module.getBodyRegion().front();
+  auto insertIt = Block::iterator(payload.getOperation());
+  for (Operation *op : nestedChildren)
+    op->moveBefore(&parentBlock, insertIt);
+
+  payload.erase();
+}
+
+static void flattenSinglePayloadChild(ModuleOp module) {
+  ModuleOp payload = getSinglePayloadChildModule(module);
+  if (!payload)
+    return;
+
+  SmallVector<Operation *> nestedChildren;
+  for (Operation &op : payload.getBodyRegion().front().getOperations())
+    nestedChildren.push_back(&op);
+
+  Block &parentBlock = module.getBodyRegion().front();
+  auto insertIt = Block::iterator(payload.getOperation());
+  for (Operation *op : nestedChildren)
+    op->moveBefore(&parentBlock, insertIt);
+
+  payload.erase();
+}
+
+static void flattenKernelKindChildPayloadModules(ModuleOp module) {
+  SmallVector<ModuleOp> kernelKindChildren;
+  for (ModuleOp child : module.getOps<ModuleOp>()) {
+    if (hasKernelKind(child))
+      kernelKindChildren.push_back(child);
+  }
+
+  for (ModuleOp child : kernelKindChildren)
+    flattenSinglePayloadChild(child);
+}
+
 static bool hasKernelKindChildModule(ModuleOp module) {
   return llvm::any_of(module.getOps<ModuleOp>(),
                       [](ModuleOp child) { return hasKernelKind(child); });
+}
+
+static ModuleOp getSinglePayloadChildModule(ModuleOp module) {
+  if (!module)
+    return nullptr;
+
+  ModuleOp payload;
+  for (Operation &op : module.getBodyRegion().front().getOperations()) {
+    auto child = dyn_cast<ModuleOp>(op);
+    if (!child)
+      return nullptr;
+    if (payload)
+      return nullptr;
+    payload = child;
+  }
+  return payload;
 }
 
 static bool isSectionSplitCandidate(func::FuncOp funcOp);
@@ -133,7 +287,7 @@ static LogicalResult verifySectionSplitCandidatesUseSections(ModuleOp module) {
     if (!hasAnySection(funcOp)) {
       status = funcOp.emitOpError(
           "must contain pto.section.cube or pto.section.vector in section "
-          "input split by vpto-split-cv-module");
+          "input split by pto-split-cv-module");
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -225,6 +379,22 @@ static ModuleOp cloneModuleForKind(ModuleOp source, FunctionKernelKind kind,
 static LogicalResult splitCVModule(ModuleOp module) {
   if (hasKernelKind(module) || hasKernelKindChildModule(module))
     return success();
+
+  ModuleOp payload = getSinglePayloadChildModule(module);
+  if (payload) {
+    if (failed(splitMixedFunctionKernelKinds(payload)))
+      return failure();
+    if (hasKernelKindChildModule(payload)) {
+      flattenSinglePayloadChildIfKernelKindContainer(module);
+      return success();
+    }
+  } else {
+    if (failed(splitMixedFunctionKernelKinds(module)))
+      return failure();
+    if (hasKernelKindChildModule(module))
+      return success();
+  }
+
   if (!hasCVSections(module))
     return success();
   if (failed(verifyNoNestedSections(module)))
@@ -255,11 +425,12 @@ static LogicalResult splitCVModule(ModuleOp module) {
 
   module.getBodyRegion().takeBody(outer.getBodyRegion());
   module->setAttrs(outer->getAttrs());
+  flattenKernelKindChildPayloadModules(module);
   return success();
 }
 
-struct VPTOSplitCVModulePass
-    : public mlir::pto::impl::VPTOSplitCVModuleBase<VPTOSplitCVModulePass> {
+struct PTOSplitCVModulePass
+    : public mlir::pto::impl::PTOSplitCVModuleBase<PTOSplitCVModulePass> {
   void runOnOperation() override {
     if (failed(splitCVModule(getOperation())))
       signalPassFailure();
@@ -268,6 +439,6 @@ struct VPTOSplitCVModulePass
 
 } // namespace
 
-std::unique_ptr<Pass> mlir::pto::createVPTOSplitCVModulePass() {
-  return std::make_unique<VPTOSplitCVModulePass>();
+std::unique_ptr<Pass> mlir::pto::createPTOSplitCVModulePass() {
+  return std::make_unique<PTOSplitCVModulePass>();
 }

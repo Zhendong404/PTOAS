@@ -1,0 +1,29 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guard: uncovered frontend pipe init ops that land in the same top-level
+// segment must still fail strict ownership inference when they mix AIC and AIV
+// initialization in one logical region.
+// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --emit-pto-ir %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @reject_mixed_frontend_pipe_init_in_one_segment(%consumer_buf: i32)
+      attributes {pto.kernel} {
+    %true = arith.constant true
+    scf.if %true {
+      pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+        (c2v_consumer_buf = %consumer_buf : i32)
+      pto.aiv_initialize_pipe {id = 1, dir_mask = 1, slot_size = 1024}
+        (c2v_consumer_buf = %consumer_buf : i32)
+    }
+    return
+  }
+}
+
+// CHECK: error: 'func.func' op contains an uncovered top-level TileOp segment whose section kind cannot be inferred uniquely
+// CHECK-SAME: saw both vector-like and cube-like TileOps in the same segment

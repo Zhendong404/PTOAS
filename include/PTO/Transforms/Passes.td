@@ -302,20 +302,26 @@ def PTONormalizeUncoveredTileSections
   ];
 }
 
-def VPTOSplitCVModule : Pass<"vpto-split-cv-module", "ModuleOp"> {
-  let summary = "Split a VPTO module with cube/vector sections into kernel modules";
+def PTOSplitCVModule : Pass<"pto-split-cv-module", "ModuleOp"> {
+  let summary = "Split a logical PTO mixed-kernel module into kernel-kind modules";
   let description = [{
-    Rewrites a single-module VPTO input where one `pto.kernel` function
-    contains `pto.section.cube` / `pto.section.vector` regions into the
-    normalized fatobj input form with one child module per kernel kind.
+    Rewrites a logical PTO input module that has not yet been partitioned by
+    module-level `pto.kernel_kind` into one child module per kernel kind.
 
-    The pass clones the original module for each target kind, removes the
-    opposite section kind, and inlines the target section body. It does not
-    analyze cross-section SSA dependencies; normal MLIR verification catches
-    illegal uses after the non-target section is removed.
+    When mixed ownership is represented by `pto.section.cube` /
+    `pto.section.vector`, the pass clones the original module for each target
+    kind, removes the opposite section kind, and inlines the target section
+    body. When the module instead carries top-level functions with inferred
+    `pto.kernel_kind`, the pass groups those functions into the corresponding
+    child modules. Modules that already carry explicit module-level
+    `pto.kernel_kind` are left unchanged.
+
+    The pass does not introduce cross-section SSA transport semantics; illegal
+    dependencies continue to fail verification after non-target content is
+    removed.
   }];
 
-  let constructor = "mlir::pto::createVPTOSplitCVModulePass()";
+  let constructor = "mlir::pto::createPTOSplitCVModulePass()";
 
   let dependentDialects = [
     "mlir::pto::PTODialect",

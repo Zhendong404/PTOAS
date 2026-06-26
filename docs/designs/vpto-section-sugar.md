@@ -146,7 +146,7 @@ module attributes {pto.target_arch = "a5"} {
 
 ## 放置位置
 
-新增 pass 命名为 `vpto-split-cv-module`。
+新增 pass 命名为 `pto-split-cv-module`。
 
 它应当在 VPTO 路径最前面执行，位置早于：
 
