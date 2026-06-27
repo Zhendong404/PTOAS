@@ -3634,22 +3634,28 @@ def main() -> None:
             return NativeBuildArtifacts(
                 cache_dir=cache_dir,
                 mlir_path=cache_dir / "kernel.mlir",
+                kernel_cpp=cache_dir / "kernel.cpp",
                 kernel_object=cache_dir / "kernel.o",
                 launch_cpp=cache_dir / "launch.cpp",
                 shared_library=cache_dir / f"lib{ir_function_name}.so",
                 manifest_path=cache_dir / "manifest.json",
             )
 
-        def fake_run_ptoas(mlir_path, kernel_object, *, target_arch, insert_sync=None):
+        def fake_run_ptoas(mlir_path, kernel_cpp, *, target_arch, insert_sync=None):
             native_build_observations.append(
                 {
                     "mlir_path": mlir_path,
-                    "kernel_object": kernel_object,
+                    "kernel_cpp": kernel_cpp,
                     "target_arch": target_arch,
                     "insert_sync": insert_sync,
                     "mlir_text": mlir_path.read_text(encoding="utf-8"),
                 }
             )
+            kernel_cpp.write_text("fake kernel cpp\n", encoding="utf-8")
+
+        def fake_compile_kernel_cpp(kernel_cpp, kernel_object, *, kernel_kind):
+            expect(kernel_cpp.is_file(), "native build should materialize kernel.cpp before compiling it")
+            expect(kernel_kind in {"vector", "cube"}, "native build should preserve kernel-kind-aware kernel compile flags")
             kernel_object.write_text("fake fatobj\n", encoding="utf-8")
 
         def fake_compile_launch_cpp(launch_cpp, launch_object, *, kernel_kind, export_macro):
@@ -3667,6 +3673,8 @@ def main() -> None:
         with mock.patch.object(native_build_runtime, "artifact_paths", side_effect=fake_artifacts), mock.patch.object(
             native_build_runtime, "is_native_build_current", return_value=False
         ), mock.patch.object(native_build_runtime, "_run_ptoas", side_effect=fake_run_ptoas), mock.patch.object(
+            native_build_runtime, "_compile_kernel_cpp", side_effect=fake_compile_kernel_cpp
+        ), mock.patch.object(
             native_build_runtime, "_compile_launch_cpp", side_effect=fake_compile_launch_cpp
         ), mock.patch.object(
             native_build_runtime, "_link_shared_library", side_effect=fake_link_shared_library
@@ -3714,7 +3722,7 @@ def main() -> None:
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         mlir_path = tmpdir_path / "kernel.mlir"
-        kernel_object = tmpdir_path / "kernel.o"
+        kernel_cpp = tmpdir_path / "kernel.cpp"
         mlir_path.write_text(default_text, encoding="utf-8")
         ptoas_cmds = []
 
@@ -3726,7 +3734,7 @@ def main() -> None:
         ):
             native_build_runtime._run_ptoas(
                 mlir_path,
-                kernel_object,
+                kernel_cpp,
                 target_arch="a5",
             )
 
@@ -3749,7 +3757,7 @@ def main() -> None:
             "native build should keep the default insert-sync policy unset when _run_ptoas is called directly",
         )
         expect(
-            "--enable-tile-op-expand" in ptoas_cmd and str(mlir_path) in ptoas_cmd and str(kernel_object) in ptoas_cmd,
+            "--enable-tile-op-expand" in ptoas_cmd and str(mlir_path) in ptoas_cmd and str(kernel_cpp) in ptoas_cmd,
             "native build should still pass the shared PTOAS compile inputs and output path",
         )
         ptoas_cmds.clear()
@@ -3758,7 +3766,7 @@ def main() -> None:
         ):
             native_build_runtime._run_ptoas(
                 mlir_path,
-                kernel_object,
+                kernel_cpp,
                 target_arch="a5",
                 insert_sync=True,
             )

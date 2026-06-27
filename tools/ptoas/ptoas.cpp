@@ -89,6 +89,19 @@ constexpr size_t kMarkerRewriteTernaryArgCount = 3;
 using StringRefVector =
     llvm::SmallVector<llvm::StringRef, kStringRefInlineCapacity>;
 
+template <typename PassFactory>
+static void addFuncPassAtKnownModuleDepths(OpPassManager &pm,
+                                           PassFactory &&createPass,
+                                           unsigned maxNestedModuleDepth = 2) {
+  pm.addNestedPass<mlir::func::FuncOp>(createPass());
+  OpPassManager *currentPM = &pm;
+  for (unsigned depth = 0; depth != maxNestedModuleDepth; ++depth) {
+    auto &nestedModulePM = currentPM->nest<ModuleOp>();
+    nestedModulePM.addNestedPass<mlir::func::FuncOp>(createPass());
+    currentPM = &nestedModulePM;
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv);
@@ -1292,6 +1305,154 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
   cpp.swap(out);
 }
 
+static void rewriteSplitKernelKindFunctionGuards(std::string &cpp) {
+  llvm::SmallVector<std::string, 0> lines;
+  for (llvm::StringRef ref(cpp); !ref.empty(); ref = ref.split('\n').second) {
+    auto split = ref.split('\n');
+    lines.push_back(split.first.str());
+  }
+
+  auto trimRef = [](const std::string &line) {
+    return llvm::StringRef(line).trim();
+  };
+
+  auto parseGuardMacro = [&](size_t lineIndex) -> std::optional<std::string> {
+    if (lineIndex >= lines.size())
+      return std::nullopt;
+    llvm::StringRef line = trimRef(lines[lineIndex]);
+    if (!line.starts_with("#if defined(") || !line.ends_with(')'))
+      return std::nullopt;
+    line.consume_front("#if defined(");
+    line.consume_back(")");
+    if (line.empty())
+      return std::nullopt;
+    return line.str();
+  };
+
+  auto parseEndGuardMacro = [&](size_t lineIndex) -> std::optional<std::string> {
+    if (lineIndex >= lines.size())
+      return std::nullopt;
+    llvm::StringRef line = trimRef(lines[lineIndex]);
+    if (!line.starts_with("#endif // "))
+      return std::nullopt;
+    line.consume_front("#endif // ");
+    if (line.empty())
+      return std::nullopt;
+    return line.str();
+  };
+
+  auto parseFunctionName = [&](size_t lineIndex) -> std::optional<std::string> {
+    if (lineIndex >= lines.size())
+      return std::nullopt;
+    llvm::StringRef line = trimRef(lines[lineIndex]);
+    if (!line.starts_with("extern \"C\" __global__ AICORE void "))
+      return std::nullopt;
+    line.consume_front("extern \"C\" __global__ AICORE void ");
+    size_t lparen = line.find('(');
+    if (lparen == llvm::StringRef::npos || lparen == 0)
+      return std::nullopt;
+    return line.take_front(lparen).trim().str();
+  };
+
+  std::string out;
+  out.reserve(cpp.size() + kRewriteOutputReserveExtra);
+
+  for (size_t i = 0; i < lines.size();) {
+    std::optional<std::string> funcName = parseFunctionName(i);
+    if (!funcName) {
+      out.append(lines[i]);
+      if (i + 1 != lines.size())
+        out.push_back('\n');
+      ++i;
+      continue;
+    }
+
+    size_t bodyStart = i;
+    int braceDepth = 0;
+    bool sawOpenBrace = false;
+    size_t j = i;
+    for (; j < lines.size(); ++j) {
+      for (char c : lines[j]) {
+        if (c == '{') {
+          ++braceDepth;
+          sawOpenBrace = true;
+        } else if (c == '}') {
+          --braceDepth;
+        }
+      }
+      if (sawOpenBrace && braceDepth == 0)
+        break;
+    }
+    if (j >= lines.size()) {
+      out.append(lines[i]);
+      if (i + 1 != lines.size())
+        out.push_back('\n');
+      ++i;
+      continue;
+    }
+
+    size_t bodyEnd = j;
+    size_t guardStart = bodyStart + 1;
+    while (guardStart < bodyEnd && trimRef(lines[guardStart]).empty())
+      ++guardStart;
+    std::optional<std::string> guardMacro = parseGuardMacro(guardStart);
+    if (!guardMacro) {
+      for (size_t k = i; k <= bodyEnd; ++k) {
+        out.append(lines[k]);
+        if (k + 1 != lines.size())
+          out.push_back('\n');
+      }
+      i = bodyEnd + 1;
+      continue;
+    }
+
+    size_t guardEnd = bodyEnd;
+    while (guardEnd > guardStart && trimRef(lines[guardEnd]).empty())
+      --guardEnd;
+    std::optional<std::string> endGuardMacro = parseEndGuardMacro(guardEnd);
+    if (!endGuardMacro || *endGuardMacro != *guardMacro) {
+      for (size_t k = i; k <= bodyEnd; ++k) {
+        out.append(lines[k]);
+        if (k + 1 != lines.size())
+          out.push_back('\n');
+      }
+      i = bodyEnd + 1;
+      continue;
+    }
+
+    size_t nextFunc = bodyEnd + 1;
+    while (nextFunc < lines.size() && trimRef(lines[nextFunc]).empty())
+      ++nextFunc;
+    std::optional<std::string> nextFuncName = parseFunctionName(nextFunc);
+    if (!nextFuncName || *nextFuncName != *funcName) {
+      for (size_t k = i; k <= bodyEnd; ++k) {
+        out.append(lines[k]);
+        if (k + 1 != lines.size())
+          out.push_back('\n');
+      }
+      i = bodyEnd + 1;
+      continue;
+    }
+
+    out.append("#if defined(");
+    out.append(*guardMacro);
+    out.append(")\n");
+    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+      if (k == guardStart || k == guardEnd)
+        continue;
+      out.append(lines[k]);
+      out.push_back('\n');
+    }
+    out.append("#endif // ");
+    out.append(*guardMacro);
+    if (bodyEnd + 1 != lines.size())
+      out.push_back('\n');
+    i = bodyEnd + 1;
+  }
+
+  cpp.swap(out);
+}
+
 namespace {
 struct ConstantDeclCandidate {
   size_t declLine = 0;
@@ -1634,8 +1795,6 @@ static LogicalResult partitionKernelKindCompileUnits(
     OwningOpRef<ModuleOp> &module) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
-  pm.addPass(pto::createPTOSplitCVModulePass());
-  pm.addPass(pto::createPTONormalizeKernelKindContainerPass());
   if (failed(applyConfiguredPassManagerCLOptions(
           pm, "PTO kernel-kind partition pipeline")))
     return failure();
@@ -1795,20 +1954,6 @@ int mlir::pto::compilePTOASModule(
       return 1;
   }
 
-  {
-    PassManager preBackendPM(module->getContext());
-    preBackendPM.enableVerifier(false);
-    preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
-    if (failed(preBackendPM.run(module.get()))) {
-      llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
-      return 1;
-    }
-    if (failed(verify(module.get()))) {
-      llvm::errs() << "Error: normalized PTO tile sections failed verification.\n";
-      return 1;
-    }
-  }
-
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
 
   if (effectiveBackend == PTOBackend::VPTO && !hasTileOpsToExpand) {
@@ -1837,30 +1982,49 @@ int mlir::pto::compilePTOASModule(
   // validation is complete and the pass is proven stable, the gate can be
   // lifted to make it unconditional for all backends.
   if (effectiveBackend == PTOBackend::VPTO)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOAssignDefaultFrontendPipeIdPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOLowerFrontendPipeOpsPass());
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createPTOCanonicalizeIRPass();
+    });
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createPTOAssignDefaultFrontendPipeIdPass();
+  });
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createPTOLowerFrontendPipeOpsPass();
+  });
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createLoweringSyncToPipePass();
+  });
   if (!disableInferLayout)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOValidateIntToPtrUsesPass());
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createInferPTOLayoutPass();
+    });
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createPTOA5NormalizeTMovPass();
+  });
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createPTOValidateIntToPtrUsesPass();
+  });
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
   if (enableA5EmitCFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
+    addFuncPassAtKnownModuleDepths(pm, [] { return pto::createFusionPlanPass(); });
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createOpSchedulingPass();
+    });
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createPTOMarkLastUsePass();
+    });
   } else if (enableA5VPTOFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+    addFuncPassAtKnownModuleDepths(pm, [] { return pto::createFusionPlanPass(); });
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createOpSchedulingPass();
+    });
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createPTOFusionRegionGenPass();
+    });
   }
 
   pm.addPass(pto::createPTOViewToMemrefPass());
@@ -1877,23 +2041,27 @@ int mlir::pto::compilePTOASModule(
   // Conditionally add one automatic synchronization mode. Barrier-all is a
   // conservative standalone pass; InsertSync and GraphSyncSolver are set/wait
   // solvers, while BufidSync is A5-only get_buf/rls_buf synchronization.
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOVerifySubkernelPipeContractPass());
+  addFuncPassAtKnownModuleDepths(pm, [] {
+    return pto::createPTOVerifySubkernelPipeContractPass();
+  });
   if (enableInsertSync)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createPTOInsertSyncPass();
+    });
   else if (enableBufidSync) {
     PTOBufidSyncOptions bufidOptions;
     bufidOptions.enableBufidSyncDebug = enableBufidSyncDebug;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOBufidSyncPass(bufidOptions));
+    addFuncPassAtKnownModuleDepths(
+        pm, [=] { return pto::createPTOBufidSyncPass(bufidOptions); });
   } else if (enableInjectBarrierAllSync)
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOInjectBarrierAllSyncPass());
+    addFuncPassAtKnownModuleDepths(pm, [] {
+      return pto::createPTOInjectBarrierAllSyncPass();
+    });
   else if (enableGraphSyncSolver) {
     PTOGraphSyncSolverOptions graphSyncOpts;
     graphSyncOpts.eventIdNumMax = graphSyncSolverEventIdMax;
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOGraphSyncSolverPass(graphSyncOpts));
+    addFuncPassAtKnownModuleDepths(
+        pm, [=] { return pto::createPTOGraphSyncSolverPass(graphSyncOpts); });
   }
 
   if (emitMlirIR) {
@@ -1987,6 +2155,7 @@ int mlir::pto::compilePTOASModule(
   rewriteMalformedVerbatimSemicolons(cppOutput);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
+  rewriteSplitKernelKindFunctionGuards(cppOutput);
 
   result.kind = PTOASCompileResultKind::Text;
   result.textOutput = std::move(cppOutput);

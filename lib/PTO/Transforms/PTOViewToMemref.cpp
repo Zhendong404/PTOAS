@@ -1532,7 +1532,10 @@ struct PTOViewToMemrefPass
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
 
-    for (auto func : mod.getOps<func::FuncOp>()) {
+    DefaultInlineVector<func::FuncOp> functions;
+    mod.walk([&](func::FuncOp func) { functions.push_back(func); });
+
+    for (auto func : functions) {
       // ------------------------------------------------------------------
       // Stage 0: ensure inttoptr values remain scalar-load/store only.
       // ------------------------------------------------------------------

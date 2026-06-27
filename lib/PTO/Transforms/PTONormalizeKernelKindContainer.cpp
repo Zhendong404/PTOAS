@@ -28,7 +28,15 @@ static bool isKernelKindSubmodule(ModuleOp module) {
   return module->hasAttr(FunctionKernelKindAttr::name);
 }
 
+static bool hasKernelKindChildModule(ModuleOp module) {
+  return llvm::any_of(module.getOps<ModuleOp>(),
+                      [](ModuleOp child) { return isKernelKindSubmodule(child); });
+}
+
 static LogicalResult verifyNormalizedKernelKindContainer(ModuleOp module) {
+  if (!isKernelKindSubmodule(module) && !hasKernelKindChildModule(module))
+    return success();
+
   bool hasChildModules = false;
   for (Operation &op : module.getBodyRegion().front().getOperations()) {
     auto child = dyn_cast<ModuleOp>(op);

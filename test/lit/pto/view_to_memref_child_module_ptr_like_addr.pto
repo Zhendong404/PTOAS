@@ -1,0 +1,30 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards PTOViewToMemref on backend-partitioned child modules.
+// RUN: ptoas --emit-pto-ir -o - %s 2>&1 | FileCheck %s
+
+module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+  module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+    func.func private @consume(!pto.ptr<f32, ub>)
+    func.func @child_module_ptr_like_tile_buf_addr_probe() attributes {pto.entry} {
+      %tile = pto.alloc_tile : !pto.tile_buf<vec, 1x16xf32>
+      %ptr = pto.tile_buf_addr %tile : !pto.tile_buf<vec, 1x16xf32> -> !pto.ptr<f32, ub>
+      call @consume(%ptr) : (!pto.ptr<f32, ub>) -> ()
+      return
+    }
+  }
+}
+
+// CHECK-LABEL: func.func private @consume(memref<?xf32, #pto.address_space<vec>>)
+// CHECK-LABEL: func.func @child_module_ptr_like_tile_buf_addr_probe()
+// CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<1x16xf32
+// CHECK: %[[BIND:.*]] = pto.bind_tile %[[ALLOC]]
+// CHECK: %[[LINEAR:.*]] = memref.reinterpret_cast %[[BIND]] to offset: [0], sizes: [%[[SIZE:.*]]], strides: [1]
+// CHECK: call @consume(%[[LINEAR]]) : (memref<?xf32, #pto.address_space<vec>>) -> ()
+// CHECK-NOT: pto.tile_buf_addr

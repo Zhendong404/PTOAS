@@ -1,0 +1,51 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guard: EmitC must honor kernel_kind inherited from split child modules so a
+// logical mixed kernel does not emit two naked same-name entry definitions into
+// one C++ translation unit.
+// RUN: ptoas --pto-arch=a5 %s -o - | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @logical_mixed_emitc_kernel(%src: !pto.ptr<f32, gm>,
+                                        %dst: !pto.ptr<f32, gm>)
+      attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %shape = pto.make_tensor_view %src,
+      shape = [%c1, %c1], strides = [%c1, %c1]
+      : !pto.tensor_view<1x1xf32>
+    %shape_dst = pto.make_tensor_view %dst,
+      shape = [%c1, %c1], strides = [%c1, %c1]
+      : !pto.tensor_view<1x1xf32>
+    %tile = pto.alloc_tile : !pto.tile_buf<vec, 1x1xf32>
+
+    pto.section.vector {
+      %part = pto.partition_view %shape, offsets = [%c0, %c0], sizes = [%c1, %c1]
+        : !pto.partition_tensor_view<1x1xf32>
+      pto.tload %part, %tile : !pto.partition_tensor_view<1x1xf32>, !pto.tile_buf<vec, 1x1xf32>
+    }
+
+    pto.section.cube {
+      %part_dst = pto.partition_view %shape_dst, offsets = [%c0, %c0], sizes = [%c1, %c1]
+        : !pto.partition_tensor_view<1x1xf32>
+      pto.tstore %tile, %part_dst
+        : !pto.tile_buf<vec, 1x1xf32>, !pto.partition_tensor_view<1x1xf32>
+    }
+
+    return
+  }
+}
+
+// CHECK-LABEL: extern "C" __global__ AICORE void logical_mixed_emitc_kernel(
+// CHECK: #if defined(__DAV_VEC__)
+// CHECK: set_mask_norm();
+// CHECK: #endif // __DAV_VEC__
+// CHECK-LABEL: extern "C" __global__ AICORE void logical_mixed_emitc_kernel(
+// CHECK: #if defined(__DAV_CUBE__)
+// CHECK: #endif // __DAV_CUBE__

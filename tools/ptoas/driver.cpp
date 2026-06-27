@@ -632,6 +632,28 @@ static std::string summarizeMixedChildModule(ModuleOp module) {
   return summary;
 }
 
+static FailureOr<mlir::pto::ObjectEmissionDeviceTarget>
+getEmitCChildDeviceTarget(ModuleOp module) {
+  auto kernelKindAttr =
+      module->getAttrOfType<mlir::pto::FunctionKernelKindAttr>(
+          mlir::pto::FunctionKernelKindAttr::name);
+  if (!kernelKindAttr) {
+    module.emitError("mixed-backend EmitC child module is missing required '")
+        << mlir::pto::FunctionKernelKindAttr::name << "' attribute";
+    return failure();
+  }
+
+  switch (kernelKindAttr.getKernelKind()) {
+  case mlir::pto::FunctionKernelKind::Vector:
+    return mlir::pto::ObjectEmissionDeviceTarget::Vector;
+  case mlir::pto::FunctionKernelKind::Cube:
+    return mlir::pto::ObjectEmissionDeviceTarget::Cube;
+  }
+
+  module.emitError("unsupported mixed-backend EmitC child kernel kind");
+  return failure();
+}
+
 static void dumpFailedMixedChildCompileUnit(llvm::StringRef backendName,
                                             llvm::StringRef summary,
                                             ModuleOp module) {
@@ -813,6 +835,10 @@ public:
   LogicalResult run(PTOASContext &context) override {
     ModuleOp op = module.get();
     op->setAttr("pto.backend", StringAttr::get(op.getContext(), "emitc"));
+    FailureOr<mlir::pto::ObjectEmissionDeviceTarget> targetOr =
+        getEmitCChildDeviceTarget(op);
+    if (failed(targetOr))
+      return failure();
 
     mlir::pto::PTOASCompileResult jobResult;
     if (mlir::pto::compilePTOASModule(module, context,
@@ -836,7 +862,7 @@ public:
     if (!toolchain)
       return failure();
     if (failed(mlir::pto::emitFatobjCCE(
-            jobResult.textOutput, fatobjPath, *toolchain,
+            jobResult.textOutput, fatobjPath, *targetOr, *toolchain,
             context.getTempFiles(), llvm::errs()))) {
       dumpFailedMixedChildCompileUnit("emitc", summary, op);
       return failure();
@@ -1042,20 +1068,6 @@ static LogicalResult resolveSingleBackend(
   }
 
   SmallVector<ModuleOp, 4> children(module.getOps<ModuleOp>());
-  bool debugIROutputRequested =
-      mlir::pto::emitMlirIR || mlir::pto::emitVPTO || mlir::pto::ptoPrintSeamIR ||
-      !mlir::pto::ptoSeamIRFile.empty();
-  if (!debugIROutputRequested && children.size() > 1) {
-    if (!isBackendPartitionedContainer(module)) {
-      llvm::errs() << "Error: mixed pto.backend fatobj mode expects either a "
-                      "single module or an outer module containing only child "
-                      "modules; found non-module top-level ops alongside child "
-                      "modules.\n";
-      return failure();
-    }
-    return success();
-  }
-
   std::optional<mlir::pto::PTOBackend> firstChildBackend;
   for (ModuleOp child : children) {
     std::optional<mlir::pto::PTOBackend> childBackend;
@@ -1070,6 +1082,25 @@ static LogicalResult resolveSingleBackend(
     }
     if (*firstChildBackend != effectiveChildBackend)
       return success();
+  }
+
+  bool debugIROutputRequested =
+      mlir::pto::emitMlirIR || mlir::pto::emitVPTO || mlir::pto::ptoPrintSeamIR ||
+      !mlir::pto::ptoSeamIRFile.empty();
+  if (!debugIROutputRequested && children.size() > 1) {
+    if (!isBackendPartitionedContainer(module)) {
+      llvm::errs() << "Error: mixed pto.backend fatobj mode expects either a "
+                      "single module or an outer module containing only child "
+                      "modules; found non-module top-level ops alongside child "
+                      "modules.\n";
+      return failure();
+    }
+    if (firstChildBackend &&
+        *firstChildBackend == mlir::pto::PTOBackend::EmitC) {
+      singleBackend = *firstChildBackend;
+      return success();
+    }
+    return success();
   }
 
   if (firstChildBackend)
@@ -1129,6 +1160,34 @@ static LogicalResult runPTOASJobs(OwningOpRef<ModuleOp> &module,
                                   PTOASContext &context,
                                   mlir::pto::PTOASCompileResult &result) {
   const mlir::pto::BackendInfo &backendInfo = context.getBackendInfo();
+  if (llvm::sys::Process::GetEnv("PTOAS_DEBUG_BACKEND_INFO")) {
+    llvm::errs() << "// PTOAS backend selection: default="
+                 << (backendInfo.defaultBackend == mlir::pto::PTOBackend::EmitC
+                         ? "emitc"
+                         : "vpto")
+                 << " single="
+                 << (backendInfo.singleBackend
+                         ? (*backendInfo.singleBackend ==
+                                    mlir::pto::PTOBackend::EmitC
+                                ? "emitc"
+                                : "vpto")
+                         : "mixed")
+                 << "\n";
+    for (ModuleOp child : module->getOps<ModuleOp>()) {
+      llvm::errs() << "// child attrs:";
+      if (auto backend = child->getAttrOfType<StringAttr>("pto.backend"))
+        llvm::errs() << " backend=" << backend.getValue();
+      if (auto kind =
+              child->getAttrOfType<mlir::pto::FunctionKernelKindAttr>(
+                  mlir::pto::FunctionKernelKindAttr::name))
+        llvm::errs() << " kernel_kind="
+                     << (kind.getKernelKind() ==
+                                 mlir::pto::FunctionKernelKind::Vector
+                             ? "vector"
+                             : "cube");
+      llvm::errs() << "\n";
+    }
+  }
   if (backendInfo.singleBackend) {
     if (*backendInfo.singleBackend == mlir::pto::PTOBackend::EmitC) {
       EmitCBackendJob singleJob(module, result);
@@ -1170,6 +1229,29 @@ static LogicalResult writeTextOutput(llvm::StringRef output,
   outputFile.os() << output;
   outputFile.os().flush();
   outputFile.keep();
+  return success();
+}
+
+static LogicalResult normalizeModuleForBackendSelection(
+    OwningOpRef<ModuleOp> &module) {
+  PassManager preBackendPM(module->getContext());
+  preBackendPM.enableVerifier(false);
+  preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+  preBackendPM.addPass(pto::createPTOSplitCVModulePass());
+  preBackendPM.addPass(pto::createPTONormalizeKernelKindContainerPass());
+  // Re-run section/container normalization so split child payload modules
+  // inherit homogeneous kernel_kind context before shared-mainline verify.
+  preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+  if (failed(preBackendPM.run(module.get()))) {
+    llvm::errs()
+        << "Error: failed to normalize and partition PTO tile sections.\n";
+    return failure();
+  }
+  if (failed(verify(module.get()))) {
+    llvm::errs() << "Error: normalized PTO tile sections failed "
+                    "verification.\n";
+    return failure();
+  }
   return success();
 }
 
@@ -1218,6 +1300,9 @@ int main(int argc, char **argv) {
   if (!module)
     return 1;
   context.setArch(std::move(arch));
+
+  if (failed(normalizeModuleForBackendSelection(module)))
+    return 1;
 
   mlir::pto::BackendInfo backendInfo;
   if (failed(buildBackendInfo(module.get(), cliBackendSpecified, backendInfo)))

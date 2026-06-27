@@ -33,7 +33,7 @@ module attributes {pto.target_arch = "a5"} {
 4. 多个 verifier 已经认识 section 上下文，例如 tpush/tpop/tfree 允许出现在 `pto.section.cube/vector` 内。
 
 5. VPTO fatobj 后端当前只认规范双 module：
-   - `vpto-normalize-container` 把单个带 `pto.kernel_kind` 的 module 包成外层 container，并要求外层只包含带 `pto.kernel_kind` 的子 module。
+   - `pto-normalize-kernel-kind-container` 把单个带 `pto.kernel_kind` 的 module 包成外层 container，并要求外层只包含带 `pto.kernel_kind` 的子 module。
    - `VPTOLLVMEmitter` 按子 module 的 `pto.kernel_kind` 选择 cube/vector LLVM 目标，并给 `pto.kernel` 函数补 `_mix_aic` / `_mix_aiv` 后缀。
    - `VPTOHostStubEmission` 根据同名 `pto.kernel` 函数生成一个 host stub，并校验 mixed variants 的签名一致。
 
@@ -96,7 +96,7 @@ module attributes {pto.target_arch = "a5"} {
 
    如果顶层 module 已经是 container，且子 module 带 `pto.kernel_kind`，则认为输入已经是规范双 module，不做 section 解包。
 
-   如果顶层 module 自身带 `pto.kernel_kind`，则由 `vpto-normalize-container` 包一层外层 container。
+   如果顶层 module 自身带 `pto.kernel_kind`，则由 `pto-normalize-kernel-kind-container` 包一层外层 container。
 
    如果顶层 module 不带 `pto.kernel_kind`，且含有 `pto.kernel` 函数内的 `pto.section.cube/vector`，则进入 section sugar 解包。
 
@@ -150,7 +150,7 @@ module attributes {pto.target_arch = "a5"} {
 
 它应当在 VPTO 路径最前面执行，位置早于：
 
-1. `vpto-normalize-container`
+1. `pto-normalize-kernel-kind-container`
 
 2. `prepareVPTOForEmission`
 

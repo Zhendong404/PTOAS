@@ -13625,10 +13625,21 @@ getEnclosingFunctionKernelKind(Operation *op) {
   auto kernelKindAttr =
       funcOp->getAttrOfType<FunctionKernelKindAttr>(
           FunctionKernelKindAttr::name);
-  if (!kernelKindAttr)
-    return std::nullopt;
+  if (kernelKindAttr)
+    return kernelKindAttr.getKernelKind();
 
-  return kernelKindAttr.getKernelKind();
+  for (Operation *parent = funcOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto module = dyn_cast<ModuleOp>(parent);
+    if (!module)
+      continue;
+    auto moduleKindAttr = module->getAttrOfType<FunctionKernelKindAttr>(
+        FunctionKernelKindAttr::name);
+    if (moduleKindAttr)
+      return moduleKindAttr.getKernelKind();
+  }
+
+  return std::nullopt;
 }
 
 static bool isInsideSectionOrAttributedKernel(Operation *op) {

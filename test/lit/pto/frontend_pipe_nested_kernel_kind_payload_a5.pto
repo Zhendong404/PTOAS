@@ -1,0 +1,42 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+//
+// Guards frontend pipe lowering when hidden-section partitioning leaves
+// kernel_kind on an ancestor child module and the function stays inside an
+// extra payload module.
+//
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir -o - %s 2>&1 | FileCheck %s
+
+module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+  module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+    module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+      func.func @vector_payload(%gm_slot_buffer : !pto.ptr<f32>) attributes {pto.entry} {
+        %c1 = arith.constant 1 : index
+        %c16 = arith.constant 16 : index
+        %slots = pto.make_tensor_view %gm_slot_buffer,
+          shape = [%c16, %c16], strides = [%c16, %c1]
+          : !pto.tensor_view<16x16xf32>
+        pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+          (gm_slot_tensor = %slots : !pto.tensor_view<16x16xf32>)
+        %entry = pto.tpop_from_aic {id = 0, split = 0}
+          -> !pto.tensor_view<16x16xf32>
+        pto.tfree_from_aic(%entry : !pto.tensor_view<16x16xf32>) {id = 0, split = 0}
+        func.return
+      }
+    }
+  }
+}
+
+// CHECK-LABEL: module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+// CHECK: module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>
+// CHECK: module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>
+// CHECK-LABEL: func.func @vector_payload
+// CHECK: pto.initialize_l2g2l_pipe
+// CHECK: pto.tpop
+// CHECK: pto.tfree
+// CHECK-NOT: pto.aiv_initialize_pipe

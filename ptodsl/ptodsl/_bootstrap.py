@@ -60,12 +60,16 @@ def _bootstrap_python_paths() -> None:
 
 _bootstrap_python_paths()
 
+from mlir.dialects import arith as _arith_dialect  # noqa: F401,E402
+from mlir.dialects import func as _func_dialect  # noqa: F401,E402
+from mlir.dialects import memref as _memref_dialect  # noqa: F401,E402
 from mlir.dialects import pto as _pto_dialect  # noqa: E402
+from mlir.dialects import scf as _scf_dialect  # noqa: F401,E402
 from mlir.ir import Context, Location           # noqa: E402
 
 
 def make_context() -> Context:
-    """Create a fresh MLIR Context with the PTO dialect loaded."""
+    """Create a fresh MLIR Context with PTO plus core standard dialects loaded."""
     ctx = Context()
     _pto_dialect.register_dialect(ctx, load=True)
     return ctx

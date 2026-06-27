@@ -38,6 +38,7 @@ class NativeBuildArtifacts:
 
     cache_dir: Path
     mlir_path: Path
+    kernel_cpp: Path
     kernel_object: Path
     launch_cpp: Path
     shared_library: Path
@@ -53,6 +54,7 @@ def artifact_paths(py_name: str, ir_function_name: str, specialization_key) -> N
     return NativeBuildArtifacts(
         cache_dir=cache_dir,
         mlir_path=cache_dir / "kernel.mlir",
+        kernel_cpp=cache_dir / "kernel.cpp",
         kernel_object=cache_dir / "kernel.o",
         launch_cpp=cache_dir / "launch.cpp",
         shared_library=cache_dir / lib_name,
@@ -94,6 +96,7 @@ def is_native_build_current(
 ) -> bool:
     required = (
         artifacts.mlir_path,
+        artifacts.kernel_cpp,
         artifacts.kernel_object,
         artifacts.launch_cpp,
         artifacts.shared_library,

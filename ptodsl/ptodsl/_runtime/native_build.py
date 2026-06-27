@@ -41,7 +41,7 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
 
 def _run_ptoas(
     mlir_path: Path,
-    kernel_object: Path,
+    kernel_cpp: Path,
     *,
     target_arch: str,
     insert_sync: bool | None = None,
@@ -57,11 +57,9 @@ def _run_ptoas(
         "--enable-tile-op-expand",
         str(mlir_path),
         "-o",
-        str(kernel_object),
+        str(kernel_cpp),
     ])
-    _run(
-        cmd
-    )
+    _run(cmd)
 
 
 def _effective_insert_sync(*, mode: str, insert_sync: bool | None) -> bool:
@@ -110,6 +108,25 @@ def _kernel_compile_flags(kernel_kind: str) -> list[str]:
         "-cce-aicore-dcci-insert-for-scalar=false",
         f"--cce-aicore-arch={arch}",
     ]
+
+
+def _compile_kernel_cpp(
+    kernel_cpp: Path,
+    kernel_object: Path,
+    *,
+    kernel_kind: str,
+) -> None:
+    bisheng = resolve_bisheng()
+    _run(
+        [
+            bisheng,
+            *_kernel_compile_flags(kernel_kind),
+            "-c",
+            str(kernel_cpp),
+            "-o",
+            str(kernel_object),
+        ]
+    )
 
 
 def _compile_launch_cpp(
@@ -193,12 +210,17 @@ def build_native_library(
 
     _run_ptoas(
         artifacts.mlir_path,
-        artifacts.kernel_object,
+        artifacts.kernel_cpp,
         target_arch=module_spec.target_arch,
         insert_sync=_effective_insert_sync(
             mode=module_spec.mode,
             insert_sync=module_spec.insert_sync,
         ),
+    )
+    _compile_kernel_cpp(
+        artifacts.kernel_cpp,
+        artifacts.kernel_object,
+        kernel_kind=module_spec.kernel_kind,
     )
 
     launch_object = artifacts.cache_dir / "launch.o"

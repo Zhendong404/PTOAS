@@ -105,12 +105,14 @@ LogicalResult emitCppCubeDeviceObject(
 
 LogicalResult emitCppFatobj(llvm::StringRef cppSource, llvm::StringRef cppPath,
                             llvm::StringRef outObjPath,
+                            ObjectEmissionDeviceTarget target,
                             const CANNToolchain &toolchain,
                             llvm::StringRef stderrPath,
                             llvm::raw_ostream &diagOS);
 
 LogicalResult emitFatobjCCE(llvm::StringRef cppSource,
                             llvm::StringRef outputPath,
+                            ObjectEmissionDeviceTarget target,
                             const CANNToolchain &toolchain,
                             TempFileRegistry &tempFiles,
                             llvm::raw_ostream &diagOS);

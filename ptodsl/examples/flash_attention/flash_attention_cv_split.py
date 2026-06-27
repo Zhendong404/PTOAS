@@ -6,13 +6,13 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 """
-CV-split PTODSL port of the hw-native Python Flash Attention example.
+Hidden-section PTODSL port of the hw-native Python Flash Attention example.
 
-This variant preserves the legacy ``cube kernel`` + ``vector kernel`` logical
-split and adapts the cross-kernel communication to the current A5 PTODSL
-local-pipe surface. The Cube and Vector pieces are plain Python helpers reached
-from a single outer ``@pto.jit`` entry, so the entry owns the host-visible ABI
-and recursive AST rewrite handles helper-local control flow.
+This variant keeps one logical mixed-kernel ``@pto.jit`` entry and expresses
+Cube-owned and Vector-owned work as plain Python helpers plus local-pipe
+communication. PTODSL does not author ``@pto.cube`` / ``@pto.simd`` decorators
+or explicit ``pto.section.*`` wrappers here; PTOAS infers and materializes the
+physical sections later.
 """
 
 import argparse
@@ -94,7 +94,7 @@ def _gm_slot_layout(*, head_dim: int, s1_tile: int) -> tuple[int, int, int, int,
 
 def _validate_specialization(*, head_dim: int, s1_tile: int, qk_preload: int, causal: bool, q_rows: int) -> None:
     if head_dim != HEAD:
-        raise ValueError(f"cv-split flash attention currently requires head_dim={HEAD}, got {head_dim}")
+        raise ValueError(f"mixed-kernel flash attention currently requires head_dim={HEAD}, got {head_dim}")
     if s1_tile not in (256, 512):
         raise ValueError(f"s1_tile must be 256 or 512, got {s1_tile}")
     if s1_tile % CUBE_S1 != 0:
@@ -102,7 +102,7 @@ def _validate_specialization(*, head_dim: int, s1_tile: int, qk_preload: int, ca
     if qk_preload not in (3, 4):
         raise ValueError(f"qk_preload must be 3 or 4, got {qk_preload}")
     if causal:
-        raise ValueError("hw-native flash attention cv-split port is non-causal; causal=True is not supported yet")
+        raise ValueError("hw-native hidden-section flash attention port is non-causal; causal=True is not supported yet")
     if q_rows % S0 != 0:
         raise ValueError(f"q_rows={q_rows} must be a multiple of S0={S0}")
 
@@ -703,7 +703,7 @@ def _build_flash_attention_entry(
                     sizes=[vec_s0, head_dim],
                 )
                 
-    @pto.jit(name=entry_symbol, target="a5", mode="explicit", backend="emitc", insert_sync=True)
+    @pto.jit(name=entry_symbol, entry=True, target="a5", mode="explicit", backend="emitc", insert_sync=True)
     def flash_attention_entry(
         gm_slot_buffer: pto.ptr(pto.f32, "gm"),
         gm_slot_buffer_fp16: pto.ptr(pto.f16, "gm"),
@@ -837,7 +837,7 @@ def run_demo(
     host_out = o_t.cpu().numpy()
     np.testing.assert_allclose(host_out, host_ref, rtol=6e-2, atol=6e-2)
     print(
-        f"PASS hw-native-fa-cv-split q_rows={q_rows} s1={s1} head={head_dim} "
+        f"PASS hw-native-fa-hidden-sections q_rows={q_rows} s1={s1} head={head_dim} "
         f"s1_tile={s1_tile} qk_preload={qk_preload} "
         f"compile={compile_s:.3f}s launch={launch_s:.3f}s"
     )
@@ -845,7 +845,7 @@ def run_demo(
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Emit or launch the CV-split local-pipe PTODSL hw-native FlashAttention port."
+        description="Emit or launch the hidden-section local-pipe PTODSL hw-native FlashAttention port."
     )
     parser.add_argument(
         "--emit-mlir",

@@ -295,32 +295,6 @@ static LogicalResult verifySectionSplitCandidatesUseSections(ModuleOp module) {
   return status;
 }
 
-static LogicalResult verifyUniqueSectionKindsPerFunction(ModuleOp module) {
-  LogicalResult status = success();
-  module.walk([&](func::FuncOp funcOp) {
-    if (failed(status) || !isSectionSplitCandidate(funcOp))
-      return WalkResult::advance();
-    unsigned cubeCount = 0;
-    unsigned vectorCount = 0;
-    funcOp.walk([&](Operation *op) {
-      if (isa<SectionCubeOp>(op))
-        ++cubeCount;
-      if (isa<SectionVectorOp>(op))
-        ++vectorCount;
-    });
-    if (cubeCount > 1) {
-      status = funcOp.emitOpError("contains more than one pto.section.cube");
-      return WalkResult::interrupt();
-    }
-    if (vectorCount > 1) {
-      status = funcOp.emitOpError("contains more than one pto.section.vector");
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return status;
-}
-
 static void eraseSectionSplitCandidatesWithoutSectionKind(ModuleOp module,
                                                           FunctionKernelKind kind) {
   SmallVector<func::FuncOp> eraseFuncs;
@@ -400,8 +374,6 @@ static LogicalResult splitCVModule(ModuleOp module) {
   if (failed(verifyNoNestedSections(module)))
     return failure();
   if (failed(verifySectionSplitCandidatesUseSections(module)))
-    return failure();
-  if (failed(verifyUniqueSectionKindsPerFunction(module)))
     return failure();
 
   bool needVector = hasSectionKind(module, FunctionKernelKind::Vector);

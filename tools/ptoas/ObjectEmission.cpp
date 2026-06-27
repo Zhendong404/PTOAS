@@ -483,6 +483,7 @@ static bool compileCppDeviceSourceToObject(
 
 static bool compileCppDeviceSourceToFatobj(
     llvm::StringRef cppPath, llvm::StringRef outObjPath,
+    llvm::StringRef targetCPU,
     const mlir::pto::CANNToolchain &toolchain,
     llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
   llvm::SmallVector<std::string, 32> args = {
@@ -503,7 +504,7 @@ static bool compileCppDeviceSourceToFatobj(
       "-cce-aicore-addr-transform",
       "-mllvm",
       "-cce-aicore-dcci-insert-for-scalar=false",
-      "--cce-aicore-arch=dav-c310",
+      std::string("--cce-aicore-arch=") + targetCPU.str(),
       "-DREGISTER_BASE",
       "-std=c++17",
       "-O2",
@@ -833,18 +834,20 @@ mlir::LogicalResult mlir::pto::emitCppCubeDeviceObject(
 
 mlir::LogicalResult mlir::pto::emitCppFatobj(
     llvm::StringRef cppSource, llvm::StringRef cppPath,
-    llvm::StringRef outObjPath, const CANNToolchain &toolchain,
+    llvm::StringRef outObjPath, ObjectEmissionDeviceTarget target,
+    const CANNToolchain &toolchain,
     llvm::StringRef stderrPath, llvm::raw_ostream &diagOS) {
   if (failed(writeCppSource(cppSource, cppPath, diagOS)))
     return failure();
-  return compileCppDeviceSourceToFatobj(cppPath, outObjPath, toolchain,
-                                        stderrPath, diagOS)
+  return compileCppDeviceSourceToFatobj(cppPath, outObjPath, getTargetCPU(target),
+                                        toolchain, stderrPath, diagOS)
              ? success()
              : failure();
 }
 
 mlir::LogicalResult mlir::pto::emitFatobjCCE(
     llvm::StringRef cppSource, llvm::StringRef outputPath,
+    ObjectEmissionDeviceTarget target,
     const CANNToolchain &toolchain, TempFileRegistry &tempFiles,
     llvm::raw_ostream &diagOS) {
   std::string cppPath;
@@ -853,8 +856,8 @@ mlir::LogicalResult mlir::pto::emitFatobjCCE(
       failed(tempFiles.create("ptoas-emitc-fatobj", ".log", stderrPath,
                               diagOS)))
     return failure();
-  return emitCppFatobj(cppSource, cppPath, outputPath, toolchain, stderrPath,
-                       diagOS);
+  return emitCppFatobj(cppSource, cppPath, outputPath, target, toolchain,
+                       stderrPath, diagOS);
 }
 
 static bool isVPTOKernelABISymbol(llvm::StringRef name) {

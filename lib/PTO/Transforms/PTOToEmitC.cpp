@@ -3302,13 +3302,33 @@ enum class KernelKind { VecAdd, Matmul, Unknown };
   }
 }
 
-static std::optional<StringRef> getKernelKindMacro(func::FuncOp funcOp) {
-  auto kernelKindAttr =
-      funcOp->getAttrOfType<FunctionKernelKindAttr>(FunctionKernelKindAttr::name);
-  if (!kernelKindAttr)
+static std::optional<FunctionKernelKind> getEnclosingKernelKind(func::FuncOp funcOp) {
+  if (!funcOp)
     return std::nullopt;
 
-  switch (kernelKindAttr.getKernelKind()) {
+  if (auto kernelKindAttr = funcOp->getAttrOfType<FunctionKernelKindAttr>(
+          FunctionKernelKindAttr::name))
+    return kernelKindAttr.getKernelKind();
+
+  for (Operation *parent = funcOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto module = dyn_cast<ModuleOp>(parent);
+    if (!module)
+      continue;
+    if (auto moduleKindAttr = module->getAttrOfType<FunctionKernelKindAttr>(
+            FunctionKernelKindAttr::name))
+      return moduleKindAttr.getKernelKind();
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<StringRef> getKernelKindMacro(func::FuncOp funcOp) {
+  std::optional<FunctionKernelKind> kernelKind = getEnclosingKernelKind(funcOp);
+  if (!kernelKind)
+    return std::nullopt;
+
+  switch (*kernelKind) {
   case FunctionKernelKind::Cube:
     return StringRef("__DAV_CUBE__");
   case FunctionKernelKind::Vector:
@@ -3316,6 +3336,11 @@ static std::optional<StringRef> getKernelKindMacro(func::FuncOp funcOp) {
   }
 
   llvm_unreachable("unexpected kernel kind");
+}
+
+static bool inheritsKernelKindFromAncestorModule(func::FuncOp funcOp) {
+  return funcOp && !funcOp->hasAttr(FunctionKernelKindAttr::name) &&
+         getEnclosingKernelKind(funcOp).has_value();
 }
 
 struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
@@ -3364,7 +3389,17 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
     }
 
     std::optional<StringRef> kernelKindMacro = getKernelKindMacro(op);
+    bool inheritedKernelKind = inheritsKernelKindFromAncestorModule(op);
     bool needsNoSplitGuard = needsA5NoSplitVectorGuard(op.getOperation());
+
+    if (kernelKindMacro && inheritedKernelKind) {
+      rewriter.setInsertionPoint(emitcFunc);
+      std::string startMacro = "\n#if defined(" + kernelKindMacro->str() + ")";
+      rewriter.create<emitc::VerbatimOp>(op.getLoc(), startMacro);
+      rewriter.setInsertionPointAfter(emitcFunc);
+      std::string endMacro = "#endif // " + kernelKindMacro->str() + "\n";
+      rewriter.create<emitc::VerbatimOp>(op.getLoc(), endMacro);
+    }
 
     // Inline the original body, then convert region/block argument types to
     // match the converted signature (also covers CFG blocks introduced by
@@ -3387,17 +3422,17 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
       Block &entryBlock = emitcFunc.getBody().front();
       rewriter.setInsertionPointToStart(&entryBlock);
       rewriter.create<emitc::VerbatimOp>(op.getLoc(), "using T = float;");
-      if (kernelKindMacro) {
+      if (kernelKindMacro && !inheritedKernelKind) {
         std::string startMacro = "\n#if defined(" + kernelKindMacro->str() + ")";
         rewriter.create<emitc::VerbatimOp>(op.getLoc(), startMacro);
-        if (*kernelKindMacro == "__DAV_VEC__") {
-          rewriter.create<emitc::VerbatimOp>(op.getLoc(), "set_mask_norm();");
-          rewriter.create<emitc::VerbatimOp>(op.getLoc(),
-                                             "set_vector_mask(-1, -1);");
-          if (needsNoSplitGuard)
-            rewriter.create<emitc::VerbatimOp>(
-                op.getLoc(), "if (get_subblockid() == 0) {");
-        }
+      }
+      if (kernelKindMacro && *kernelKindMacro == "__DAV_VEC__") {
+        rewriter.create<emitc::VerbatimOp>(op.getLoc(), "set_mask_norm();");
+        rewriter.create<emitc::VerbatimOp>(op.getLoc(),
+                                           "set_vector_mask(-1, -1);");
+        if (needsNoSplitGuard)
+          rewriter.create<emitc::VerbatimOp>(
+              op.getLoc(), "if (get_subblockid() == 0) {");
       }
     }
 
@@ -3406,8 +3441,10 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
       rewriter.setInsertionPoint(lastBlock.getTerminator());
       if (*kernelKindMacro == "__DAV_VEC__" && needsNoSplitGuard)
         rewriter.create<emitc::VerbatimOp>(op.getLoc(), "}");
-      std::string endMacro = "#endif // " + kernelKindMacro->str() + "\n";
-      rewriter.create<emitc::VerbatimOp>(op.getLoc(), endMacro);
+      if (!inheritedKernelKind) {
+        std::string endMacro = "#endif // " + kernelKindMacro->str() + "\n";
+        rewriter.create<emitc::VerbatimOp>(op.getLoc(), endMacro);
+      }
     }
 
     rewriter.eraseOp(op);
