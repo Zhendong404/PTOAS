@@ -1,0 +1,53 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards shared-mainline lowering for the supported nested-wrapper shape.
+// RUN: ptoas --pto-backend=emitc --pto-arch=a5 --mlir-print-ir-after=pto-view-to-memref %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIEW
+// RUN: ptoas --pto-backend=emitc --pto-arch=a5 --mlir-print-ir-after=pto-plan-memory %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ptoas --pto-backend=emitc --pto-arch=a5 --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RESOLVE
+// RUN: ptoas --pto-backend=emitc --pto-arch=a5 --mlir-print-ir-after=pto-materialize-tile-handles %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=MATERIALIZE
+
+module attributes {pto.target_arch = "a5"} {
+  module {
+    func.func @kernel(%arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
+                      %arg1: memref<16x16x16xf16, #pto.address_space<gm>>) {
+      %fifo = pto.reserve_buffer {
+        name = "fifo",
+        size = 8192,
+        location = #pto.address_space<vec>,
+        auto = true
+      } -> i32
+
+      %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      pto.tmov ins(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=16, v_row=1, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      return
+    }
+  }
+}
+
+// VIEW: IR Dump After PTOViewToMemref
+// VIEW: func.func @kernel
+// VIEW: memref.alloc()
+// VIEW: pto.bind_tile
+
+// PLAN: IR Dump After PlanMemory
+// PLAN: func.func @kernel
+// PLAN: pto.reserve_buffer{name = "fifo", size = 8192, location = <vec>, auto = true, base = 256} -> i32
+// PLAN: pto.pointer_cast(%c0_i64)
+
+// RESOLVE: IR Dump After PTOResolveReservedBuffers
+// RESOLVE: func.func @kernel
+// RESOLVE-NOT: pto.reserve_buffer
+// RESOLVE: arith.constant 256 : i32
+
+// MATERIALIZE: IR Dump After PTOMaterializeTileHandles
+// MATERIALIZE: func.func @kernel
+// MATERIALIZE: pto.alloc_tile addr = %c0_i64
+// MATERIALIZE: pto.tmov ins(

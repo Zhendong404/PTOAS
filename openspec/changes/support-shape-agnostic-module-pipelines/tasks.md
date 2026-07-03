@@ -6,10 +6,10 @@
 
 ## 2. Shared mainline pass conversion
 
-- [ ] 2.1 Update `PTOViewToMemref` to use compile-unit-aware traversal without changing its per-function rewrite order.
-- [ ] 2.2 Update `PlanMemory` and `PTOResolveReservedBuffers` to use the same compile-unit-aware traversal.
-- [ ] 2.3 Update `PTOMaterializeTileHandles` to restore/helper-materialize nested compile-unit functions through the shared traversal model.
-- [ ] 2.4 Add regression tests covering flat and nested-wrapper single-backend inputs through the shared mainline.
+- [x] 2.1 Update `PTOViewToMemref` to use compile-unit-aware traversal without changing its per-function rewrite order.
+- [x] 2.2 Update `PlanMemory` and `PTOResolveReservedBuffers` to use the same compile-unit-aware traversal.
+- [x] 2.3 Update `PTOMaterializeTileHandles` to restore/helper-materialize nested compile-unit functions through the shared traversal model.
+- [x] 2.4 Add regression tests covering flat and nested-wrapper single-backend inputs through the shared mainline.
 
 ## 3. Single-backend VPTO and EmitC support
 

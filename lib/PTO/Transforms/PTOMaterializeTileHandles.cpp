@@ -16,6 +16,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1090,7 +1091,9 @@ static LogicalResult restorePTODSLSubkernelHelperTileABI(
     DenseMap<Value, Value> &tileHandles, bool &failedMaterialization) {
   DenseMap<StringRef, SmallVector<Type>> helperInputTypes;
 
-  for (func::FuncOp func : module.getOps<func::FuncOp>()) {
+  SmallVector<func::FuncOp, 4> funcs;
+  collectFunctionDefinitionsInSourceOrder(module, funcs);
+  for (func::FuncOp func : funcs) {
     std::optional<SmallVector<Type>> maybeInputs =
         inferSubkernelHelperTileSignature(func, ctx);
     if (!maybeInputs)

@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -432,8 +433,12 @@ struct PTOResolveReservedBuffersPass
       status = collectPeerAwareInit(initOp, initInfos, keyedInits);
     };
 
-    moduleOp.walk([&](InitializeL2LPipeOp initOp) { collectInit(initOp); });
-    moduleOp.walk([&](InitializeL2G2LPipeOp initOp) { collectInit(initOp); });
+    SmallVector<func::FuncOp, 4> funcs;
+    collectFunctionDefinitionsInSourceOrder(moduleOp, funcs);
+    for (func::FuncOp funcOp : funcs)
+      funcOp.walk([&](InitializeL2LPipeOp initOp) { collectInit(initOp); });
+    for (func::FuncOp funcOp : funcs)
+      funcOp.walk([&](InitializeL2G2LPipeOp initOp) { collectInit(initOp); });
     if (failed(status))
       return failure();
 
@@ -460,7 +465,9 @@ struct PTOResolveReservedBuffersPass
     // downstream lowering only sees ordinary SSA values.
     SmallVector<Operation *> eraseOps;
 
-    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
+    SmallVector<func::FuncOp, 4> funcs;
+    collectFunctionDefinitionsInSourceOrder(moduleOp, funcs);
+    for (func::FuncOp funcOp : funcs) {
       OpBuilder builder(funcOp.getContext());
 
       SmallVector<ReserveBufferOp> reserveOps;

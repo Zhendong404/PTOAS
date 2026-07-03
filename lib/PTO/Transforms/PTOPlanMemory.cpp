@@ -20,6 +20,7 @@
 #include "mlir/IR/AsmState.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "AllocToPointerCast.h"
+#include "Utils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
@@ -2443,7 +2444,9 @@ private:
 
 void PlanMemoryPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
-  for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
+  SmallVector<func::FuncOp, 4> funcs;
+  collectFunctionDefinitionsInSourceOrder(moduleOp, funcs);
+  for (func::FuncOp funcOp : funcs) {
     ReserveBufferPlans reservePlans;
     if (this->memMode == MemPlanMode::LOCAL_MEM_PLAN &&
         failed(analyzeReserveBufferPlans(funcOp, reservePlans))) {

@@ -1604,7 +1604,7 @@ struct PTOViewToMemrefPass
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
 
-    for (auto func : mod.getOps<func::FuncOp>()) {
+    auto runOnFunc = [&](func::FuncOp func) {
       // ------------------------------------------------------------------
       // Stage 0: ensure inttoptr values remain scalar-load/store only.
       // ------------------------------------------------------------------
@@ -1625,7 +1625,8 @@ struct PTOViewToMemrefPass
       for (Type t : fnTy.getResults()) newResults.push_back(convertPTOTypeToMemRef(t));
 
       func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
-      if (func.isExternal()) continue;
+      if (func.isExternal())
+        return;
 
       Block &entry = func.front();
 
@@ -4294,6 +4295,15 @@ struct PTOViewToMemrefPass
         signalPassFailure();
         return;
       }
+    };
+
+    SmallVector<ModuleOp, 4> compileUnits;
+    collectFunctionBearingModulesInSourceOrder(mod, compileUnits);
+    for (ModuleOp compileUnit : compileUnits) {
+      SmallVector<func::FuncOp, 4> funcs;
+      collectDirectFuncsInSourceOrder(compileUnit, funcs);
+      for (func::FuncOp func : funcs)
+        runOnFunc(func);
     }
     
     // Debug Output
