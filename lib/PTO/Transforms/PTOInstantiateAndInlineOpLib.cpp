@@ -9,6 +9,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTOLowerToOpLibCalls.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -203,20 +204,12 @@ static void emitMissingInstanceBodyError(func::CallOp call, func::FuncOp callee)
   }
 }
 
-static SmallVector<ModuleOp, 4> collectFuncModules(ModuleOp root) {
-  SmallVector<ModuleOp, 4> modules;
-  modules.push_back(root);
-  root.walk([&](ModuleOp nested) {
-    if (nested != root)
-      modules.push_back(nested);
-  });
-  return modules;
-}
-
 template <typename InlinePredicate>
 static LogicalResult validateInlineableCalleesHaveBodies(
     ModuleOp module, InlinePredicate &&shouldInline) {
-  for (ModuleOp funcModule : collectFuncModules(module)) {
+  SmallVector<ModuleOp, 4> funcModules;
+  pto::collectFunctionBearingModulesInSourceOrder(module, funcModules);
+  for (ModuleOp funcModule : funcModules) {
     for (func::FuncOp func : funcModule.getOps<func::FuncOp>()) {
       if (func.isExternal() || func.empty())
         continue;
@@ -247,7 +240,9 @@ template <typename InlinePredicate>
 static LogicalResult inlineMatchingCalls(
     ModuleOp module, InlinePredicate &&shouldInline, bool debug,
     llvm::StringRef debugTag, int &inlinedCalls, int &touchedFuncs) {
-  for (ModuleOp funcModule : collectFuncModules(module)) {
+  SmallVector<ModuleOp, 4> funcModules;
+  pto::collectFunctionBearingModulesInSourceOrder(module, funcModules);
+  for (ModuleOp funcModule : funcModules) {
     for (func::FuncOp func : funcModule.getOps<func::FuncOp>()) {
       if (func.isExternal())
         continue;
@@ -330,7 +325,9 @@ static LogicalResult inlineMatchingCalls(
 template <typename FuncPredicate>
 static void eraseDeadMatchingPrivateFuncs(ModuleOp module,
                                           FuncPredicate &&predicate) {
-  for (ModuleOp funcModule : collectFuncModules(module)) {
+  SmallVector<ModuleOp, 4> funcModules;
+  pto::collectFunctionBearingModulesInSourceOrder(module, funcModules);
+  for (ModuleOp funcModule : funcModules) {
     SymbolTable symbolTable(funcModule);
     SmallVector<func::FuncOp, 8> deadFuncs;
     for (func::FuncOp func : funcModule.getOps<func::FuncOp>()) {

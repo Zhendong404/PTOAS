@@ -22,6 +22,63 @@
 namespace mlir {
 namespace pto {
 
+void collectDirectFuncsInSourceOrder(ModuleOp module,
+                                     SmallVectorImpl<func::FuncOp> &funcs) {
+  funcs.clear();
+  if (!module)
+    return;
+
+  Block *body = module.getBody();
+  if (!body)
+    return;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto func = dyn_cast<func::FuncOp>(op))
+      funcs.push_back(func);
+  }
+}
+
+static void collectFunctionBearingModulesInSourceOrderImpl(
+    ModuleOp module, SmallVectorImpl<ModuleOp> &modules) {
+  SmallVector<func::FuncOp, 4> directFuncs;
+  collectDirectFuncsInSourceOrder(module, directFuncs);
+  if (!directFuncs.empty())
+    modules.push_back(module);
+
+  Block *body = module.getBody();
+  if (!body)
+    return;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto nested = dyn_cast<ModuleOp>(op))
+      collectFunctionBearingModulesInSourceOrderImpl(nested, modules);
+  }
+}
+
+void collectFunctionBearingModulesInSourceOrder(
+    ModuleOp root, SmallVectorImpl<ModuleOp> &modules) {
+  modules.clear();
+  if (!root)
+    return;
+  collectFunctionBearingModulesInSourceOrderImpl(root, modules);
+}
+
+void collectFunctionDefinitionsInSourceOrder(
+    ModuleOp root, SmallVectorImpl<func::FuncOp> &funcs) {
+  funcs.clear();
+
+  SmallVector<ModuleOp, 4> modules;
+  collectFunctionBearingModulesInSourceOrder(root, modules);
+  for (ModuleOp module : modules) {
+    SmallVector<func::FuncOp, 4> directFuncs;
+    collectDirectFuncsInSourceOrder(module, directFuncs);
+    for (func::FuncOp func : directFuncs) {
+      if (!func.isExternal())
+        funcs.push_back(func);
+    }
+  }
+}
+
 func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   func::ReturnOp returnOp;
   for (Block &b : funcOp.getBody()) {

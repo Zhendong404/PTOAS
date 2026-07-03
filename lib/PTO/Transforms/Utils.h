@@ -39,6 +39,17 @@ namespace pto {
   const std::set<pto::AddressSpace> LocalBufferSpace{
     pto::AddressSpace::VEC, pto::AddressSpace::MAT, pto::AddressSpace::ACC, pto::AddressSpace::LEFT, pto::AddressSpace::RIGHT, pto::AddressSpace::BIAS, pto::AddressSpace::SCALING};
   constexpr const uint8_t kBitsToByte = 8;
+  // Compile-unit traversal treats wrapper-only builtin.module ops as
+  // containers. A module becomes a compile unit when it directly owns one or
+  // more func.func ops in its body block. Individual callers still decide
+  // whether declarations are meaningful for their use case; body-rewriting
+  // passes should consume definitions rather than declarations.
+  void collectFunctionBearingModulesInSourceOrder(
+      ModuleOp root, SmallVectorImpl<ModuleOp> &modules);
+  void collectDirectFuncsInSourceOrder(
+      ModuleOp module, SmallVectorImpl<func::FuncOp> &funcs);
+  void collectFunctionDefinitionsInSourceOrder(
+      ModuleOp root, SmallVectorImpl<func::FuncOp> &funcs);
   func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp);
   std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op);
   std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand);

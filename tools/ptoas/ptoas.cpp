@@ -96,6 +96,13 @@ using StringRefVector =
 
 } // namespace
 
+namespace mlir::pto {
+void collectFunctionBearingModulesInSourceOrder(
+    ModuleOp root, SmallVectorImpl<ModuleOp> &modules);
+void collectDirectFuncsInSourceOrder(ModuleOp module,
+                                     SmallVectorImpl<func::FuncOp> &funcs);
+} // namespace mlir::pto
+
 int main(int argc, char **argv);
 
 void mlir::pto::registerPTOASDialects(DialectRegistry &registry) {
@@ -361,6 +368,11 @@ static llvm::cl::opt<int> graphSyncSolverEventIdMax(
         "Lower values exercise the PIPE_ALL coloring fallback sooner."),
     llvm::cl::init(kDefaultGraphSyncSolverEventIdMax));
 
+static llvm::cl::opt<bool> printCompileUnitOrder(
+    "pto-print-compile-unit-order",
+    llvm::cl::desc("Print compile-unit traversal order and exit"),
+    llvm::cl::init(false), llvm::cl::Hidden);
+
 static llvm::cl::opt<bool> enableTileOpExpand(
     "enable-tile-op-expand",
     llvm::cl::desc(
@@ -530,6 +542,20 @@ enum class PTOBuildLevel {
 
 static PTOBuildLevel defaultBuildLevel() {
   return PTOBuildLevel::Level2;
+}
+
+static void printCompileUnitTraversalOrder(ModuleOp module,
+                                           llvm::raw_ostream &os) {
+  SmallVector<ModuleOp, 4> compileUnits;
+  mlir::pto::collectFunctionBearingModulesInSourceOrder(module, compileUnits);
+  for (auto [idx, compileUnit] : llvm::enumerate(compileUnits)) {
+    SmallVector<func::FuncOp, 4> directFuncs;
+    mlir::pto::collectDirectFuncsInSourceOrder(compileUnit, directFuncs);
+    os << "compile-unit[" << idx << "]:";
+    for (func::FuncOp func : directFuncs)
+      os << ' ' << func.getSymName();
+    os << "\n";
+  }
 }
 
 static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
@@ -2688,6 +2714,11 @@ int mlir::pto::compilePTOASModule(
   if (failed(mlir::verify(module.get()))) {
     llvm::errs() << "Error: input module verification failed.\n";
     return 1;
+  }
+
+  if (printCompileUnitOrder) {
+    printCompileUnitTraversalOrder(*module, llvm::outs());
+    return 0;
   }
 
   if (enableOpFusion) {
