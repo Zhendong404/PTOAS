@@ -305,6 +305,76 @@ static bool isBackendPartitionedContainer(ModuleOp module) {
                       [](Operation &op) { return isa<ModuleOp>(op); });
 }
 
+static SmallVector<ModuleOp> collectDirectChildModules(ModuleOp module) {
+  SmallVector<ModuleOp, 4> children;
+  for (ModuleOp child : module.getOps<ModuleOp>())
+    children.push_back(child);
+  return children;
+}
+
+static bool hasDirectFuncs(ModuleOp module) {
+  return llvm::any_of(module.getOps<func::FuncOp>(),
+                      [](func::FuncOp) { return true; });
+}
+
+static bool hasNestedCompileUnitDescendant(ModuleOp module) {
+  for (ModuleOp child : module.getOps<ModuleOp>()) {
+    if (hasDirectFuncs(child) || hasNestedCompileUnitDescendant(child))
+      return true;
+  }
+  return false;
+}
+
+static void copyMissingModuleAttrs(ModuleOp source, ModuleOp target) {
+  for (NamedAttribute attr : source->getAttrs()) {
+    StringRef attrName = attr.getName().getValue();
+    if (attrName == SymbolTable::getSymbolAttrName() ||
+        attrName == "pto.backend" || target->hasAttr(attr.getName()))
+      continue;
+    target->setAttr(attr.getName(), attr.getValue());
+  }
+}
+
+static LogicalResult normalizeSingleBackendModule(
+    OwningOpRef<ModuleOp> &module) {
+  if (!module)
+    return success();
+
+  ModuleOp current = module.get();
+  if (hasDirectFuncs(current) || !isBackendPartitionedContainer(current))
+    return success();
+
+  SmallVector<ModuleOp, 4> wrapperChain;
+  while (true) {
+    wrapperChain.push_back(current);
+    SmallVector<ModuleOp, 4> children = collectDirectChildModules(current);
+    if (children.size() != 1)
+      return success();
+    current = children.front();
+    if (hasDirectFuncs(current))
+      break;
+    if (!isBackendPartitionedContainer(current))
+      return success();
+  }
+
+  auto normalized =
+      OwningOpRef<ModuleOp>(cast<ModuleOp>(current->clone()));
+  for (ModuleOp wrapper : wrapperChain)
+    copyMissingModuleAttrs(wrapper, normalized.get());
+  module = std::move(normalized);
+  return success();
+}
+
+static LogicalResult verifyMixedBackendChildShape(ModuleOp child) {
+  if (!hasNestedCompileUnitDescendant(child))
+    return success();
+
+  child.emitError(
+      "mixed-backend child compile units must directly own their func.func "
+      "definitions; nested wrapper modules inside a child are not supported");
+  return failure();
+}
+
 static SmallVector<StringRef> collectImportedPeerNames(ModuleOp module) {
   SmallVector<StringRef> names;
   module.walk([&](pto::ImportReservedBufferOp importOp) {
@@ -1017,10 +1087,12 @@ static LogicalResult collectChildJobs(
     ModuleOp module, mlir::pto::PTOBackend defaultBackend,
     PTOASContext &context, SmallVectorImpl<std::string> &fatobjPaths,
     SmallVectorImpl<std::unique_ptr<BackendChildJob>> &backendJobs) {
-  SmallVector<ModuleOp, 4> children(module.getOps<ModuleOp>());
+  SmallVector<ModuleOp, 4> children = collectDirectChildModules(module);
   for (ModuleOp child : children) {
     std::optional<mlir::pto::PTOBackend> childBackend;
     if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
+      return failure();
+    if (failed(verifyMixedBackendChildShape(child)))
       return failure();
 
     FailureOr<OwningOpRef<ModuleOp>> jobModuleOr =
@@ -1060,11 +1132,8 @@ static LogicalResult resolveSingleBackend(
     return success();
   }
 
-  SmallVector<ModuleOp, 4> children(module.getOps<ModuleOp>());
-  bool debugIROutputRequested =
-      mlir::pto::emitMlirIR || mlir::pto::emitVPTO || mlir::pto::ptoPrintSeamIR ||
-      !mlir::pto::ptoSeamIRFile.empty();
-  if (!debugIROutputRequested && children.size() > 1) {
+  SmallVector<ModuleOp, 4> children = collectDirectChildModules(module);
+  if (children.size() > 1) {
     if (!isBackendPartitionedContainer(module)) {
       llvm::errs() << "Error: mixed pto.backend fatobj mode expects either a "
                       "single module or an outer module containing only child "
@@ -1149,6 +1218,8 @@ static LogicalResult runPTOASJobs(OwningOpRef<ModuleOp> &module,
                                   mlir::pto::PTOASCompileResult &result) {
   const mlir::pto::BackendInfo &backendInfo = context.getBackendInfo();
   if (backendInfo.singleBackend) {
+    if (failed(normalizeSingleBackendModule(module)))
+      return failure();
     if (*backendInfo.singleBackend == mlir::pto::PTOBackend::EmitC) {
       EmitCBackendJob singleJob(module, result);
       return singleJob.run(context);

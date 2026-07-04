@@ -91,6 +91,17 @@ a fatobj.
 For `pto.backend = "vpto"`, normal object mode produces a host-linkable fatobj
 at `-o`. VPTO object output requires an explicit file path.
 
+Supported single-backend container shapes are intentionally narrow:
+
+- one flat top-level `module` that directly owns the relevant `func.func`
+  definitions
+- one wrapper-only module chain whose real compile unit is the single nested
+  child module that directly owns those functions
+
+The driver peels that supported wrapper-only single-backend shape before
+calling the backend pipeline, so `compilePTOASModule` still receives a normal
+top-level compile unit.
+
 ### Mixed-Backend Container
 
 A mixed-backend input is an outer module containing backend-selected child
@@ -129,6 +140,11 @@ child unless the child already defines them.
 Mixed-backend mode produces a final fatobj. It requires an explicit `-o` file
 path and rejects debug IR output modes because those modes do not produce the
 child fatobjs needed by the mixed linker.
+
+Mixed-backend child shape is also intentionally narrow: each direct child module
+of the outer container is itself the compile unit. PTOAS does not recursively
+peel additional wrapper modules inside a mixed-backend child; that nested-child
+shape is rejected with a diagnostic today.
 
 If child modules use more than one backend and `--pto-backend` is present, the
 command line wins and the input is treated as a forced single-backend

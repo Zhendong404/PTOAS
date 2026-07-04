@@ -13,12 +13,12 @@
 
 ## 3. Single-backend VPTO and EmitC support
 
-- [ ] 3.1 Audit and update single-backend VPTO entry handling so supported nested-wrapper input reaches backend passes only after shared lowering has processed the real function bodies.
-- [ ] 3.2 Audit and update single-backend EmitC entry validation and pre-lowering logic to support the same nested-wrapper contract.
-- [ ] 3.3 Add compile-success regressions for nested-wrapper VPTO and nested-wrapper EmitC control cases, plus flat-input non-regression controls.
+- [x] 3.1 Audit and update single-backend VPTO entry handling so supported nested-wrapper input reaches backend passes only after shared lowering has processed the real function bodies.
+- [x] 3.2 Audit and update single-backend EmitC entry validation and pre-lowering logic to support the same nested-wrapper contract.
+- [x] 3.3 Add compile-success regressions for nested-wrapper VPTO and nested-wrapper EmitC control cases, plus flat-input non-regression controls.
 
 ## 4. Mixed-backend contract and diagnostics
 
-- [ ] 4.1 Preserve the direct-child compile-unit contract in mixed-backend driver logic and avoid broadening child job assembly to nested children.
-- [ ] 4.2 Add an explicit negative test for mixed-backend nested child compile units with a stable diagnostic.
-- [ ] 4.3 Update user-facing design/spec references so the supported and unsupported container shapes are documented consistently.
+- [x] 4.1 Preserve the direct-child compile-unit contract in mixed-backend driver logic and avoid broadening child job assembly to nested children.
+- [x] 4.2 Add an explicit negative test for mixed-backend nested child compile units with a stable diagnostic.
+- [x] 4.3 Update user-facing design/spec references so the supported and unsupported container shapes are documented consistently.
