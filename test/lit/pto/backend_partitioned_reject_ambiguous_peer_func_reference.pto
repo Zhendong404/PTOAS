@@ -8,7 +8,7 @@
 
 // RUN: not ptoas --pto-arch=a5 %s -o %t.o 2>&1 | FileCheck %s
 // Guards peer lookup: peer_func references must resolve to exactly one sibling
-// public func.func before mixed-backend child assembly can pick a source.
+// public func.func before child compile-unit assembly can pick a source.
 
 module attributes {pto.target_arch = "a5"} {
   module attributes {pto.backend = "emitc"} {

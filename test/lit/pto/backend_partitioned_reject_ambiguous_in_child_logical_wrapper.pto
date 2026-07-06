@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: not ptoas --pto-arch=a5 %s -o %t.o 2>&1 | FileCheck %s
-// Guards in-child logical wrapper creation: one mixed-backend child cannot yet
+// Guards in-child logical wrapper creation: one child compile unit cannot yet
 // export multiple ABI-specialized public funcs that share one PTODSL logical
 // name, because wrapper synthesis would otherwise mis-type the forwarded call.
 
@@ -35,4 +35,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: error: mixed-backend child assembly does not yet support ambiguous in-child logical reference '@helper'; found multiple ABI-specialized public func.func definitions
+// CHECK: error: child compile-unit assembly does not yet support ambiguous in-child logical reference '@helper'; found multiple ABI-specialized public func.func definitions

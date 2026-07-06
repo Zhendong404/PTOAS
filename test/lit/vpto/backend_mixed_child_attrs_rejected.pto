@@ -25,4 +25,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: mixed pto.backend fatobj mode does not support debug IR output flags
+// CHECK: child compile-unit link mode does not support debug IR output flags

@@ -33,15 +33,12 @@ module attributes {pto.target_arch = "a5"} {
 }
 
 // CHECK-LABEL: module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
-// CHECK: module attributes {pto.backend = "emitc"} {
-// CHECK: func.func private @helper__ptodsl_user()
+// CHECK: func.func public @helper__ptodsl_user() {
+// CHECK-NEXT: return
+// CHECK-NEXT: }
 // CHECK: func.func @entry() attributes {pto.entry} {
 // CHECK: call @helper__ptodsl_user() : () -> ()
 // CHECK: return
-// CHECK: module attributes {pto.backend = "emitc"} {
 // CHECK: func.func public @helper() {
-// CHECK-NEXT: return
-// CHECK-NEXT: }
-// CHECK-NEXT: func.func public @helper__ptodsl_user() {
 // CHECK-NEXT: return
 // CHECK-NEXT: }

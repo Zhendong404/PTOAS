@@ -29,5 +29,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: compile-unit[0]: child_a_entry child_a_helper
-// CHECK-NEXT: compile-unit[1]: child_b_entry
+// CHECK: compile-unit[0]: child_a_entry child_a_helper child_b_entry

@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: not ptoas --pto-arch=a5 %s -o %t.o 2>&1 | FileCheck %s
-// Guards the narrowed mixed-backend contract: imported peer_func targets are
+// Guards the narrowed child compile-unit contract: imported peer_func targets are
 // leaf-only for now and may not pull in transitive function closure.
 
 module attributes {pto.target_arch = "a5"} {
@@ -36,4 +36,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: error: mixed-backend child assembly does not yet support transitive cross-child function closure for imported peer 'producer'; cloned peer body @producer directly calls @producer_helper. Keep peer_func targets leaf-only for now.
+// CHECK: error: child compile-unit assembly does not yet support transitive cross-child function closure for imported peer 'producer'; cloned peer body @producer directly calls @producer_helper. Keep peer_func targets leaf-only for now.

@@ -29,4 +29,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: mixed pto.backend fatobj mode expects either a single module or an outer module containing only child modules
+// CHECK: child compile-unit link mode expects either a single module or an outer module containing only child modules

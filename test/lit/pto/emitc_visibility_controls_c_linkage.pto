@@ -35,17 +35,13 @@ module attributes {pto.target_arch = "a5"} {
 }
 
 // CHECK-LABEL: module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
-// CHECK: module attributes {pto.backend = "emitc"} {
-// CHECK: func.func private @helper_internal()
-// CHECK: func.func private @helper_external()
-// CHECK: func.func @entry() attributes {pto.entry} {
-// CHECK: call @helper_internal() : () -> ()
-// CHECK: call @helper_external() : () -> ()
-// CHECK: return
-// CHECK: module attributes {pto.backend = "emitc"} {
 // CHECK: func.func public @helper_internal() {
 // CHECK-NEXT: return
 // CHECK-NEXT: }
 // CHECK: func.func public @helper_external() attributes {pto.visibility = "external"} {
 // CHECK-NEXT: return
 // CHECK-NEXT: }
+// CHECK: func.func @entry() attributes {pto.entry} {
+// CHECK: call @helper_internal() : () -> ()
+// CHECK: call @helper_external() : () -> ()
+// CHECK: return

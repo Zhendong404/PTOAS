@@ -25,4 +25,4 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK: mixed pto.backend fatobj mode requires an explicit file path passed with -o
+// CHECK: child compile-unit link mode requires an explicit file path passed with -o

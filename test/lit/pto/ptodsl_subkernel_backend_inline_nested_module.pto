@@ -29,7 +29,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
-// CHECK-LABEL: module {
+// CHECK-LABEL: module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
 // CHECK: func.func @kernel
 // CHECK: arith.constant 1 : i32
 // CHECK: arith.addi %arg0, %{{[^,]+}} : i32

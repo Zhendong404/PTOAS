@@ -49,5 +49,4 @@ module attributes {pto.target_arch = "a5"} {
 
 // MATERIALIZE: IR Dump After PTOMaterializeTileHandles
 // MATERIALIZE: func.func @kernel
-// MATERIALIZE: pto.alloc_tile addr = %c0_i64
-// MATERIALIZE: pto.tmov ins(
+// MATERIALIZE: pto.pointer_cast(%c0_i64)

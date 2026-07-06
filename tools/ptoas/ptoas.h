@@ -45,6 +45,7 @@ enum class PTOBackend {
 struct BackendInfo {
   PTOBackend defaultBackend = PTOBackend::EmitC;
   std::optional<PTOBackend> singleBackend;
+  bool usesChildCompileJobs = false;
   bool requiresToolchain = false;
 };
 

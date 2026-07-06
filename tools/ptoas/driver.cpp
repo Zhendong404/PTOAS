@@ -24,6 +24,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Parser/Parser.h"
 #include "ptobc/ptobc_decode.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -335,42 +336,148 @@ static void copyMissingModuleAttrs(ModuleOp source, ModuleOp target) {
   }
 }
 
+static bool shouldNormalizeSingleBackendModule(mlir::pto::PTOBackend backend) {
+  (void)backend;
+  return true;
+}
+
+struct ChildCompileKey {
+  mlir::pto::PTOBackend backend = mlir::pto::PTOBackend::EmitC;
+  std::string targetArch;
+  std::string kernelKind;
+
+  bool operator==(const ChildCompileKey &other) const {
+    return backend == other.backend && targetArch == other.targetArch &&
+           kernelKind == other.kernelKind;
+  }
+};
+
+struct ChildCompileGroup {
+  ChildCompileKey key;
+  SmallVector<ModuleOp, 4> children;
+};
+
+static void copyMissingModuleAttrsToJobModule(ModuleOp source,
+                                              ModuleOp jobModule);
+static LogicalResult verifyChildCompileUnitShape(ModuleOp child);
+static FailureOr<OwningOpRef<ModuleOp>>
+buildBackendChildCompileUnit(ModuleOp outer, ArrayRef<ModuleOp> targetChildren);
+
+static std::string stringifyAttribute(Attribute attr) {
+  if (!attr)
+    return {};
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << attr;
+  os.flush();
+  return text;
+}
+
+static Attribute getVisibleModuleAttr(ModuleOp outer, ModuleOp child,
+                                      StringRef attrName) {
+  if (Attribute attr = child->getAttr(attrName))
+    return attr;
+  return outer->getAttr(attrName);
+}
+
+static FailureOr<ChildCompileKey> buildChildCompileKey(
+    ModuleOp outer, ModuleOp child, mlir::pto::PTOBackend defaultBackend) {
+  std::optional<mlir::pto::PTOBackend> childBackend;
+  if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
+    return failure();
+
+  ChildCompileKey key;
+  key.backend = childBackend.value_or(defaultBackend);
+  key.targetArch = stringifyAttribute(
+      getVisibleModuleAttr(outer, child, mlir::pto::kPTOTargetArchAttrName));
+  key.kernelKind =
+      stringifyAttribute(getVisibleModuleAttr(outer, child, "pto.kernel_kind"));
+  return std::move(key);
+}
+
+static FailureOr<SmallVector<ChildCompileGroup, 4>>
+collectChildCompileGroups(ModuleOp outer,
+                          mlir::pto::PTOBackend defaultBackend) {
+  SmallVector<ChildCompileGroup, 4> groups;
+  for (ModuleOp child : collectDirectChildModules(outer)) {
+    auto keyOr = buildChildCompileKey(outer, child, defaultBackend);
+    if (failed(keyOr))
+      return failure();
+    ChildCompileKey key = std::move(*keyOr);
+    auto it = llvm::find_if(groups, [&](const ChildCompileGroup &group) {
+      return group.key == key;
+    });
+    if (it == groups.end()) {
+      ChildCompileGroup &group = groups.emplace_back();
+      group.key = std::move(key);
+      group.children.push_back(child);
+      continue;
+    }
+    it->children.push_back(child);
+  }
+  return std::move(groups);
+}
+
+static bool containsModule(ArrayRef<ModuleOp> modules, ModuleOp needle) {
+  return llvm::is_contained(modules, needle);
+}
+
 static LogicalResult normalizeSingleBackendModule(
-    OwningOpRef<ModuleOp> &module) {
+    OwningOpRef<ModuleOp> &module, mlir::pto::PTOBackend backend) {
   if (!module)
     return success();
 
   ModuleOp current = module.get();
-  if (hasDirectFuncs(current) || !isBackendPartitionedContainer(current))
-    return success();
-
   SmallVector<ModuleOp, 4> wrapperChain;
   while (true) {
-    wrapperChain.push_back(current);
-    SmallVector<ModuleOp, 4> children = collectDirectChildModules(current);
-    if (children.size() != 1)
-      return success();
-    current = children.front();
     if (hasDirectFuncs(current))
       break;
     if (!isBackendPartitionedContainer(current))
       return success();
+
+    SmallVector<ModuleOp, 4> children = collectDirectChildModules(current);
+    if (children.empty())
+      return success();
+
+    if (children.size() == 1) {
+      wrapperChain.push_back(current);
+      current = children.front();
+      continue;
+    }
+
+    for (ModuleOp child : children) {
+      if (failed(verifyChildCompileUnitShape(child)))
+        return failure();
+    }
+
+    FailureOr<OwningOpRef<ModuleOp>> mergedOr =
+        buildBackendChildCompileUnit(current, children);
+    if (failed(mergedOr))
+      return failure();
+
+    for (ModuleOp wrapper : wrapperChain)
+      copyMissingModuleAttrsToJobModule(wrapper, mergedOr->get());
+    module = std::move(*mergedOr);
+    return success();
   }
 
-  auto normalized =
-      OwningOpRef<ModuleOp>(cast<ModuleOp>(current->clone()));
+  if (backend == mlir::pto::PTOBackend::VPTO &&
+      !current->hasAttr("pto.kernel_kind"))
+    return success();
+
+  auto normalized = OwningOpRef<ModuleOp>(cast<ModuleOp>(current->clone()));
   for (ModuleOp wrapper : wrapperChain)
     copyMissingModuleAttrs(wrapper, normalized.get());
   module = std::move(normalized);
   return success();
 }
 
-static LogicalResult verifyMixedBackendChildShape(ModuleOp child) {
+static LogicalResult verifyChildCompileUnitShape(ModuleOp child) {
   if (!hasNestedCompileUnitDescendant(child))
     return success();
 
   child.emitError(
-      "mixed-backend child compile units must directly own their func.func "
+      "child compile units must directly own their func.func "
       "definitions; nested wrapper modules inside a child are not supported");
   return failure();
 }
@@ -419,6 +526,17 @@ static void copyModuleAttrsToJobModule(ModuleOp source, ModuleOp jobModule) {
   }
 }
 
+static void copyMissingModuleAttrsToJobModule(ModuleOp source,
+                                              ModuleOp jobModule) {
+  for (NamedAttribute attr : source->getAttrs()) {
+    StringRef attrName = attr.getName().getValue();
+    if (attrName == SymbolTable::getSymbolAttrName() ||
+        attrName == "pto.backend" || jobModule->hasAttr(attr.getName()))
+      continue;
+    jobModule->setAttr(attr.getName(), attr.getValue());
+  }
+}
+
 static func::FuncOp findFunctionByLogicalName(ModuleOp module,
                                               StringRef logicalName) {
   for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
@@ -432,6 +550,37 @@ static func::FuncOp findFunctionBySymbolName(ModuleOp module,
                                              StringRef symbolName) {
   return dyn_cast_or_null<func::FuncOp>(
       SymbolTable::lookupSymbolIn(module, symbolName));
+}
+
+static LogicalResult mergeClonedFunctionIntoModule(ModuleOp jobModule,
+                                                   func::FuncOp sourceFunc) {
+  StringRef symbolName = sourceFunc.getSymName();
+  func::FuncOp existing = findFunctionBySymbolName(jobModule, symbolName);
+  if (!existing) {
+    jobModule.push_back(sourceFunc->clone());
+    return success();
+  }
+
+  if (existing.isExternal() && !sourceFunc.isExternal()) {
+    OpBuilder builder(jobModule.getContext());
+    builder.setInsertionPoint(existing);
+    builder.insert(sourceFunc->clone());
+    existing.erase();
+    return success();
+  }
+
+  if (!existing.isExternal() && sourceFunc.isExternal())
+    return success();
+
+  if (existing.isExternal() && sourceFunc.isExternal())
+    return success();
+
+  sourceFunc.emitError(
+      "child compile-unit assembly does not yet support duplicate function "
+      "definitions '@")
+      << symbolName
+      << "' while merging same-key child modules";
+  return failure();
 }
 
 static func::FuncOp findFunctionForPeerReference(ModuleOp module,
@@ -454,13 +603,13 @@ static func::FuncOp findFunctionForPeerReference(ModuleOp module,
 }
 
 static FailureOr<func::FuncOp>
-findSiblingSourceFunction(ModuleOp outer, ModuleOp targetChild,
+findSiblingSourceFunction(ModuleOp outer, ArrayRef<ModuleOp> targetChildren,
                           StringRef symbolName, bool allowLogicalNameMatch,
                           StringRef referenceKind) {
   SmallVector<func::FuncOp> exactMatches;
   SmallVector<func::FuncOp> logicalMatches;
   for (ModuleOp child : outer.getOps<ModuleOp>()) {
-    if (child == targetChild)
+    if (containsModule(targetChildren, child))
       continue;
     for (func::FuncOp funcOp : child.getOps<func::FuncOp>()) {
       auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
@@ -477,7 +626,9 @@ findSiblingSourceFunction(ModuleOp outer, ModuleOp targetChild,
   }
 
   if (exactMatches.size() > 1) {
-    targetChild.emitError("mixed-backend child assembly does not yet support ambiguous cross-child ")
+    ModuleOp diagnosticModule = targetChildren.front();
+    diagnosticModule.emitError(
+        "child compile-unit assembly does not yet support ambiguous cross-child ")
         << referenceKind << " '@" << symbolName
         << "'; found multiple sibling public func.func definitions";
     return failure();
@@ -486,7 +637,9 @@ findSiblingSourceFunction(ModuleOp outer, ModuleOp targetChild,
     return exactMatches.front();
 
   if (logicalMatches.size() > 1) {
-    targetChild.emitError("mixed-backend child assembly does not yet support ambiguous cross-child logical ")
+    ModuleOp diagnosticModule = targetChildren.front();
+    diagnosticModule.emitError(
+        "child compile-unit assembly does not yet support ambiguous cross-child logical ")
         << referenceKind << " '@" << symbolName
         << "'; found multiple sibling public func.func definitions";
     return failure();
@@ -503,7 +656,7 @@ static LogicalResult verifyImportedPeerCloneContract(func::FuncOp peerSource,
     return success();
 
   peerSource.emitError(
-      "mixed-backend child assembly does not yet support transitive cross-child function closure for imported peer '")
+      "child compile-unit assembly does not yet support transitive cross-child function closure for imported peer '")
       << logicalName << "'; cloned peer body @" << peerSource.getSymName()
       << " directly calls @" << directCalleeNames.front()
       << ". Keep peer_func targets leaf-only for now.";
@@ -554,7 +707,7 @@ static void rewriteExportedFunctionToLogicalWrapper(func::FuncOp exportedFunc,
 }
 
 static LogicalResult
-verifyInChildLogicalWrapperAmbiguity(ModuleOp targetChild,
+verifyInChildLogicalWrapperAmbiguity(ModuleOp diagnosticModule,
                                      ArrayRef<func::FuncOp> exportedFuncs) {
   llvm::SmallDenseMap<StringRef, SmallVector<func::FuncOp, 2>> grouped;
   for (func::FuncOp exportedFunc : exportedFuncs) {
@@ -571,8 +724,8 @@ verifyInChildLogicalWrapperAmbiguity(ModuleOp targetChild,
   for (const auto &entry : grouped) {
     if (entry.second.size() <= 1)
       continue;
-    targetChild.emitError(
-        "mixed-backend child assembly does not yet support ambiguous in-child logical reference '@")
+    diagnosticModule.emitError(
+        "child compile-unit assembly does not yet support ambiguous in-child logical reference '@")
         << entry.first
         << "'; found multiple ABI-specialized public func.func definitions";
     return failure();
@@ -581,38 +734,48 @@ verifyInChildLogicalWrapperAmbiguity(ModuleOp targetChild,
 }
 
 static FailureOr<OwningOpRef<ModuleOp>>
-buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
+buildBackendChildCompileUnit(ModuleOp outer, ArrayRef<ModuleOp> targetChildren) {
+  assert(!targetChildren.empty() && "expected at least one target child");
   ModuleOp jobModule = ModuleOp::create(outer.getLoc());
   copyModuleAttrsToJobModule(outer, jobModule);
-  copyModuleAttrsToJobModule(targetChild, jobModule);
 
-  for (Operation &op : targetChild.getBodyRegion().front().getOperations()) {
-    jobModule.push_back(op.clone());
-  }
-
-  SmallVector<StringRef> directCalleeNames = collectDirectCalleeNames(targetChild);
-  for (StringRef calleeName : directCalleeNames) {
-    if (findFunctionByLogicalName(jobModule, calleeName))
-      continue;
-    FailureOr<func::FuncOp> siblingSourceOr =
-        findSiblingSourceFunction(outer, targetChild, calleeName,
-                                  /*allowLogicalNameMatch=*/false,
-                                  /*referenceKind=*/"function reference");
-    if (failed(siblingSourceOr))
-      return failure();
-    func::FuncOp siblingSource = *siblingSourceOr;
-    if (!siblingSource) {
-      targetChild.emitError(
-          "mixed-backend child assembly does not yet support unresolved cross-child function reference '@")
-          << calleeName
-          << "'; each cross-child func.call must resolve to one sibling public func.func";
-      return failure();
+  for (ModuleOp targetChild : targetChildren) {
+    copyModuleAttrsToJobModule(targetChild, jobModule);
+    for (Operation &op : targetChild.getBodyRegion().front().getOperations()) {
+      if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+        if (failed(mergeClonedFunctionIntoModule(jobModule, funcOp)))
+          return failure();
+        continue;
+      }
+      jobModule.push_back(op.clone());
     }
-    cloneFunctionDeclarationIntoModule(jobModule, siblingSource, calleeName,
-                                       "private");
   }
 
-  SmallVector<StringRef> importedPeerNames = collectImportedPeerNames(targetChild);
+  for (ModuleOp targetChild : targetChildren) {
+    SmallVector<StringRef> directCalleeNames =
+        collectDirectCalleeNames(targetChild);
+    for (StringRef calleeName : directCalleeNames) {
+      if (findFunctionByLogicalName(jobModule, calleeName))
+        continue;
+      FailureOr<func::FuncOp> siblingSourceOr =
+          findSiblingSourceFunction(outer, targetChildren, calleeName,
+                                    /*allowLogicalNameMatch=*/false,
+                                    /*referenceKind=*/"function reference");
+      if (failed(siblingSourceOr))
+        return failure();
+      func::FuncOp siblingSource = *siblingSourceOr;
+      if (!siblingSource) {
+        targetChild.emitError(
+            "child compile-unit assembly does not yet support unresolved cross-child function reference '@")
+            << calleeName
+            << "'; each cross-child func.call must resolve to one sibling public func.func";
+        return failure();
+      }
+      cloneFunctionDeclarationIntoModule(jobModule, siblingSource, calleeName,
+                                         "private");
+    }
+  }
+
   SmallVector<func::FuncOp> exportedFuncs;
   for (func::FuncOp funcOp : jobModule.getOps<func::FuncOp>()) {
     auto visibility = funcOp->getAttrOfType<StringAttr>("sym_visibility");
@@ -622,8 +785,10 @@ buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
       continue;
     exportedFuncs.push_back(funcOp);
   }
-  if (failed(verifyInChildLogicalWrapperAmbiguity(targetChild, exportedFuncs)))
+  if (failed(verifyInChildLogicalWrapperAmbiguity(targetChildren.front(),
+                                                  exportedFuncs))) {
     return failure();
+  }
   for (func::FuncOp exportedFunc : exportedFuncs) {
     StringRef logicalName =
         mlir::pto::getPTODSLLogicalNameOrSymbolName(exportedFunc);
@@ -638,34 +803,40 @@ buildBackendChildCompileUnit(ModuleOp outer, ModuleOp targetChild) {
     rewriteExportedFunctionToLogicalWrapper(exportedFunc, logicalName);
   }
 
-  for (StringRef logicalName : importedPeerNames) {
-    FailureOr<func::FuncOp> peerSourceOr =
-        findSiblingSourceFunction(outer, targetChild, logicalName,
-                                  /*allowLogicalNameMatch=*/true,
-                                  /*referenceKind=*/"peer_func reference");
-    if (failed(peerSourceOr))
-      return failure();
-    func::FuncOp peerSource = *peerSourceOr;
-    if (!peerSource) {
-      targetChild.emitError(
-          "mixed-backend child assembly does not yet support unresolved cross-child peer_func reference '@")
-          << logicalName
-          << "'; each import_reserved_buffer peer_func must resolve to one sibling public func.func";
-      return failure();
+  for (ModuleOp targetChild : targetChildren) {
+    SmallVector<StringRef> importedPeerNames = collectImportedPeerNames(targetChild);
+    for (StringRef logicalName : importedPeerNames) {
+      if (findFunctionForPeerReference(jobModule, logicalName))
+        continue;
+      FailureOr<func::FuncOp> peerSourceOr =
+          findSiblingSourceFunction(outer, targetChildren, logicalName,
+                                    /*allowLogicalNameMatch=*/true,
+                                    /*referenceKind=*/"peer_func reference");
+      if (failed(peerSourceOr))
+        return failure();
+      func::FuncOp peerSource = *peerSourceOr;
+      if (!peerSource) {
+        targetChild.emitError(
+            "child compile-unit assembly does not yet support unresolved cross-child peer_func reference '@")
+            << logicalName
+            << "'; each import_reserved_buffer peer_func must resolve to one sibling public func.func";
+        return failure();
+      }
+      if (failed(verifyImportedPeerCloneContract(peerSource, logicalName)))
+        return failure();
+
+      StringRef peerSymbolName = peerSource.getSymName();
+      if (!findFunctionBySymbolName(jobModule, peerSymbolName))
+        cloneFunctionIntoModule(jobModule, peerSource, peerSymbolName,
+                                "private");
+
+      jobModule.walk([&](pto::ImportReservedBufferOp importOp) {
+        if (importOp.getPeerFuncAttr().getValue() != logicalName)
+          return;
+        importOp.setPeerFuncAttr(
+            FlatSymbolRefAttr::get(jobModule.getContext(), peerSymbolName));
+      });
     }
-    if (failed(verifyImportedPeerCloneContract(peerSource, logicalName)))
-      return failure();
-
-    StringRef peerSymbolName = peerSource.getSymName();
-    if (!findFunctionBySymbolName(jobModule, peerSymbolName))
-      cloneFunctionIntoModule(jobModule, peerSource, peerSymbolName, "private");
-
-    jobModule.walk([&](pto::ImportReservedBufferOp importOp) {
-      if (importOp.getPeerFuncAttr().getValue() != logicalName)
-        return;
-      importOp.setPeerFuncAttr(
-          FlatSymbolRefAttr::get(jobModule.getContext(), peerSymbolName));
-    });
   }
 
   jobModule.walk([&](pto::ImportReservedBufferOp importOp) {
@@ -686,14 +857,18 @@ static constexpr llvm::StringLiteral kEmptyHostStubSource =
     "#ifndef __global__\n#define __global__\n#endif\n\n"
     "#ifndef __gm__\n#define __gm__\n#endif\n\n";
 
-static std::string summarizeMixedChildModule(ModuleOp module) {
+static std::string summarizeChildCompileUnit(ModuleOp module) {
   std::string summary;
   llvm::raw_string_ostream os(summary);
 
   if (auto backendAttr = module->getAttrOfType<StringAttr>("pto.backend"))
     os << "backend=" << backendAttr.getValue() << " ";
-  if (auto kindAttr = module->getAttrOfType<StringAttr>("pto.kernel_kind"))
-    os << "kernel_kind=" << kindAttr.getValue() << " ";
+  if (auto archAttr =
+          module->getAttrOfType<StringAttr>(mlir::pto::kPTOTargetArchAttrName)) {
+    os << "target_arch=" << archAttr.getValue() << " ";
+  }
+  if (Attribute kindAttr = module->getAttr("pto.kernel_kind"))
+    os << "kernel_kind=" << stringifyAttribute(kindAttr) << " ";
 
   SmallVector<std::string, 4> exportedNames;
   for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
@@ -721,15 +896,15 @@ static std::string summarizeMixedChildModule(ModuleOp module) {
   return summary;
 }
 
-static void dumpFailedMixedChildCompileUnit(llvm::StringRef backendName,
-                                            llvm::StringRef summary,
-                                            ModuleOp module) {
-  llvm::errs() << "Error: mixed-backend child module compilation failed"
+static void dumpFailedChildCompileUnit(llvm::StringRef backendName,
+                                       llvm::StringRef summary,
+                                       ModuleOp module) {
+  llvm::errs() << "Error: child compile unit compilation failed"
                << " [" << backendName << "]";
   if (!summary.empty())
     llvm::errs() << " {" << summary << "}";
   llvm::errs() << "\n";
-  llvm::errs() << "// ----- failed mixed-backend child compile unit ----- //\n";
+  llvm::errs() << "// ----- failed child compile unit ----- //\n";
   module.print(llvm::errs());
   llvm::errs() << "\n";
 }
@@ -907,13 +1082,13 @@ public:
     if (mlir::pto::compilePTOASModule(module, context,
                                       mlir::pto::PTOBackend::EmitC, jobResult,
                                       /*emitVPTOHostStub=*/false) != 0) {
-      dumpFailedMixedChildCompileUnit("emitc", summary, op);
+      dumpFailedChildCompileUnit("emitc", summary, op);
       return failure();
     }
     if (jobResult.kind != mlir::pto::PTOASCompileResultKind::Text) {
       llvm::errs() << "Error: EmitC backend child job produced non-text "
                       "output.\n";
-      dumpFailedMixedChildCompileUnit("emitc", summary, op);
+      dumpFailedChildCompileUnit("emitc", summary, op);
       return failure();
     }
 
@@ -927,7 +1102,7 @@ public:
     if (failed(mlir::pto::emitFatobjCCE(
             jobResult.textOutput, fatobjPath, *toolchain,
             context.getTempFiles(), llvm::errs()))) {
-      dumpFailedMixedChildCompileUnit("emitc", summary, op);
+      dumpFailedChildCompileUnit("emitc", summary, op);
       return failure();
     }
 
@@ -959,13 +1134,13 @@ public:
     if (mlir::pto::compilePTOASModule(
             module, context, mlir::pto::PTOBackend::VPTO, jobResult,
             emitHostStub) != 0) {
-      dumpFailedMixedChildCompileUnit("vpto", summary, op);
+      dumpFailedChildCompileUnit("vpto", summary, op);
       return failure();
     }
     if (jobResult.kind != mlir::pto::PTOASCompileResultKind::VPTOObject) {
       llvm::errs() << "Error: VPTO backend child job produced non-object "
                       "output.\n";
-      dumpFailedMixedChildCompileUnit("vpto", summary, op);
+      dumpFailedChildCompileUnit("vpto", summary, op);
       return failure();
     }
 
@@ -974,7 +1149,7 @@ public:
       return failure();
 
     if (failed(emitVPTOLLVMFatobj(jobResult, context, moduleId, fatobjPath))) {
-      dumpFailedMixedChildCompileUnit("vpto", summary, op);
+      dumpFailedChildCompileUnit("vpto", summary, op);
       return failure();
     }
 
@@ -997,7 +1172,7 @@ public:
   LogicalResult run(PTOASContext &context) {
     if (fatobjPaths.size() < 2) {
       llvm::errs()
-          << "Error: mixed backend link requires at least two fatobjs.\n";
+          << "Error: child compile-unit link requires at least two fatobjs.\n";
       return failure();
     }
 
@@ -1087,16 +1262,17 @@ static LogicalResult collectChildJobs(
     ModuleOp module, mlir::pto::PTOBackend defaultBackend,
     PTOASContext &context, SmallVectorImpl<std::string> &fatobjPaths,
     SmallVectorImpl<std::unique_ptr<BackendChildJob>> &backendJobs) {
-  SmallVector<ModuleOp, 4> children = collectDirectChildModules(module);
-  for (ModuleOp child : children) {
-    std::optional<mlir::pto::PTOBackend> childBackend;
-    if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
-      return failure();
-    if (failed(verifyMixedBackendChildShape(child)))
-      return failure();
+  auto groupsOr = collectChildCompileGroups(module, defaultBackend);
+  if (failed(groupsOr))
+    return failure();
+  for (const ChildCompileGroup &group : *groupsOr) {
+    for (ModuleOp child : group.children) {
+      if (failed(verifyChildCompileUnitShape(child)))
+        return failure();
+    }
 
     FailureOr<OwningOpRef<ModuleOp>> jobModuleOr =
-        buildBackendChildCompileUnit(module, child);
+        buildBackendChildCompileUnit(module, group.children);
     if (failed(jobModuleOr))
       return failure();
     OwningOpRef<ModuleOp> jobModule = std::move(*jobModuleOr);
@@ -1105,8 +1281,8 @@ static LogicalResult collectChildJobs(
       jobModule->print(llvm::errs());
       llvm::errs() << "\n";
     }
-    std::string summary = summarizeMixedChildModule(jobModule.get());
-    if (childBackend.value_or(defaultBackend) == mlir::pto::PTOBackend::VPTO)
+    std::string summary = summarizeChildCompileUnit(jobModule.get());
+    if (group.key.backend == mlir::pto::PTOBackend::VPTO)
       backendJobs.push_back(std::make_unique<VPTOBackendChildJob>(
           std::move(jobModule), std::move(summary), context.allocModuleId(),
           fatobjPaths));
@@ -1121,49 +1297,39 @@ static LogicalResult resolveSingleBackend(
     bool cliBackendSpecified,
     std::optional<mlir::pto::PTOBackend> moduleBackend,
     mlir::pto::PTOBackend defaultBackend, ModuleOp module,
-    std::optional<mlir::pto::PTOBackend> &singleBackend) {
+    std::optional<mlir::pto::PTOBackend> &singleBackend,
+    bool &usesChildCompileJobs) {
   singleBackend = std::nullopt;
+  usesChildCompileJobs = false;
   if (cliBackendSpecified) {
-    singleBackend = defaultBackend;
-    return success();
-  }
-  if (moduleBackend) {
-    singleBackend = *moduleBackend;
-    return success();
+    moduleBackend = std::nullopt;
+  } else if (moduleBackend) {
+    defaultBackend = *moduleBackend;
   }
 
   SmallVector<ModuleOp, 4> children = collectDirectChildModules(module);
-  if (children.size() > 1) {
-    if (!isBackendPartitionedContainer(module)) {
-      llvm::errs() << "Error: mixed pto.backend fatobj mode expects either a "
+  if (children.empty()) {
+    singleBackend = defaultBackend;
+    return success();
+  }
+
+  auto groupsOr = collectChildCompileGroups(module, defaultBackend);
+  if (failed(groupsOr))
+    return failure();
+  SmallVector<ChildCompileGroup, 4> groups = std::move(*groupsOr);
+  usesChildCompileJobs = groups.size() > 1;
+
+  if (!isBackendPartitionedContainer(module)) {
+      llvm::errs() << "Error: child compile-unit link mode expects either a "
                       "single module or an outer module containing only child "
                       "modules; found non-module top-level ops alongside child "
                       "modules.\n";
       return failure();
-    }
+  }
+  if (usesChildCompileJobs)
     return success();
-  }
 
-  std::optional<mlir::pto::PTOBackend> firstChildBackend;
-  for (ModuleOp child : children) {
-    std::optional<mlir::pto::PTOBackend> childBackend;
-    if (failed(parseDriverBackendAttr(child.getOperation(), childBackend)))
-      return failure();
-
-    mlir::pto::PTOBackend effectiveChildBackend =
-        childBackend.value_or(defaultBackend);
-    if (!firstChildBackend) {
-      firstChildBackend = effectiveChildBackend;
-      continue;
-    }
-    if (*firstChildBackend != effectiveChildBackend)
-      return success();
-  }
-
-  if (firstChildBackend)
-    singleBackend = *firstChildBackend;
-  else
-    singleBackend = defaultBackend;
+  singleBackend = groups.front().key.backend;
   return success();
 }
 
@@ -1185,10 +1351,11 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
 
   if (failed(resolveSingleBackend(cliBackendSpecified, moduleBackend,
                                   backendInfo.defaultBackend, module,
-                                  backendInfo.singleBackend)))
+                                  backendInfo.singleBackend,
+                                  backendInfo.usesChildCompileJobs)))
     return failure();
 
-  if (backendInfo.singleBackend) {
+  if (!backendInfo.usesChildCompileJobs && backendInfo.singleBackend) {
     backendInfo.requiresToolchain =
         *backendInfo.singleBackend == mlir::pto::PTOBackend::VPTO &&
         !mlir::pto::emitMlirIR && !mlir::pto::emitVPTO &&
@@ -1199,12 +1366,12 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
   if (mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
       mlir::pto::emitVPTOLLVMDialect ||
       mlir::pto::ptoPrintSeamIR || !mlir::pto::ptoSeamIRFile.empty()) {
-    llvm::errs() << "Error: mixed pto.backend fatobj mode does not support "
+    llvm::errs() << "Error: child compile-unit link mode does not support "
                     "debug IR output flags.\n";
     return failure();
   }
   if (outputFilename.empty() || outputFilename == "-") {
-    llvm::errs() << "Error: mixed pto.backend fatobj mode requires an "
+    llvm::errs() << "Error: child compile-unit link mode requires an "
                     "explicit file path passed with -o.\n";
     return failure();
   }
@@ -1217,9 +1384,11 @@ static LogicalResult runPTOASJobs(OwningOpRef<ModuleOp> &module,
                                   PTOASContext &context,
                                   mlir::pto::PTOASCompileResult &result) {
   const mlir::pto::BackendInfo &backendInfo = context.getBackendInfo();
-  if (backendInfo.singleBackend) {
-    if (failed(normalizeSingleBackendModule(module)))
-      return failure();
+  if (!backendInfo.usesChildCompileJobs && backendInfo.singleBackend) {
+    if (shouldNormalizeSingleBackendModule(*backendInfo.singleBackend))
+      if (failed(normalizeSingleBackendModule(module,
+                                             *backendInfo.singleBackend)))
+        return failure();
     if (*backendInfo.singleBackend == mlir::pto::PTOBackend::EmitC) {
       EmitCBackendJob singleJob(module, result);
       return singleJob.run(context);
