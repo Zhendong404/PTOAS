@@ -54,6 +54,18 @@ log() {
   echo "[sim_dsl] $*"
 }
 
+prepend_path() {
+  local dir="$1"
+  if [[ -z "${dir}" || ! -d "${dir}" ]]; then
+    return 0
+  fi
+  if [[ ":${PATH}:" == *":${dir}:"* ]]; then
+    return 0
+  fi
+  PATH="${dir}:${PATH}"
+  export PATH
+}
+
 ensure_private_dir() {
   local dir="$1"
   umask 077
@@ -97,6 +109,14 @@ print_msprof_log() {
     fi
     log "full msprof log saved at ${log_file}"
   fi
+}
+
+python_can_import_ptodsl() {
+  local python_bin="$1"
+  "${python_bin}" - <<'PY' >/dev/null 2>&1
+import mlir.ir  # noqa: F401
+from ptodsl import pto  # noqa: F401
+PY
 }
 
 SOC_VERSION="Ascend950PR_9599"
@@ -177,9 +197,24 @@ ensure_private_dir "${PRIVATE_ROOT}"
 RUNTIME_OUTPUT_DIR="$(mktemp -d "${PRIVATE_ROOT}/${EXAMPLE_STEM}.XXXXXX")"
 chmod 700 "${RUNTIME_OUTPUT_DIR}"
 MSPROF_STDIO_LOG="${RUNTIME_OUTPUT_DIR}/msprof.stdout.log"
+PYTHON_BIN="${PTO_PYTHON_BIN:-${PYTHON_BIN:-python3}}"
 
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
-source "${REPO_ROOT}/scripts/ptoas_env.sh"
+if [[ -n "${PTOAS_BIN:-}" ]]; then
+  [[ -x "${PTOAS_BIN}" ]] || die "PTOAS_BIN is not executable: ${PTOAS_BIN}"
+  prepend_path "$(dirname -- "${PTOAS_BIN}")"
+fi
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  die "PYTHON_BIN is not executable or not found on PATH: ${PYTHON_BIN}"
+fi
+PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+if ! python_can_import_ptodsl "${PYTHON_BIN}"; then
+  die "active Python environment cannot import ptodsl/mlir.ir; install the PTOAS wheel or use a preconfigured environment"
+fi
+if ! command -v ptoas >/dev/null 2>&1; then
+  die "ptoas is not available on PATH; install the PTOAS wheel or export PTOAS_BIN"
+fi
+log "using installed Python environment from ${PYTHON_BIN}"
 export LD_LIBRARY_PATH="${SIM_LIB_DIR}:${LD_LIBRARY_PATH:-}"
 ulimit -n 65535
 
@@ -196,7 +231,7 @@ set +e
 msprof op simulator \
   --soc-version="${SOC_VERSION}" \
   --output="${RUNTIME_OUTPUT_DIR}" \
-  python3 "${EXAMPLE_PATH}" "${EXAMPLE_ARGS[@]}" \
+  "${PYTHON_BIN}" "${EXAMPLE_PATH}" "${EXAMPLE_ARGS[@]}" \
   > "${MSPROF_STDIO_LOG}" 2>&1
 STATUS=$?
 set -e

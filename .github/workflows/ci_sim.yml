@@ -110,6 +110,8 @@ jobs:
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto-llvm21
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
+      PTO_WHEELHOUSE: ${{ github.workspace }}/.work/ptoas-wheelhouse
+      PTOAS_VENV: ${{ github.workspace }}/.work/ptoas-sim-venv
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
       TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
@@ -207,6 +209,8 @@ jobs:
           set -euo pipefail
           rm -rf "${GITHUB_WORKSPACE}/build"
           rm -rf "${PTO_INSTALL_DIR}"
+          rm -rf "${PTO_WHEELHOUSE}"
+          rm -rf "${PTOAS_VENV}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
           rm -rf "${PYPTO_WORKSPACE}"
@@ -268,18 +272,39 @@ jobs:
           path: ${{ env.LLVM_DIR }}
           key: ${{ steps.llvm-cache-key.outputs.key }}
 
-      - name: Build PTOAS
+      - name: Build PTOAS wheel
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${PTO_INSTALL_DIR}"
+          rm -rf "${PTO_WHEELHOUSE}"
+          mkdir -p "${PTO_WHEELHOUSE}"
           # Pin system compilers for the same reason as LLVM above.
           export CC=gcc
           export CXX=g++
-          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          # LLVM_BUILD_DIR / PTO_INSTALL_DIR are read by the build backend
+          # while producing the wheel payload and staging native runtime bits.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
-            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
+            python3 -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+
+      - name: Create PTOAS simulator venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${PTOAS_VENV}"
+          python3 -m venv "${PTOAS_VENV}"
+          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
+
+          readarray -t ptoas_wheels < <(find "${PTO_WHEELHOUSE}" -maxdepth 1 -type f -name 'ptoas-*.whl' | sort)
+          if [[ "${#ptoas_wheels[@]}" -ne 1 ]]; then
+            echo "ERROR: expected exactly one PTOAS wheel in ${PTO_WHEELHOUSE}, found ${#ptoas_wheels[@]}" >&2
+            printf '  %s\n' "${ptoas_wheels[@]}" >&2
+            exit 1
+          fi
+
+          "${PTOAS_VENV}/bin/pip" install numpy ml-dtypes "${ptoas_wheels[0]}"
+          PATH="${PTOAS_VENV}/bin:${PATH}" bash docker/test_wheel_imports.sh
 
       - name: Resolve simulator environment
         shell: bash
@@ -511,6 +536,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${VPTO_SIM_WORKSPACE}"
+          export PATH="${PTOAS_VENV}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${GITHUB_WORKSPACE}/build/lib:${LD_LIBRARY_PATH:-}"
           WORK_SPACE="${VPTO_SIM_WORKSPACE}" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
@@ -542,8 +569,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${TILELANG_DSL_WORKSPACE}"
-          export LLVM_BUILD_DIR="${LLVM_DIR}"
-          export PYTHON_BIN="python3"
+          export PATH="${PTOAS_VENV}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${GITHUB_WORKSPACE}/build/lib:${LD_LIBRARY_PATH:-}"
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTOAS_BIN}" \
           scripts/sim_dsl.sh test/dsl-st \
@@ -564,8 +591,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${TILELANG_DSL_UT_WORKSPACE}"
-          cd tilelang-dsl
-          PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_*.py' \
+          export PATH="${PTOAS_VENV}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${GITHUB_WORKSPACE}/build/lib:${LD_LIBRARY_PATH:-}"
+          cd tilelang-dsl/python
+          python3 -m unittest discover -s ../tests -p 'test_*.py' \
             2>&1 | tee "${TILELANG_DSL_UT_WORKSPACE}/unittest.log"
 
       - name: Upload TileLang DSL unit test logs
