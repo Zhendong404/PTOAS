@@ -21,23 +21,8 @@
 // META-SAME: candidates = [
 // META-SAME: id = 0 : i64
 // META-SAME: loop_depth = 2 : i64
-// META-SAME: name = "template_tadd_2d_no_post_update"
+// META-SAME: name = "template_tadd"
 // META-SAME: postupdate = 0 : i64
-// META-SAME: tail = 0 : i64
-// META-SAME: id = 1 : i64
-// META-SAME: loop_depth = 1 : i64
-// META-SAME: name = "template_tadd_1d_no_post_update"
-// META-SAME: postupdate = 0 : i64
-// META-SAME: tail = 0 : i64
-// META-SAME: id = 2 : i64
-// META-SAME: loop_depth = 2 : i64
-// META-SAME: name = "template_tadd_2d_post_update"
-// META-SAME: postupdate = 1 : i64
-// META-SAME: tail = 0 : i64
-// META-SAME: id = 3 : i64
-// META-SAME: loop_depth = 1 : i64
-// META-SAME: name = "template_tadd_1d_post_update"
-// META-SAME: postupdate = 1 : i64
 // META-SAME: tail = 0 : i64}]
 // META-NOT: priority =
 // META-NOT: tags =
@@ -46,8 +31,13 @@
 // PREFUSION: IR Dump Before FusionPlan
 // PREFUSION: pto.tadd
 // PREFUSION-SAME: candidates = [
+// PREFUSION-SAME: id = 0 : i64
+// PREFUSION-SAME: loop_depth = 2 : i64
+// PREFUSION-SAME: name = "template_tadd"
+// PREFUSION-SAME: postupdate = 0 : i64
+// PREFUSION-SAME: tail = 0 : i64}]
 
-// SELECT: func.func {{.*}}@{{.*}}__template_tadd_2d_no_post_update
+// SELECT: func.func {{.*}}@{{.*}}__template_tadd
 
 // EXPAND: func.func @TADD
 // EXPAND-NOT: pto.tadd ins
