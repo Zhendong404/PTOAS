@@ -20,7 +20,8 @@
 # Output structure:
 #   <output_directory>/
 #     ptoas           - Wrapper script that sets up LD_LIBRARY_PATH
-#     bin/ptoas       - The actual ptoas binary
+#     bin/ptoas       - Python wrapper entrypoint
+#     ptoas/          - Launcher package used by the wrapper
 #     lib/*.so*       - Required shared library dependencies
 #     share/ptoas/TileOps - TileLang template library
 #     tilelang_dsl/   - TileLang DSL Python package
@@ -49,14 +50,21 @@ export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRAR
 
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-${PTO_SOURCE_DIR}/build}"
 PTOAS_BIN="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
+PTOAS_SHARED_MODULE="${PTO_INSTALL_DIR}/lib/ptoas.so"
 PTOAS_DEPS_DIR="${PTOAS_DIST_DIR}/lib"
 PTOAS_TILEOPS_SRC_DIR="${PTO_INSTALL_DIR}/share/ptoas/TileOps"
 PTOAS_TILEOPS_DIST_DIR="${PTOAS_DIST_DIR}/share/ptoas/TileOps"
 PTOAS_TILELANG_DSL_SRC_DIR="${PTO_INSTALL_DIR}/tilelang_dsl"
 PTOAS_TILELANG_DSL_DIST_DIR="${PTOAS_DIST_DIR}/tilelang_dsl"
+PTOAS_WRAPPER_PKG_SRC_DIR="${PTO_INSTALL_DIR}/ptoas"
+PTOAS_WRAPPER_PKG_DIST_DIR="${PTOAS_DIST_DIR}/ptoas"
 
 if [ ! -f "$PTOAS_BIN" ]; then
-  echo "Error: ptoas binary not found at $PTOAS_BIN" >&2
+  echo "Error: ptoas wrapper not found at $PTOAS_BIN" >&2
+  exit 1
+fi
+if [ ! -f "$PTOAS_SHARED_MODULE" ]; then
+  echo "Error: shared launcher module not found at $PTOAS_SHARED_MODULE" >&2
   exit 1
 fi
 
@@ -134,11 +142,13 @@ mkdir -p \
   "${PTOAS_DIST_DIR}/bin" \
   "${PTOAS_DEPS_DIR}" \
   "$(dirname "${PTOAS_TILEOPS_DIST_DIR}")"
+rm -rf "${PTOAS_WRAPPER_PKG_DIST_DIR}"
+cp -R "${PTOAS_WRAPPER_PKG_SRC_DIR}" "${PTOAS_WRAPPER_PKG_DIST_DIR}"
 
 # Copy ptoas binary
-echo "Copying ptoas binary..."
+echo "Copying ptoas wrapper..."
 cp "$PTOAS_BIN" "${PTOAS_DIST_DIR}/bin/"
-harden_elf "${PTOAS_DIST_DIR}/bin/ptoas"
+chmod +x "${PTOAS_DIST_DIR}/bin/ptoas"
 
 # Collect *.so dependencies (transitive closure under /llvm-workspace)
 echo "Collecting shared library dependencies..."
@@ -158,10 +168,13 @@ copy_so() {
 while read -r res; do
   copy_so "$res"
 done < <(ldd "$PTOAS_BIN" 2>/dev/null | awk '/=> \/llvm-workspace\// {print $3}')
+while read -r res; do
+  copy_so "$res"
+done < <(ldd "$PTOAS_SHARED_MODULE" 2>/dev/null | awk '/=> \/llvm-workspace\// {print $3}')
 
 while read -r packaged; do
   harden_elf "$packaged"
-done < <(find "${PTOAS_DIST_DIR}/bin" "${PTOAS_DEPS_DIR}" -type f | sort)
+done < <(find "${PTOAS_DEPS_DIR}" -type f | sort)
 
 echo "Copying TileLang runtime resources..."
 if [ ! -d "${PTOAS_TILEOPS_SRC_DIR}" ]; then
