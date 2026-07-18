@@ -7,15 +7,15 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 #include "ptoas.h"
+#include "PTOASNameHints.h"
+#include "PTOASCppEmission.h"
 #include "PTO/IR/PTO.h"
-#include "PTO/IR/VMIUtils.h"
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "VPTOHostStubEmission.h"
 #include "TilelangDaemon.h"
 #include "PTO/Transforms/CppPostprocess.h"
-#include "mlir/AsmParser/AsmParserState.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -42,8 +42,6 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
-#include "ptobc/ptobc_decode.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
@@ -59,18 +57,12 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Program.h"
 #include <algorithm>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
-#include <thread>
-#include <chrono>
 #include <unistd.h>
-#include <signal.h>
-#include <sys/types.h>
 
 extern "C" {
 extern char **environ;
@@ -178,7 +170,7 @@ static LogicalResult applyConfiguredPassManagerCLOptions(
   return failure();
 }
 
-static LogicalResult reorderEmitCFunctions(ModuleOp module) {
+[[maybe_unused]] static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   SmallVector<emitc::FuncOp> declarations;
   SmallVector<emitc::FuncOp> definitions;
   llvm::DenseMap<StringAttr, emitc::FuncOp> definitionsByName;
@@ -659,6 +651,7 @@ static bool hasUnexpandedTileOps(ModuleOp module) {
   return found;
 }
 
+#if 0
 using FunctionBlockArgHintMap =
     llvm::StringMap<llvm::SmallVector<llvm::SmallVector<std::string, 4>, 4>>;
 
@@ -1009,23 +1002,6 @@ static void narrowUnusedMultiResultProvenanceLocs(Operation *root) {
   });
 }
 
-namespace {
-struct NarrowUnusedMultiResultProvenancePass
-    : public PassWrapper<NarrowUnusedMultiResultProvenancePass,
-                         OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      NarrowUnusedMultiResultProvenancePass)
-
-  void runOnOperation() override {
-    narrowUnusedMultiResultProvenanceLocs(getOperation());
-  }
-};
-} // namespace
-
-static std::unique_ptr<Pass> createNarrowUnusedMultiResultProvenancePass() {
-  return std::make_unique<NarrowUnusedMultiResultProvenancePass>();
-}
-
 static void collectNonEntryBlocksInSourceOrder(
     Operation *op, SmallVectorImpl<Block *> &blocks) {
   for (Region &region : op->getRegions()) {
@@ -1076,6 +1052,8 @@ void mlir::pto::applyTextualNameHintsToModule(ModuleOp module,
     applyOperationResultNameHints(opDef.op, hints);
   }
 }
+#endif
+#if 0
 
 static FunctionBlockArgHintMap collectFunctionBlockArgNameHints(ModuleOp module) {
   FunctionBlockArgHintMap hintsByFunction;
@@ -2561,6 +2539,7 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
   return llvm::any_of(module.getOps<func::FuncOp>(), hasMultiBlockFunc) ||
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
+#endif
 
 static void appendVMISemanticPipeline(OpPassManager &pm);
 
@@ -3063,8 +3042,6 @@ int mlir::pto::compilePTOASModule(
   // or an `arith.select` chain (dynamic slot). The multi-address cast
   // produced by PlanMemory survives as the alloc anchor.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
-  if (effectiveBackend == PTOBackend::EmitC)
-    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
 
   module->getOperation()->setAttr(
       "pto.target_arch",
@@ -3090,8 +3067,6 @@ int mlir::pto::compilePTOASModule(
   // materialized tile-native handles, so helper arguments are restored to the
   // tile_buf ABI before qk.as_ptr()-style bridges are cloned into callers.
   pm.addPass(pto::createPTOInlineBackendHelpersPass());
-  if (effectiveBackend == PTOBackend::EmitC)
-    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   pm.addPass(pto::createPTOMemoryConsistencyPass());
@@ -3137,9 +3112,6 @@ int mlir::pto::compilePTOASModule(
   if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
     return 1;
 
-  narrowUnusedMultiResultProvenanceLocs(module.get());
-  splitDerivedSingleResultProvenanceLocs(module.get());
-
   PassManager emitcPM(module->getContext());
   emitcPM.enableVerifier();
   if (arch == "a3") {
@@ -3158,41 +3130,12 @@ int mlir::pto::compilePTOASModule(
     return 1;
   }
 
-  applyFunctionBlockArgNameHintsToEmitC(*module, functionBlockArgHints);
-  splitDerivedSingleResultProvenanceLocs(module.get());
-  dropEmptyEmitCExpressions(module.get());
-  materializeControlFlowOperands(module.get());
-  normalizeEmitCIntegerAttrsForCppEmission(module.get());
-  if (failed(reorderEmitCFunctions(module.get()))) {
-    llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
-    return 1;
-  }
-  annotateEmitCProvenanceHints(*module);
-
-  // Emit C++ to string, then post-process, then write to output file.
   std::string cppOutput;
-  llvm::raw_string_ostream cppOS(cppOutput);
-  // CFG-style lowering (e.g. scf.while -> cf.br/cf.cond_br) may introduce
-  // multiple blocks, requiring variables to be declared at the top for valid
-  // C++ emission.
-  bool declareVariablesAtTop = shouldDeclareVariablesAtTop(*module);
-  if (failed(emitc::translateToCpp(*module, cppOS,
-                                  /*declareVariablesAtTop=*/declareVariablesAtTop))) {
+  if (failed(finalizeEmitCModuleForCppEmission(*module, functionBlockArgHints,
+                                               emitAddPtrTrace, cppOutput))) {
     llvm::errs() << "Error: Failed to emit C++.\n";
     return 1;
   }
-  cppOS.flush();
-  rewriteTileGetSetValueMarkers(cppOutput);
-  rewriteAsyncEventMarkers(cppOutput);
-  rewritePtrScalarMarkers(cppOutput);
-  rewriteScalarGMStoreFlushMarkers(cppOutput);
-  rewriteEventIdArrayMarkers(cppOutput);
-  pto::rewriteLastUseMarkersInCpp(cppOutput);
-  rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
-  rewriteMalformedVerbatimSemicolons(cppOutput);
-  rewriteScalarConstantDecls(cppOutput);
-  rewriteHoistedGlobalTensorDecls(cppOutput);
-  rewriteNameHintMarkers(cppOutput);
 
   result.kind = PTOASCompileResultKind::Text;
   result.textOutput = std::move(cppOutput);

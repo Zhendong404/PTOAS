@@ -13,6 +13,8 @@
 
 set(PTOAS_RUNTIME_SOURCES
   ptoas.cpp
+  PTOASNameHints.cpp
+  PTOASCppEmission.cpp
   driver.cpp
   VPTOHostStubEmission.cpp
   ObjectEmission.cpp
