@@ -34,10 +34,10 @@ fi
 
 WHEEL_GLOB="${PTO_TEST_WHEEL_PATH:-}"
 if [[ -z "${WHEEL_GLOB}" && -n "${PTO_WHEEL_DIST_DIR:-}" ]]; then
-  WHEEL_GLOB="${PTO_WHEEL_DIST_DIR}/ptoas-*.whl"
+  WHEEL_GLOB="${PTO_WHEEL_DIST_DIR}/ptoas*.whl"
 fi
 if [[ -z "${WHEEL_GLOB}" && -d "${REPO_ROOT}/build/wheel-dist" ]]; then
-  WHEEL_GLOB="${REPO_ROOT}/build/wheel-dist/ptoas-*.whl"
+  WHEEL_GLOB="${REPO_ROOT}/build/wheel-dist/ptoas*.whl"
 fi
 
 TEST_TMPDIR=""
@@ -88,8 +88,9 @@ echo "Testing ptodsl public imports..."
 echo "Testing installed ptoas console entry..."
 PTOAS_VERSION_OUTPUT="$(ptoas --version | tr -d '\r')"
 echo "${PTOAS_VERSION_OUTPUT}"
-if [[ -n "${PTOAS_VERSION:-}" ]]; then
-  EXPECTED_VERSION_OUTPUT="ptoas ${PTOAS_VERSION}"
+EXPECTED_PTOAS_CLI_VERSION="${PTOAS_CLI_VERSION:-${PTOAS_VERSION:-}}"
+if [[ -n "${EXPECTED_PTOAS_CLI_VERSION}" ]]; then
+  EXPECTED_VERSION_OUTPUT="ptoas ${EXPECTED_PTOAS_CLI_VERSION}"
   if [[ "${PTOAS_VERSION_OUTPUT}" != "${EXPECTED_VERSION_OUTPUT}" ]]; then
     echo "Error: expected '${EXPECTED_VERSION_OUTPUT}', got '${PTOAS_VERSION_OUTPUT}'" >&2
     exit 1
@@ -114,8 +115,8 @@ CLEAN_PTOAS_VERSION_OUTPUT="$(
     "${PTOAS_ENTRYPOINT}" --version | tr -d '\r'
 )"
 echo "${CLEAN_PTOAS_VERSION_OUTPUT}"
-if [[ -n "${PTOAS_VERSION:-}" ]]; then
-  EXPECTED_VERSION_OUTPUT="ptoas ${PTOAS_VERSION}"
+if [[ -n "${EXPECTED_PTOAS_CLI_VERSION}" ]]; then
+  EXPECTED_VERSION_OUTPUT="ptoas ${EXPECTED_PTOAS_CLI_VERSION}"
   if [[ "${CLEAN_PTOAS_VERSION_OUTPUT}" != "${EXPECTED_VERSION_OUTPUT}" ]]; then
     echo "Error: expected '${EXPECTED_VERSION_OUTPUT}', got '${CLEAN_PTOAS_VERSION_OUTPUT}'" >&2
     exit 1
