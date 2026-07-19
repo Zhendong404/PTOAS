@@ -21,6 +21,10 @@ set(PTOAS_RUNTIME_SOURCES
   TilelangDaemon.cpp
 )
 
+option(PTOAS_PROFILE_PTOAS_CPP
+  "Enable per-TU profiling flags for tools/ptoas/ptoas.cpp"
+  OFF)
+
 set(PTOAS_WRAPPER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ptoas_wrapper.py")
 set(PTOAS_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas")
 
@@ -92,6 +96,25 @@ add_library(ptoas_runtime SHARED ${PTOAS_RUNTIME_SOURCES})
 # Keep the shared runtime's compile mode aligned with LLVM/MLIR so RTTI,
 # exceptions, and visibility expectations match the libraries it links to.
 llvm_update_compile_flags(ptoas_runtime)
+
+if(PTOAS_PROFILE_PTOAS_CPP)
+  set(_ptoas_cpp_profile_options)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    list(APPEND _ptoas_cpp_profile_options
+      -ftime-trace
+      -ftime-report
+      -H)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    list(APPEND _ptoas_cpp_profile_options
+      -ftime-report
+      -H)
+  endif()
+  if(_ptoas_cpp_profile_options)
+    set_source_files_properties(ptoas.cpp PROPERTIES
+      COMPILE_OPTIONS "${_ptoas_cpp_profile_options}")
+  endif()
+endif()
+
 set_target_properties(ptoas_runtime PROPERTIES
   OUTPUT_NAME "ptoas"
   PREFIX ""

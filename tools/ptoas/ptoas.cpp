@@ -16,12 +16,18 @@
 #include "VPTOHostStubEmission.h"
 #include "TilelangDaemon.h"
 #include "PTO/Transforms/CppPostprocess.h"
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Func/Transforms/Passes.h"
+#include "mlir/Dialect/Math/Transforms/Passes.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/Transforms/Passes.h"
+#include "mlir/Dialect/Tensor/Transforms/Passes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/InitAllDialects.h"
-#include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -80,12 +86,12 @@ namespace {
 constexpr unsigned kSeenCalleeInlineCapacity = 8;
 constexpr int kDefaultGraphSyncSolverEventIdMax = 8;
 constexpr unsigned kStringRefInlineCapacity = 4;
-constexpr unsigned kEmptyExpressionInlineCapacity = 8;
-constexpr unsigned kBranchInlineCapacity = 16;
-constexpr size_t kMarkerCallReserveExtra = 16;
-constexpr size_t kRewriteOutputReserveExtra = 64;
-constexpr size_t kMarkerRewriteMinArgCount = 2;
-constexpr size_t kMarkerRewriteTernaryArgCount = 3;
+// constexpr unsigned kEmptyExpressionInlineCapacity = 8;
+// constexpr unsigned kBranchInlineCapacity = 16;
+// constexpr size_t kMarkerCallReserveExtra = 16;
+// constexpr size_t kRewriteOutputReserveExtra = 64;
+// constexpr size_t kMarkerRewriteMinArgCount = 2;
+// constexpr size_t kMarkerRewriteTernaryArgCount = 3;
 
 using StringRefVector =
     llvm::SmallVector<llvm::StringRef, kStringRefInlineCapacity>;
@@ -130,7 +136,15 @@ void mlir::pto::registerPTOASDialects(DialectRegistry &registry) {
 }
 
 void mlir::pto::registerPTOASPassesAndCLOptions() {
-  mlir::registerAllPasses();
+  mlir::registerTransformsPasses();
+  mlir::registerConversionPasses();
+  arith::registerArithPasses();
+  func::registerFuncPasses();
+  math::registerMathPasses();
+  memref::registerMemRefPasses();
+  registerSCFPasses();
+  tensor::registerTensorPasses();
+  emitc::registerEmitCPasses();
   mlir::pto::registerPTOPasses();
   mlir::pto::registerPTOViewToMemrefPass();
   mlir::pto::registerPTOInlineLibCall();
