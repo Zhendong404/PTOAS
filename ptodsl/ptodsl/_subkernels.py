@@ -594,8 +594,10 @@ def simt(
     target: str = "a5",
     ast_rewrite: bool = True,
     max_threads: int | None = None,
+    max_regs: int | None = None,
 ):
     max_threads = _validate_simt_resource_attr("max_threads", max_threads)
+    _validate_simt_resource_attr("max_regs", max_regs)
     simt_inline_dims = None
     if fn is not None and not callable(fn):
         dims = (fn, *dims)

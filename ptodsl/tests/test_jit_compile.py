@@ -829,7 +829,7 @@ def simt_grouped_query_probe():
     pto.keep(grid_z, slot=8)
 
 
-@pto.simt(max_threads=256)
+@pto.simt(max_threads=256, max_regs=48)
 def simt_resource_attr_probe():
     pto.get_tid_x()
 
@@ -5158,12 +5158,21 @@ def main() -> None:
             r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_threads = 256 : i32\}",
             simt_resource_attr_text,
         ) is not None,
-        "@pto.simt(max_threads=...) should attach resource attrs to the helper function",
+        "@pto.simt(max_threads=..., max_regs=...) should only attach max_threads to the helper function",
+    )
+    expect(
+        "pto.simt_max_regs" not in simt_resource_attr_text,
+        "@pto.simt(max_regs=...) is accepted for compatibility but must not emit an attribute",
     )
     expect_raises(
         ValueError,
         lambda: pto.simt(max_threads=0)(lambda: None),
         "max_threads",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.simt(max_regs=True)(lambda: None),
+        "max_regs",
     )
 
     def _enter_inline_simt_with_resource_attr():

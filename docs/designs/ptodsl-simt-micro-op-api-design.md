@@ -291,7 +291,7 @@ SIMT entry functions may carry an optional VPTO attribute:
 PTO-DSL exposes it through `@pto.simt`:
 
 ```python
-@pto.simt(max_threads=256)
+@pto.simt(max_threads=256, max_regs=48)
 def body(...):
     ...
 ```
@@ -305,9 +305,10 @@ func.func @body(...) attributes {
 }
 ```
 
-Lowering attaches the attribute to the generated specialized helper function,
-not to the authored Python symbol. Omitting the argument emits no explicit
-attribute and lets the backend default (1024) apply.
+Lowering attaches the `max_threads` attribute to the generated specialized helper
+function, not to the authored Python symbol. `max_regs` is accepted only for source
+compatibility and emits no attribute; the backend derives the register budget from
+`max_threads`.
 
 Validation:
 
@@ -430,10 +431,8 @@ Minimum Python/frontend tests:
    produces distinct helper functions and distinct traced bodies.
 8. `pto.simt_launch` callee attributes reference the actual generated helper
    symbols.
-9. `@pto.simt(max_threads=...)` emits `pto.simt_max_threads` on the generated
-   helper function. The register budget (`simt-max-registers`) is automatically
-   derived from `max_threads` by the backend according to the hardware resource
-   partition and is no longer a configurable attribute.
+9. `@pto.simt(max_threads=..., max_regs=...)` emits only `pto.simt_max_threads` on
+   the generated helper function; `max_regs` remains a no-op compatibility argument.
 
 Suggested lit/frontend assertions:
 
