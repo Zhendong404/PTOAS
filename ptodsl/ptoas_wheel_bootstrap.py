@@ -67,7 +67,12 @@ def _candidate_wheel_python_roots(wrapper: Path, module_file: str | None = None)
     candidates: list[Path] = []
 
     if module_file:
-        candidates.append(Path(module_file).resolve().parent)
+        module_path = Path(module_file).resolve()
+        candidates.append(module_path.parent)
+        # Editable installs import this bootstrap from the repository while
+        # the generated runtime overlay lives under build/python.
+        repo_root = module_path.parent.parent
+        candidates.append(repo_root / "build" / "python")
 
     for scheme_name in ("purelib", "platlib"):
         scheme_path = sysconfig.get_path(scheme_name)

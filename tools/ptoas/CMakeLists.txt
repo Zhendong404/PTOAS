@@ -116,6 +116,20 @@ add_custom_target(ptoas_runtime_staging ALL
   VERBATIM
 )
 
+# Editable Python installs resolve the wheel bootstrap from build/python. Keep
+# a wheel-shaped runtime overlay there so the same launcher contract works for
+# both regular and editable installations.
+if(TARGET PTODSLPackage)
+  add_custom_command(TARGET ptoas_runtime_staging POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+            "${CMAKE_BINARY_DIR}/python/ptoas/_runtime"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${PTOAS_BUILD_RUNTIME_STAGING_DIR}"
+            "${CMAKE_BINARY_DIR}/python/ptoas/_runtime"
+    VERBATIM
+  )
+endif()
+
 if(TARGET PTODSLPackage)
   # The build-tree launcher imports ptoas._runtime_entry from build/python.
   # Keep that package staging coupled to every runtime staging entrypoint,
