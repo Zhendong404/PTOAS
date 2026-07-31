@@ -12,7 +12,11 @@ const path = require('path');
 const COMMENT_MARKER = '<!-- ci-sim-duration-warning -->';
 const RESOLVED_PREFIX = 'Resolved:';
 const BOT_LOGIN = 'github-actions[bot]';
-const JOB_NAME = 'vpto-sim-validation';
+const PRODUCER_JOB_NAME = 'build-wheel-x86_64';
+const GATE_JOB_NAME = 'ci-sim-required';
+const SUITE_JOB_NAMES = ['pypto-sim-smoke', 'tileop-st', 'vpto-sim', 'tilelib-st', 'ptodsl-st'];
+const PRODUCER_TARGET_MINUTES = 6;
+const PRODUCER_P95_BUDGET_MINUTES = 10;
 const SLOW_LABEL = 'ci-slow';
 const SHA_RE = /^[0-9a-fA-F]{40}$/;
 
@@ -47,12 +51,18 @@ function formatBudget(totalMinutes) {
   return `${minutes}m`;
 }
 
-function warningBody(author, elapsed, budget, conclusion, runUrl) {
+function warningBody(author, producerElapsed, criticalPath, budget, conclusion, runUrl, suiteDurations) {
+  const suiteLines = suiteDurations.length
+    ? suiteDurations.map(item => `- \`${item.name}\`: **${item.duration}**`).join('\n')
+    : '- No completed suite jobs were found.';
   return [
     COMMENT_MARKER,
     `Warning: @${author}, ci-sim exceeded its soft runtime budget.`,
     '',
-    `- \`${JOB_NAME}\` runtime: **${elapsed}**`,
+    `- \`${PRODUCER_JOB_NAME}\` runtime: **${producerElapsed}**`,
+    `- Producer → gate critical path: **${criticalPath}**`,
+    `- Selected suite durations:\n${suiteLines}`,
+    `- Warm-cache producer target: **${PRODUCER_TARGET_MINUTES}m**; P95 advisory budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
     `- Soft budget: **${budget}**`,
     `- Job conclusion: **${conclusion}**`,
     `- [Workflow run](${runUrl})`,
@@ -62,12 +72,14 @@ function warningBody(author, elapsed, budget, conclusion, runUrl) {
   ].join('\n');
 }
 
-function resolvedBody(elapsed, budget, runUrl) {
+function resolvedBody(producerElapsed, criticalPath, budget, runUrl) {
   return [
     COMMENT_MARKER,
     'Resolved: ci-sim runtime is back within its soft budget.',
     '',
-    `- Latest \`${JOB_NAME}\` runtime: **${elapsed}**`,
+    `- Latest \`${PRODUCER_JOB_NAME}\` runtime: **${producerElapsed}**`,
+    `- Producer → gate critical path: **${criticalPath}**`,
+    `- Warm-cache producer target: **${PRODUCER_TARGET_MINUTES}m**; P95 advisory budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
     `- Soft budget: **${budget}**`,
     `- [Workflow run](${runUrl})`,
     '',
@@ -123,17 +135,31 @@ module.exports = async function observeRun({github, context, config = {}}) {
     filter: 'latest',
     per_page: 100,
   });
-  const job = jobs.find(item => item.name === JOB_NAME && item.started_at && item.completed_at);
-  if (!job) {
-    return `No completed ${JOB_NAME} job found in workflow run ${runId}.`;
+  const producer = jobs.find(item => item.name.includes(PRODUCER_JOB_NAME) && item.started_at && item.completed_at);
+  const gate = jobs.find(item => item.name === GATE_JOB_NAME && item.started_at && item.completed_at);
+  if (!producer) {
+    return `No completed ${PRODUCER_JOB_NAME} job found in workflow run ${runId}.`;
   }
 
-  const elapsedSeconds = Math.floor((Date.parse(job.completed_at) - Date.parse(job.started_at)) / 1000);
+  const elapsedSeconds = Math.floor((Date.parse(producer.completed_at) - Date.parse(producer.started_at)) / 1000);
   if (!Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) {
-    throw new Error(`Invalid job timestamps: ${job.started_at} to ${job.completed_at}`);
+    throw new Error(`Invalid job timestamps: ${producer.started_at} to ${producer.completed_at}`);
   }
 
   const elapsed = formatDuration(elapsedSeconds);
+  const criticalPathSeconds = gate
+    ? Math.floor((Date.parse(gate.completed_at) - Date.parse(producer.started_at)) / 1000)
+    : elapsedSeconds;
+  if (!Number.isFinite(criticalPathSeconds) || criticalPathSeconds < 0) {
+    throw new Error(`Invalid producer/gate timestamps: ${producer.started_at} to ${gate?.completed_at}`);
+  }
+  const criticalPath = formatDuration(criticalPathSeconds);
+  const suiteDurations = jobs
+    .filter(item => SUITE_JOB_NAMES.includes(item.name) && item.started_at && item.completed_at)
+    .map(item => ({
+      name: item.name,
+      duration: formatDuration(Math.max(0, Math.floor((Date.parse(item.completed_at) - Date.parse(item.started_at)) / 1000))),
+    }));
   const budget = formatBudget(softTimeoutMinutes);
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
@@ -146,12 +172,14 @@ module.exports = async function observeRun({github, context, config = {}}) {
     .reverse()
     .find(comment => comment.user?.login === BOT_LOGIN && comment.body?.includes(COMMENT_MARKER));
 
-  if (elapsedSeconds > softTimeoutMinutes * 60) {
-    const body = warningBody(pull.user.login, elapsed, budget, job.conclusion || 'unknown', runUrl);
+  const producerOverBudget = elapsedSeconds > PRODUCER_P95_BUDGET_MINUTES * 60;
+  const criticalPathOverBudget = criticalPathSeconds > softTimeoutMinutes * 60;
+  if (producerOverBudget || criticalPathOverBudget) {
+    const body = warningBody(pull.user.login, elapsed, criticalPath, budget, producer.conclusion || 'unknown', runUrl, suiteDurations);
     if (dryRun) {
       const labelAction = hasSlowLabel ? 'keep' : 'add';
       const commentAction = existing ? 'update' : 'create';
-      return `Dry run: would ${labelAction} ${SLOW_LABEL} and ${commentAction} slow CI warning ` +
+    return `Dry run: would ${labelAction} ${SLOW_LABEL} and ${commentAction} slow CI warning ` +
         `on PR #${prContext.number}.\n${body}`;
     }
 
@@ -174,7 +202,7 @@ module.exports = async function observeRun({github, context, config = {}}) {
     if (hasSlowLabel) actions.push(`remove ${SLOW_LABEL}`);
     if (commentNeedsResolution) actions.push('resolve slow CI warning');
     return `Dry run: would ${actions.join(' and ')} on PR #${prContext.number}.\n` +
-      resolvedBody(elapsed, budget, runUrl);
+      resolvedBody(elapsed, criticalPath, budget, runUrl);
   }
 
   const actions = [];
@@ -187,7 +215,7 @@ module.exports = async function observeRun({github, context, config = {}}) {
       owner,
       repo,
       comment_id: existing.id,
-      body: resolvedBody(elapsed, budget, runUrl),
+      body: resolvedBody(elapsed, criticalPath, budget, runUrl),
     });
     actions.push('resolved slow CI warning');
   }
@@ -195,7 +223,7 @@ module.exports = async function observeRun({github, context, config = {}}) {
     return `${actions.join('; ')} on PR #${prContext.number}.`;
   }
   if (existing) {
-    return `CI runtime ${elapsed} remains within the ${budget} budget.`;
+    return `CI producer runtime ${elapsed}; producer-to-gate critical path ${criticalPath}; within the ${budget} budget.`;
   }
-  return `CI runtime ${elapsed} is within the ${budget} budget.`;
+  return `CI producer runtime ${elapsed}; producer-to-gate critical path ${criticalPath}; within the ${budget} budget.`;
 };

@@ -357,7 +357,88 @@ jobs:
             ${{ steps.consumer.outputs.work_dir }}/**
           if-no-files-found: warn
 
+  ci-sim-required:
+    name: ci-sim-required
+    if: ${{ always() }}
+    needs:
+      - select-ci-sim
+      - build-wheel-x86_64
+      - validate-wheel-aarch64
+      - pypto-sim-smoke
+      - tileop-st
+      - vpto-sim
+      - tilelib-st
+      - ptodsl-st
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate selected CI graph
+        shell: bash
+        env:
+          SELECTION_RESULT: ${{ needs.select-ci-sim.result }}
+          WHEEL_SELECTED: ${{ needs.select-ci-sim.outputs.wheel }}
+          X86_WHEEL_RESULT: ${{ needs.build-wheel-x86_64.result }}
+          AARCH64_WHEEL_RESULT: ${{ needs.validate-wheel-aarch64.result }}
+          PYPTO_SELECTED: ${{ needs.select-ci-sim.outputs.pypto }}
+          PYPTO_RESULT: ${{ needs.pypto-sim-smoke.result }}
+          TILEOP_SELECTED: ${{ needs.select-ci-sim.outputs.tileop }}
+          TILEOP_RESULT: ${{ needs.tileop-st.result }}
+          VPTO_SELECTED: ${{ needs.select-ci-sim.outputs.vpto }}
+          VPTO_RESULT: ${{ needs.vpto-sim.result }}
+          TILELIB_SELECTED: ${{ needs.select-ci-sim.outputs.tilelib }}
+          TILELIB_RESULT: ${{ needs.tilelib-st.result }}
+          PTODSL_SELECTED: ${{ needs.select-ci-sim.outputs.ptodsl }}
+          PTODSL_RESULT: ${{ needs.ptodsl-st.result }}
+          SELECTION_REASON: ${{ needs.select-ci-sim.outputs.selection_reason }}
+        run: |
+          set -euo pipefail
+          failures=()
+
+          require_result() {
+            local name="$1" selected="$2" result="$3"
+            local expected="skipped"
+            [[ "${selected}" == "true" ]] && expected="success"
+            if [[ "${result}" != "${expected}" ]]; then
+              failures+=("${name}: selected=${selected}, expected=${expected}, actual=${result}")
+            fi
+          }
+
+          if [[ "${SELECTION_RESULT}" != "success" ]]; then
+            failures+=("selection: expected=success, actual=${SELECTION_RESULT}")
+          fi
+          require_result build-wheel-x86_64 "${WHEEL_SELECTED}" "${X86_WHEEL_RESULT}"
+          require_result validate-wheel-aarch64 "${WHEEL_SELECTED}" "${AARCH64_WHEEL_RESULT}"
+          require_result pypto-sim-smoke "${PYPTO_SELECTED}" "${PYPTO_RESULT}"
+          require_result tileop-st "${TILEOP_SELECTED}" "${TILEOP_RESULT}"
+          require_result vpto-sim "${VPTO_SELECTED}" "${VPTO_RESULT}"
+          require_result tilelib-st "${TILELIB_SELECTED}" "${TILELIB_RESULT}"
+          require_result ptodsl-st "${PTODSL_SELECTED}" "${PTODSL_RESULT}"
+
+          {
+            echo "### ci-sim required gate"
+            echo
+            echo "Selection: ${SELECTION_REASON:-unavailable}"
+            echo
+            echo '| Job | Selected | Result |'
+            echo '| --- | --- | --- |'
+            echo "| build-wheel-x86_64 | ${WHEEL_SELECTED} | ${X86_WHEEL_RESULT} |"
+            echo "| validate-wheel-aarch64 | ${WHEEL_SELECTED} | ${AARCH64_WHEEL_RESULT} |"
+            echo "| pypto-sim-smoke | ${PYPTO_SELECTED} | ${PYPTO_RESULT} |"
+            echo "| tileop-st | ${TILEOP_SELECTED} | ${TILEOP_RESULT} |"
+            echo "| vpto-sim | ${VPTO_SELECTED} | ${VPTO_RESULT} |"
+            echo "| tilelib-st | ${TILELIB_SELECTED} | ${TILELIB_RESULT} |"
+            echo "| ptodsl-st | ${PTODSL_SELECTED} | ${PTODSL_RESULT} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${#failures[@]}" -ne 0 ]]; then
+            printf 'ERROR: %s\n' "${failures[@]}" >&2
+            exit 1
+          fi
+          echo "All selected ci-sim jobs succeeded and all unselected jobs skipped."
+
   vpto-sim-validation:
+    # Temporary non-blocking comparison path; the fan-out jobs and
+    # ci-sim-required own the required result during rollout.
+    continue-on-error: true
     needs: select-ci-sim
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 300
