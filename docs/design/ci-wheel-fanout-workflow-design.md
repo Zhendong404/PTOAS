@@ -180,6 +180,12 @@ cache. Successful main builds may save a cache capped at 2 GiB. Release,
 scheduled publication, and manual publication builds do not restore, save, or
 configure ccache compiler launchers.
 
+The `ci-sim` workflow uses PR-scoped concurrency. A new commit cancels older
+runs for the same pull request before they can all rebuild LLVM after the same
+cache miss. Schedule and workflow-dispatch runs are not cancelled by this
+policy. A successful default-branch wheel build remains the preferred seed for
+LLVM and PTOAS caches that PR refs are allowed to restore.
+
 The warm-cache x86_64 producer target is approximately six minutes. Ten
 minutes is the P95 budget evaluated from a representative warm-cache sample,
 not a per-run alert threshold. A cold LLVM cache is expected after an LLVM
