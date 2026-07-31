@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+name: Setup ci-sim wheel consumer
+description: Install and probe the single CPython 3.11 x86_64 PTOAS wheel artifact.
+inputs:
+  suite:
+    description: Consumer suite name used to isolate paths.
+    required: true
+  system-site-packages:
+    description: Use a Python 3.11 runtime that imports torch and torch_npu.
+    required: false
+    default: "false"
+outputs:
+  python:
+    description: Isolated consumer Python executable.
+    value: ${{ steps.setup.outputs.python }}
+  ptoas:
+    description: PTOAS executable installed from the shared wheel.
+    value: ${{ steps.setup.outputs.ptoas }}
+  work_dir:
+    description: Suite-specific working directory.
+    value: ${{ steps.setup.outputs.work_dir }}
+  log_dir:
+    description: Suite-specific log directory.
+    value: ${{ steps.setup.outputs.log_dir }}
+  ascend_home:
+    description: Detected CANN installation root when torch_npu is required.
+    value: ${{ steps.setup.outputs.ascend_home }}
+runs:
+  using: composite
+  steps:
+    - name: Download shared PTOAS wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: ptoas-ci-wheel-cp311-x86_64
+        path: ${{ runner.temp }}/ci-sim-${{ inputs.suite }}/wheel
+
+    - name: Install and probe shared wheel
+      id: setup
+      shell: bash
+      env:
+        SUITE: ${{ inputs.suite }}
+        REQUIRE_TORCH_NPU: ${{ inputs.system-site-packages }}
+      run: |
+        set -euo pipefail
+        root="${RUNNER_TEMP}/ci-sim-${SUITE}"
+        wheel_dir="${root}/wheel"
+        venv_dir="${root}/venv"
+        work_dir="${root}/work"
+        log_dir="${root}/logs"
+        rm -rf "${venv_dir}" "${work_dir}" "${log_dir}"
+        mkdir -p "${work_dir}" "${log_dir}"
+
+        shopt -s nullglob
+        wheels=("${wheel_dir}"/*.whl)
+        if [[ "${#wheels[@]}" -ne 1 ]]; then
+          echo "ERROR: expected exactly one shared wheel, found ${#wheels[@]}" >&2
+          printf '  %s\n' "${wheels[@]}" >&2
+          exit 1
+        fi
+        wheel="${wheels[0]}"
+        if [[ "$(basename "${wheel}")" != *-cp311-cp311-manylinux_2_34_x86_64.whl ]]; then
+          echo "ERROR: incompatible shared wheel: $(basename "${wheel}")" >&2
+          exit 1
+        fi
+
+        base_python=python3.11
+        ascend_home=""
+        if [[ "${REQUIRE_TORCH_NPU}" == "true" ]]; then
+          ascend_home="$(bash "${GITHUB_WORKSPACE}/.github/scripts/find_ascend_home.sh")"
+          source "${ascend_home}/bin/setenv.bash"
+          base_python="$(bash "${GITHUB_WORKSPACE}/.github/scripts/find_torch_npu_python.sh")"
+          "${base_python}" -m venv --system-site-packages "${venv_dir}"
+        else
+          command -v "${base_python}" >/dev/null 2>&1 || {
+            echo "ERROR: ci-sim consumers require python3.11" >&2
+            exit 1
+          }
+          "${base_python}" -m venv "${venv_dir}"
+        fi
+
+        python_bin="${venv_dir}/bin/python"
+        "${python_bin}" -m pip install --upgrade pip
+        "${python_bin}" -m pip install --no-deps --force-reinstall "${wheel}"
+        "${python_bin}" - <<'PY'
+        import ptoas.mlir.ir
+        from ptoas.mlir.dialects import pto
+        from ptodsl import pto as ptodsl_pto
+        print("ptoas and ptodsl import probe passed")
+        PY
+        "${venv_dir}/bin/ptoas" --version
+        if [[ "${REQUIRE_TORCH_NPU}" == "true" ]]; then
+          TORCH_DEVICE_BACKEND_AUTOLOAD=0 "${python_bin}" - <<'PY'
+        import sys
+        import torch
+        import torch_npu
+        assert sys.version_info[:2] == (3, 11), sys.version
+        print("torch", torch.__version__)
+        print("torch_npu", getattr(torch_npu, "__version__", "unknown"))
+        PY
+        fi
+
+        sha256sum "${wheel}" | tee "${log_dir}/wheel.sha256"
+        echo "python=${python_bin}" >> "${GITHUB_OUTPUT}"
+        echo "ptoas=${venv_dir}/bin/ptoas" >> "${GITHUB_OUTPUT}"
+        echo "work_dir=${work_dir}" >> "${GITHUB_OUTPUT}"
+        echo "log_dir=${log_dir}" >> "${GITHUB_OUTPUT}"
+        echo "ascend_home=${ascend_home}" >> "${GITHUB_OUTPUT}"

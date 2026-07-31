@@ -110,6 +110,253 @@ jobs:
       upload_wheel: false
       upload_binary: false
 
+  pypto-sim-smoke:
+    name: pypto-sim-smoke
+    needs: [select-ci-sim, build-wheel-x86_64]
+    if: ${{ needs.select-ci-sim.outputs.pypto == 'true' }}
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 180
+    concurrency:
+      group: ci-sim-pypto-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    env:
+      PYPTO_REF: ef6ce7cd8bd33b4c93b58dc34830a20b145736ac
+      PTO_ISA_COMMIT: 016396b57e2c17093f1194e6acd89bb112b0ab24
+      PYPTO_WORKSPACE: ${{ github.workspace }}/.work/pypto-ci-${{ github.run_id }}
+      PYPTO_RUN_WORKSPACE: ${{ github.workspace }}/.work/pypto-run-ci-${{ github.run_id }}
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install shared wheel
+        id: consumer
+        uses: ./.github/actions/setup-ci-sim-consumer
+        with:
+          suite: pypto
+      - name: Checkout PyPTO
+        uses: actions/checkout@v4
+        with:
+          repository: hw-native-sys/pypto
+          ref: ${{ env.PYPTO_REF }}
+          path: ${{ env.PYPTO_WORKSPACE }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Checkout PTO-ISA
+        uses: actions/checkout@v4
+        with:
+          repository: hw-native-sys/pto-isa
+          ref: ${{ env.PTO_ISA_COMMIT }}
+          path: ${{ github.workspace }}/.work/pto-isa-ci-${{ github.run_id }}
+          persist-credentials: false
+      - name: Prepare PyPTO dependencies
+        shell: bash
+        env:
+          CONSUMER_PYTHON: ${{ steps.consumer.outputs.python }}
+        run: |
+          set -euo pipefail
+          compiler_major() { "$1" -dumpfullversion -dumpversion | cut -d. -f1; }
+          if ! command -v g++-15 >/dev/null 2>&1; then
+            command -v conda >/dev/null 2>&1 || { echo "ERROR: GCC 15 or conda is required" >&2; exit 1; }
+            conda install -y -c conda-forge gcc_linux-64=15 gxx_linux-64=15
+            mkdir -p "${PYPTO_WORKSPACE}/.work/bin"
+            ln -sf "$(command -v x86_64-conda-linux-gnu-g++)" "${PYPTO_WORKSPACE}/.work/bin/g++-15"
+            ln -sf "$(command -v x86_64-conda-linux-gnu-gcc)" "${PYPTO_WORKSPACE}/.work/bin/gcc-15"
+            echo "${PYPTO_WORKSPACE}/.work/bin" >> "${GITHUB_PATH}"
+          fi
+          [[ "$(compiler_major "$(command -v g++-15 || echo "${PYPTO_WORKSPACE}/.work/bin/g++-15")")" == 15 ]] || {
+            echo "ERROR: PyPTO simulator smoke requires GCC 15" >&2; exit 1;
+          }
+          "${CONSUMER_PYTHON}" -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          "${CONSUMER_PYTHON}" -m pip install scikit-build-core nanobind ninja pytest cloudpickle
+          "${CONSUMER_PYTHON}" -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}"
+          env -u ASCEND_HOME_PATH "${CONSUMER_PYTHON}" -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}/runtime"
+      - name: Run PyPTO simulator smoke
+        id: run
+        shell: bash
+        env:
+          PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
+          CONSUMER_PYTHON: ${{ steps.consumer.outputs.python }}
+          PTO_ISA_ROOT: ${{ github.workspace }}/.work/pto-isa-ci-${{ github.run_id }}
+          TORCH_DEVICE_BACKEND_AUTOLOAD: "0"
+        run: |
+          bash .github/scripts/run_pypto_sim_smoke.sh
+      - name: Upload PyPTO logs and wheel digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypto-sim-smoke-${{ github.run_id }}
+          path: |
+            ${{ steps.consumer.outputs.log_dir }}/wheel.sha256
+            ${{ env.PYPTO_RUN_WORKSPACE }}/**
+          if-no-files-found: warn
+
+  tileop-st:
+    name: tileop-st
+    needs: [select-ci-sim, build-wheel-x86_64]
+    if: ${{ needs.select-ci-sim.outputs.tileop == 'true' }}
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install shared wheel
+        id: consumer
+        uses: ./.github/actions/setup-ci-sim-consumer
+        with:
+          suite: tileop
+      - name: Resolve simulator environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          detected=""
+          for d in "${ASCEND_HOME_PATH:-}" /usr/local/Ascend/cann /usr/local/Ascend/cann-* /usr/local/Ascend/ascend-toolkit/latest; do
+            [[ -d "${d}" ]] && { detected="${d}"; break; }
+          done
+          [[ -n "${detected}" ]] || { echo "ERROR: ASCEND_HOME_PATH not found" >&2; exit 1; }
+          echo "ASCEND_HOME_PATH=${detected}" >> "${GITHUB_ENV}"
+      - name: Run TileOp ST
+        shell: bash
+        env:
+          PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
+        run: |
+          set -euo pipefail
+          source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          mkdir -p "${{ steps.consumer.outputs.work_dir }}"
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
+            bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --build-jobs 32 --jobs 64 --smoke \
+            2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/tileop-st.log"
+      - name: Upload TileOp logs and wheel digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tileop-st-${{ github.run_id }}
+          path: |
+            ${{ steps.consumer.outputs.log_dir }}/**
+            ${{ steps.consumer.outputs.work_dir }}/**
+          if-no-files-found: warn
+
+  vpto-sim:
+    name: vpto-sim
+    needs: [select-ci-sim, build-wheel-x86_64]
+    if: ${{ needs.select-ci-sim.outputs.vpto == 'true' }}
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install shared wheel with torch_npu runtime
+        id: consumer
+        uses: ./.github/actions/setup-ci-sim-consumer
+        with:
+          suite: vpto
+          system-site-packages: "true"
+      - name: Run VPTO SIM
+        shell: bash
+        env:
+          PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
+        run: |
+          set -euo pipefail
+          source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          mkdir -p "${{ steps.consumer.outputs.work_dir }}"
+          WORK_SPACE="${{ steps.consumer.outputs.work_dir }}" \
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" DEVICE=SIM \
+            JOBS="${JOBS:-32}" bash test/vpto/scripts/run_host_vpto_validation_parallel.sh \
+            2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/vpto-sim.log"
+      - name: Upload VPTO logs and wheel digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpto-sim-${{ github.run_id }}
+          path: |
+            ${{ steps.consumer.outputs.log_dir }}/**
+            ${{ steps.consumer.outputs.work_dir }}/**
+          if-no-files-found: warn
+
+  tilelib-st:
+    name: tilelib-st
+    needs: [select-ci-sim, build-wheel-x86_64]
+    if: ${{ needs.select-ci-sim.outputs.tilelib == 'true' }}
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install shared wheel with torch_npu runtime
+        id: consumer
+        uses: ./.github/actions/setup-ci-sim-consumer
+        with:
+          suite: tilelib
+          system-site-packages: "true"
+      - name: Run TileLib ST
+        shell: bash
+        env:
+          PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
+        run: |
+          set -euo pipefail
+          source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          TILELIB_ST_OUTPUT_ROOT="${{ steps.consumer.outputs.work_dir }}/tilelib-st-a5" \
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
+            scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py -- test/tilelib-st/a5 \
+            2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/tilelib-st.log"
+      - name: Upload TileLib logs and wheel digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tilelib-st-${{ github.run_id }}
+          path: |
+            ${{ steps.consumer.outputs.log_dir }}/**
+            ${{ steps.consumer.outputs.work_dir }}/**
+          if-no-files-found: warn
+
+  ptodsl-st:
+    name: ptodsl-st
+    needs: [select-ci-sim, build-wheel-x86_64]
+    if: ${{ needs.select-ci-sim.outputs.ptodsl == 'true' }}
+    runs-on: [self-hosted, Linux, X64, label-1]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install shared wheel with torch_npu runtime
+        id: consumer
+        uses: ./.github/actions/setup-ci-sim-consumer
+        with:
+          suite: ptodsl
+          system-site-packages: "true"
+      - name: Run PTODSL ST
+        shell: bash
+        env:
+          PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
+        run: |
+          set -euo pipefail
+          source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
+            scripts/sim_dsl.sh test/dsl-st \
+            2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/ptodsl-st.log"
+      - name: Upload PTODSL logs and wheel digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ptodsl-st-${{ github.run_id }}
+          path: |
+            ${{ steps.consumer.outputs.log_dir }}/**
+            ${{ steps.consumer.outputs.work_dir }}/**
+          if-no-files-found: warn
+
   vpto-sim-validation:
     needs: select-ci-sim
     runs-on: [self-hosted, Linux, X64, label-1]
@@ -913,7 +1160,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tilelib-st-ci-${{ github.run_id }}
+          name: legacy-tilelib-st-ci-${{ github.run_id }}
           path: |
             ${{ env.TILELIB_ST_WORKSPACE }}/run_ci.log
             ${{ env.TILELIB_ST_WORKSPACE }}/ptodsl-dsl-st.log
@@ -929,7 +1176,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vpto-sim-validation-${{ github.run_id }}
+          name: legacy-vpto-sim-validation-${{ github.run_id }}
           path: |
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-runner.log
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-summary.tsv
@@ -939,7 +1186,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pypto-sim-smoke-${{ github.run_id }}
+          name: legacy-pypto-sim-smoke-${{ github.run_id }}
           path: |
             ${{ env.PYPTO_RUN_WORKSPACE }}/*.log
           if-no-files-found: warn
