@@ -42,62 +42,76 @@ jobs:
           path: pr-context
           if-no-files-found: error
 
-  detect-vpto-sim-changes:
+  select-ci-sim:
     runs-on: ubuntu-22.04
     outputs:
-      should_run: ${{ steps.decide.outputs.should_run }}
+      wheel: ${{ steps.classify.outputs.wheel }}
+      pypto: ${{ steps.classify.outputs.pypto }}
+      tileop: ${{ steps.classify.outputs.tileop }}
+      vpto: ${{ steps.classify.outputs.vpto }}
+      tilelib: ${{ steps.classify.outputs.tilelib }}
+      ptodsl: ${{ steps.classify.outputs.ptodsl }}
+      matched_paths: ${{ steps.classify.outputs.matched_paths }}
+      selection_reason: ${{ steps.classify.outputs.selection_reason }}
     steps:
-      - name: Detect PR changes relevant to VPTO SIM validation
+      - name: Checkout repository for changed-path classification
         if: ${{ github.event_name == 'pull_request' }}
-        id: filter
-        uses: dorny/paths-filter@v3
+        uses: actions/checkout@v4
         with:
-          token: ${{ github.token }}
-          filters: |
-            relevant:
-              - '.github/workflows/ci_sim.yml'
-              - 'scripts/sim_dsl.sh'
-              - 'test/vpto/**'
-              - 'test/tilelang_st/**'
-              - 'test/dsl-st/**'
-              - 'test/tilelib-st/**'
-              - 'ptodsl/**'
-              - 'tools/ptoas/**'
-              - 'lib/TileOps/**'
-              - 'include/PTO/IR/VPTO*.td'
-              - 'lib/PTO/IR/VPTO.cpp'
-              - 'include/PTO/Transforms/Passes.h'
-              - 'include/PTO/Transforms/Passes.td'
-              - 'include/PTO/Transforms/*VPTO*'
-              - 'include/PTO/Transforms/**/*VPTO*'
-              - 'lib/PTO/Transforms/CMakeLists.txt'
-              - 'lib/PTO/Transforms/ExpandTileOp.cpp'
-              - 'lib/PTO/Transforms/FoldTileBufIntrinsics.cpp'
-              - 'lib/PTO/Transforms/PTOToEmitC.cpp'
-              - 'lib/PTO/Transforms/*VPTO*'
-              - 'lib/PTO/Transforms/**/*VPTO*'
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Decide whether to run VPTO SIM validation
-        id: decide
+      - name: Collect pull request changed paths
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --name-only -z "${BASE_SHA}" "${HEAD_SHA}" > changed-paths
+
+      - name: Classify ci-sim selection
+        id: classify
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_RELEVANT: ${{ steps.filter.outputs.relevant || 'false' }}
         run: |
           set -euo pipefail
-          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
-            echo "should_run=true" >> "${GITHUB_OUTPUT}"
-            echo "Running vpto-sim-validation on ${EVENT_NAME}"
-          elif [[ "${PR_RELEVANT}" == "true" ]]; then
-            echo "should_run=true" >> "${GITHUB_OUTPUT}"
-            echo "Running vpto-sim-validation because the PR touched VPTO-related paths"
-          else
-            echo "should_run=false" >> "${GITHUB_OUTPUT}"
-            echo "Skipping vpto-sim-validation because the PR did not touch VPTO-related paths"
+          args=(--event-name "${EVENT_NAME}" --github-output "${GITHUB_OUTPUT}")
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            args+=(--paths-file changed-paths --null)
           fi
+          python3 .github/scripts/classify_ci_sim_changes.py "${args[@]}" | tee selection.json
+          echo "Selection reason: $(python3 -c 'import json,sys; print(json.load(open("selection.json"))["selection_reason"])')"
+
+  build-wheel-x86_64:
+    needs: select-ci-sim
+    if: ${{ needs.select-ci-sim.outputs.wheel == 'true' }}
+    uses: ./.github/workflows/_build_linux_wheel.yml
+    with:
+      arch: x86_64
+      python: '3.11'
+      release_kind: ptoas
+      enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+      save_ccache: false
+      upload_wheel: true
+      wheel_artifact_name: ptoas-ci-wheel-cp311-x86_64
+      upload_binary: false
+
+  validate-wheel-aarch64:
+    needs: select-ci-sim
+    if: ${{ needs.select-ci-sim.outputs.wheel == 'true' }}
+    uses: ./.github/workflows/_build_linux_wheel.yml
+    with:
+      arch: aarch64
+      python: '3.11'
+      release_kind: ptoas
+      enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+      save_ccache: false
+      upload_wheel: false
+      upload_binary: false
 
   vpto-sim-validation:
-    needs: detect-vpto-sim-changes
+    needs: select-ci-sim
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 300
     concurrency:
@@ -105,7 +119,7 @@ jobs:
       cancel-in-progress: true
     if: >-
       ${{
-        needs.detect-vpto-sim-changes.outputs.should_run == 'true'
+        needs.select-ci-sim.outputs.wheel == 'true'
       }}
     env:
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
