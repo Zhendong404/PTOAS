@@ -20,7 +20,7 @@ async function main() {
   const jobs = [
     {name: 'build-wheel-x86_64 / Build ptoas wheel (x86_64, py3.11)', started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:11:00Z', conclusion: 'success'},
     {name: 'vpto-sim', started_at: '2026-01-01T00:11:00Z', completed_at: '2026-01-01T00:20:00Z', conclusion: 'success'},
-    {name: 'ci-sim-required', started_at: '2026-01-01T00:20:00Z', completed_at: '2026-01-01T00:21:00Z', conclusion: 'success'},
+    {name: 'ci-sim-required', started_at: '2026-01-01T01:40:00Z', completed_at: '2026-01-01T01:41:00Z', conclusion: 'success'},
   ];
   const github = {
     rest: {
@@ -35,8 +35,8 @@ async function main() {
     context: {repo: {owner: 'owner', repo: 'repo'}, payload: {workflow_run: {id: 1, head_sha: sha, html_url: 'https://example.invalid/run'}}},
     config: {contextDir, dryRun: true, softTimeoutMinutes: 90},
   });
-  assert.match(result, /P95 advisory budget: \*\*10m\*\*/);
-  assert.match(result, /Producer → gate critical path: \*\*21m 0s\*\*/);
+  assert.match(result, /P95 sampling budget: \*\*10m\*\*/);
+  assert.match(result, /Producer → gate critical path: \*\*1h 41m 0s\*\*/);
   assert.match(result, /`vpto-sim`: \*\*9m 0s\*\*/);
   fs.rmSync(contextDir, {recursive: true});
 }

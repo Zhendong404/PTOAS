@@ -55,19 +55,39 @@ jobs:
       selection_reason: ${{ steps.classify.outputs.selection_reason }}
     steps:
       - name: Checkout repository for changed-path classification
-        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Collect pull request changed paths
         if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const paths = new Set();
+            for (const file of files) {
+              paths.add(file.filename);
+              // Classify both sides of a rename so moving code into an
+              // allowlisted path cannot suppress its former owner's suite.
+              if (file.previous_filename) paths.add(file.previous_filename);
+            }
+            fs.writeFileSync('changed-paths', `${[...paths].sort().join('\n')}\n`);
+
+      - name: Test ci-sim selection and duration scripts
         shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git diff --name-only -z "${BASE_SHA}" "${HEAD_SHA}" > changed-paths
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_classify_ci_sim_changes.py'
+          node .github/scripts/test_ci_sim_duration_warning.js
 
       - name: Classify ci-sim selection
         id: classify
@@ -78,7 +98,7 @@ jobs:
           set -euo pipefail
           args=(--event-name "${EVENT_NAME}" --github-output "${GITHUB_OUTPUT}")
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            args+=(--paths-file changed-paths --null)
+            args+=(--paths-file changed-paths)
           fi
           python3 .github/scripts/classify_ci_sim_changes.py "${args[@]}" | tee selection.json
           echo "Selection reason: $(python3 -c 'import json,sys; print(json.load(open("selection.json"))["selection_reason"])')"
@@ -191,6 +211,7 @@ jobs:
             ${{ steps.consumer.outputs.log_dir }}/wheel.sha256
             ${{ env.PYPTO_RUN_WORKSPACE }}/**
           if-no-files-found: warn
+          overwrite: true
 
   tileop-st:
     name: tileop-st
@@ -213,11 +234,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          detected=""
-          for d in "${ASCEND_HOME_PATH:-}" /usr/local/Ascend/cann /usr/local/Ascend/cann-* /usr/local/Ascend/ascend-toolkit/latest; do
-            [[ -d "${d}" ]] && { detected="${d}"; break; }
-          done
-          [[ -n "${detected}" ]] || { echo "ERROR: ASCEND_HOME_PATH not found" >&2; exit 1; }
+          detected="$(bash .github/scripts/find_ascend_home.sh)"
           echo "ASCEND_HOME_PATH=${detected}" >> "${GITHUB_ENV}"
       - name: Run TileOp ST
         shell: bash
@@ -225,7 +242,9 @@ jobs:
           PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
         run: |
           set -euo pipefail
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
           mkdir -p "${{ steps.consumer.outputs.work_dir }}"
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
             bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --build-jobs 32 --jobs 64 --smoke \
@@ -239,6 +258,7 @@ jobs:
             ${{ steps.consumer.outputs.log_dir }}/**
             ${{ steps.consumer.outputs.work_dir }}/**
           if-no-files-found: warn
+          overwrite: true
 
   vpto-sim:
     name: vpto-sim
@@ -264,7 +284,9 @@ jobs:
           PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
         run: |
           set -euo pipefail
+          set +u
           source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          set -u
           mkdir -p "${{ steps.consumer.outputs.work_dir }}"
           WORK_SPACE="${{ steps.consumer.outputs.work_dir }}" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" DEVICE=SIM \
@@ -279,6 +301,7 @@ jobs:
             ${{ steps.consumer.outputs.log_dir }}/**
             ${{ steps.consumer.outputs.work_dir }}/**
           if-no-files-found: warn
+          overwrite: true
 
   tilelib-st:
     name: tilelib-st
@@ -304,7 +327,9 @@ jobs:
           PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
         run: |
           set -euo pipefail
+          set +u
           source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          set -u
           TILELIB_ST_OUTPUT_ROOT="${{ steps.consumer.outputs.work_dir }}/tilelib-st-a5" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
             scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py -- test/tilelib-st/a5 \
@@ -318,6 +343,7 @@ jobs:
             ${{ steps.consumer.outputs.log_dir }}/**
             ${{ steps.consumer.outputs.work_dir }}/**
           if-no-files-found: warn
+          overwrite: true
 
   ptodsl-st:
     name: ptodsl-st
@@ -343,7 +369,9 @@ jobs:
           PTOAS_BIN: ${{ steps.consumer.outputs.ptoas }}
         run: |
           set -euo pipefail
+          set +u
           source "${{ steps.consumer.outputs.ascend_home }}/bin/setenv.bash"
+          set -u
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
             scripts/sim_dsl.sh test/dsl-st \
             2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/ptodsl-st.log"
@@ -356,6 +384,7 @@ jobs:
             ${{ steps.consumer.outputs.log_dir }}/**
             ${{ steps.consumer.outputs.work_dir }}/**
           if-no-files-found: warn
+          overwrite: true
 
   ci-sim-required:
     name: ci-sim-required
@@ -878,7 +907,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
 
           add_python_candidate() {
             local candidate="$1"
@@ -1135,7 +1166,9 @@ jobs:
           set -euo pipefail
           mkdir -p "${TILELIB_ST_WORKSPACE}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
 
           probe_ptodsl_python() {
             "${PTO_DSL_ST_PYTHON_BIN}" - <<'PY'
@@ -1193,7 +1226,9 @@ jobs:
           export PTO_PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PATH="${PTO_DSL_ST_BIN_DIR}:${PATH}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
 
           WORK_SPACE="${VPTO_SIM_WORKSPACE}" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
@@ -1211,7 +1246,9 @@ jobs:
           export PTO_PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PATH="${PTO_DSL_ST_BIN_DIR}:${PATH}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
 
           TILELIB_ST_OUTPUT_ROOT="${TILELIB_ST_WORKSPACE}/tilelib-st-a5" \
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
@@ -1230,7 +1267,9 @@ jobs:
           export PTO_PYTHON_BIN="${PTO_DSL_ST_PYTHON_BIN}"
           export PATH="${PTO_DSL_ST_BIN_DIR}:${PATH}"
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          set +u
           source "${ASCEND_HOME_PATH}/bin/setenv.bash"
+          set -u
 
           ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
           PTOAS_BIN="${PTO_DSL_ST_PTOAS_BIN}" \
@@ -1252,6 +1291,7 @@ jobs:
             ${{ env.TILELIB_ST_WORKSPACE }}/tilelib-st-a5/cases/*/msprof.stdout.log
             ${{ env.TILELIB_ST_WORKSPACE }}/ptodsl-python-probe.log
           if-no-files-found: warn
+          overwrite: true
 
       - name: Upload VPTO SIM logs
         if: always()
@@ -1262,6 +1302,7 @@ jobs:
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-runner.log
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-summary.tsv
           if-no-files-found: warn
+          overwrite: true
 
       - name: Upload PyPTO SIM logs
         if: always()
@@ -1271,3 +1312,4 @@ jobs:
           path: |
             ${{ env.PYPTO_RUN_WORKSPACE }}/*.log
           if-no-files-found: warn
+          overwrite: true

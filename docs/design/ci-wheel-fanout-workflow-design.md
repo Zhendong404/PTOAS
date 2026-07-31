@@ -87,6 +87,12 @@ selection. It emits:
 - `matched_paths`
 - `selection_reason`
 
+For pull requests, `select-ci-sim` obtains the complete changed-file list from
+the GitHub Pull Request Files API with pagination. It does not use a local
+two-point or three-point Git diff, so fork PR heads and base commits that are
+not present in the checkout do not break selection. Rename entries classify
+both the new and previous path conservatively.
+
 ### 5.1 Direct Suite Ownership
 
 | Changed path | Selected suite |
@@ -114,8 +120,11 @@ files.
 Schedule and workflow-dispatch events bypass PR path selection and always run
 both wheel architectures and all five suites.
 
-Classifier behavior is covered by
-`.github/scripts/test_classify_ci_sim_changes.py`.
+Before classifying a run, `select-ci-sim` executes both
+`.github/scripts/test_classify_ci_sim_changes.py` and
+`.github/scripts/test_ci_sim_duration_warning.js`. A regression in selection
+or duration-observer behavior therefore fails CI instead of silently
+accumulating in an unreferenced test script.
 
 ## 6. Shared Wheel Producer
 
@@ -130,6 +139,11 @@ The producer contract is:
 - Artifact name: `ptoas-ci-wheel-cp311-x86_64`.
 - Artifact contents: exactly one repaired compatible wheel.
 - LLVM/MLIR: statically linked into the PTOAS compiler payload.
+
+Artifact names remain stable so failed consumer jobs can download the producer
+artifact from the same workflow run. Uploads use `overwrite: true`, allowing a
+watchdog `rerun-failed-jobs` attempt to replace an artifact previously uploaded
+by the same job instead of failing with an immutable-artifact conflict.
 
 The reusable build retains payload validation, `auditwheel repair`, isolated
 wheel installation tests, native dependency checks, and optional binary
@@ -159,7 +173,10 @@ scheduled publication, and manual publication builds do not restore, save, or
 configure ccache compiler launchers.
 
 The warm-cache x86_64 producer target is approximately six minutes. Ten
-minutes is the advisory P95 budget.
+minutes is the P95 budget evaluated from a representative warm-cache sample,
+not a per-run alert threshold. A cold LLVM cache is expected after an LLVM
+revision change, so the watchdog uses the overall critical-path soft budget for
+single-run warnings.
 
 ## 8. Consumer Contract
 
@@ -246,7 +263,9 @@ limit prevents retry loops.
 - the six-minute producer target and ten-minute advisory budget.
 
 The existing `ci-slow` label and PR comment remain advisory and do not change
-functional conclusions.
+functional conclusions. The watchdog removes the label only while resolving
+its own active warning comment; a manually applied label is otherwise left
+untouched.
 
 ## 11. Security And Isolation
 

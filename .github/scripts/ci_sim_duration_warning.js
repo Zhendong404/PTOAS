@@ -57,13 +57,13 @@ function warningBody(author, producerElapsed, criticalPath, budget, conclusion, 
     : '- No completed suite jobs were found.';
   return [
     COMMENT_MARKER,
-    `Warning: @${author}, ci-sim exceeded its soft runtime budget.`,
+    `Warning: @${author}, ci-sim exceeded its **${budget} critical-path soft budget**.`,
     '',
     `- \`${PRODUCER_JOB_NAME}\` runtime: **${producerElapsed}**`,
     `- Producer → gate critical path: **${criticalPath}**`,
     `- Selected suite durations:\n${suiteLines}`,
-    `- Warm-cache producer target: **${PRODUCER_TARGET_MINUTES}m**; P95 advisory budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
-    `- Soft budget: **${budget}**`,
+    `- Warm-cache producer sampling target: **${PRODUCER_TARGET_MINUTES}m**; P95 sampling budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
+    '- Producer sampling targets do not trigger this per-run warning because a cold LLVM cache is expected after an LLVM revision change.',
     `- Job conclusion: **${conclusion}**`,
     `- [Workflow run](${runUrl})`,
     '',
@@ -79,8 +79,8 @@ function resolvedBody(producerElapsed, criticalPath, budget, runUrl) {
     '',
     `- Latest \`${PRODUCER_JOB_NAME}\` runtime: **${producerElapsed}**`,
     `- Producer → gate critical path: **${criticalPath}**`,
-    `- Warm-cache producer target: **${PRODUCER_TARGET_MINUTES}m**; P95 advisory budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
-    `- Soft budget: **${budget}**`,
+    `- Warm-cache producer sampling target: **${PRODUCER_TARGET_MINUTES}m**; P95 sampling budget: **${PRODUCER_P95_BUDGET_MINUTES}m**`,
+    `- Critical-path soft budget: **${budget}**`,
     `- [Workflow run](${runUrl})`,
     '',
     'The previous duration warning is resolved. This status is advisory only.',
@@ -172,9 +172,8 @@ module.exports = async function observeRun({github, context, config = {}}) {
     .reverse()
     .find(comment => comment.user?.login === BOT_LOGIN && comment.body?.includes(COMMENT_MARKER));
 
-  const producerOverBudget = elapsedSeconds > PRODUCER_P95_BUDGET_MINUTES * 60;
   const criticalPathOverBudget = criticalPathSeconds > softTimeoutMinutes * 60;
-  if (producerOverBudget || criticalPathOverBudget) {
+  if (criticalPathOverBudget) {
     const body = warningBody(pull.user.login, elapsed, criticalPath, budget, producer.conclusion || 'unknown', runUrl, suiteDurations);
     if (dryRun) {
       const labelAction = hasSlowLabel ? 'keep' : 'add';
@@ -197,7 +196,7 @@ module.exports = async function observeRun({github, context, config = {}}) {
   }
 
   const commentNeedsResolution = Boolean(existing && !existing.body?.includes(RESOLVED_PREFIX));
-  if (dryRun && (hasSlowLabel || commentNeedsResolution)) {
+  if (dryRun && commentNeedsResolution) {
     const actions = [];
     if (hasSlowLabel) actions.push(`remove ${SLOW_LABEL}`);
     if (commentNeedsResolution) actions.push('resolve slow CI warning');
@@ -206,7 +205,7 @@ module.exports = async function observeRun({github, context, config = {}}) {
   }
 
   const actions = [];
-  if (hasSlowLabel) {
+  if (hasSlowLabel && commentNeedsResolution) {
     await github.rest.issues.removeLabel({owner, repo, issue_number: prContext.number, name: SLOW_LABEL});
     actions.push(`Removed ${SLOW_LABEL}`);
   }
@@ -221,9 +220,6 @@ module.exports = async function observeRun({github, context, config = {}}) {
   }
   if (actions.length) {
     return `${actions.join('; ')} on PR #${prContext.number}.`;
-  }
-  if (existing) {
-    return `CI producer runtime ${elapsed}; producer-to-gate critical path ${criticalPath}; within the ${budget} budget.`;
   }
   return `CI producer runtime ${elapsed}; producer-to-gate critical path ${criticalPath}; within the ${budget} budget.`;
 };

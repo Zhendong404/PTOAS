@@ -74,7 +74,9 @@ runs:
         ascend_home=""
         if [[ "${REQUIRE_TORCH_NPU}" == "true" ]]; then
           ascend_home="$(bash "${GITHUB_WORKSPACE}/.github/scripts/find_ascend_home.sh")"
+          set +u
           source "${ascend_home}/bin/setenv.bash"
+          set -u
           base_python="$(bash "${GITHUB_WORKSPACE}/.github/scripts/find_torch_npu_python.sh")"
           "${base_python}" -m venv --system-site-packages "${venv_dir}"
         else
@@ -86,7 +88,7 @@ runs:
         fi
 
         python_bin="${venv_dir}/bin/python"
-        "${python_bin}" -m pip install --upgrade pip
+        "${python_bin}" -m pip --version
         "${python_bin}" -m pip install --no-deps --force-reinstall "${wheel}"
         "${python_bin}" - <<'PY'
         import ptoas.mlir.ir

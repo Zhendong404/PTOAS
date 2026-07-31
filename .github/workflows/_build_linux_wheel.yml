@@ -67,13 +67,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set Python version
+        env:
+          INPUT_PYTHON: ${{ inputs.python }}
         run: |
-          case "${{ inputs.python }}" in
+          case "${INPUT_PYTHON}" in
             "3.10") PY_VER="cp310-cp310" ;;
             "3.11") PY_VER="cp311-cp311" ;;
             "3.12") PY_VER="cp312-cp312" ;;
             *)
-              echo "Unsupported Python version: ${{ inputs.python }}" >&2
+              echo "Unsupported Python version: ${INPUT_PYTHON}" >&2
               exit 1
               ;;
           esac
@@ -302,6 +304,7 @@ jobs:
           name: ${{ inputs.wheel_artifact_name || format('ptoas-wheel-py{0}-{1}', inputs.python, inputs.arch) }}
           path: wheelhouse/*.whl
           if-no-files-found: error
+          overwrite: true
 
       - name: Collect ptoas binary and dependencies
         if: ${{ inputs.upload_binary && inputs.python == '3.11' }}
@@ -348,6 +351,7 @@ jobs:
           name: ptoas-bin-${{ inputs.arch }}
           path: ptoas-bin-${{ inputs.arch }}.tar.gz
           if-no-files-found: error
+          overwrite: true
 
       - name: Show ccache statistics
         if: ${{ always() && inputs.enable_ccache }}
