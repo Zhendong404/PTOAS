@@ -290,10 +290,9 @@ untouched.
 The workflow implementation is present, but rollout validation is not yet
 complete.
 
-During migration, the old `vpto-sim-validation` job remains as a non-blocking
-comparison path. Its artifacts use a `legacy-` prefix, and it is not evaluated
-by `ci-sim-required`. It should be removed after representative full and
-targeted PRs pass the fan-out graph.
+The old monolithic `vpto-sim-validation` comparison job has been removed. The
+five fan-out consumers and `ci-sim-required` now own simulator validation;
+there is no legacy source build or sequential suite path in the active graph.
 
 The following rollout work remains:
 
