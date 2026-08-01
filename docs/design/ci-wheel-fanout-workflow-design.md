@@ -176,9 +176,11 @@ The cache identity contains:
 - main commit SHA for saved entries.
 
 PR jobs restore from the compatible main prefix and never save a PR-specific
-cache. Successful main builds may save a cache capped at 2 GiB. Release,
-scheduled publication, and manual publication builds do not restore, save, or
-configure ccache compiler launchers.
+cache. LLVM cache updates are manual-only: a `workflow_dispatch` run on the
+default branch may save a cache capped at 2 GiB from its CPython 3.11 leg.
+Main push builds can restore the cache and still warm the separate PTOAS ccache,
+but do not update the LLVM cache. Release and scheduled publication builds do
+not save the LLVM cache or configure ccache compiler launchers.
 
 The `ci-sim` workflow uses PR-scoped concurrency. A new commit cancels older
 runs for the same pull request before they can all rebuild LLVM after the same
