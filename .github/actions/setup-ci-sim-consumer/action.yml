@@ -13,7 +13,7 @@ inputs:
     description: Consumer suite name used to isolate paths.
     required: true
   system-site-packages:
-    description: Use a Python 3.11 runtime that imports torch and torch_npu.
+    description: Install cached CPython 3.11 torch and torch_npu wheels.
     required: false
     default: "false"
 outputs:
@@ -40,6 +40,49 @@ runs:
       with:
         name: ptoas-ci-wheel-cp311-x86_64
         path: ${{ runner.temp }}/ci-sim-${{ inputs.suite }}/wheel
+
+    - name: Restore cached Torch and TorchNPU wheels
+      if: ${{ inputs.system-site-packages == 'true' }}
+      id: restore-torch-npu
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/ci-sim-torch-npu-cp311-x86_64
+        key: ci-sim-torch-npu-cp311-x86_64-v1
+
+    - name: Download Torch and TorchNPU wheels on cache miss
+      if: ${{ inputs.system-site-packages == 'true' && steps.restore-torch-npu.outputs.cache-hit != 'true' }}
+      id: download-torch-npu
+      shell: bash
+      env:
+        TORCH_NPU_CACHE_DIR: ${{ runner.temp }}/ci-sim-torch-npu-cp311-x86_64
+        TORCH_WHEEL_URL: https://download.pytorch.org/whl/cpu/torch-2.12.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl
+        TORCH_NPU_WHEEL_URL: https://gitcode.com/Ascend/pytorch/releases/download/v26.1.0-pytorch2.12.0/torch_npu-2.12.0-cp311-cp311-manylinux_2_28_x86_64.whl
+      run: |
+        set -euo pipefail
+        command -v python3.11 >/dev/null 2>&1 || {
+          echo "ERROR: ci-sim consumers require python3.11 to install torch and torch_npu" >&2
+          exit 1
+        }
+        rm -rf "${TORCH_NPU_CACHE_DIR}"
+        mkdir -p "${TORCH_NPU_CACHE_DIR}"
+        python3.11 -m pip download \
+          --only-binary=:all: \
+          --dest "${TORCH_NPU_CACHE_DIR}" \
+          "${TORCH_WHEEL_URL}" \
+          "${TORCH_NPU_WHEEL_URL}"
+        touch "${TORCH_NPU_CACHE_DIR}/.complete"
+        echo "downloaded=true" >> "${GITHUB_OUTPUT}"
+
+    - name: Save Torch and TorchNPU wheel cache
+      if: >-
+        ${{ inputs.system-site-packages == 'true' &&
+            steps.download-torch-npu.outputs.downloaded == 'true' &&
+            github.event_name != 'pull_request' &&
+            github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/ci-sim-torch-npu-cp311-x86_64
+        key: ci-sim-torch-npu-cp311-x86_64-v1
 
     - name: Install and probe shared wheel
       id: setup
@@ -77,8 +120,11 @@ runs:
           set +u
           source "${ascend_home}/bin/setenv.bash"
           set -u
-          base_python="$(bash "${GITHUB_WORKSPACE}/.github/scripts/find_torch_npu_python.sh")"
-          "${base_python}" -m venv --system-site-packages "${venv_dir}"
+          command -v "${base_python}" >/dev/null 2>&1 || {
+            echo "ERROR: ci-sim consumers require python3.11" >&2
+            exit 1
+          }
+          "${base_python}" -m venv "${venv_dir}"
         else
           command -v "${base_python}" >/dev/null 2>&1 || {
             echo "ERROR: ci-sim consumers require python3.11" >&2
@@ -89,6 +135,16 @@ runs:
 
         python_bin="${venv_dir}/bin/python"
         "${python_bin}" -m pip --version
+        if [[ "${REQUIRE_TORCH_NPU}" == "true" ]]; then
+          torch_npu_cache_dir="${RUNNER_TEMP}/ci-sim-torch-npu-cp311-x86_64"
+          [[ -f "${torch_npu_cache_dir}/.complete" ]] || {
+            echo "ERROR: cached torch and torch_npu wheels are incomplete" >&2
+            exit 1
+          }
+          "${python_bin}" -m pip install --no-index --find-links "${torch_npu_cache_dir}" \
+            "${torch_npu_cache_dir}"/torch-*.whl \
+            "${torch_npu_cache_dir}"/torch_npu-*.whl
+        fi
         "${python_bin}" -m pip install --no-deps --force-reinstall "${wheel}"
         "${python_bin}" - <<'PY'
         import ptoas.mlir.ir

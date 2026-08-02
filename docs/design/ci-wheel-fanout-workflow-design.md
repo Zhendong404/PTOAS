@@ -41,7 +41,9 @@ an aarch64 CPython 3.11 wheel build as an independent packaging validation.
 - Splitting the regular `build-and-test` workflow.
 - Parallelizing TileLib internally at the operator or testcase level.
 - Changing PTOAS compiler behavior, Python APIs, or wheel payload semantics.
-- Installing `torch_npu` dynamically on self-hosted runners.
+- Managing general-purpose Python environments outside the simulator jobs. The
+  simulator action installs the pinned `torch` and `torch_npu` wheels into its
+  own Python 3.11 virtual environment.
 - Making release, scheduled publication, or manual publication builds depend
   on ccache.
 
@@ -204,9 +206,12 @@ The action:
 1. Downloads `ptoas-ci-wheel-cp311-x86_64`.
 2. Requires exactly one compatible wheel.
 3. Creates a suite-specific virtual environment under `RUNNER_TEMP`.
-4. Installs with `pip install --no-deps --force-reinstall`.
-5. Probes `ptoas`, MLIR Python bindings, and PTODSL imports.
-6. Records the consumed wheel SHA256 in the suite log directory.
+4. For NPU suites, restores or downloads the pinned `torch` and `torch_npu`
+   wheels and installs them offline into that environment.
+5. Installs PTOAS with `pip install --no-deps --force-reinstall`.
+6. Probes `ptoas`, MLIR Python bindings, PTODSL, and (when requested) NPU
+   imports.
+7. Records the consumed wheel SHA256 in the suite log directory.
 
 Consumers must not use editable PTOAS installation, build PTOAS or LLVM, or
 refer to the producer build tree.
@@ -217,13 +222,18 @@ refer to the producer build tree.
 | --- | --- | --- |
 | `pypto-sim-smoke` | Isolated Python 3.11; CPU Torch and pinned PyPTO/PTO-ISA dependencies | `.github/scripts/run_pypto_sim_smoke.sh` |
 | `tileop-st` | Isolated Python 3.11 and detected CANN installation | `test/tilelang_st/script/run_ci.sh` |
-| `vpto-sim` | Python 3.11 with preinstalled `torch` and `torch_npu` | `test/vpto/scripts/run_host_vpto_validation_parallel.sh` |
-| `tilelib-st` | Python 3.11 with preinstalled `torch` and `torch_npu` | `scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py` |
-| `ptodsl-st` | Python 3.11 with preinstalled `torch` and `torch_npu` | `scripts/sim_dsl.sh test/dsl-st` |
+| `vpto-sim` | Isolated Python 3.11 with cached `torch` and `torch_npu` wheels | `test/vpto/scripts/run_host_vpto_validation_parallel.sh` |
+| `tilelib-st` | Isolated Python 3.11 with cached `torch` and `torch_npu` wheels | `scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py` |
+| `ptodsl-st` | Isolated Python 3.11 with cached `torch` and `torch_npu` wheels | `scripts/sim_dsl.sh test/dsl-st` |
 
-The DSL-related jobs use `.github/scripts/find_torch_npu_python.sh`. Missing a
-compatible interpreter is a runner-contract failure; the job must not fall
-back to another PTOAS build or Python ABI.
+The NPU-related jobs source the detected CANN `setenv.bash`, then install the
+pinned CPython 3.11 wheels into their suite-specific virtual environment. The
+wheel directory is restored from the shared `ci-sim-torch-npu-cp311-x86_64-v1`
+cache. A cache miss downloads the direct wheels and their dependencies; only
+successful default-branch schedule or manual runs save the cache, while pull
+requests restore it without creating PR-specific entries. Missing Python 3.11
+or an incomplete package cache is a setup failure; the job must not fall back
+to another Python ABI or a preinstalled runner environment.
 
 Each job has independent work, temporary, virtual-environment, and log paths.
 Artifacts are suite-specific and always include the wheel digest when setup
@@ -330,6 +340,8 @@ while unused; they do not change compiler or release payload behavior.
 - Direct test-only paths select only their owning suites; unknown paths select
   all suites; non-code-only changes select none.
 - Both wheel architectures run whenever any suite is selected.
+- NPU consumers install the pinned CPython 3.11 Torch packages from a shared
+  cache; pull requests restore but do not save that cache.
 - `ci-sim-required` succeeds only for legal success/skip combinations.
 - Functional failures are not automatically retried.
 - Warm-cache producer P95 is no greater than ten minutes before rollout is
