@@ -193,7 +193,7 @@ jobs:
             echo "ERROR: PyPTO simulator smoke requires GCC 15" >&2; exit 1;
           }
           "${CONSUMER_PYTHON}" -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          "${CONSUMER_PYTHON}" -m pip install scikit-build-core nanobind ninja pytest cloudpickle
+          "${CONSUMER_PYTHON}" -m pip install numpy scikit-build-core nanobind ninja pytest cloudpickle
           "${CONSUMER_PYTHON}" -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}"
           env -u ASCEND_HOME_PATH "${CONSUMER_PYTHON}" -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}/runtime"
       - name: Run PyPTO simulator smoke
