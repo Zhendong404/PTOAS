@@ -11,6 +11,22 @@ set -euo pipefail
 : "${PYPTO_WORKSPACE:?}"
 : "${PYPTO_RUN_WORKSPACE:?}"
 : "${CONSUMER_PYTHON:?}"
+: "${PTOAS_BIN:?}"
+
+[[ -x "${PTOAS_BIN}" ]] || {
+  echo "ERROR: PTOAS_BIN is not executable: ${PTOAS_BIN}" >&2
+  exit 1
+}
+# PyPTO's codegen subprocess resolves the compiler from PTOAS_ROOT/ptoas
+# rather than from PTOAS_BIN. The shared wheel consumer exposes the launcher
+# in the venv's bin directory, so use that directory as the PTOAS root.
+PTOAS_ROOT="$(cd "$(dirname "${PTOAS_BIN}")" && pwd)"
+export PTOAS_ROOT
+export PATH="$(dirname "${PTOAS_BIN}"):${PATH}"
+[[ -x "${PTOAS_ROOT}/ptoas" ]] || {
+  echo "ERROR: PTOAS_ROOT/ptoas is not executable: ${PTOAS_ROOT}/ptoas" >&2
+  exit 1
+}
 mkdir -p "${PYPTO_RUN_WORKSPACE}"
 cd "${PYPTO_WORKSPACE}"
 
