@@ -228,7 +228,7 @@ refer to the producer build tree.
 
 The NPU-related jobs source the detected CANN `setenv.bash`, then install the
 pinned CPython 3.11 wheels into their suite-specific virtual environment. The
-wheel directory is restored from the shared `ci-sim-torch-npu-cp311-x86_64-v1`
+wheel directory is restored from the shared `ci-sim-torch-npu-cp311-x86_64-v2`
 cache. A cache miss downloads the direct wheels and their dependencies; only
 successful default-branch schedule or manual runs save the cache, while pull
 requests restore it without creating PR-specific entries. Missing Python 3.11

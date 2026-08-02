@@ -207,7 +207,7 @@ jobs:
         run: |
           bash .github/scripts/run_pypto_sim_smoke.sh
       - name: Upload PyPTO logs and wheel digest
-        if: always()
+        if: ${{ always() && steps.consumer.outputs.log_dir != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: pypto-sim-smoke-${{ github.run_id }}
@@ -254,7 +254,7 @@ jobs:
             bash test/tilelang_st/script/run_ci.sh -r sim -v a5 --build-jobs 32 --jobs 64 --smoke \
             2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/tileop-st.log"
       - name: Upload TileOp logs and wheel digest
-        if: always()
+        if: ${{ always() && steps.consumer.outputs.work_dir != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: tileop-st-${{ github.run_id }}
@@ -297,7 +297,7 @@ jobs:
             JOBS="${JOBS:-32}" bash test/vpto/scripts/run_host_vpto_validation_parallel.sh \
             2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/vpto-sim.log"
       - name: Upload VPTO logs and wheel digest
-        if: always()
+        if: ${{ always() && steps.consumer.outputs.work_dir != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: vpto-sim-${{ github.run_id }}
@@ -339,7 +339,7 @@ jobs:
             scripts/sim_dsl.sh test/tilelib-st/run_tilelib_st.py -- test/tilelib-st/a5 \
             2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/tilelib-st.log"
       - name: Upload TileLib logs and wheel digest
-        if: always()
+        if: ${{ always() && steps.consumer.outputs.work_dir != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: tilelib-st-${{ github.run_id }}
@@ -380,7 +380,7 @@ jobs:
             scripts/sim_dsl.sh test/dsl-st \
             2>&1 | tee "${{ steps.consumer.outputs.log_dir }}/ptodsl-st.log"
       - name: Upload PTODSL logs and wheel digest
-        if: always()
+        if: ${{ always() && steps.consumer.outputs.work_dir != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ptodsl-st-${{ github.run_id }}

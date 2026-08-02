@@ -47,7 +47,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/ci-sim-torch-npu-cp311-x86_64
-        key: ci-sim-torch-npu-cp311-x86_64-v1
+        key: ci-sim-torch-npu-cp311-x86_64-v2
 
     - name: Download Torch and TorchNPU wheels on cache miss
       if: ${{ inputs.system-site-packages == 'true' && steps.restore-torch-npu.outputs.cache-hit != 'true' }}
@@ -69,7 +69,9 @@ runs:
           --only-binary=:all: \
           --dest "${TORCH_NPU_CACHE_DIR}" \
           "${TORCH_WHEEL_URL}" \
-          "${TORCH_NPU_WHEEL_URL}"
+          "${TORCH_NPU_WHEEL_URL}" \
+          numpy \
+          PyYAML
         touch "${TORCH_NPU_CACHE_DIR}/.complete"
         echo "downloaded=true" >> "${GITHUB_OUTPUT}"
 
@@ -82,7 +84,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/ci-sim-torch-npu-cp311-x86_64
-        key: ci-sim-torch-npu-cp311-x86_64-v1
+        key: ci-sim-torch-npu-cp311-x86_64-v2
 
     - name: Install and probe shared wheel
       id: setup
@@ -143,7 +145,9 @@ runs:
           }
           "${python_bin}" -m pip install --no-index --find-links "${torch_npu_cache_dir}" \
             "${torch_npu_cache_dir}"/torch-*.whl \
-            "${torch_npu_cache_dir}"/torch_npu-*.whl
+            "${torch_npu_cache_dir}"/torch_npu-*.whl \
+            numpy \
+            PyYAML
         fi
         "${python_bin}" -m pip install --no-deps --force-reinstall "${wheel}"
         "${python_bin}" - <<'PY'
