@@ -167,6 +167,10 @@ the reusable workflow.
 ## 7. Ccache Policy
 
 PTOAS compilation uses ccache only for PR and default-branch wheel builds.
+Both the Linux wheel producer and the regular `build-and-test` job use Clang;
+the wheel producer records its Clang version in a separate cache key because
+its static wheel configuration and container toolchain differ from the
+assert-enabled developer build.
 
 The cache identity contains:
 

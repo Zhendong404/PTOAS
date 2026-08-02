@@ -85,8 +85,27 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
+          dnf install -y ninja-build cmake git ccache clang lld zip binutils patchelf chrpath
           dnf clean all
+
+      - name: Configure Clang toolchain
+        id: clang-config
+        run: |
+          set -euo pipefail
+          clang_c="$(command -v clang)"
+          clang_cxx="$(command -v clang++)"
+          [[ -x "${clang_c}" && -x "${clang_cxx}" ]] || {
+            echo "clang and clang++ are required for wheel builds" >&2
+            exit 1
+          }
+          echo "CC=${clang_c}" >> "${GITHUB_ENV}"
+          echo "CXX=${clang_cxx}" >> "${GITHUB_ENV}"
+          echo "CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
+          echo "compiler=${clang_c}" >> "${GITHUB_OUTPUT}"
+          echo "compiler_cxx=${clang_cxx}" >> "${GITHUB_OUTPUT}"
+          "${clang_c}" --version | head -n 1
+          "${clang_cxx}" --version | head -n 1
 
       - name: Install Python dependencies
         run: |
@@ -102,7 +121,9 @@ jobs:
           echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
           echo "CCACHE_COMPILERCHECK=content" >> "${GITHUB_ENV}"
           echo "CCACHE_NOHASHDIR=true" >> "${GITHUB_ENV}"
-          compiler_id="$(g++ -dumpfullversion -dumpversion)"
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "${GITHUB_ENV}"
+          compiler_id="$(clang -dumpfullversion -dumpversion)"
           echo "compiler_id=${compiler_id}" >> "${GITHUB_OUTPUT}"
 
       - name: Resolve PTOAS distribution version
@@ -179,9 +200,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-gcc${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-${{ github.sha }}
+          key: ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-clang${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-${{ github.sha }}
           restore-keys: |
-            ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-gcc${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-
+            ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-clang${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-
 
       - name: Initialize PTOAS ccache
         if: ${{ inputs.enable_ccache }}
@@ -211,8 +232,17 @@ jobs:
 
       - name: Build LLVM/MLIR
         if: steps.cache-llvm.outputs.cache-hit != 'true'
+        env:
+          ENABLE_CCACHE: ${{ inputs.enable_ccache }}
         run: |
           cd "${LLVM_SOURCE_DIR}"
+          llvm_cmake_launcher=()
+          if [[ "${ENABLE_CCACHE}" == "true" ]]; then
+            llvm_cmake_launcher=(
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            )
+          fi
           cmake -C "${PTO_SOURCE_DIR}/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B "${LLVM_BUILD_DIR}" \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" -DBUILD_SHARED_LIBS=OFF \
             -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF -DMLIR_LINK_MLIR_DYLIB=OFF \
@@ -222,7 +252,8 @@ jobs:
             -DPython_EXECUTABLE="${PY_PATH}/bin/python" -Dpybind11_DIR="$(${PY_PATH}/bin/python -m pybind11 --cmakedir)" \
             -Dnanobind_DIR="$(${PY_PATH}/bin/python -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=host \
-            -DCMAKE_INSTALL_PREFIX="${LLVM_INSTALL_DIR}"
+            -DCMAKE_C_COMPILER="${CMAKE_C_COMPILER}" -DCMAKE_CXX_COMPILER="${CMAKE_CXX_COMPILER}" \
+            -DCMAKE_INSTALL_PREFIX="${LLVM_INSTALL_DIR}" "${llvm_cmake_launcher[@]}"
           ninja -C "${LLVM_BUILD_DIR}"
           cmake --install "${LLVM_BUILD_DIR}"
 
@@ -241,6 +272,7 @@ jobs:
       - name: Build PTOAS wheel
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
+          ENABLE_CCACHE: ${{ inputs.enable_ccache }}
           CMAKE_C_COMPILER_LAUNCHER: ${{ inputs.enable_ccache && 'ccache' || '' }}
           CMAKE_CXX_COMPILER_LAUNCHER: ${{ inputs.enable_ccache && 'ccache' || '' }}
         run: |
@@ -253,8 +285,22 @@ jobs:
           fi
           rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist" "${GITHUB_WORKSPACE}/wheelhouse"
           mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
+          cmake_settings=(
+            --config-settings=cmake.define.CMAKE_C_COMPILER="${CMAKE_C_COMPILER}"
+            --config-settings=cmake.define.CMAKE_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+          )
+          if [[ "${ENABLE_CCACHE}" == "true" ]]; then
+            # Pass the launcher as an explicit scikit-build-core CMake
+            # definition. Relying only on CMAKE_*_COMPILER_LAUNCHER in the
+            # subprocess environment is not reliable across CMake versions.
+            cmake_settings+=(
+              --config-settings=cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache
+              --config-settings=cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache
+            )
+          fi
           SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" LLVM_BUILD_DIR="${LLVM_INSTALL_DIR}" \
-            python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" --no-build-isolation --no-deps \
+            python -m pip wheel "${cmake_settings[@]}" "${PTOAS_WHEEL_SOURCE_DIR}" \
+            --no-build-isolation --no-deps \
             --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
 
       - name: Validate wheel payload and launcher contract
@@ -363,4 +409,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-gcc${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-${{ github.sha }}
+          key: ptoas-wheel-ccache-main-${{ inputs.arch }}-py${{ inputs.python }}-llvm${{ steps.llvm-source.outputs.sha }}-clang${{ steps.ccache-config.outputs.compiler_id }}-${{ env.LLVM_CACHE_FLAVOR }}-${{ github.sha }}
