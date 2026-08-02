@@ -50,7 +50,8 @@ jobs:
       arch: ${{ matrix.arch }}
       python: ${{ matrix.python }}
       release_kind: ${{ inputs.release_kind || 'ptoas' }}
-      enable_ccache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      # PRs may restore the shared main ccache, but only a main push may save it.
+      enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
       save_ccache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       upload_wheel: ${{ github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       wheel_artifact_name: ${{ format('ptoas-wheel-py{0}-{1}', matrix.python, matrix.arch) }}
