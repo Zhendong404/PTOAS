@@ -41,6 +41,11 @@ on:
         required: false
         default: true
         type: boolean
+      llvm_profile:
+        description: LLVM profile for this consumer. PR validation uses assert-static; releases use release-static.
+        required: false
+        default: release-static
+        type: string
 
 permissions:
   contents: read
@@ -48,7 +53,7 @@ permissions:
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
   LLVM_REF: feature-vpto-llvm21
-  LLVM_CACHE_FLAVOR: llvm21-vpto-wheel-static-pic-utils-v3
+  LLVM_CACHE_FLAVOR: ${{ inputs.llvm_profile == 'assert-static' && 'llvm21-assert-static-mlirpy-hardening-install-v1' || 'llvm21-vpto-wheel-static-pic-utils-v3' }}
 
 jobs:
   build_wheel:
@@ -186,6 +191,11 @@ jobs:
           echo "LLVM_INSTALL_DIR=/llvm-workspace/llvm-install" >> "${GITHUB_ENV}"
           echo "PTO_SOURCE_DIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
           echo "PTO_BUILD_DIR=${GITHUB_WORKSPACE}/build-release" >> "${GITHUB_ENV}"
+          if [[ "${{ inputs.llvm_profile }}" == "assert-static" ]]; then
+            echo "LLVM_ASSERTIONS=ON" >> "${GITHUB_ENV}"
+          else
+            echo "LLVM_ASSERTIONS=OFF" >> "${GITHUB_ENV}"
+          fi
 
       - name: Resolve LLVM source SHA
         id: llvm-source
@@ -210,7 +220,7 @@ jobs:
           ccache --max-size=2G
           ccache --zero-stats
 
-      - name: Restore LLVM build cache
+      - name: Restore LLVM install cache
         id: cache-llvm
         uses: actions/cache/restore@v4
         with:
@@ -246,7 +256,7 @@ jobs:
           cmake -C "${PTO_SOURCE_DIR}/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B "${LLVM_BUILD_DIR}" \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" -DBUILD_SHARED_LIBS=OFF \
             -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF -DMLIR_LINK_MLIR_DYLIB=OFF \
-            -DLLVM_ENABLE_PIC=ON -DMLIR_INSTALL_AGGREGATE_OBJECTS=ON -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_PIC=ON -DMLIR_INSTALL_AGGREGATE_OBJECTS=ON -DLLVM_ENABLE_ASSERTIONS="${LLVM_ASSERTIONS}" \
             -DLLVM_INSTALL_UTILS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON -DPython3_EXECUTABLE="${PY_PATH}/bin/python" \
             -DPython_EXECUTABLE="${PY_PATH}/bin/python" -Dpybind11_DIR="$(${PY_PATH}/bin/python -m pybind11 --cmakedir)" \

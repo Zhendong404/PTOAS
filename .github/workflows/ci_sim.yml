@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   pull-requests: read
 
 concurrency:
@@ -107,19 +108,100 @@ jobs:
           python3 .github/scripts/classify_ci_sim_changes.py "${args[@]}" | tee selection.json
           echo "Selection reason: $(python3 -c 'import json,sys; print(json.load(open("selection.json"))["selection_reason"])')"
 
-  build-wheel-x86_64:
+  build-and-test-wheel:
+    name: wait-for-ci-build-and-test-wheel
     needs: select-ci-sim
     if: ${{ needs.select-ci-sim.outputs.wheel == 'true' }}
-    uses: ./.github/workflows/_build_linux_wheel.yml
-    with:
-      arch: x86_64
-      python: '3.11'
-      release_kind: ptoas
-      enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
-      save_ccache: false
-      upload_wheel: true
-      wheel_artifact_name: ptoas-ci-wheel-cp311-x86_64
-      upload_binary: false
+    runs-on: ubuntu-22.04
+    outputs:
+      producer_run_id: ${{ steps.find-producer.outputs.run_id }}
+    steps:
+      - name: Wait for matching CI build-and-test wheel artifact
+        id: find-producer
+        uses: actions/github-script@v7
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const deadline = Date.now() + 45 * 60 * 1000;
+            const headSha = process.env.HEAD_SHA;
+            const eventName = process.env.EVENT_NAME;
+            const workflowId = 'ci.yml';
+
+            while (Date.now() < deadline) {
+              const response = await github.rest.actions.listWorkflowRunsForWorkflow({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflowId,
+                event: eventName,
+                per_page: 100,
+              });
+              const candidates = response.data.workflow_runs
+                .filter((run) => run.head_sha === headSha ||
+                  (run.pull_requests || []).some((pr) => pr.head && pr.head.sha === headSha))
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              const run = candidates[0];
+
+              if (run) {
+                const artifacts = await github.paginate(
+                  github.rest.actions.listWorkflowRunArtifacts,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                    per_page: 100,
+                  },
+                );
+                const wheel = artifacts.find((artifact) =>
+                  artifact.name === 'ptoas-ci-wheel-cp311-x86_64' && !artifact.expired,
+                );
+                if (wheel) {
+                  core.setOutput('run_id', String(run.id));
+                  return;
+                }
+                if (run.status === 'completed') {
+                  core.setFailed(`CI workflow ${run.id} completed with ${run.conclusion} before publishing the wheel`);
+                  return;
+                }
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(`timed out waiting for successful CI workflow for ${headSha}`);
+
+  verify-ci-build-and-test:
+    name: verify-ci-build-and-test
+    needs: build-and-test-wheel
+    if: ${{ needs.build-and-test-wheel.result == 'success' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Wait for CI build-and-test completion
+        uses: actions/github-script@v7
+        env:
+          PRODUCER_RUN_ID: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const deadline = Date.now() + 45 * 60 * 1000;
+            const runId = Number(process.env.PRODUCER_RUN_ID);
+            while (Date.now() < deadline) {
+              const response = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: runId,
+              });
+              const run = response.data;
+              if (run.status === 'completed') {
+                if (run.conclusion !== 'success') {
+                  core.setFailed(`CI workflow ${run.id} completed with ${run.conclusion}`);
+                }
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            core.setFailed(`timed out waiting for CI workflow ${runId} to complete`);
 
   validate-wheel-aarch64:
     needs: select-ci-sim
@@ -129,6 +211,7 @@ jobs:
       arch: aarch64
       python: '3.11'
       release_kind: ptoas
+      llvm_profile: ${{ github.event_name == 'pull_request' && 'assert-static' || 'release-static' }}
       enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
       save_ccache: false
       upload_wheel: false
@@ -136,7 +219,7 @@ jobs:
 
   pypto-sim-smoke:
     name: pypto-sim-smoke
-    needs: [select-ci-sim, build-wheel-x86_64]
+    needs: [select-ci-sim, build-and-test-wheel]
     if: ${{ needs.select-ci-sim.outputs.pypto == 'true' }}
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 180
@@ -159,6 +242,7 @@ jobs:
         uses: ./.github/actions/setup-ci-sim-consumer
         with:
           suite: pypto
+          producer_run_id: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
       - name: Checkout PyPTO
         uses: actions/checkout@v4
         with:
@@ -219,7 +303,7 @@ jobs:
 
   tileop-st:
     name: tileop-st
-    needs: [select-ci-sim, build-wheel-x86_64]
+    needs: [select-ci-sim, build-and-test-wheel]
     if: ${{ needs.select-ci-sim.outputs.tileop == 'true' }}
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 180
@@ -234,6 +318,7 @@ jobs:
         uses: ./.github/actions/setup-ci-sim-consumer
         with:
           suite: tileop
+          producer_run_id: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
       - name: Resolve simulator environment
         shell: bash
         run: |
@@ -266,7 +351,7 @@ jobs:
 
   vpto-sim:
     name: vpto-sim
-    needs: [select-ci-sim, build-wheel-x86_64]
+    needs: [select-ci-sim, build-and-test-wheel]
     if: ${{ needs.select-ci-sim.outputs.vpto == 'true' }}
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 180
@@ -282,6 +367,7 @@ jobs:
         with:
           suite: vpto
           system-site-packages: "true"
+          producer_run_id: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
       - name: Run VPTO SIM
         shell: bash
         env:
@@ -311,7 +397,7 @@ jobs:
 
   tilelib-st:
     name: tilelib-st
-    needs: [select-ci-sim, build-wheel-x86_64]
+    needs: [select-ci-sim, build-and-test-wheel]
     if: ${{ needs.select-ci-sim.outputs.tilelib == 'true' }}
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 180
@@ -327,6 +413,7 @@ jobs:
         with:
           suite: tilelib
           system-site-packages: "true"
+          producer_run_id: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
       - name: Run TileLib ST
         shell: bash
         env:
@@ -355,7 +442,7 @@ jobs:
 
   ptodsl-st:
     name: ptodsl-st
-    needs: [select-ci-sim, build-wheel-x86_64]
+    needs: [select-ci-sim, build-and-test-wheel]
     if: ${{ needs.select-ci-sim.outputs.ptodsl == 'true' }}
     runs-on: [self-hosted, Linux, X64, label-1]
     timeout-minutes: 180
@@ -371,6 +458,7 @@ jobs:
         with:
           suite: ptodsl
           system-site-packages: "true"
+          producer_run_id: ${{ needs.build-and-test-wheel.outputs.producer_run_id }}
       - name: Run PTODSL ST
         shell: bash
         env:
@@ -401,7 +489,8 @@ jobs:
     if: ${{ always() }}
     needs:
       - select-ci-sim
-      - build-wheel-x86_64
+      - build-and-test-wheel
+      - verify-ci-build-and-test
       - validate-wheel-aarch64
       - pypto-sim-smoke
       - tileop-st
@@ -415,7 +504,8 @@ jobs:
         env:
           SELECTION_RESULT: ${{ needs.select-ci-sim.result }}
           WHEEL_SELECTED: ${{ needs.select-ci-sim.outputs.wheel }}
-          X86_WHEEL_RESULT: ${{ needs.build-wheel-x86_64.result }}
+          X86_WHEEL_RESULT: ${{ needs.build-and-test-wheel.result }}
+          CI_BUILD_AND_TEST_RESULT: ${{ needs.verify-ci-build-and-test.result }}
           AARCH64_WHEEL_RESULT: ${{ needs.validate-wheel-aarch64.result }}
           PYPTO_SELECTED: ${{ needs.select-ci-sim.outputs.pypto }}
           PYPTO_RESULT: ${{ needs.pypto-sim-smoke.result }}
@@ -444,7 +534,8 @@ jobs:
           if [[ "${SELECTION_RESULT}" != "success" ]]; then
             failures+=("selection: expected=success, actual=${SELECTION_RESULT}")
           fi
-          require_result build-wheel-x86_64 "${WHEEL_SELECTED}" "${X86_WHEEL_RESULT}"
+          require_result build-and-test-wheel "${WHEEL_SELECTED}" "${X86_WHEEL_RESULT}"
+          require_result verify-ci-build-and-test "${WHEEL_SELECTED}" "${CI_BUILD_AND_TEST_RESULT}"
           require_result validate-wheel-aarch64 "${WHEEL_SELECTED}" "${AARCH64_WHEEL_RESULT}"
           require_result pypto-sim-smoke "${PYPTO_SELECTED}" "${PYPTO_RESULT}"
           require_result tileop-st "${TILEOP_SELECTED}" "${TILEOP_RESULT}"
@@ -459,7 +550,8 @@ jobs:
             echo
             echo '| Job | Selected | Result |'
             echo '| --- | --- | --- |'
-            echo "| build-wheel-x86_64 | ${WHEEL_SELECTED} | ${X86_WHEEL_RESULT} |"
+            echo "| build-and-test-wheel | ${WHEEL_SELECTED} | ${X86_WHEEL_RESULT} |"
+            echo "| verify-ci-build-and-test | ${WHEEL_SELECTED} | ${CI_BUILD_AND_TEST_RESULT} |"
             echo "| validate-wheel-aarch64 | ${WHEEL_SELECTED} | ${AARCH64_WHEEL_RESULT} |"
             echo "| pypto-sim-smoke | ${PYPTO_SELECTED} | ${PYPTO_RESULT} |"
             echo "| tileop-st | ${TILEOP_SELECTED} | ${TILEOP_RESULT} |"

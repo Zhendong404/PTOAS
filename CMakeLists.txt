@@ -60,7 +60,7 @@ function(ptoas_append_editable_llvm_rpath target_name)
     return()
   endif()
   get_filename_component(_ptoas_editable_llvm_library_dir
-    "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
+    "${PTOAS_LLVM_LIBRARY_DIR}" REALPATH)
   set_property(TARGET "${target_name}" APPEND PROPERTY
     INSTALL_RPATH "${_ptoas_editable_llvm_library_dir}")
 endfunction()
@@ -113,6 +113,20 @@ find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "LLVM CMake Dir: ${LLVM_CMAKE_DIR}")
 message(STATUS "LLVM Include Dir: ${LLVM_INCLUDE_DIRS}")
+# Build-tree LLVM packages expose LLVM_BUILD_LIBRARY_DIR, while installed
+# packages expose LLVM_LIBRARY_DIR or LLVM_LIBRARY_DIRS. Normalize both forms
+# for PTOAS link directories and test environments.
+set(PTOAS_LLVM_LIBRARY_DIR "")
+if(DEFINED LLVM_BUILD_LIBRARY_DIR AND NOT LLVM_BUILD_LIBRARY_DIR STREQUAL "")
+  set(PTOAS_LLVM_LIBRARY_DIR "${LLVM_BUILD_LIBRARY_DIR}")
+elseif(DEFINED LLVM_LIBRARY_DIR AND NOT LLVM_LIBRARY_DIR STREQUAL "")
+  set(PTOAS_LLVM_LIBRARY_DIR "${LLVM_LIBRARY_DIR}")
+elseif(DEFINED LLVM_LIBRARY_DIRS AND NOT LLVM_LIBRARY_DIRS STREQUAL "")
+  list(GET LLVM_LIBRARY_DIRS 0 PTOAS_LLVM_LIBRARY_DIR)
+endif()
+if(PTOAS_LLVM_LIBRARY_DIR STREQUAL "")
+  message(FATAL_ERROR "Unable to determine the LLVM library directory")
+endif()
 if(NOT DEFINED LLVM_VERSION_MAJOR)
   string(REGEX MATCH "^[0-9]+" LLVM_VERSION_MAJOR "${LLVM_PACKAGE_VERSION}")
 endif()
@@ -168,7 +182,7 @@ include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
-link_directories(${LLVM_BUILD_LIBRARY_DIR})
+link_directories(${PTOAS_LLVM_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 # =========================================================
@@ -213,7 +227,7 @@ if(BUILD_TESTING)
     )
     set(_pto_python_test_env
       "PYTHONPATH=${_pto_python_test_pythonpath}"
-      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${LLVM_BUILD_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${PTOAS_LLVM_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
       "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:${_pto_python_bin_dir}:$ENV{PATH}"
       "PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas"
     )

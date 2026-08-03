@@ -13,7 +13,7 @@ if(NOT DEFINED _pto_python_test_env)
   )
   set(_pto_python_test_env
     "PYTHONPATH=${_ptodsl_test_pythonpath}"
-    "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${LLVM_BUILD_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${PTOAS_LLVM_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:${_pto_python_bin_dir}:$ENV{PATH}"
     "PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas"
   )

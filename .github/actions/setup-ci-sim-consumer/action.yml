@@ -12,6 +12,10 @@ inputs:
   suite:
     description: Consumer suite name used to isolate paths.
     required: true
+  producer_run_id:
+    description: CI workflow run that produced the shared PTOAS wheel.
+    required: false
+    default: ""
   system-site-packages:
     description: Install cached CPython 3.11 torch and torch_npu wheels.
     required: false
@@ -35,7 +39,18 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Download shared PTOAS wheel
+    - name: Download shared PTOAS wheel from producer workflow
+      if: ${{ inputs.producer_run_id != '' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ptoas-ci-wheel-cp311-x86_64
+        path: ${{ runner.temp }}/ci-sim-${{ inputs.suite }}/wheel
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        run-id: ${{ inputs.producer_run_id }}
+
+    - name: Download shared PTOAS wheel from current workflow
+      if: ${{ inputs.producer_run_id == '' }}
       uses: actions/download-artifact@v4
       with:
         name: ptoas-ci-wheel-cp311-x86_64
@@ -110,10 +125,13 @@ runs:
           exit 1
         fi
         wheel="${wheels[0]}"
-        if [[ "$(basename "${wheel}")" != *-cp311-cp311-manylinux_2_34_x86_64.whl ]]; then
+        case "$(basename "${wheel}")" in
+          *-cp311-cp311-manylinux_2_34_x86_64.whl|*-cp311-cp311-manylinux_2_35_x86_64.whl) ;;
+          *)
           echo "ERROR: incompatible shared wheel: $(basename "${wheel}")" >&2
           exit 1
-        fi
+          ;;
+        esac
 
         base_python=python3.11
         ascend_home=""

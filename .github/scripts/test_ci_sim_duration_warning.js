@@ -18,7 +18,7 @@ async function main() {
   fs.writeFileSync(path.join(contextDir, 'pr-number'), '42\n');
   fs.writeFileSync(path.join(contextDir, 'pr-head-sha'), `${sha}\n`);
   const jobs = [
-    {name: 'build-wheel-x86_64 / Build ptoas wheel (x86_64, py3.11)', started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:11:00Z', conclusion: 'success'},
+    {name: 'build-and-test-wheel / wait-for-ci-build-and-test-wheel', started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:11:00Z', conclusion: 'success'},
     {name: 'vpto-sim', started_at: '2026-01-01T00:11:00Z', completed_at: '2026-01-01T00:20:00Z', conclusion: 'success'},
     {name: 'ci-sim-required', started_at: '2026-01-01T01:40:00Z', completed_at: '2026-01-01T01:41:00Z', conclusion: 'success'},
   ];

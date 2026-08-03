@@ -21,9 +21,12 @@ long-lived job. This caused three problems:
 - Changes unrelated to simulator behavior still consumed expensive wheel and
   self-hosted simulator capacity.
 
-The current design builds one repaired x86_64 CPython 3.11 wheel and fans that
-exact artifact out to independently selected simulator suites. It also keeps
-an aarch64 CPython 3.11 wheel build as an independent packaging validation.
+The current design builds PTOAS once in the regular `ci.yml` build-and-test
+job. After the PTOAS build is ready, wheel packaging and the lit suite run in
+parallel. The repaired x86_64 CPython 3.11 wheel is uploaded as soon as
+packaging finishes, so `ci-sim` can start consumers without waiting for the
+remaining lit or sample tests. It also keeps an aarch64 CPython 3.11 wheel
+build as an independent packaging validation.
 
 ## 2. Goals
 
@@ -49,12 +52,26 @@ an aarch64 CPython 3.11 wheel build as an independent packaging validation.
 
 ## 4. Workflow Topology
 
-The PR workflow is defined in `.github/workflows/ci_sim.yml`.
+The regular CI workflow publishes the x86_64 wheel as soon as PTOAS itself has
+been built. The long-running lit tests and wheel packaging then run in
+parallel; sample tests continue after both have completed. The PR simulator
+workflow consumes the artifact as soon as it is published.
+
+```mermaid
+flowchart LR
+  Build["build PTOAS"] --> Lit["lit tests"]
+  Build --> Wheel["create, repair, upload wheel"]
+  Wheel --> Consumers["ci-sim consumers"]
+  Lit --> MainGate["ci.yml build-and-test result"]
+  Wheel --> MainGate
+```
+
+The PR fan-out workflow is defined in `.github/workflows/ci_sim.yml`.
 
 ```mermaid
 flowchart TD
   Event["PR / schedule / workflow_dispatch"] --> Select["select-ci-sim"]
-  Select -->|wheel=true| X86["build-wheel-x86_64"]
+  Select -->|wheel=true| X86["build-and-test-wheel\n(wait for ci.yml artifact)"]
   Select -->|wheel=true| ARM["validate-wheel-aarch64"]
   X86 --> Artifact["ptoas-ci-wheel-cp311-x86_64"]
   Artifact --> PyPTO["pypto-sim-smoke"]
@@ -75,11 +92,15 @@ flowchart TD
   VPTO --> Gate
   TileLib --> Gate
   PTODSL --> Gate
+  X86 --> Verify["verify ci.yml completion"]
+  Verify --> Gate
   Gate --> Watchdog["workflow_run watchdog"]
 ```
 
-Only selected suite jobs run. All suite jobs depend on the x86_64 producer, so
-a producer failure prevents consumers from starting. The required gate uses
+Only selected suite jobs run. The x86_64 wait job polls the matching `ci.yml`
+run for the wheel artifact and returns as soon as that artifact is available;
+it does not wait for the complete `build-and-test` job. A packaging failure or
+missing artifact prevents consumers from starting. The required gate uses
 `if: always()` and distinguishes these dependency skips from legal unselected
 skips.
 
@@ -138,14 +159,16 @@ accumulating in an unreferenced test script.
 
 ## 6. Shared Wheel Producer
 
-`.github/workflows/_build_linux_wheel.yml` is a reusable workflow shared by
-`ci-sim` and `.github/workflows/build_wheel.yml`.
+The regular `.github/workflows/ci.yml` `build-and-test` job is the x86_64
+consumer-wheel producer for PR and simulator validation. The reusable
+`.github/workflows/_build_linux_wheel.yml` workflow remains shared by the
+aarch64 validation job and `.github/workflows/build_wheel.yml`.
 
 The producer contract is:
 
 - Python ABI: CPython 3.11 for `ci-sim`.
 - Consumer architecture: x86_64.
-- Platform tag: `manylinux_2_34_x86_64`.
+- Platform tag: `manylinux_2_35_x86_64`.
 - Artifact name: `ptoas-ci-wheel-cp311-x86_64`.
 - Artifact contents: exactly one repaired compatible wheel.
 - LLVM/MLIR: statically linked into the PTOAS compiler payload.
@@ -155,10 +178,9 @@ artifact from the same workflow run. Uploads use `overwrite: true`, allowing a
 watchdog `rerun-failed-jobs` attempt to replace an artifact previously uploaded
 by the same job instead of failing with an immutable-artifact conflict.
 
-The reusable build retains payload validation, `auditwheel repair`, isolated
-wheel installation tests, native dependency checks, and optional binary
-archive generation. The aarch64 job performs the same wheel validation but
-does not upload a consumer artifact.
+The x86_64 producer performs payload validation, `auditwheel repair`, and an
+isolated wheel installation test before uploading. The aarch64 job performs
+the same wheel validation but does not upload a consumer artifact.
 
 The standalone wheel workflow no longer has a pull-request trigger. Main,
 release, schedule, and workflow-dispatch publication paths continue to call
@@ -167,10 +189,10 @@ the reusable workflow.
 ## 7. Ccache Policy
 
 PTOAS compilation uses ccache only for PR and default-branch wheel builds.
-Both the Linux wheel producer and the regular `build-and-test` job use Clang;
-the wheel producer records its Clang version in a separate cache key because
-its static wheel configuration and container toolchain differ from the
-assert-enabled developer build.
+The regular `build-and-test` job uses the assert-static LLVM install tree and
+its ccache is shared by the build and wheel packaging path. The independent
+aarch64/release wheel workflow records its Clang version in a separate cache
+key because its container toolchain differs from the developer build.
 
 The cache identity contains:
 
@@ -287,7 +309,7 @@ limit prevents retry loops.
 
 `.github/scripts/ci_sim_duration_warning.js` reports:
 
-- x86_64 wheel producer duration;
+- x86_64 wheel-artifact wait/producer duration;
 - duration of each selected, completed suite;
 - critical path from producer start to `ci-sim-required` completion;
 - the six-minute producer target and ten-minute advisory budget.

@@ -102,17 +102,23 @@ jobs:
       PTOAS_CLANG_MAJOR: "15"
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto-llvm21
-      LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
-      LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
+      LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert-static
+      LLVM_INSTALL_DIR: ${{ github.workspace }}/llvm-install-assert-static
+      LLVM_DIR: ${{ github.workspace }}/llvm-install-assert-static
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTOAS_VENV: ${{ github.workspace }}/.venv-ptoas-assert
-      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v2
+      LLVM_CACHE_FLAVOR: llvm21-assert-static-mlirpy-hardening-install-v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Set up wheel-compatible Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install dependencies and create developer environment
         run: |
@@ -130,14 +136,14 @@ jobs:
             ccache cmake git ninja-build \
             python3 python3-pip python3-venv \
             clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
-            libedit-dev zlib1g-dev libxml2-dev libzstd-dev
+            libedit-dev zlib1g-dev libxml2-dev libzstd-dev patchelf
           rm -rf "${PTOAS_VENV}"
-          python3 -m venv "${PTOAS_VENV}"
+          python -m venv "${PTOAS_VENV}"
           "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
           "${PTOAS_VENV}/bin/pip" install \
             'scikit-build-core>=0.12.2,<2' 'pybind11<3' \
-            nanobind numpy ml-dtypes
+            nanobind numpy ml-dtypes auditwheel
 
       - name: Define payload paths
         shell: bash
@@ -211,13 +217,13 @@ jobs:
           }
           echo "LLVM_SOURCE_SHA=${LLVM_SOURCE_SHA}" >> "${GITHUB_ENV}"
 
-      # 先恢复 LLVM build 缓存
-      - name: Restore LLVM build cache
+      # Cache only the installed LLVM prefix. The build tree is an ephemeral
+      # producer and is intentionally excluded from the cache.
+      - name: Restore LLVM assert-static install cache
         id: cache-llvm
         uses: actions/cache/restore@v4
         with:
-          path: |
-            llvm-project/llvm/build-assert
+          path: ${{ github.workspace }}/llvm-install-assert-static
           key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Prepare LLVM source (no rebuild)
@@ -225,7 +231,8 @@ jobs:
           mkdir -p llvm-project
           cd llvm-project
 
-          # cache 只保存 build 目录，这里补一个最小 git repo 供 cmake/ninja 使用
+          # The source checkout is needed to produce the install tree on a
+          # cache miss and keeps the normal LLVM source layout available.
           if [ ! -d .git ]; then
             git init
             git remote add origin "${LLVM_REPO}"
@@ -235,14 +242,20 @@ jobs:
           git fetch --depth 1 origin "${LLVM_SOURCE_SHA}"
           git checkout --force "${LLVM_SOURCE_SHA}"
 
-      - name: Build LLVM/MLIR (only if cache miss)
+      - name: Build and install LLVM/MLIR (only if cache miss)
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           cd llvm-project
           cmake -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B "${LLVM_BUILD_DIR}" \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF \
+            -DLLVM_LINK_LLVM_DYLIB=OFF \
+            -DMLIR_LINK_MLIR_DYLIB=OFF \
+            -DLLVM_ENABLE_PIC=ON \
+            -DMLIR_INSTALL_AGGREGATE_OBJECTS=ON \
             -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DLLVM_INSTALL_UTILS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE="${PTOAS_VENV}/bin/python" \
             -DPython_EXECUTABLE="${PTOAS_VENV}/bin/python" \
@@ -251,21 +264,32 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
-            -DLLVM_TARGETS_TO_BUILD="host"
+            -DLLVM_TARGETS_TO_BUILD="host" \
+            -DCMAKE_INSTALL_PREFIX="${LLVM_INSTALL_DIR}"
 
           ninja -C "${LLVM_BUILD_DIR}"
-         
+          cmake --install "${LLVM_BUILD_DIR}"
 
-      # LLVM build 完成后立即保存缓存，避免后续测试影响缓存内容
-      - name: Save LLVM build cache
+      - name: Validate LLVM assert-static install tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${LLVM_INSTALL_DIR}/lib/cmake/llvm/LLVMConfig.cmake"
+          test -f "${LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake"
+          for tool in FileCheck count not; do
+            test -x "${LLVM_INSTALL_DIR}/bin/${tool}"
+          done
+
+      # Save immediately after installation so later PTOAS tests cannot
+      # pollute the reusable LLVM cache.
+      - name: Save LLVM assert-static install cache
         if: >-
           steps.cache-llvm.outputs.cache-hit != 'true' &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
           success()
         uses: actions/cache/save@v4
         with:
-          path: |
-            llvm-project/llvm/build-assert
+          path: ${{ github.workspace }}/llvm-install-assert-static
           key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Validate strict CMake 4 configure
@@ -275,7 +299,7 @@ jobs:
           cmake4_venv="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/cmake-4.1.3-venv"
           cmake4_build="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/ptoas-cmake4-strict"
           rm -rf "${cmake4_venv}" "${cmake4_build}"
-          python3 -m venv "${cmake4_venv}"
+          python -m venv "${cmake4_venv}"
           "${cmake4_venv}/bin/python" -m pip install --upgrade pip
           "${cmake4_venv}/bin/pip" install "cmake==4.1.3" 'pybind11<3' nanobind
           cmake4_bin="${cmake4_venv}/bin/cmake"
@@ -326,13 +350,94 @@ jobs:
           export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
-      - name: Run lit tests
+      - name: Start lit tests in background
         shell: bash
         env:
           LLVM_DIR: ${{ env.LLVM_DIR }}
         run: |
+          set -euo pipefail
+          lit_root="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}/ptoas-lit"
+          lit_pid_file="${lit_root}/pid"
+          lit_status_file="${lit_root}/status"
+          lit_log="${lit_root}/lit.log"
+          rm -rf "${lit_root}"
+          mkdir -p "${lit_root}"
+
           export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
-          ninja -C "${PTO_BUILD_DIR}" check-pto
+          # Clear the runner's process-tracking marker so the background lit
+          # process survives this step and can be joined below.
+          RUNNER_TRACKING_ID="" PTOAS_LIT_STATUS_FILE="${lit_status_file}" \
+          nohup bash -c '
+            set +e
+            ninja -C "${PTO_BUILD_DIR}" check-pto
+            status=$?
+            printf "%s\\n" "${status}" > "${PTOAS_LIT_STATUS_FILE}"
+            exit "${status}"
+          ' >"${lit_log}" 2>&1 </dev/null &
+          echo "$!" >"${lit_pid_file}"
+          echo "PTOAS_LIT_PID_FILE=${lit_pid_file}" >>"${GITHUB_ENV}"
+          echo "PTOAS_LIT_STATUS_FILE=${lit_status_file}" >>"${GITHUB_ENV}"
+          echo "PTOAS_LIT_LOG=${lit_log}" >>"${GITHUB_ENV}"
+          echo "Started lit tests in background (pid $(cat "${lit_pid_file}")); log: ${lit_log}"
+
+      - name: Create wheel while lit tests run
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_dist="${GITHUB_WORKSPACE}/build/wheel-dist"
+          wheelhouse="${GITHUB_WORKSPACE}/wheelhouse"
+          rm -rf "${wheel_dist}" "${wheelhouse}"
+          mkdir -p "${wheel_dist}" "${wheelhouse}"
+
+          # Reuse the PTOAS CMake build that was already compiled and tested.
+          # scikit-build-core may reconfigure this tree for wheel packaging,
+          # but it must not create a second PTOAS build directory.
+          LLVM_BUILD_DIR="${LLVM_INSTALL_DIR}" \
+            "${PTOAS_VENV}/bin/python" -m pip wheel . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_BUILD_DIR}" \
+              --wheel-dir "${wheel_dist}"
+          "${PTOAS_VENV}/bin/python" docker/validate_wheel_payload.py "${wheel_dist}"
+          "${PTOAS_VENV}/bin/auditwheel" repair --plat manylinux_2_35_x86_64 \
+            "${wheel_dist}"/ptoas*.whl -w "${wheelhouse}"
+
+          PTO_EXPECT_STATIC_LLVM=1 \
+          PTO_TEST_WHEEL_PATH="${wheelhouse}/ptoas*.whl" \
+            bash docker/test_wheel_imports.sh
+
+      - name: Upload tested PTOAS wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ptoas-ci-wheel-cp311-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Finish lit tests
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f "${PTOAS_LIT_PID_FILE}" ]] || {
+            echo "ERROR: lit pid file is missing" >&2
+            exit 1
+          }
+          lit_pid="$(cat "${PTOAS_LIT_PID_FILE}")"
+          while [[ ! -f "${PTOAS_LIT_STATUS_FILE}" ]]; do
+            if ! kill -0 "${lit_pid}" 2>/dev/null; then
+              echo "ERROR: lit exited without writing a status" >&2
+              [[ -f "${PTOAS_LIT_LOG}" ]] && cat "${PTOAS_LIT_LOG}" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          lit_status="$(cat "${PTOAS_LIT_STATUS_FILE}")"
+          cat "${PTOAS_LIT_LOG}"
+          if [[ "${lit_status}" != "0" ]]; then
+            echo "ERROR: lit tests failed with status ${lit_status}" >&2
+            exit "${lit_status}"
+          fi
+          echo "lit tests passed"
 
       - name: Show ccache statistics
         if: always()
