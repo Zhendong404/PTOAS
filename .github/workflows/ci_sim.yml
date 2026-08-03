@@ -131,13 +131,16 @@ jobs:
             const workflowId = 'ci.yml';
 
             while (Date.now() < deadline) {
-              const response = await github.rest.actions.listWorkflowRunsForWorkflow({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: workflowId,
-                event: eventName,
-                per_page: 100,
-              });
+              const response = await github.request(
+                'GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflowId,
+                  event: eventName,
+                  per_page: 100,
+                },
+              );
               const candidates = response.data.workflow_runs
                 .filter((run) => run.head_sha === headSha ||
                   (run.pull_requests || []).some((pr) => pr.head && pr.head.sha === headSha))
@@ -146,7 +149,7 @@ jobs:
 
               if (run) {
                 const artifacts = await github.paginate(
-                  github.rest.actions.listWorkflowRunArtifacts,
+                  'GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts',
                   {
                     owner: context.repo.owner,
                     repo: context.repo.repo,
@@ -187,11 +190,14 @@ jobs:
             const deadline = Date.now() + 45 * 60 * 1000;
             const runId = Number(process.env.PRODUCER_RUN_ID);
             while (Date.now() < deadline) {
-              const response = await github.rest.actions.getWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: runId,
-              });
+              const response = await github.request(
+                'GET /repos/{owner}/{repo}/actions/runs/{run_id}',
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: runId,
+                },
+              );
               const run = response.data;
               if (run.status === 'completed') {
                 if (run.conclusion !== 'success') {
