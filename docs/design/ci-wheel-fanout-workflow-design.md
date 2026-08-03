@@ -25,8 +25,9 @@ The current design builds PTOAS once in the regular `ci.yml` build-and-test
 job. After the PTOAS build is ready, wheel packaging and the lit suite run in
 parallel. The repaired x86_64 CPython 3.11 wheel is uploaded as soon as
 packaging finishes, so `ci-sim` can start consumers without waiting for the
-remaining lit or sample tests. It also keeps an aarch64 CPython 3.11 wheel
-build as an independent packaging validation.
+remaining lit or sample tests. Aarch64 wheel validation is intentionally not
+part of the PR simulator workflow and can run from the nightly publication
+workflow later.
 
 ## 2. Goals
 
@@ -72,7 +73,6 @@ The PR fan-out workflow is defined in `.github/workflows/ci_sim.yml`.
 flowchart TD
   Event["PR / schedule / workflow_dispatch"] --> Select["select-ci-sim"]
   Select -->|wheel=true| X86["build-and-test-wheel\n(wait for ci.yml artifact)"]
-  Select -->|wheel=true| ARM["validate-wheel-aarch64"]
   X86 --> Artifact["ptoas-ci-wheel-cp311-x86_64"]
   Artifact --> PyPTO["pypto-sim-smoke"]
   Artifact --> TileOp["tileop-st"]
@@ -86,7 +86,6 @@ flowchart TD
   Select --> PTODSL
   Select --> Gate["ci-sim-required"]
   X86 --> Gate
-  ARM --> Gate
   PyPTO --> Gate
   TileOp --> Gate
   VPTO --> Gate
@@ -149,7 +148,8 @@ artifacts, issue templates, licenses, and a small set of repository metadata
 files.
 
 Schedule and workflow-dispatch events bypass PR path selection and always run
-both wheel architectures and all five suites.
+the x86_64 consumer wheel and all five suites. Aarch64 packaging remains a
+separate publication/nightly concern.
 
 Before classifying a run, `select-ci-sim` executes both
 `.github/scripts/test_classify_ci_sim_changes.py` and
@@ -161,8 +161,9 @@ accumulating in an unreferenced test script.
 
 The regular `.github/workflows/ci.yml` `build-and-test` job is the x86_64
 consumer-wheel producer for PR and simulator validation. The reusable
-`.github/workflows/_build_linux_wheel.yml` workflow remains shared by the
-aarch64 validation job and `.github/workflows/build_wheel.yml`.
+`.github/workflows/_build_linux_wheel.yml` workflow remains available to
+`.github/workflows/build_wheel.yml` for publication and future nightly
+aarch64 validation.
 
 The producer contract is:
 
@@ -179,8 +180,8 @@ watchdog `rerun-failed-jobs` attempt to replace an artifact previously uploaded
 by the same job instead of failing with an immutable-artifact conflict.
 
 The x86_64 producer performs payload validation, `auditwheel repair`, and an
-isolated wheel installation test before uploading. The aarch64 job performs
-the same wheel validation but does not upload a consumer artifact.
+isolated wheel installation test before uploading. The simulator workflow has
+no aarch64 consumer artifact or aarch64 build gate.
 
 The standalone wheel workflow no longer has a pull-request trigger. Main,
 release, schedule, and workflow-dispatch publication paths continue to call
@@ -268,7 +269,8 @@ completed.
 ## 9. Required Gate
 
 `ci-sim-required` is the stable branch-protection result. It depends on path
-selection, both architecture wheel jobs, and all five suite jobs.
+selection, the x86_64 wheel producer, the producer completion check, and all
+five suite jobs.
 
 For each job the gate applies this rule:
 
@@ -340,7 +342,7 @@ there is no legacy source build or sequential suite path in the active graph.
 
 The following rollout work remains:
 
-- execute clean x86_64 and aarch64 builds on GitHub runners;
+- execute a clean x86_64 build on GitHub runners;
 - exercise every consumer and compare their recorded wheel digests;
 - validate path selection, failure propagation, and network-only reruns;
 - collect at least ten warm-cache producer samples and evaluate P95;
@@ -365,7 +367,8 @@ while unused; they do not change compiler or release payload behavior.
 - Consumers do not build PTOAS or LLVM and do not install PTOAS editable.
 - Direct test-only paths select only their owning suites; unknown paths select
   all suites; non-code-only changes select none.
-- Both wheel architectures run whenever any suite is selected.
+- The x86_64 consumer wheel runs whenever any suite is selected.
+- Aarch64 wheel validation is reserved for the publication/nightly workflow.
 - NPU consumers install the pinned CPython 3.11 Torch packages from a shared
   cache; pull requests restore but do not save that cache.
 - `ci-sim-required` succeeds only for legal success/skip combinations.

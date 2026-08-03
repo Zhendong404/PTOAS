@@ -209,20 +209,6 @@ jobs:
             }
             core.setFailed(`timed out waiting for CI workflow ${runId} to complete`);
 
-  validate-wheel-aarch64:
-    needs: select-ci-sim
-    if: ${{ needs.select-ci-sim.outputs.wheel == 'true' }}
-    uses: ./.github/workflows/_build_linux_wheel.yml
-    with:
-      arch: aarch64
-      python: '3.11'
-      release_kind: ptoas
-      llvm_profile: ${{ github.event_name == 'pull_request' && 'assert-static' || 'release-static' }}
-      enable_ccache: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
-      save_ccache: false
-      upload_wheel: false
-      upload_binary: false
-
   pypto-sim-smoke:
     name: pypto-sim-smoke
     needs: [select-ci-sim, build-and-test-wheel]
@@ -497,7 +483,6 @@ jobs:
       - select-ci-sim
       - build-and-test-wheel
       - verify-ci-build-and-test
-      - validate-wheel-aarch64
       - pypto-sim-smoke
       - tileop-st
       - vpto-sim
@@ -512,7 +497,6 @@ jobs:
           WHEEL_SELECTED: ${{ needs.select-ci-sim.outputs.wheel }}
           X86_WHEEL_RESULT: ${{ needs.build-and-test-wheel.result }}
           CI_BUILD_AND_TEST_RESULT: ${{ needs.verify-ci-build-and-test.result }}
-          AARCH64_WHEEL_RESULT: ${{ needs.validate-wheel-aarch64.result }}
           PYPTO_SELECTED: ${{ needs.select-ci-sim.outputs.pypto }}
           PYPTO_RESULT: ${{ needs.pypto-sim-smoke.result }}
           TILEOP_SELECTED: ${{ needs.select-ci-sim.outputs.tileop }}
@@ -542,7 +526,6 @@ jobs:
           fi
           require_result build-and-test-wheel "${WHEEL_SELECTED}" "${X86_WHEEL_RESULT}"
           require_result verify-ci-build-and-test "${WHEEL_SELECTED}" "${CI_BUILD_AND_TEST_RESULT}"
-          require_result validate-wheel-aarch64 "${WHEEL_SELECTED}" "${AARCH64_WHEEL_RESULT}"
           require_result pypto-sim-smoke "${PYPTO_SELECTED}" "${PYPTO_RESULT}"
           require_result tileop-st "${TILEOP_SELECTED}" "${TILEOP_RESULT}"
           require_result vpto-sim "${VPTO_SELECTED}" "${VPTO_RESULT}"
@@ -558,7 +541,6 @@ jobs:
             echo '| --- | --- | --- |'
             echo "| build-and-test-wheel | ${WHEEL_SELECTED} | ${X86_WHEEL_RESULT} |"
             echo "| verify-ci-build-and-test | ${WHEEL_SELECTED} | ${CI_BUILD_AND_TEST_RESULT} |"
-            echo "| validate-wheel-aarch64 | ${WHEEL_SELECTED} | ${AARCH64_WHEEL_RESULT} |"
             echo "| pypto-sim-smoke | ${PYPTO_SELECTED} | ${PYPTO_RESULT} |"
             echo "| tileop-st | ${TILEOP_SELECTED} | ${TILEOP_RESULT} |"
             echo "| vpto-sim | ${VPTO_SELECTED} | ${VPTO_RESULT} |"
