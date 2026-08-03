@@ -549,6 +549,55 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 self.assertEqual(signature.parameters["tmp"].kind, inspect.Parameter.KEYWORD_ONLY)
                 self.assertIsNone(signature.parameters["tmp"].default)
 
+    def test_tile_remainder_surface_exposes_optional_tmp(self):
+        for func, expected in [
+            (pto.tile.rem, ["src0", "src1", "dst", "tmp", "precision"]),
+            (pto.tile.rems, ["src", "scalar", "dst", "tmp"]),
+        ]:
+            with self.subTest(func=func):
+                signature = inspect.signature(func)
+                self.assertEqual(list(signature.parameters), expected)
+                self.assertEqual(signature.parameters["tmp"].kind, inspect.Parameter.KEYWORD_ONLY)
+                self.assertIsNone(signature.parameters["tmp"].default)
+
+    def test_tile_precision_surfaces_use_common_precision_parameter(self):
+        self.assertIs(pto.Precision, pto.DivPrecision)
+        self.assertIs(pto.Precision, pto.RemPrecision)
+        for func in [
+            pto.tile.div,
+            pto.tile.divs,
+            pto.tile.rem,
+            pto.tile.exp,
+            pto.tile.log,
+            pto.tile.sqrt,
+            pto.tile.rsqrt,
+            pto.tile.recip,
+            pto.tile.rowexpanddiv,
+            pto.tile.colexpanddiv,
+        ]:
+            with self.subTest(func=func):
+                self.assertIn("precision", inspect.signature(func).parameters)
+                self.assertNotIn("div_precision", inspect.signature(func).parameters)
+                self.assertNotIn("rem_precision", inspect.signature(func).parameters)
+
+    def test_tile_remainder_wrappers_forward_tmp_scalar_and_precision(self):
+        src0 = object()
+        src1 = object()
+        dst = object()
+        tmp = object()
+        scalar = 3.0
+        with patch.object(_ops, "trem") as trem_op:
+            pto.tile.rem(src0, src1, dst, tmp=tmp, precision="high_precision")
+        trem_op.assert_called_once_with(
+            src0, src1, tmp, dst, precision="high_precision"
+        )
+
+        with patch.object(_ops, "_resolve_selection_tmp", return_value=tmp) as resolve_tmp, \
+             patch.object(_ops, "trems") as trems_op:
+            pto.tile.rems(src0, scalar, dst)
+        resolve_tmp.assert_called_once_with(dst, None, context="trems")
+        trems_op.assert_called_once_with(src0, scalar, tmp, dst)
+
     def test_tile_selection_wrappers_use_explicit_tmp_or_synthesize_one(self):
         mask = object()
         src0 = object()

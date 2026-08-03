@@ -635,13 +635,18 @@ def _normalize_vcvt_part_mode(mode, *, context: str):
 def _normalize_enum_attr(value, *, enum_cls, attr_cls, context: str):
     if value is None or isinstance(value, Attribute):
         return value
-    if isinstance(value, str):
-        token = value.strip().upper()
-        try:
-            value = getattr(enum_cls, token)
-        except AttributeError as exc:
-            allowed = ", ".join(name for name in dir(enum_cls) if name.isupper())
-            raise ValueError(f"{context} does not support {value!r}; expected one of {allowed}") from exc
+    token = value if isinstance(value, str) else getattr(value, "name", None)
+    if token is not None:
+        normalized = "".join(ch for ch in str(token) if ch.isalnum()).lower()
+        candidates = [
+            name for name in dir(enum_cls)
+            if not name.startswith("_")
+            and "".join(ch for ch in name if ch.isalnum()).lower() == normalized
+        ]
+        if not candidates:
+            allowed = ", ".join(name for name in dir(enum_cls) if not name.startswith("_"))
+            raise ValueError(f"{context} does not support {value!r}; expected one of {allowed}")
+        value = getattr(enum_cls, candidates[0])
     return attr_cls.get(value)
 
 
@@ -3236,13 +3241,44 @@ def tmul(src0, src1, dst):
     )
 
 
-def tdiv(src0, src1, dst, *, div_precision=None):
+def tdiv(src0, src1, dst, *, precision=None):
     """``pto.tdiv ins(src0, src1) outs(dst)``."""
     _pto.tdiv(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        precision_type=div_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.DivPrecision,
+            attr_cls=_pto.DivPrecisionAttr,
+            context="tdiv precision",
+        ),
+    )
+
+
+def trem(src0, src1, tmp, dst, *, precision=None):
+    """``pto.trem ins(src0, src1, tmp) outs(dst)``."""
+    _pto.trem(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.RemPrecision,
+            attr_cls=_pto.RemPrecisionAttr,
+            context="trem precision",
+        ),
+    )
+
+
+def trems(src, scalar, tmp, dst):
+    """``pto.trems ins(src, scalar, tmp) outs(dst)``."""
+    _pto.trems(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="trems"),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
     )
 
 
@@ -3291,13 +3327,18 @@ def tmuls(src, scalar, dst):
     )
 
 
-def tdivs(src, scalar, dst, *, div_precision=None):
+def tdivs(src, scalar, dst, *, precision=None):
     """``pto.tdivs ins(src, scalar) outs(dst)``."""
     _pto.tdivs(
         unwrap_surface_value(src),
         _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
         unwrap_surface_value(dst),
-        precision_type=div_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.DivPrecision,
+            attr_cls=_pto.DivPrecisionAttr,
+            context="tdivs precision",
+        ),
     )
 
 
@@ -3319,49 +3360,74 @@ def tmins(src, scalar, dst):
     )
 
 
-def texp(src, dst, *, exp_precision=None):
+def texp(src, dst, *, precision=None):
     """``pto.texp ins(src) outs(dst)``."""
     _pto.texp(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        precision_type=exp_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.ExpPrecision,
+            attr_cls=_pto.ExpPrecisionAttr,
+            context="texp precision",
+        ),
     )
 
 
-def tlog(src, dst, *, log_precision=None):
+def tlog(src, dst, *, precision=None):
     """``pto.tlog ins(src) outs(dst)``."""
     _pto.tlog(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        precision_type=log_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.LogPrecision,
+            attr_cls=_pto.LogPrecisionAttr,
+            context="tlog precision",
+        ),
     )
 
 
-def tsqrt(src, dst, *, sqrt_precision=None):
+def tsqrt(src, dst, *, precision=None):
     """``pto.tsqrt ins(src) outs(dst)``."""
     _pto.tsqrt(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        precision_type=sqrt_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.SqrtPrecision,
+            attr_cls=_pto.SqrtPrecisionAttr,
+            context="tsqrt precision",
+        ),
     )
 
 
-def trsqrt(src, dst, *, tmp=None, rsqrt_precision=None):
+def trsqrt(src, dst, *, tmp=None, precision=None):
     """``pto.trsqrt ins(src, tmp?) outs(dst)``."""
     _pto.trsqrt(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
         tmp=None if tmp is None else unwrap_surface_value(tmp),
-        precision_type=rsqrt_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.RsqrtPrecision,
+            attr_cls=_pto.RsqrtPrecisionAttr,
+            context="trsqrt precision",
+        ),
     )
 
 
-def trecip(src, dst, *, recip_precision=None):
+def trecip(src, dst, *, precision=None):
     """``pto.trecip ins(src) outs(dst)``."""
     _pto.trecip(
         unwrap_surface_value(src),
         unwrap_surface_value(dst),
-        precision_type=recip_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.RecipPrecision,
+            attr_cls=_pto.RecipPrecisionAttr,
+            context="trecip precision",
+        ),
     )
 
 
@@ -3649,14 +3715,19 @@ def trowexpandmul(src0, src1, dst, *, tmp=None):
     )
 
 
-def trowexpanddiv(src0, src1, dst, *, tmp=None, div_precision=None):
+def trowexpanddiv(src0, src1, dst, *, tmp=None, precision=None):
     """``pto.trowexpanddiv ins(src0, src1, tmp?) outs(dst)``."""
     _pto.trowexpanddiv(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
         tmp=None if tmp is None else unwrap_surface_value(tmp),
-        precision_type=div_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.DivPrecision,
+            attr_cls=_pto.DivPrecisionAttr,
+            context="trowexpanddiv precision",
+        ),
     )
 
 
@@ -3717,13 +3788,18 @@ def tcolexpandmul(src0, src1, dst):
     )
 
 
-def tcolexpanddiv(src0, src1, dst, *, div_precision=None):
+def tcolexpanddiv(src0, src1, dst, *, precision=None):
     """``pto.tcolexpanddiv ins(src0, src1) outs(dst)``."""
     _pto.tcolexpanddiv(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
-        precision_type=div_precision,
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.DivPrecision,
+            attr_cls=_pto.DivPrecisionAttr,
+            context="tcolexpanddiv precision",
+        ),
     )
 
 
@@ -6448,6 +6524,7 @@ __all__ = [
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
+    "trem", "trems",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
     "trelu", "tlrelu",

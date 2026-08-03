@@ -98,6 +98,12 @@ class _TileNamespace:
     sub = staticmethod(_ops.tsub)
     mul = staticmethod(_ops.tmul)
     div = staticmethod(_ops.tdiv)
+
+    @staticmethod
+    def rem(src0, src1, dst, *, tmp=None, precision=None):
+        resolved_tmp = tmp if tmp is not None else _ops._resolve_selection_tmp(dst, tmp, context="trem")
+        return _ops.trem(src0, src1, resolved_tmp, dst, precision=precision)
+
     max = staticmethod(_ops.tmax)
     min = staticmethod(_ops.tmin)
 
@@ -105,6 +111,12 @@ class _TileNamespace:
     subs = staticmethod(_ops.tsubs)
     muls = staticmethod(_ops.tmuls)
     divs = staticmethod(_ops.tdivs)
+
+    @staticmethod
+    def rems(src, scalar, dst, *, tmp=None):
+        resolved_tmp = tmp if tmp is not None else _ops._resolve_selection_tmp(dst, tmp, context="trems")
+        return _ops.trems(src, scalar, resolved_tmp, dst)
+
     maxs = staticmethod(_ops.tmaxs)
     mins = staticmethod(_ops.tmins)
 

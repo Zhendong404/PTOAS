@@ -41,9 +41,9 @@ pto.tile.mul(scale_tile, data_tile, scaled_tile)
 
 ---
 
-#### `pto.tile.div(src0: Tile, src1: Tile, dst: Tile, *, div_precision: DivPrecision = DivPrecision.Default) -> None`
+#### `pto.tile.div(src0: Tile, src1: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
 
-**Description**: Element-wise division. `div_precision` can be `Default` or `HighPrecision` (f16/f32 only).
+**Description**: Element-wise division. `precision` can be `Default` or `HighPrecision` (f16/f32 only).
 
 **Parameters**:
 
@@ -52,7 +52,7 @@ pto.tile.mul(scale_tile, data_tile, scaled_tile)
 | `src0` | `Tile` | Numerator tile |
 | `src1` | `Tile` | Denominator tile |
 | `dst` | `Tile` | Destination tile |
-| `div_precision` | `DivPrecision` | `Default` (default) or `HighPrecision` |
+| `precision` | `Precision` | `Default` (default) or `HighPrecision` |
 
 **Returns**: None.
 
@@ -82,7 +82,7 @@ Element-wise operations between a tile and a scalar.
 
 ---
 
-#### `pto.tile.divs(src: Tile, scalar: ScalarType, dst: Tile, *, div_precision: DivPrecision = DivPrecision.Default) -> None`
+#### `pto.tile.divs(src: Tile, scalar: ScalarType, dst: Tile, *, precision: Precision = Precision.Default) -> None`
 
 **Description**: Element-wise tile-scalar division: `dst[i,j] = src[i,j] / scalar`.
 
@@ -123,15 +123,58 @@ pto.tile.mov(p_tile, p_mat)
 
 ---
 
+### 8.1.2b Tile remainder
+
+#### `pto.tile.rem(src0: Tile, src1: Tile, dst: Tile, *, tmp: Tile | None = None, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.rems(src: Tile, scalar: ScalarType, dst: Tile, *, tmp: Tile | None = None) -> None`
+
+**Description**: Computes the element-wise remainder using truncation toward
+zero for the quotient. The binary form uses two tiles; the scalar form divides
+each source element by the scalar.
+
+**Semantics**:
+
+```text
+rem(src0, src1): dst[i,j] = src0[i,j] - trunc(src0[i,j] / src1[i,j]) * src1[i,j]
+rems(src, scalar): dst[i,j] = src[i,j] - trunc(src[i,j] / scalar) * scalar
+```
+
+For floating-point inputs, `rem` and `rems` preserve the sign of the dividend
+for ordinary finite, non-zero operands. Integer support is target-dependent.
+The A5 public surface currently covers the floating-point forms used by the
+validated A5 cases (`f16` and `f32`).
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `src0`, `src1`, `src` | `Tile` | Row-major source tile(s) with matching valid shapes |
+| `scalar` | `ScalarType` | Scalar whose type matches `src` |
+| `dst` | `Tile` | Row-major destination tile with the same valid shape as the source |
+| `tmp` | `Tile` or `None` | Optional scratch-tile override. When omitted, PTODSL supplies the target-appropriate placeholder. |
+| `precision` | `Precision` | `Default` or `HighPrecision`; applies to the binary form |
+
+The binary operation requires a scratch tile in the target contract; callers
+normally omit `tmp` unless they need to control that scratch tile explicitly.
+
+**Example**:
+
+```python
+pto.tile.rem(a_tile, b_tile, remainder_tile)
+pto.tile.rems(a_tile, 3.0, remainder_tile)
+```
+
+---
+
 ### 8.1.3 Unary math
 
 Single-source element-wise math functions.
 
-#### `pto.tile.exp(src: Tile, dst: Tile, *, exp_precision: ExpPrecision = ExpPrecision.Default) -> None`
-#### `pto.tile.log(src: Tile, dst: Tile, *, log_precision: LogPrecision = LogPrecision.Default) -> None`
-#### `pto.tile.sqrt(src: Tile, dst: Tile, *, sqrt_precision: SqrtPrecision = SqrtPrecision.Default) -> None`
-#### `pto.tile.rsqrt(src: Tile, dst: Tile, *, rsqrt_precision: RsqrtPrecision = RsqrtPrecision.Default) -> None`
-#### `pto.tile.recip(src: Tile, dst: Tile, *, recip_precision: RecipPrecision = RecipPrecision.Default) -> None`
+#### `pto.tile.exp(src: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.log(src: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.sqrt(src: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.rsqrt(src: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.recip(src: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
 
 **Description**: Element-wise `exp`, `ln`, `sqrt`, `1/sqrt`, `1/x`.
 
@@ -141,7 +184,7 @@ Single-source element-wise math functions.
 |-----------|------|-------------|
 | `src` | `Tile` | Source tile |
 | `dst` | `Tile` | Destination tile |
-| `*_precision` | op-specific precision enum | `Default` or `HighPrecision` |
+| `precision` | `Precision` | `Default` or `HighPrecision` |
 
 **Returns**: None.
 
