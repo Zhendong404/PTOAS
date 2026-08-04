@@ -34,9 +34,9 @@ L0A_ADDR = 0
 L0B_ADDR = 0
 L0C_ADDR = 0
 
-# This case keeps explicit L1/L0 addresses because the current GM->L1 fractal
-# path passes raw MAT pointers into mte_gm_l1_frac. Vector tile cases in this
-# directory use automatic tile address allocation.
+# This case keeps explicit L1/L0 addresses because the cube staging templates
+# consume explicit MAT/LEFT/RIGHT tile buffers. GM↔MAT and ACC→GM boundaries
+# use the public tile.load/store surface below.
 
 
 @pto.jit(
@@ -98,34 +98,28 @@ def _tmatmul_kernel(
         fractal_size=1024,
     )
 
-    a_l1_ptr = pto.castptr(pto.ui64(L1_A_ADDR), pto.ptr(pto.f32, "mat"))
-    b_l1_ptr = pto.castptr(pto.ui64(L1_B_ADDR), pto.ptr(pto.f32, "mat"))
-
-    pto.mte_gm_l1_frac(
-        a_ptr,
-        a_l1_ptr,
-        pto.FractalMode.ND2NZ,
-        shape=(M, K),
-        src_layout=(K * ELEM_BYTES,),
-        dst_group=(1, 1, M, 0),
-        ctrl=(0, False),
+    a_view = pto.make_tensor_view(
+        a_ptr, shape=[1, 1, 1, M, K], strides=[M * K, M * K, M * K, K, 1]
     )
+    b_view = pto.make_tensor_view(
+        b_ptr, shape=[1, 1, 1, K, N], strides=[K * N, K * N, K * N, N, 1]
+    )
+    c_view = pto.make_tensor_view(
+        c_ptr, shape=[1, 1, 1, M, N], strides=[M * N, M * N, M * N, N, 1]
+    )
+    a_shape = [1, 1, 1, M, K]
+    b_shape = [1, 1, 1, K, N]
+    c_shape = [1, 1, 1, M, N]
+
+    pto.tile.load(a_view, a_mat, offsets=[0, 0, 0, 0, 0], sizes=a_shape)
     pto.set_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=0)
     pto.wait_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=0)
-    pto.mte_l1_l0a(a_l1_ptr, a_l0a.as_ptr(), M, K)
+    pto.mte_l1_l0a(a_mat.as_ptr(), a_l0a.as_ptr(), M, K)
 
-    pto.mte_gm_l1_frac(
-        b_ptr,
-        b_l1_ptr,
-        pto.FractalMode.ND2NZ,
-        shape=(K, N),
-        src_layout=(N * ELEM_BYTES,),
-        dst_group=(1, 1, K, 0),
-        ctrl=(0, False),
-    )
+    pto.tile.load(b_view, b_mat, offsets=[0, 0, 0, 0, 0], sizes=b_shape)
     pto.set_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=1)
     pto.wait_flag(pto.Pipe.MTE2, pto.Pipe.MTE1, event_id=1)
-    pto.mte_l1_l0b(b_l1_ptr, b_l0b.as_ptr(), K, N, transpose=True)
+    pto.mte_l1_l0b(b_mat.as_ptr(), b_l0b.as_ptr(), K, N, transpose=True)
 
     pto.set_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
     pto.wait_flag(pto.Pipe.MTE1, pto.Pipe.M, event_id=0)
@@ -133,17 +127,7 @@ def _tmatmul_kernel(
 
     pto.set_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=1)
     pto.wait_flag(pto.Pipe.M, pto.Pipe.FIX, event_id=1)
-    pto.mte_l0c_gm(
-        c_acc.as_ptr(),
-        c_ptr,
-        M,
-        N,
-        M,
-        N,
-        0,
-        0,
-        layout="nz2nd",
-    )
+    pto.tile.store(c_acc, c_view, offsets=[0, 0, 0, 0, 0], sizes=c_shape)
     pto.pipe_barrier(pto.Pipe.ALL)
 
 
