@@ -117,6 +117,14 @@ class _TileNamespace:
         resolved_tmp = tmp if tmp is not None else _ops._resolve_selection_tmp(dst, tmp, context="trems")
         return _ops.trems(src, scalar, resolved_tmp, dst)
 
+    @staticmethod
+    def fmod(src0, src1, dst, *, precision=None):
+        return _ops.tfmod(src0, src1, dst, precision=precision)
+
+    @staticmethod
+    def fmods(src, scalar, dst):
+        return _ops.tfmods(src, scalar, dst)
+
     maxs = staticmethod(_ops.tmaxs)
     mins = staticmethod(_ops.tmins)
 

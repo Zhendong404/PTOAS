@@ -123,10 +123,12 @@ pto.tile.mov(p_tile, p_mat)
 
 ---
 
-### 8.1.2b Tile remainder
+### 8.1.2b Tile remainder and fmod
 
 #### `pto.tile.rem(src0: Tile, src1: Tile, dst: Tile, *, tmp: Tile | None = None, precision: Precision = Precision.Default) -> None`
 #### `pto.tile.rems(src: Tile, scalar: ScalarType, dst: Tile, *, tmp: Tile | None = None) -> None`
+#### `pto.tile.fmod(src0: Tile, src1: Tile, dst: Tile, *, precision: Precision = Precision.Default) -> None`
+#### `pto.tile.fmods(src: Tile, scalar: ScalarType, dst: Tile) -> None`
 
 **Description**: Computes the element-wise remainder using truncation toward
 zero for the quotient. The binary form uses two tiles; the scalar form divides
@@ -137,6 +139,8 @@ each source element by the scalar.
 ```text
 rem(src0, src1): dst[i,j] = src0[i,j] - trunc(src0[i,j] / src1[i,j]) * src1[i,j]
 rems(src, scalar): dst[i,j] = src[i,j] - trunc(src[i,j] / scalar) * scalar
+fmod(src0, src1): dst[i,j] = src0[i,j] - trunc(src0[i,j] / src1[i,j]) * src1[i,j]
+fmods(src, scalar): dst[i,j] = src[i,j] - trunc(src[i,j] / scalar) * scalar
 ```
 
 For floating-point inputs, `rem` and `rems` preserve the sign of the dividend
@@ -152,7 +156,7 @@ validated A5 cases (`f16` and `f32`).
 | `scalar` | `ScalarType` | Scalar whose type matches `src` |
 | `dst` | `Tile` | Row-major destination tile with the same valid shape as the source |
 | `tmp` | `Tile` or `None` | Optional scratch-tile override. When omitted, PTODSL supplies the target-appropriate placeholder. |
-| `precision` | `Precision` | `Default` or `HighPrecision`; applies to the binary form |
+| `precision` | `Precision` | `Default` or `HighPrecision`; applies to the binary `rem` and `fmod` forms |
 
 The binary operation requires a scratch tile in the target contract; callers
 normally omit `tmp` unless they need to control that scratch tile explicitly.
@@ -162,6 +166,8 @@ normally omit `tmp` unless they need to control that scratch tile explicitly.
 ```python
 pto.tile.rem(a_tile, b_tile, remainder_tile)
 pto.tile.rems(a_tile, 3.0, remainder_tile)
+pto.tile.fmod(a_tile, b_tile, remainder_tile)
+pto.tile.fmods(a_tile, 3.0, remainder_tile)
 ```
 
 ---

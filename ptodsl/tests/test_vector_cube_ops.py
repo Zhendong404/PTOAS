@@ -580,6 +580,26 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 self.assertNotIn("div_precision", inspect.signature(func).parameters)
                 self.assertNotIn("rem_precision", inspect.signature(func).parameters)
 
+    def test_tile_fmod_surfaces_expose_public_precision_contract(self):
+        self.assertEqual(
+            list(inspect.signature(pto.tile.fmod).parameters),
+            ["src0", "src1", "dst", "precision"],
+        )
+        self.assertEqual(
+            list(inspect.signature(pto.tile.fmods).parameters),
+            ["src", "scalar", "dst"],
+        )
+
+        src0, src1, dst = object(), object(), object()
+        with patch.object(_ops, "tfmod") as tfmod_op:
+            pto.tile.fmod(src0, src1, dst, precision="high_precision")
+        tfmod_op.assert_called_once_with(src0, src1, dst, precision="high_precision")
+
+        src, scalar, dst = object(), 3.0, object()
+        with patch.object(_ops, "tfmods") as tfmods_op:
+            pto.tile.fmods(src, scalar, dst)
+        tfmods_op.assert_called_once_with(src, scalar, dst)
+
     def test_tile_remainder_wrappers_forward_tmp_scalar_and_precision(self):
         src0 = object()
         src1 = object()

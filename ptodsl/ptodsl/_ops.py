@@ -3282,6 +3282,30 @@ def trems(src, scalar, tmp, dst):
     )
 
 
+def tfmod(src0, src1, dst, *, precision=None):
+    """``pto.tfmod ins(src0, src1) outs(dst)``."""
+    _pto.tfmod(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+        precision_type=_normalize_enum_attr(
+            precision,
+            enum_cls=_pto.FmodPrecision,
+            attr_cls=_pto.FmodPrecisionAttr,
+            context="tfmod precision",
+        ),
+    )
+
+
+def tfmods(src, scalar, dst):
+    """``pto.tfmods ins(src, scalar) outs(dst)``."""
+    _pto.tfmods(
+        unwrap_surface_value(src),
+        _coerce_tile_scalar_operand(src, scalar, context="tfmods"),
+        unwrap_surface_value(dst),
+    )
+
+
 def tmax(src0, src1, dst):
     """``pto.tmax ins(src0, src1) outs(dst)``."""
     _pto.tmax(
@@ -6524,7 +6548,7 @@ __all__ = [
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
-    "trem", "trems",
+    "trem", "trems", "tfmod", "tfmods",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
     "trelu", "tlrelu",
