@@ -144,6 +144,12 @@ class _TileNamespace:
     lrelu = staticmethod(_ops.tlrelu)
 
     @staticmethod
+    def prelu(src0, src1, dst, *, tmp=None):
+        """``pto.tprelu`` with an optional explicit scratch tile."""
+        resolved_tmp = tmp if tmp is not None else _ops._resolve_selection_tmp(dst, tmp, context="tprelu")
+        return _ops.tprelu(src0, src1, resolved_tmp, dst)
+
+    @staticmethod
     def rowsum(src, dst, *, tmp=None):
         return _ops.trowsum(src, _resolve_row_reduction_tmp(src, tmp), dst)
 

@@ -3523,6 +3523,16 @@ def trelu(src, dst):
     )
 
 
+def tprelu(src0, src1, tmp, dst):
+    """``pto.tprelu ins(src0, src1, tmp) outs(dst)``."""
+    _pto.TPReluOp(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(tmp),
+        unwrap_surface_value(dst),
+    )
+
+
 def tlrelu(src, slope, dst):
     """``pto.tlrelu ins(src, slope) outs(dst)``."""
     _pto.tlrelu(

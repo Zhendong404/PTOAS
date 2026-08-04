@@ -563,6 +563,21 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 self.assertEqual(signature.parameters["tmp"].kind, inspect.Parameter.KEYWORD_ONLY)
                 self.assertIsNone(signature.parameters["tmp"].default)
 
+    def test_tile_prelu_surface_exposes_explicit_tmp(self):
+        self.assertEqual(
+            list(inspect.signature(pto.tile.prelu).parameters),
+            ["src0", "src1", "dst", "tmp"],
+        )
+        self.assertEqual(
+            inspect.signature(pto.tile.prelu).parameters["tmp"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+
+        src0, src1, dst, tmp = object(), object(), object(), object()
+        with patch.object(_ops, "tprelu") as tprelu_op:
+            pto.tile.prelu(src0, src1, dst, tmp=tmp)
+        tprelu_op.assert_called_once_with(src0, src1, tmp, dst)
+
     def test_tile_precision_surfaces_use_common_precision_parameter(self):
         self.assertIs(pto.Precision, pto.DivPrecision)
         self.assertIs(pto.Precision, pto.RemPrecision)
