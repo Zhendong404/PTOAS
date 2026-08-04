@@ -3160,6 +3160,40 @@ def tmatmul_mx_bias(lhs, lhs_scale, rhs, rhs_scale, bias, dst):
     )
 
 
+def tgemv(lhs, rhs, dst, *, acc_phase=None):
+    """``pto.tgemv ins(lhs, rhs) outs(dst)``."""
+    _pto.TGemvOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tgemv_acc(acc_in, lhs, rhs, dst, *, acc_phase=None):
+    """``pto.tgemv.acc ins(acc_in, lhs, rhs) outs(dst)``."""
+    _pto.TGemvAccOp(
+        None,
+        unwrap_surface_value(acc_in),
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tgemv_bias(lhs, rhs, bias, dst):
+    """``pto.tgemv.bias ins(lhs, rhs, bias) outs(dst)``."""
+    _pto.TGemvBiasOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(bias),
+        unwrap_surface_value(dst),
+    )
+
+
 def tgemv_mx(lhs, lhs_scale, rhs, rhs_scale, dst, *, acc_phase=None):
     """``pto.tgemv.mx ins(lhs, lhs_scale, rhs, rhs_scale) outs(dst)``."""
     _pto.TGemvMxOp(
@@ -6546,6 +6580,7 @@ __all__ = [
     "alloc_buffer", "alloc_tile",
     "tload", "tstore", "tmov", "tinsert", "tconcat",
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
+    "tgemv", "tgemv_acc", "tgemv_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "trem", "trems", "tfmod", "tfmods",

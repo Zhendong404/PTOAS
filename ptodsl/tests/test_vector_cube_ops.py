@@ -418,6 +418,9 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                     self.assertEqual(op_ctor.call_args.args, expected_call)
 
         mx_tileop_cases = [
+            ("tgemv", "TGemvOp", (lhs, rhs, dst), (None, lhs, rhs, dst)),
+            ("tgemv_acc", "TGemvAccOp", (acc_in, lhs, rhs, dst), (None, acc_in, lhs, rhs, dst)),
+            ("tgemv_bias", "TGemvBiasOp", (lhs, rhs, bias, dst), (None, lhs, rhs, bias, dst)),
             ("tmatmul_mx", "TMatmulMxOp", (lhs, lhs_scale, rhs, rhs_scale, dst), (None, lhs, lhs_scale, rhs, rhs_scale, dst)),
             ("tmatmul_mx_acc", "TMatmulMxAccOp", (acc_in, lhs, lhs_scale, rhs, rhs_scale, dst), (None, acc_in, lhs, lhs_scale, rhs, rhs_scale, dst)),
             ("tmatmul_mx_bias", "TMatmulMxBiasOp", (lhs, lhs_scale, rhs, rhs_scale, bias, dst), (None, lhs, lhs_scale, rhs, rhs_scale, bias, dst)),

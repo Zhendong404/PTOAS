@@ -1187,6 +1187,45 @@ pto.tile.matmul_mx_bias(lhs_l0a_mx, lhs_scale, rhs_l0b_mx, rhs_scale, bias_tile,
 
 ---
 
+#### `pto.tile.gemv(lhs: Tile, rhs: Tile, dst: Tile) -> None`
+
+**Description**: Tile-level ordinary GEMV. Computes `lhs @ rhs` on the cube
+pipeline and writes the result into `dst`. The usual A5 shape is a single
+logical row in `lhs` and `dst`.
+
+Conceptually:
+
+```text
+dst[m, n] = sum_k lhs[m, k] * rhs[k, n]
+```
+
+The operands must be staged in compatible `LEFT`, `RIGHT`, and `ACC` tiles.
+This operation is the ordinary-precision counterpart of `pto.tile.gemv_mx`.
+
+#### `pto.tile.gemv_acc(acc_in: Tile, lhs: Tile, rhs: Tile, dst: Tile) -> None`
+
+**Description**: Accumulating ordinary GEMV. Adds `lhs @ rhs` to `acc_in` and
+writes the result into `dst`; use it for split-K GEMV.
+
+```text
+dst[m, n] = acc_in[m, n] + sum_k lhs[m, k] * rhs[k, n]
+```
+
+`acc_in` and `dst` must be compatible `ACC` tiles, while `lhs` and `rhs` must
+be compatible `LEFT` and `RIGHT` tiles.
+
+#### `pto.tile.gemv_bias(lhs: Tile, rhs: Tile, bias: Tile, dst: Tile) -> None`
+
+**Description**: Bias-enabled ordinary GEMV. Computes `lhs @ rhs`, adds the
+`bias` tile, and writes the result into `dst`.
+
+```text
+dst[m, n] = sum_k lhs[m, k] * rhs[k, n] + bias[m, n]
+```
+
+On A5, `bias` is normally a `[1, N]` tile in `MemorySpace.BIAS`, and `dst` is
+an `ACC` tile.
+
 #### `pto.tile.gemv_mx(lhs: Tile, lhs_scale: Tile, rhs: Tile, rhs_scale: Tile, dst: Tile) -> None`
 
 **Description**: Tile-level MX GEMV. Computes the product `lhs @ rhs` on the matrix pipeline and writes the result into `dst`. This surface lowers to `pto.tgemv.mx` and is the tile-level counterpart to MX GEMV execution.
