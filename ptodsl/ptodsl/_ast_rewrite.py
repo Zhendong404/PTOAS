@@ -705,6 +705,14 @@ def _is_pto_attr_call(node, name: str) -> bool:
     )
 
 
+def _is_pto_section_with(node) -> bool:
+    return (
+        isinstance(node, ast.With)
+        and len(node.items) == 1
+        and _is_pto_attr_call(node.items[0].context_expr, "section")
+    )
+
+
 def _is_range_call(node) -> bool:
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "range"
 
@@ -824,6 +832,14 @@ class _ControlFlowRewriter:
     def rewrite_stmt(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
+        if _is_pto_section_with(stmt):
+            return self._rewrite_section(
+                stmt,
+                live_after=live_after,
+                live_after_slots=live_after_slots,
+                allow_loop_control=allow_loop_control,
+                static_iters=static_iters,
+            )
         if isinstance(stmt, ast.If):
             return self._rewrite_if(
                 stmt,
@@ -853,6 +869,54 @@ class _ControlFlowRewriter:
                 static_iters=static_iters,
             )
         ]
+
+    def _rewrite_section(
+        self,
+        stmt,
+        *,
+        live_after,
+        live_after_slots=None,
+        allow_loop_control=False,
+        static_iters=None,
+    ):
+        """Keep Python bindings assigned in one physical section region-local.
+
+        ``pto.section`` operations are sibling MLIR regions and have no SSA
+        results.  Without restoring the incoming Python bindings, tracing a
+        later section can accidentally capture values produced by an earlier
+        sibling region, yielding invalid cross-region SSA uses.
+        """
+        live_after_slots = set(live_after_slots or ())
+        static_iters = dict(static_iters or {})
+        restore_names = tuple(sorted(set(live_after) & _name_info(stmt.body).stores))
+        saved_names = {
+            name: self._fresh(f"section_old_{name}")
+            for name in restore_names
+        }
+
+        stmt.body = self.rewrite_block(
+            stmt.body,
+            live_after=set(live_after),
+            live_after_slots=live_after_slots,
+            allow_loop_control=allow_loop_control,
+            static_iters=static_iters,
+        )
+
+        saves = [
+            ast.Assign(
+                targets=[_name(saved_name, ast.Store())],
+                value=_name(name),
+            )
+            for name, saved_name in saved_names.items()
+        ]
+        restores = [
+            ast.Assign(
+                targets=[_name(name, ast.Store())],
+                value=_name(saved_name),
+            )
+            for name, saved_name in saved_names.items()
+        ]
+        return [*saves, stmt, *restores]
 
     def _rewrite_nested(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         live_after_slots = set(live_after_slots or ())

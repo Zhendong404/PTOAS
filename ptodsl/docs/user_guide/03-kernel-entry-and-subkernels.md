@@ -675,6 +675,11 @@ inference. Sections cannot be nested, each kind may appear at most once per
 function, and `pto.section()` cannot be combined with an explicit
 `@pto.jit(kernel_kind=...)` contract. The context manager is only a placement
 scope and does not expose the underlying IR operation through an `as` binding.
+Runtime scalar assignments inside a section are local to that physical region;
+after the section closes, AST rewrite restores the incoming Python bindings so
+a sibling section cannot capture SSA values defined in the previous region.
+Communicate between cube and vector sections through memory and synchronization
+operations rather than Python scalar assignments.
 
 The richer type surface also applies to sub-kernels: in auto mode, a
 sub-kernel's parameters are restricted to `Tile` and PTO scalar types; in

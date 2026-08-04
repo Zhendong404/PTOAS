@@ -26,6 +26,26 @@ def explicit_sections_probe():
         pto.set_flag("S", "MTE2", event_id=event_id)
 
 
+@pto.jit(target="a5", mode="explicit")
+def sibling_section_branch_binding_probe():
+    m_tile = pto.const(0, dtype=pto.i64)
+    n_tile = pto.const(0, dtype=pto.i64)
+
+    with pto.section("cube"):
+        if pto.get_block_idx() < 16:
+            m_tile = pto.get_block_idx() & 3
+            n_tile = pto.get_block_idx() // 4
+        _ = m_tile
+        _ = n_tile
+
+    with pto.section("vector"):
+        if pto.get_block_idx() < 16:
+            m_tile = pto.get_block_idx() & 3
+            n_tile = pto.get_block_idx() // 4
+        _ = m_tile
+        _ = n_tile
+
+
 @pto.jit(target="a5", mode="explicit", ast_rewrite=False)
 def duplicate_section_probe():
     with pto.section("cube"):
@@ -128,6 +148,14 @@ def main() -> None:
     assert "pto.set_flag_dyn[<PIPE_S>, <PIPE_MTE2>" in text
     with make_context() as context:
         module = Module.parse(text, context)
+        module.operation.verify()
+
+    sibling_text = sibling_section_branch_binding_probe.compile().mlir_text()
+    assert sibling_text.count("pto.section.cube {") == 1
+    assert sibling_text.count("pto.section.vector {") == 1
+    assert sibling_text.count("scf.if") == 2
+    with make_context() as context:
+        module = Module.parse(sibling_text, context)
         module.operation.verify()
 
     recovered_text = recovered_section_probe.compile().mlir_text()
