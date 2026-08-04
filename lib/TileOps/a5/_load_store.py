@@ -245,9 +245,12 @@ def tload_mat_nd2nz_constraint(
     if not _known_eq(src_shape[4], dst_shape[1]):
         return False
     # ND2NZ consumes a row-major source: the final source dimension is
-    # contiguous and the preceding dimension advances by one full row.
-    return _known_eq(_stride_at(src_strides, 4), 1) and _known_eq(
-        _stride_at(src_strides, 3), src_shape[4]
+    # contiguous and the preceding dimension advances by at least one logical
+    # destination row.  A partition can load a narrower sub-tile from a wider
+    # physical GM row, so compare against the destination width rather than
+    # the partitioned source width.
+    return _known_eq(_stride_at(src_strides, 4), 1) and _known_le(
+        dst_shape[1], _stride_at(src_strides, 3)
     )
 
 
@@ -276,9 +279,11 @@ def tload_mat_dn2nz_constraint(
         return False
     if not _known_eq(src_shape[4], dst_shape[0]):
         return False
-    # DN2NZ consumes a column-major transposed source.
-    return _known_eq(_stride_at(src_strides, 3), 1) and _known_eq(
-        _stride_at(src_strides, 4), src_shape[3]
+    # DN2NZ consumes a column-major transposed source.  As with ND2NZ, a
+    # partition may expose a narrower logical sub-tile than the physical row
+    # stride, so the stride is checked against the destination height.
+    return _known_eq(_stride_at(src_strides, 3), 1) and _known_le(
+        dst_shape[0], _stride_at(src_strides, 4)
     )
 
 
