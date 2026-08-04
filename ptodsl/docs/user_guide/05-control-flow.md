@@ -213,6 +213,11 @@ conditional closes, `br.val` is the SSA-merged result seen by downstream code.
 This surface avoids explicit result-type declarations and explicit
 `pto.yield_(...)` in user code while still keeping the merge contract explicit.
 
+When one branch yields `pto.i1` and the other yields an integer-like scalar,
+the integer value is normalized to `i1` with nonzero truthiness (`0` is false;
+any nonzero value is true). Other incompatible branch result types still
+require an explicit conversion.
+
 ## 5.4 `pto.const_expr` and tracing
 
 `pto.const_expr` parameters (Section 3.6) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
