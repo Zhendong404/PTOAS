@@ -219,7 +219,19 @@ def tstore_nz_constraint(src_kind, src_shape, src_valid_shape, src_memory_space,
     )
 
 
-def tload_mat_nd2nz_constraint(src_kind, src_shape, src_memory_space, dst_kind, dst_shape, dst_memory_space, dst_config, dst_dtype, **_):
+def tload_mat_nd2nz_constraint(
+    src_kind,
+    src_shape,
+    src_strides,
+    src_layout,
+    src_memory_space,
+    dst_kind,
+    dst_shape,
+    dst_memory_space,
+    dst_config,
+    dst_dtype,
+    **_,
+):
     if src_kind != "view" or dst_kind != "tile" or src_memory_space != "gm" or dst_memory_space != "mat":
         return False
     if dst_config.b_layout != "col_major" or dst_config.s_layout != "row_major":
@@ -228,10 +240,30 @@ def tload_mat_nd2nz_constraint(src_kind, src_shape, src_memory_space, dst_kind, 
         return False
     if _view_rank(src_shape) != 5:
         return False
-    return _known_eq(src_shape[4], dst_shape[1])
+    if src_layout not in (None, "ND", "nd"):
+        return False
+    if not _known_eq(src_shape[4], dst_shape[1]):
+        return False
+    # ND2NZ consumes a row-major source: the final source dimension is
+    # contiguous and the preceding dimension advances by one full row.
+    return _known_eq(_stride_at(src_strides, 4), 1) and _known_eq(
+        _stride_at(src_strides, 3), src_shape[4]
+    )
 
 
-def tload_mat_dn2nz_constraint(src_kind, src_shape, src_memory_space, dst_kind, dst_shape, dst_memory_space, dst_config, dst_dtype, **_):
+def tload_mat_dn2nz_constraint(
+    src_kind,
+    src_shape,
+    src_strides,
+    src_layout,
+    src_memory_space,
+    dst_kind,
+    dst_shape,
+    dst_memory_space,
+    dst_config,
+    dst_dtype,
+    **_,
+):
     if src_kind != "view" or dst_kind != "tile" or src_memory_space != "gm" or dst_memory_space != "mat":
         return False
     if dst_config.b_layout != "col_major" or dst_config.s_layout != "row_major":
@@ -240,7 +272,14 @@ def tload_mat_dn2nz_constraint(src_kind, src_shape, src_memory_space, dst_kind, 
         return False
     if _view_rank(src_shape) != 5:
         return False
-    return _known_eq(src_shape[4], dst_shape[0])
+    if src_layout not in (None, "ND", "nd", "DN", "dn"):
+        return False
+    if not _known_eq(src_shape[4], dst_shape[0]):
+        return False
+    # DN2NZ consumes a column-major transposed source.
+    return _known_eq(_stride_at(src_strides, 3), 1) and _known_eq(
+        _stride_at(src_strides, 4), src_shape[3]
+    )
 
 
 def tstore_acc_base(src_kind, src_memory_space, src_dtype, dst_kind, dst_memory_space, **_):
