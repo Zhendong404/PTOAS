@@ -282,6 +282,27 @@ def ast_rewrite_branch_kernel():
 The assigned value `total` is live after the branch, so PTODSL rewrites the
 branch into a `pto.if_` with automatic merge.
 
+Static list slots can also be live across a rewritten branch. The subscript
+index must be an integer that can be resolved during AST rewriting, including
+compile-time constants and `pto.const_expr` values:
+
+```python
+@pto.jit(target="a5")
+def ast_rewrite_static_slot_kernel(*, SLOT: pto.const_expr = 0):
+    values = [pto.const(0, dtype=pto.i32)]
+
+    if pto.const(1, dtype=pto.i1):
+        values[SLOT] = pto.const(1, dtype=pto.i32)
+
+    if values[SLOT]:
+        pto.pipe_barrier(pto.Pipe.ALL)
+```
+
+The rewritten slot is merged as an `scf.if` result, just like a named scalar
+value. Dynamic indices and container aliases remain unsupported; use an
+explicit `pto.if_`/`pto.for_` state value or a real buffer load/store for those
+cases.
+
 If a live-out value is assigned in only one branch, PTODSL keeps the old value
 on the missing branch:
 
