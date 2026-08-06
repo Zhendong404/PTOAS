@@ -97,15 +97,21 @@ def _make_expected(src, idx, np_dtype, src_valid, dst_shape, dst_valid):
                 sorted_values = values[order]
                 sorted_indices = indices[order]
             out = start * stride
+            # The physical tile contains one complete 32-element block, but
+            # legacy ST comparison exposes only dst_valid columns.  Do not
+            # materialize the synthetic tail beyond that valid output region.
             for i, value in enumerate(sorted_values):
-                result[row, out + i * stride] = value
+                value_offset = out + i * stride
+                if value_offset >= dst_valid[1]:
+                    break
+                result[row, value_offset] = value
                 bits = np.asarray(sorted_indices[i], dtype=np.uint32)
                 if np_dtype == np.float32:
-                    result[row, out + i * stride + 1] = bits.view(np.float32)
+                    result[row, value_offset + 1] = bits.view(np.float32)
                 else:
                     raw = bits.tobytes()
-                    result[row, out + i * stride + 1] = np.frombuffer(raw[:2], dtype=np.float16)[0]
-                    result[row, out + i * stride + 2] = np.frombuffer(raw[2:], dtype=np.float16)[0]
+                    result[row, value_offset + 1] = np.frombuffer(raw[:2], dtype=np.float16)[0]
+                    result[row, value_offset + 2] = np.frombuffer(raw[2:], dtype=np.float16)[0]
     return result
 
 

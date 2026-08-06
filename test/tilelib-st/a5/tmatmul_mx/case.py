@@ -682,9 +682,11 @@ def _kernel_fp4_mixed_115(
     c_ptr: pto.ptr(pto.f32, "gm"),
 ):
     a_l1 = pto.castptr(pto.ui64(0), pto.ptr(pto.f4e2m1x2, "mat"))
-    a_scale_l1 = pto.castptr(pto.ui64(1024), pto.ptr(pto.f4e2m1x2, "mat"))
-    b_l1 = pto.castptr(pto.ui64(1088), pto.ptr(pto.f4e1m2x2, "mat"))
-    b_scale_l1 = pto.castptr(pto.ui64(3136), pto.ptr(pto.f4e1m2x2, "mat"))
+    # Keep the four L1 regions disjoint: A is 4 * 1024 bytes, followed by
+    # its scale, B, and B scale, as in the legacy kernel.
+    a_scale_l1 = pto.castptr(pto.ui64(4096), pto.ptr(pto.f4e2m1x2, "mat"))
+    b_l1 = pto.castptr(pto.ui64(4352), pto.ptr(pto.f4e1m2x2, "mat"))
+    b_scale_l1 = pto.castptr(pto.ui64(6400), pto.ptr(pto.f4e1m2x2, "mat"))
     lhs = pto.alloc_tile(shape=[128, 64], dtype=pto.f4e2m1x2, memory_space=pto.MemorySpace.LEFT,
                          addr=0, valid_shape=[115, 64], blayout="ColMajor", slayout="RowMajor", fractal_size=512)
     lhs_scale = pto.alloc_tile(shape=[128, 2], dtype=pto.f16, memory_space=pto.MemorySpace.SCALING,

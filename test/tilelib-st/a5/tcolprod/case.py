@@ -75,7 +75,7 @@ def _make_kernel(name: str, pto_dtype, shape, valid_shape, dst_shape):
         )
 
         pto.tile.load(src_view, src_tile)
-        pto.tile.colmin(src_tile, dst_tile)
+        pto.tile.colprod(src_tile, dst_tile)
         pto.tile.store(dst_tile, dst_view)
 
     return _kernel

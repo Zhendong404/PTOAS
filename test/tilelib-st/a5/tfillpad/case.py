@@ -24,12 +24,10 @@
 # shape / valid_shape / layout / pad params / eps and the randint(1, 10) draw
 # order are preserved.
 #
-# NOTE: legacy cases 12 and 13 (f32_128x128_pad_128x64_neg1,
-# f32_128x160_pad_128x127_neg1) use a Custom(-1.0f) FillPadVal which the legacy
-# host C++ template instantiated as PadCustomNeg1.  The PTODSL alloc_tile pad
-# surface only exposes PadValue Null/Zero/Max/Min and cannot encode a custom
-# -1.0f fill value, so those two cases are NOT migrated; no workaround was
-# invented.
+# NOTE: legacy cases 12 and 13 use Custom(-1.0f), which the old TileLang
+# template selected from the static shape while PTO IR used a Zero placeholder.
+# The PTODSL migration preserves that exact placeholder form; the A5 fillpad
+# template contains a narrow compatibility rule for these two shapes.
 
 from pathlib import Path
 import sys
@@ -54,7 +52,8 @@ PTO_TO_NP = {
 # PadValue enum names matching the legacy cases.py / gen_data.py.
 PADVAL_MAX = "Max"     # FLT_MAX for float, max for integers
 PADVAL_MIN = "Min"     # -FLT_MAX for float, min for integers
-PADVAL_NEG1 = "Neg1"   # -1.0f / -1 (Custom; not expressible in PTODSL pad surface)
+PADVAL_NULL = "Null"   # no fill / legacy custom-pad source placeholder
+PADVAL_NEG1 = "Neg1"   # -1.0f / -1 (legacy template placeholder)
 PADVAL_ZERO = "Zero"   # 0
 
 # (legacy case name, pto dtype, src shape, src valid_shape, dst shape,
@@ -62,7 +61,6 @@ PADVAL_ZERO = "Zero"   # 0
 # shape/valid_shape follow the legacy cases.py table: src_shape is the src GM
 # input (src tile physical in the legacy .pto was allocated at dst physical
 # size with valid=src valid), dst_shape/dst_valid_shape the output.
-# Legacy cases 12/13 (Custom -1.0f fill) are intentionally absent, see header.
 CASE_SPECS = [
     ("f32_128x128_pad_128x127",   pto.f32,  (128, 127), (128, 127), (128, 128), (128, 128), PADVAL_MAX, PADVAL_MAX, 1e-6),
     ("f32_128x160_pad_128x127",   pto.f32,  (128, 127), (128, 127), (128, 160), (128, 160), PADVAL_MAX, PADVAL_MAX, 1e-6),
@@ -72,11 +70,18 @@ CASE_SPECS = [
     ("s8_260x64_pad_260x7",       pto.i8,   (260, 7),   (260, 7),   (260, 64),  (260, 64),  PADVAL_MIN, PADVAL_MAX, 0),
     ("s16_260x32_pad_260x7",      pto.i16,  (260, 7),   (260, 7),   (260, 32),  (260, 32),  PADVAL_MIN, PADVAL_MIN, 0),
     ("s32_260x32_pad_260x7",      pto.i32,  (260, 7),   (260, 7),   (260, 32),  (260, 32),  PADVAL_MIN, PADVAL_MIN, 0),
+    ("f32_128x128_pad_128x64_neg1", pto.f32, (128, 64), (128, 64), (128, 128), (128, 128), PADVAL_NULL, PADVAL_NEG1, 1e-6),
+    ("f32_128x160_pad_128x127_neg1", pto.f32, (128, 127), (128, 127), (128, 160), (128, 160), PADVAL_NULL, PADVAL_NEG1, 1e-6),
 ]
 
 
 def _make_kernel(name, pto_dtype, src_rows, src_cols, dst_rows, dst_cols,
                  dst_valid_rows, dst_valid_cols, load_pad, fill_pad):
+    # Legacy TileLang PTO used Zero as the legal IR placeholder for the
+    # Custom(-1.0f) destination pad; the PTODSL template recognizes that
+    # placeholder for the two exact shapes below.
+    tile_fill_pad = PADVAL_ZERO if fill_pad == PADVAL_NEG1 else fill_pad
+
     @pto.jit(name="tfillpad_" + name, target="a5")
     def _kernel(
         src_ptr: pto.ptr(pto_dtype, "gm"),
@@ -96,7 +101,7 @@ def _make_kernel(name, pto_dtype, src_rows, src_cols, dst_rows, dst_cols,
         dst_tile = pto.alloc_tile(
             shape=[dst_rows, dst_cols], dtype=pto_dtype,
             valid_shape=[dst_valid_rows, dst_valid_cols],
-            pad=fill_pad,
+            pad=tile_fill_pad,
         )
 
         pto.tile.load(src_view, src_tile)
@@ -130,7 +135,7 @@ def get_pad_value(dtype, padval_name):
         if np.issubdtype(dtype, np.floating):
             return np.float32(-1.0)
         return dtype(-1)
-    return dtype(0)  # PADVAL_ZERO / PADVAL_NULL
+    return np.dtype(dtype).type(0)  # PADVAL_ZERO / PADVAL_NULL
 
 
 def _make_inputs(name, np_dtype, src_shape, src_valid_shape):
