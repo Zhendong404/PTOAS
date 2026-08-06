@@ -52,8 +52,33 @@ def _zero(dtype):
     return pto.i8(0)
 
 
-def _fill_scalar(dst):
+def _legacy_custom_neg1(src, dst):
+    """Recognize the two legacy TileLang custom-pad placeholders.
+
+    The old TileLang template could not encode a custom PadValue in PTO IR;
+    those cases used dst pad=Zero and selected -1.0f from their static shape.
+    Keep this compatibility rule deliberately narrow instead of making Zero
+    mean -1 for general tfillpad programs.
+    """
+    src_static_valid = getattr(src, "_template_static_valid_shape", None)
+    dst_static_valid = getattr(dst, "_template_static_valid_shape", None)
+    if src_static_valid is None or dst_static_valid is None:
+        return False
+    return (
+        str(dst.dtype) == "f32"
+        and str(getattr(dst, "pad_value", "Null")).lower() in {"zero", "0x1", "0x01"}
+        and (
+            (tuple(src_static_valid) == (128, 64) and tuple(dst.shape) == (128, 128))
+            or (tuple(src_static_valid) == (128, 127) and tuple(dst.shape) == (128, 160))
+        )
+        and tuple(dst_static_valid) == tuple(dst.shape)
+    )
+
+
+def _fill_scalar(dst, *, custom_neg1=False):
     dtype = dst.dtype
+    if custom_neg1:
+        return pto.f32(-1.0)
     pad_value = str(getattr(dst, "pad_value", "Null")).lower()
     if str(dtype) == "f32" and pad_value in {"zero", "0x1", "0x01"}:
         return pto.f32(0.0)
@@ -125,12 +150,12 @@ def _scalar_tail_start(dst, lanes):
     return (cols // lanes) * lanes
 
 
-def _fill(dst, row_start, row_stop, col_start, col_stop, scalar_tail_start=None):
+def _fill(dst, row_start, row_stop, col_start, col_stop, scalar_tail_start=None, custom_neg1=False):
     dtype = dst.dtype
     lanes = pto.elements_per_vreg(dtype)
     cols = dst.shape[1]
     dst_ptr = dst.as_ptr()
-    fill_scalar = _fill_scalar(dst)
+    fill_scalar = _fill_scalar(dst, custom_neg1=custom_neg1)
     vector_col_stop = scalar_tail_start if scalar_tail_start is not None else col_stop
     with pto.for_(row_start, row_stop, step=1) as row:
         remained = vector_col_stop - col_start
@@ -171,18 +196,37 @@ def register_fillpad(*, op, name, copy):
         src_valid_rows, src_valid_cols = src.valid_shape
         dst_valid_rows, dst_valid_cols = dst.valid_shape
         lanes = pto.elements_per_vreg(dst.dtype)
+        custom_neg1 = copy and _legacy_custom_neg1(src, dst)
         aligned_cols = (src_valid_cols // lanes) * lanes
         if not copy:
             _fill_inplace(dst, src_valid_rows, src_valid_cols, dst_valid_rows, dst_valid_cols)
             return
         if copy:
+            if custom_neg1 and src_valid_cols < src.shape[1]:
+                _fill(src, 0, src_valid_rows, src_valid_cols, src.shape[1], custom_neg1=True)
             _copy_region(src, dst, src_valid_rows, 0, aligned_cols)
         fill_row_stop = dst_valid_rows if op == "pto.tfillpad_expand" else src_valid_rows
         scalar_tail_start = _scalar_tail_start(dst, lanes)
-        _fill(dst, 0, fill_row_stop, aligned_cols, dst_valid_cols, scalar_tail_start=scalar_tail_start)
+        _fill(
+            dst,
+            0,
+            fill_row_stop,
+            aligned_cols,
+            dst_valid_cols,
+            scalar_tail_start=scalar_tail_start,
+            custom_neg1=custom_neg1,
+        )
         if copy:
             _copy_region(src, dst, src_valid_rows, aligned_cols, src_valid_cols)
-        _fill(dst, src_valid_rows, dst_valid_rows, 0, dst_valid_cols, scalar_tail_start=scalar_tail_start)
+        _fill(
+            dst,
+            src_valid_rows,
+            dst_valid_rows,
+            0,
+            dst_valid_cols,
+            scalar_tail_start=scalar_tail_start,
+            custom_neg1=custom_neg1,
+        )
 
     return template
 
