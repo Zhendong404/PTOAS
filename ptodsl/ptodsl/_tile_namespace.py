@@ -143,6 +143,8 @@ class _TileNamespace:
     relu = staticmethod(_ops.trelu)
     lrelu = staticmethod(_ops.tlrelu)
 
+    random = staticmethod(_ops.trandom)
+
     @staticmethod
     def prelu(src0, src1, dst, *, tmp=None):
         """``pto.tprelu`` with an optional explicit scratch tile."""

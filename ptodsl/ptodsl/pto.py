@@ -124,6 +124,7 @@ from ._ops import (             # noqa: F401
     alloc_buffer, alloc_tile,
     tsort32, tmrgsort, tgather, tscatter,
     trem, trems, tfmod, tfmods, tprelu,
+    trandom,
     mte_load, mte_store, mte_gm_ub, mte_ub_gm, mte_ub_ub, mte_ub_l1,
     mte_gm_l1, mte_l1_ub, mte_gm_l1_frac, mte_l1_bt, mte_l1_fb, mem_bar,
     set_store_atomic_cfg,

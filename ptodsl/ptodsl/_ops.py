@@ -3533,6 +3533,28 @@ def tprelu(src0, src1, tmp, dst):
     )
 
 
+def trandom(key0, key1, counter0, counter1, counter2, counter3, dst, *, rounds=10):
+    """``pto.trandom`` – generate A5 Philox random words into ``dst``.
+
+    The six scalar operands are 32-bit key/counter words.  ``rounds`` is the
+    compile-time Philox round count supported by the A5 operation (7 or 10).
+    """
+    if not isinstance(rounds, int) or isinstance(rounds, bool):
+        raise TypeError("pto.trandom rounds must be a Python integer")
+    if rounds not in (7, 10):
+        raise ValueError(f"pto.trandom rounds must be 7 or 10, got {rounds}")
+    _pto.TRandomOp(
+        unwrap_surface_value(key0),
+        unwrap_surface_value(key1),
+        unwrap_surface_value(counter0),
+        unwrap_surface_value(counter1),
+        unwrap_surface_value(counter2),
+        unwrap_surface_value(counter3),
+        unwrap_surface_value(dst),
+        rounds=rounds,
+    )
+
+
 def tlrelu(src, slope, dst):
     """``pto.tlrelu ins(src, slope) outs(dst)``."""
     _pto.tlrelu(
@@ -6597,6 +6619,7 @@ __all__ = [
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg", "tdequant",
     "trelu", "tlrelu",
+    "trandom",
     "trowsum", "trowmax", "trowmin", "trowprod", "trowargmax", "trowargmin",
     "tcolsum", "tcolmax", "tcolmin", "tcolprod", "tcolargmax", "tcolargmin",
     "tcmp", "tcmps",
