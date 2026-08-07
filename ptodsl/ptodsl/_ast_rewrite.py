@@ -1026,7 +1026,10 @@ class _ControlFlowRewriter:
         }
         self._counter += len(slot_value_names)
         old_slot_value_names = {
-            slot: self._fresh(f"old_slot_{slot.base}_{slot.index}")
+            slot: self._fresh(
+                f"old_slot_{slot.base}_"
+                f"{'neg' if slot.index < 0 else ''}{abs(slot.index)}"
+            )
             for slot in merge_slots
         }
         dynamic_then_body = copy.deepcopy(then_body)
