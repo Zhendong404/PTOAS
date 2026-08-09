@@ -3127,11 +3127,13 @@ static FailureOr<StringRef> buildVldsPostCallee(MLIRContext *context,
 
 static FailureOr<StringRef> buildVstsPostCallee(MLIRContext *context,
                                                 Type valueType) {
-  std::string vec =
-      getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  Type elementType = getElementTypeFromVectorLike(valueType);
+  std::string vec = getMemoryElementTypeFragment(elementType);
   auto lanes = getElementCountFromVectorLike(valueType);
   if (vec.empty() || !lanes)
     return failure();
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    vec = "i" + std::to_string(intType.getWidth());
   return StringAttr::get(context, "llvm.hivm.vstsx1.post.v" +
                                       std::to_string(*lanes) + vec)
       .getValue();
@@ -3815,11 +3817,16 @@ static FailureOr<StringRef> buildVsldbCallee(MLIRContext *context,
 }
 
 static FailureOr<StringRef> buildVstsCallee(MLIRContext *context, Type valueType) {
-  std::string vec =
-      getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  Type elementType = getElementTypeFromVectorLike(valueType);
+  std::string vec = getMemoryElementTypeFragment(elementType);
   auto lanes = getElementCountFromVectorLike(valueType);
   if (vec.empty() || !lanes)
     return failure();
+  // A5's Bisheng ABI uses signless integer names for VST vector payloads,
+  // matching the native C++ vsts intrinsic (v64i32/v128i16).  Signedness is
+  // a PTO semantic type, not part of the hardware VST callee name.
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    vec = "i" + std::to_string(intType.getWidth());
   return StringAttr::get(context, "llvm.hivm.vstsx1.v" + std::to_string(*lanes) +
                                       vec)
       .getValue();
@@ -3944,11 +3951,18 @@ static FailureOr<StringRef> buildVmulscvtCallee(MLIRContext *context,
 }
 
 static FailureOr<StringRef> buildVciCallee(MLIRContext *context, Type resultType) {
-  std::string vec =
-      getElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  Type elementType = getElementTypeFromVectorLike(resultType);
+  std::string vec = getElementTypeFragment(elementType);
   auto lanes = getElementCountFromVectorLike(resultType);
   if (vec.empty() || !lanes)
     return failure();
+  // The Bisheng VCI ABI uses the signless integer intrinsic names for all
+  // integer vectors (for example v64i32/v128i16).  Signed and unsigned PTO
+  // element types still carry their semantic type through VPTO, but using
+  // v64s32/v64u32 here selects names that are not the A5 VCI intrinsics.  The
+  // CANN900 emitter already canonicalizes integer VCI names this way.
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    vec = "i" + std::to_string(intType.getWidth());
   if (vec == "f16" || vec == "f32")
     return StringAttr::get(context, "llvm.hivm.vci.v" + std::to_string(*lanes) +
                                         vec + "." + vec)

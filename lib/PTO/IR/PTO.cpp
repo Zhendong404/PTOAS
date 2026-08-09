@@ -12546,7 +12546,7 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
         return ty.isInteger(32) || ty.isF32();
       if (elemBytes == 2)
         return ty.isInteger(16) || ty.isF16() || ty.isBF16();
-      return ty.isInteger(8);
+      return ty.isInteger(8) || isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty);
     };
     if (!isAllowedWidthType(srcElem))
       return emitOpError() << "expects transpose element type to match the supported set for its width";
@@ -12556,9 +12556,9 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
     Type srcTy = getSrc().getType();
     Type tmpTy = getTmp().getType();
     Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, tmpTy, "tmp")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
+        failed(verifyTileBufCommon(*this, tmpTy, "tmp", /*allowLowPrecision=*/true)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/true)))
       return failure();
     Type srcElem = getElemTy(srcTy);
     Type tmpElem = getElemTy(tmpTy);
@@ -12575,7 +12575,7 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
         return ty.isInteger(32) || ty.isF32();
       if (elemBytes == 2)
         return ty.isInteger(16) || ty.isF16() || ty.isBF16();
-      return ty.isInteger(8);
+      return ty.isInteger(8) || isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty);
     };
     if (!isAllowedWidthType(srcElem))
       return emitOpError() << "expects transpose element type to match the supported set for its width";

@@ -20,6 +20,7 @@ from ._load_store import (
     tstore_fp_constraint,
     tstore_nd_constraint,
     tstore_nz_constraint,
+    dma_hw_loop_source_legal,
 )
 
 
@@ -66,14 +67,35 @@ def template_tstore_nd(src: pto.Tile, dst: pto.PartitionTensorView):
     src_stride1 = g2 * src_stride2
     src_stride0 = g1 * src_stride1
 
+    # Preserve A5's semantic nesting: loop2 is the outer g1 level and loop1
+    # is the inner g2 level.  A singleton level must remain present so the
+    # other level is not renumbered by VPTO expansion.
     loops = []
-    if g2 not in (1, None):
-        loops.append((g2, src_stride2 * elem_bytes, s2 * elem_bytes))
-    if g1 not in (1, None):
+    if g1 is not None:
         loops.append((g1, src_stride1 * elem_bytes, s1 * elem_bytes))
+    if g2 is not None:
+        loops.append((g2, src_stride2 * elem_bytes, s2 * elem_bytes))
 
     ub_ptr = src.as_ptr()
     gm_ptr = dst.as_ptr()
+    use_hw_loops = (
+        dma_hw_loop_source_legal(g1, src_stride1 * elem_bytes)
+        and dma_hw_loop_source_legal(g2, src_stride2 * elem_bytes)
+        and dma_hw_loop_source_legal(n_burst, s3 * elem_bytes)
+    )
+    if not use_hw_loops:
+        for i in range(0, g0, 1):
+            ub_offset0 = 0 if s0 is None else i * src_stride0
+            for j in range(0, g1, 1):
+                for k in range(0, g2, 1):
+                    for l in range(0, n_burst, 1):
+                        pto.mte_store(
+                            pto.addptr(ub_ptr, ub_offset0 + j * src_stride1 + k * src_stride2 + l * ub_cols),
+                            pto.addptr(gm_ptr, (0 if s0 is None else i * s0) + j * s1 + k * s2 + l * s3),
+                            len_burst,
+                            nburst=(1, 0, 0),
+                        )
+        return
     if g0 == 1 and s0 is None:
         pto.mte_store(
             ub_ptr,
@@ -123,14 +145,34 @@ def template_tstore_dn(src: pto.Tile, dst: pto.PartitionTensorView):
     src_stride1 = g2 * src_stride2
     src_stride0 = g1 * src_stride1
 
+    # The first grouped loop is lowered as hardware loop2 (outer), and the
+    # second as loop1 (inner), matching the legacy A5 TSTORE mapping.
     loops = []
-    if g2 not in (1, None):
-        loops.append((g2, src_stride2 * elem_bytes, s2 * elem_bytes))
-    if g1 not in (1, None):
+    if g1 is not None:
         loops.append((g1, src_stride1 * elem_bytes, s1 * elem_bytes))
+    if g2 is not None:
+        loops.append((g2, src_stride2 * elem_bytes, s2 * elem_bytes))
 
     ub_ptr = src.as_ptr()
     gm_ptr = dst.as_ptr()
+    use_hw_loops = (
+        dma_hw_loop_source_legal(g1, src_stride1 * elem_bytes)
+        and dma_hw_loop_source_legal(g2, src_stride2 * elem_bytes)
+        and dma_hw_loop_source_legal(n_burst, s4 * elem_bytes)
+    )
+    if not use_hw_loops:
+        for i in range(0, g0, 1):
+            ub_offset0 = 0 if s0 is None else i * src_stride0
+            for j in range(0, g1, 1):
+                for k in range(0, g2, 1):
+                    for l in range(0, n_burst, 1):
+                        pto.mte_store(
+                            pto.addptr(ub_ptr, ub_offset0 + j * src_stride1 + k * src_stride2 + l * ub_rows),
+                            pto.addptr(gm_ptr, (0 if s0 is None else i * s0) + j * s1 + k * s2 + l * s4),
+                            len_burst,
+                            nburst=(1, 0, 0),
+                        )
+        return
     if g0 == 1 and s0 is None:
         pto.mte_store(
             ub_ptr,
@@ -210,6 +252,13 @@ def template_tstore_acc_to_gm_nz2nd(src: pto.Tile, dst: pto.PartitionTensorView)
     src_stride = src.shape[0]
     dst_stride = n if strides is None or strides[3] is None else strides[3]
 
+    dst_dtype = str(dst.dtype)
+    kwargs = {}
+    if str(src.dtype) == "f32" and dst_dtype == "f16":
+        kwargs["pre_quant"] = (pto.f16(1.0), "f32_f16")
+    elif str(src.dtype) == "f32" and dst_dtype == "bf16":
+        kwargs["pre_quant"] = (pto.bf16(1.0), "f32_bf16")
+
     pto.mte_l0c_gm(
         src.as_ptr(),
         dst.as_ptr(),
@@ -220,6 +269,7 @@ def template_tstore_acc_to_gm_nz2nd(src: pto.Tile, dst: pto.PartitionTensorView)
         0,
         0,
         layout="nz2nd",
+        **kwargs,
     )
 
 
@@ -242,8 +292,18 @@ def template_tstore_acc_to_gm_nz2dn(src: pto.Tile, dst: pto.PartitionTensorView)
     m, n = src.valid_shape
     strides = dst.strides
     src_stride = src.shape[0]
-    dst_stride = m if strides is None or strides[4] is None else strides[4]
+    # NZ2DN writes n contiguous DN bursts of m elements.  The fixpipe
+    # destination stride is therefore the logical M, as in the A5
+    # TStoreAcc/NZ2DN contract; it is not the rank-5 view's last stride.
+    dst_stride = m
     loop0_src_stride = 1
+
+    dst_dtype = str(dst.dtype)
+    kwargs = {}
+    if str(src.dtype) == "f32" and dst_dtype == "f16":
+        kwargs["pre_quant"] = (pto.f16(1.0), "f32_f16")
+    elif str(src.dtype) == "f32" and dst_dtype == "bf16":
+        kwargs["pre_quant"] = (pto.bf16(1.0), "f32_bf16")
 
     pto.mte_l0c_gm(
         src.as_ptr(),
@@ -255,6 +315,7 @@ def template_tstore_acc_to_gm_nz2dn(src: pto.Tile, dst: pto.PartitionTensorView)
         0,
         0,
         layout=("nz2dn", loop0_src_stride),
+        **kwargs,
     )
 
 
@@ -276,7 +337,20 @@ def template_tstore_acc_to_gm_nz2dn(src: pto.Tile, dst: pto.PartitionTensorView)
 def template_tstore_acc_to_gm_nz2nz(src: pto.Tile, dst: pto.PartitionTensorView):
     m, n = src.valid_shape
     src_stride = src.shape[0]
-    dst_stride = n
+    # The NZ destination stride is the physical distance between consecutive
+    # NZ rows, not the logical column count.  This is the same contract as
+    # pto::TStoreAccNZ: one destination row is a 16-row fractal times C0.
+    c0_size = 16
+    if str(dst.dtype) == "f32" and dst.shape[3] == 8:
+        c0_size = 8
+    dst_stride = ((m + 15) // 16) * 16 * c0_size
+
+    dst_dtype = str(dst.dtype)
+    kwargs = {}
+    if str(src.dtype) == "f32" and dst_dtype == "f16":
+        kwargs["pre_quant"] = (pto.f16(1.0), "f32_f16")
+    elif str(src.dtype) == "f32" and dst_dtype == "bf16":
+        kwargs["pre_quant"] = (pto.bf16(1.0), "f32_bf16")
 
     pto.mte_l0c_gm(
         src.as_ptr(),
@@ -288,6 +362,7 @@ def template_tstore_acc_to_gm_nz2nz(src: pto.Tile, dst: pto.PartitionTensorView)
         0,
         0,
         layout=("nz2nz", 1),
+        **kwargs,
     )
 
 

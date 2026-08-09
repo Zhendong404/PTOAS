@@ -482,16 +482,18 @@ class TileSliceValue(_SurfaceValue):
 class TensorViewValue(_SurfaceValue, TensorView):
     """Author-facing tensor-view descriptor value."""
 
-    def __init__(self, value, *, shape=None, strides=None):
+    def __init__(self, value, *, shape=None, strides=None, dtype=None):
         super().__init__(value)
         self.shape = tuple(shape) if shape is not None else None
         self.strides = tuple(strides) if strides is not None else None
+        self.dtype = dtype
 
     @property
     def surface_metadata(self):
         return {
             "shape": self.shape,
             "strides": self.strides,
+            "dtype": self.dtype,
         }
 
     def as_ptr(self):
@@ -509,6 +511,7 @@ class PartitionTensorViewValue(_SurfaceValue, PartitionTensorView):
         self.sizes = tuple(sizes) if sizes is not None else None
         self.shape = self.sizes
         self.strides = getattr(root_tensor_view, "strides", None)
+        self.dtype = getattr(root_tensor_view, "dtype", None)
 
     def as_ptr(self):
         from ._ops import as_ptr

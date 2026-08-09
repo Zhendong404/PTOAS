@@ -1,0 +1,19 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %s 2>&1 | FileCheck %s
+
+module attributes {"pto.device-spec" = "Ascend910B3"} {
+  func.func @a5_ttrans_fp8() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>
+    %tmp = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>
+    pto.ttrans ins(%src, %tmp : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>, !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>)
+               outs(%dst : !pto.tile_buf<loc=vec, dtype=f8E4M3FN, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=256, pad=0>)
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @a5_ttrans_fp8
+// CHECK: pto.ttrans

@@ -522,6 +522,107 @@ class TileLibCatalogTest(unittest.TestCase):
                 if op not in OPS_ALLOWING_CASTPTR:
                     self.assertNotIn("pto.castptr", mlir)
 
+    def test_tci_mode1_selects_float_tmp_contract(self):
+        specs = {
+            "start": ScalarSpec(dtype=ScalarType("i32"), value=0),
+            "tmp": TileSpec(
+                shape=(1, 512),
+                dtype=ScalarType("f32"),
+                valid_shape=(1, 512),
+            ),
+            "dst": TileSpec(
+                shape=(1, 128),
+                dtype=ScalarType("i32"),
+                valid_shape=(1, 128),
+            ),
+        }
+        selected = select("pto.tci", "a5", specs)
+        self.assertEqual(selected.name, "template_tci_tmp")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("!pto.tile_buf<vec, 1x512xf32>", mlir)
+
+    def test_tcolsum_binary_selects_and_uses_tmp(self):
+        specs = {
+            "src": TileSpec(
+                shape=(64, 128),
+                dtype=ScalarType("f32"),
+                valid_shape=(63, 127),
+            ),
+            "tmp": TileSpec(
+                shape=(32, 128),
+                dtype=ScalarType("f32"),
+                valid_shape=(32, 127),
+            ),
+            "dst": TileSpec(
+                shape=(1, 128),
+                dtype=ScalarType("f32"),
+                valid_shape=(1, 127),
+            ),
+        }
+        selected = select("pto.tcolsum", "a5", specs)
+        self.assertEqual(selected.name, "template_tcolsum_binary")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("!pto.tile_buf<vec, 32x128xf32, valid=32x127>", mlir)
+        self.assertIn("pto.vadd", mlir)
+        self.assertIn("pto.mem_bar", mlir)
+
+    def test_trowexpanddiv_high_precision_selects_tmp_template(self):
+        specs = {
+            "src0": TileSpec(
+                shape=(40, 32),
+                dtype=ScalarType("f32"),
+                valid_shape=(40, 32),
+            ),
+            "src1": TileSpec(
+                shape=(40, 8),
+                dtype=ScalarType("f32"),
+                valid_shape=(40, 1),
+            ),
+            "tmp": TileSpec(
+                shape=(40, 32),
+                dtype=ScalarType("f32"),
+                valid_shape=(40, 32),
+            ),
+            "dst": TileSpec(
+                shape=(40, 32),
+                dtype=ScalarType("f32"),
+                valid_shape=(40, 32),
+            ),
+        }
+        selected = select(
+            "pto.trowexpanddiv",
+            "a5",
+            specs,
+            context_attrs={"precisionType": "high_precision"},
+        )
+        self.assertEqual(selected.name, "template_trowexpanddiv_high_precision")
+        mlir = selected.specialize(context_attrs={"precisionType": "high_precision"}, **specs).mlir_text()
+        self.assertIn("pto.vdup", mlir)
+        self.assertIn("pto.vdiv", mlir)
+
+    def test_ttrans_selects_partial_b16_rowwise(self):
+        specs = {
+            "src": TileSpec(
+                shape=(16, 32),
+                dtype=ScalarType("f16"),
+                valid_shape=(15, 31),
+            ),
+            "tmp": TileSpec(
+                shape=(32, 16),
+                dtype=ScalarType("f16"),
+                valid_shape=(32, 16),
+            ),
+            "dst": TileSpec(
+                shape=(32, 16),
+                dtype=ScalarType("f16"),
+                valid_shape=(31, 15),
+            ),
+        }
+        selected = select("pto.ttrans", "a5", specs)
+        self.assertEqual(selected.name, "template_ttrans_b16_rowwise")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.vscatter", mlir)
+
     def test_rank2_row_major_load_store_views_render(self):
         load_specs = {
             "src": ViewSpec(

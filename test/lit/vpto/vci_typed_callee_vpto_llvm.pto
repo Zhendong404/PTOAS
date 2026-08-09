@@ -1,0 +1,38 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details in the LICENSE file in the root of this software repository.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto-llvm-ir %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @vci_i32(%base: i32, %dst: !pto.ptr<si32, ub>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %idx = pto.vci %base {order = "DESC"} : i32 -> !pto.vreg<64xsi32>
+      pto.vsts %idx, %dst[%c0], %mask : !pto.vreg<64xsi32>, !pto.ptr<si32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+
+  func.func @vci_i16(%base: i16, %dst: !pto.ptr<si16, ub>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
+      %idx = pto.vci %base : i16 -> !pto.vreg<128xsi16>
+      pto.vsts %idx, %dst[%c0], %mask : !pto.vreg<128xsi16>, !pto.ptr<si16, ub>, !pto.mask<b16>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: define void @vci_i32_mix_aiv
+// CHECK: call <64 x i32> @llvm.hivm.vci.v64i32(i32 {{.*}}, i32 1)
+// CHECK: call void @llvm.hivm.vstsx1.v64i32
+// CHECK-LABEL: define void @vci_i16_mix_aiv
+// CHECK: call <128 x i16> @llvm.hivm.vci.v128i16(i16 {{.*}}, i32 0)
+// CHECK: call void @llvm.hivm.vstsx1.v128i16

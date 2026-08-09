@@ -2594,7 +2594,7 @@ def make_tensor_view(ptr, *, shape=None, strides=None, layout=None):
         _unwrap_sequence(normalized_strides),
         layout=layout_attr,
     ).result
-    return TensorViewValue(value, shape=tuple(shape), strides=tuple(strides))
+    return TensorViewValue(value, shape=tuple(shape), strides=tuple(strides), dtype=elem)
 
 
 def _normalize_static_tile_shape(shape):

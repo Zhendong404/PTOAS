@@ -9,7 +9,7 @@
 
 from ptodsl import pto
 
-from ._reductions import register_column_reduction
+from ._reductions import register_binary_column_reduction, register_column_reduction
 
 
 template_tcolsum = register_column_reduction(
@@ -23,5 +23,19 @@ template_tcolsum = register_column_reduction(
         ("f16", "f16"),
         ("bf16", "bf16"),
         ("f32", "f32"),
+    ],
+)
+
+
+template_tcolsum_binary = register_binary_column_reduction(
+    op="pto.tcolsum",
+    name="template_tcolsum_binary",
+    dtypes=[
+        ("i8", "i8", "i8"),
+        ("i16", "i16", "i16"),
+        ("i32", "i32", "i32"),
+        ("f16", "f16", "f16"),
+        ("bf16", "bf16", "bf16"),
+        ("f32", "f32", "f32"),
     ],
 )

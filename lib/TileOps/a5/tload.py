@@ -19,6 +19,7 @@ from ._load_store import (
     tload_mat_nd2nz_constraint,
     tload_nd2nd_constraint,
     tload_nz2nz_constraint,
+    dma_hw_loop_source_legal,
 )
 
 
@@ -67,14 +68,38 @@ def template_tload_nd2nd(src: pto.PartitionTensorView, dst: pto.Tile):
     dst_stride1 = g2 * dst_stride2
     dst_stride0 = g1 * dst_stride1
 
+    # A5 names the two hardware levels by semantic dimension: loop1 is the
+    # inner g2 level and loop2 is the outer g1 level.  Keep singleton levels
+    # in the grouped representation; dropping one would renumber the other
+    # level during VPTO expansion.
     loops = []
-    if g2 not in (1, None):
-        loops.append((g2, s2 * elem_bytes, dst_stride2 * elem_bytes))
-    if g1 not in (1, None):
+    if g1 is not None:
         loops.append((g1, s1 * elem_bytes, dst_stride1 * elem_bytes))
+    if g2 is not None:
+        loops.append((g2, s2 * elem_bytes, dst_stride2 * elem_bytes))
 
     gm_ptr = src.as_ptr()
     ub_ptr = dst.as_ptr()
+    use_hw_loops = (
+        dma_hw_loop_source_legal(g1, s1 * elem_bytes)
+        and dma_hw_loop_source_legal(g2, s2 * elem_bytes)
+        and dma_hw_loop_source_legal(n_burst, s3 * elem_bytes)
+    )
+    if not use_hw_loops:
+        for i in range(0, g0, 1):
+            gm_offset0 = 0 if s0 is None else i * s0
+            for j in range(0, g1, 1):
+                for k in range(0, g2, 1):
+                    for l in range(0, n_burst, 1):
+                        pto.mte_load(
+                            pto.addptr(gm_ptr, gm_offset0 + j * s1 + k * s2 + l * s3),
+                            pto.addptr(ub_ptr, i * dst_stride0 + j * dst_stride1 + k * dst_stride2 + l * ub_cols),
+                            0,
+                            len_burst,
+                            nburst=(1, 0, 0),
+                            pad=dma_pad_for(dst),
+                        )
+        return
     if g0 == 1 and s0 is None:
         pto.mte_load(
             gm_ptr,
@@ -143,14 +168,37 @@ def template_tload_dn2dn(src: pto.PartitionTensorView, dst: pto.Tile):
     dst_stride1 = g2 * dst_stride2
     dst_stride0 = g1 * dst_stride1
 
+    # Preserve the semantic outer(g1)/inner(g2) level mapping even when one
+    # count is one; the A5 lowering maps the first grouped loop to loop2 and
+    # the second grouped loop to loop1.
     loops = []
-    if g2 not in (1, None):
-        loops.append((g2, s2 * elem_bytes, dst_stride2 * elem_bytes))
-    if g1 not in (1, None):
+    if g1 is not None:
         loops.append((g1, s1 * elem_bytes, dst_stride1 * elem_bytes))
+    if g2 is not None:
+        loops.append((g2, s2 * elem_bytes, dst_stride2 * elem_bytes))
 
     gm_ptr = src.as_ptr()
     ub_ptr = dst.as_ptr()
+    use_hw_loops = (
+        dma_hw_loop_source_legal(g1, s1 * elem_bytes)
+        and dma_hw_loop_source_legal(g2, s2 * elem_bytes)
+        and dma_hw_loop_source_legal(n_burst, s4 * elem_bytes)
+    )
+    if not use_hw_loops:
+        for i in range(0, g0, 1):
+            gm_offset0 = 0 if s0 is None else i * s0
+            for j in range(0, g1, 1):
+                for k in range(0, g2, 1):
+                    for l in range(0, n_burst, 1):
+                        pto.mte_load(
+                            pto.addptr(gm_ptr, gm_offset0 + j * s1 + k * s2 + l * s4),
+                            pto.addptr(ub_ptr, i * dst_stride0 + j * dst_stride1 + k * dst_stride2 + l * ub_rows),
+                            0,
+                            len_burst,
+                            nburst=(1, 0, 0),
+                            pad=dma_pad_for(dst),
+                        )
+        return
     if g0 == 1 and s0 is None:
         pto.mte_load(
             gm_ptr,

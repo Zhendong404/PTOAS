@@ -154,6 +154,7 @@ class _TemplateTrace(TracingRuntime):
                     arg,
                     shape=tuple(spec.shape),
                     strides=tuple(spec.strides) if spec.strides is not None else None,
+                    dtype=spec.dtype,
                 )
                 bound.append(
                     PartitionTensorViewValue(

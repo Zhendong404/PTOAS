@@ -17,5 +17,8 @@ template_tshls = register_scalar_binary(
     op="pto.tshls",
     name="template_tshls",
     vector_op=pto.vshls,
-    dtypes=[(dtype, "i16", dtype) for dtype in INT_DTYPES],
+    # The public TSHLS scalar follows the tile element type (the C++
+    # intrinsic takes TileDataDst::DType).  The vector helper still lowers
+    # the uniform shift count to its i16 hardware operand internally.
+    dtypes=[(dtype, dtype, dtype) for dtype in INT_DTYPES],
 )

@@ -3701,7 +3701,15 @@ def TCIOp : PTO_TOp<"tci", [
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_S; }
+    // A5 mode-0 TCI is the scalar sequence form and executes on PIPE_S.
+    // The overload with the optional scratch tile is the vector VCI/VSTS
+    // implementation, so InsertSync must model it as PIPE_V.  Keeping this
+    // distinction on the TileOp itself lets a following tstore receive the
+    // same V -> MTE3 dependency as the native PTO implementation.
+    ::mlir::pto::PIPE getPipe() {
+      return getTmp() ? ::mlir::pto::PIPE::PIPE_V
+                      : ::mlir::pto::PIPE::PIPE_S;
+    }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }

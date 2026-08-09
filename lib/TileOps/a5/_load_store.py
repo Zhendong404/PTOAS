@@ -64,6 +64,11 @@ def _stride_at(strides, index):
     return strides[index]
 
 
+def dma_hw_loop_source_legal(count, stride_bytes) -> bool:
+    """Return whether an A5 hardware loop can carry this source stride."""
+    return count in (None, 1) or stride_bytes is None or stride_bytes % 32 == 0
+
+
 def _is_tile_layout(config, *, row_major: bool, s_layout: str) -> bool:
     if config is None:
         return False
@@ -156,7 +161,11 @@ def tload_dn2dn_constraint(src_kind, src_shape, src_strides, src_memory_space, d
 def tload_nz2nz_constraint(src_kind, src_shape, src_memory_space, dst_kind, dst_shape, dst_valid_shape, dst_memory_space, dst_config, **_):
     if src_kind != "view" or dst_kind != "tile" or src_memory_space != "gm" or dst_memory_space not in {"ub", "vec"}:
         return False
-    logical_rows = src_shape[2]
+    # NZ folds the two middle dimensions into the tile row axis.  This is the
+    # same contract used by the A5 TileLib TLOAD/TSTORE pair:
+    #   Row = gShape2 * gShape3
+    #   Col = gShape0 * gShape1 * gShape4
+    logical_rows = src_shape[2] * src_shape[3]
     return _is_tile_layout(dst_config, row_major=False, s_layout="row_major") and _check_load_bounds(
         src_shape,
         None,

@@ -23,10 +23,17 @@ import ptodsl.tilelib as tilelib
 B32_DTYPES = ("f32", "i32", "ui32")
 B16_DTYPES = ("f16", "bf16", "i16", "ui16")
 B8_DTYPES = ("i8", "ui8")
+B8_STORAGE_DTYPES = ("i8", "ui8", "f8e4m3", "f8e5m2", "hif8")
 
 _BYTEWIDTH_BY_NAME = {"f32": 4, "i32": 4, "ui32": 4,
                       "f16": 2, "bf16": 2, "i16": 2, "ui16": 2,
-                      "i8": 1, "ui8": 1}
+                      "i8": 1, "ui8": 1, "f8e4m3": 1, "f8e5m2": 1,
+                      "hif8": 1}
+
+
+def _is_f8_storage_name(dtype_name):
+    text = str(dtype_name)
+    return text in {"f8e4m3", "f8e5m2", "hif8", "f8E4M3FN", "f8E5M2", "!pto.hif8"}
 
 
 def _ub_row_major_2d(operand_memory_spaces, operand_b_layouts, operand_s_layouts, **_):
@@ -37,23 +44,25 @@ def _ub_row_major_2d(operand_memory_spaces, operand_b_layouts, operand_s_layouts
     )
 
 
-def _wide_shape(src_valid_shape, **_):
-    rows, cols = src_valid_shape
+def _wide_shape(src_shape, **_):
+    rows, cols = src_shape
     return rows < cols
 
 
-def _tall_shape(src_valid_shape, **_):
-    rows, cols = src_valid_shape
+def _tall_shape(src_shape, **_):
+    rows, cols = src_shape
     return rows >= cols
 
 
-def _major_32byte_aligned(src_valid_shape, src_dtype, dst_dtype, **_):
+def _major_32byte_aligned(src_shape, dst_shape, src_dtype, dst_dtype, **_):
     dtype_name = getattr(src_dtype, "name", str(src_dtype))
     bytewidth = _BYTEWIDTH_BY_NAME.get(dtype_name)
     if bytewidth is None:
         return False
-    rows, cols = src_valid_shape
-    return (cols * bytewidth) % 32 == 0
+    src_rows, src_cols = src_shape
+    dst_rows, dst_cols = dst_shape
+    _ = src_rows, dst_rows, src_dtype, dst_dtype
+    return (src_cols * bytewidth) % 32 == 0 and (dst_cols * bytewidth) % 32 == 0
 
 
 @tilelib.tile_template(
@@ -187,8 +196,102 @@ def template_ttrans_b16_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
 @tilelib.tile_template(
     op="pto.ttrans",
     target="a5",
+    name="template_ttrans_b16_rowwise",
+    dtypes=[(d, d, d) for d in B16_DTYPES],
+    iteration_axis="none",
+    op_engine="vector",
+    op_class="movement",
+    constraints=[
+        _ub_row_major_2d,
+        _wide_shape,
+        _major_32byte_aligned,
+    ],
+    id=2,
+    loop_depth=2,
+    is_post_update=False,
+    tags=("trans", "ub", "b16", "rowwise"),
+)
+def template_ttrans_b16_rowwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+    """Transpose wide b16 tiles with the A5 scatter path."""
+    dtype = dst.dtype
+    valid_rows, valid_cols = src.valid_shape
+    lanes = pto.elements_per_vreg(dtype)
+    dst_stride = dst.shape[1]
+    dst_ptr = dst.as_ptr()
+    base_idx = pto.vci(pto.i16(0), "ASC")
+
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, lanes):
+            mask, remained = pto.make_mask(dtype, remained)
+            data = pto.vlds(src[row, col:])
+            idx = pto.vadds(base_idx, col, mask)
+            idx = pto.vmins(idx, valid_cols - 1, mask)
+            idx = pto.vmuls(idx, dst_stride, mask)
+            idx = pto.vadds(idx, row, mask)
+            pto.vscatter(data, dst_ptr, idx, mask)
+
+
+@tilelib.tile_template(
+    op="pto.ttrans",
+    target="a5",
+    name="template_ttrans_b8_rowwise",
+    dtypes=[(d, d, d) for d in B8_STORAGE_DTYPES],
+    iteration_axis="none",
+    op_engine="vector",
+    op_class="movement",
+    constraints=[
+        _ub_row_major_2d,
+        _wide_shape,
+        _major_32byte_aligned,
+    ],
+    id=4,
+    loop_depth=2,
+    is_post_update=False,
+    tags=("trans", "ub", "b8", "rowwise"),
+)
+def template_ttrans_b8_rowwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
+    """Transpose wide b8/storage tiles with the A5 UNPK_B8 path."""
+    dtype = dst.dtype
+    dtype_name = getattr(dtype, "name", str(dtype))
+    valid_rows, valid_cols = src.valid_shape
+    packed_lanes = pto.elements_per_vreg(pto.i8) >> 1
+    dst_stride = dst.shape[1]
+    dst_ptr = dst.as_ptr()
+    if _is_f8_storage_name(dtype_name):
+        src_ptr = pto.castptr(src.as_ptr(), pto.ptr(pto.ui8, "ub"))
+        dst_ptr = pto.castptr(dst_ptr, pto.ptr(pto.ui8, "ub"))
+        data_type = pto.vreg_type(pto.elements_per_vreg(pto.ui8), pto.ui8)
+    else:
+        src_ptr = src.as_ptr()
+        data_type = pto.vreg_type(pto.elements_per_vreg(dtype), dtype)
+    base_idx = pto.vci(pto.i16(0), "ASC")
+
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, packed_lanes):
+            mask, remained = pto.make_mask(pto.i16, remained)
+            if _is_f8_storage_name(dtype_name):
+                data = pto.vlds(
+                    src_ptr,
+                    row * src.shape[1] + col,
+                    data_type,
+                    dist="UNPK_B8",
+                )
+            else:
+                data = pto.vlds(src[row, col:], dist="UNPK_B8")
+            idx = pto.vadds(base_idx, col, mask)
+            idx = pto.vmins(idx, valid_cols - 1, mask)
+            idx = pto.vmuls(idx, dst_stride, mask)
+            idx = pto.vadds(idx, row, mask)
+            pto.vscatter(data, dst_ptr, idx, mask)
+
+
+@tilelib.tile_template(
+    op="pto.ttrans",
+    target="a5",
     name="template_ttrans_b8_colwise",
-    dtypes=[(d, d, d) for d in B8_DTYPES],
+    dtypes=[(d, d, d) for d in B8_STORAGE_DTYPES],
     iteration_axis="none",
     op_engine="vector",
     op_class="movement",
@@ -215,16 +318,22 @@ def template_ttrans_b8_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     yet covered by the ST harness (b8 transpose hits a deeper emitc/intrinsic
     issue under investigation).
     """
-    dtype = dst.dtype  # i8/ui8
+    dtype = dst.dtype  # i8/ui8 or one-byte floating-point storage
+    dtype_name = getattr(dtype, "name", str(dtype))
     valid_rows, valid_cols = src.valid_shape
     # packed lanes: two b8 per b16 lane
     packed_lanes = pto.elements_per_vreg(dtype) >> 1   # 256/2 = 128
     src_stride = src.shape[1]
+    dst_stride = dst.shape[1]
     valid_rows_minus_1 = valid_rows - 1
     src_ptr = src.as_ptr()
+    dst_ptr = dst.as_ptr()
     base_idx = pto.vci(pto.i16(0), "ASC")
     # b8 gather uses paired-pack: i8 source -> i16 result, ui8 -> ui16 result
-    _b8_index_elem = pto.ui16 if str(dtype) in ("ui8",) else pto.i16
+    if _is_f8_storage_name(dtype_name):
+        src_ptr = pto.castptr(src_ptr, pto.ptr(pto.ui8, "ub"))
+        dst_ptr = pto.castptr(dst_ptr, pto.ptr(pto.ui8, "ub"))
+    _b8_index_elem = pto.ui16 if dtype_name == "ui8" or _is_f8_storage_name(dtype_name) else pto.i16
     result_ty = pto.vreg_type(packed_lanes, _b8_index_elem)
 
     for col in range(0, valid_cols, 1):
@@ -236,4 +345,13 @@ def template_ttrans_b8_colwise(src: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
             idx = pto.vmuls(idx, src_stride, mask)
             idx = pto.vadds(idx, col, mask)
             data = pto.vgather2(src_ptr, idx, mask, result_vreg_type=result_ty)
-            pto.vsts(data, dst[col, row:], mask)
+            # ``data`` is the packed b16 result of vgather2, while dst_ptr is
+            # deliberately a byte-storage pointer for b8/f8 data.  The
+            # generic vsts lowering converts its scalar offset using the
+            # value element width (16 bits), so passing the byte offset here
+            # would double it and make every second destination row miss.
+            # Advance the byte pointer first and keep the vsts offset zero;
+            # this is equivalent to the native TTransB8ColWise pointer-plus-
+            # offset form and preserves odd byte offsets in the tail rows.
+            store_ptr = pto.addptr(dst_ptr, col * dst_stride + row)
+            pto.vsts(data, store_ptr, 0, mask, dist="PK_B16")

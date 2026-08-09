@@ -3083,11 +3083,13 @@ static FailureOr<StringRef> buildVldsPostCallee(MLIRContext *context,
 
 static FailureOr<StringRef> buildVstsPostCallee(MLIRContext *context,
                                                 Type valueType) {
-  std::string vec =
-      getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  Type elementType = getElementTypeFromVectorLike(valueType);
+  std::string vec = getMemoryElementTypeFragment(elementType);
   auto lanes = getElementCountFromVectorLike(valueType);
   if (vec.empty() || !lanes)
     return failure();
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    vec = "i" + std::to_string(intType.getWidth());
   return StringAttr::get(context, "llvm.hivm.vstsx1.post.v" +
                                       std::to_string(*lanes) + vec)
       .getValue();
@@ -3769,11 +3771,13 @@ static FailureOr<StringRef> buildVsldbCallee(MLIRContext *context,
 }
 
 static FailureOr<StringRef> buildVstsCallee(MLIRContext *context, Type valueType) {
-  std::string vec =
-      getMemoryElementTypeFragment(getElementTypeFromVectorLike(valueType));
+  Type elementType = getElementTypeFromVectorLike(valueType);
+  std::string vec = getMemoryElementTypeFragment(elementType);
   auto lanes = getElementCountFromVectorLike(valueType);
   if (vec.empty() || !lanes)
     return failure();
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    vec = "i" + std::to_string(intType.getWidth());
   return StringAttr::get(context, "llvm.hivm.vstsx1.v" + std::to_string(*lanes) +
                                       vec)
       .getValue();

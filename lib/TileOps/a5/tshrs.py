@@ -17,5 +17,7 @@ template_tshrs = register_scalar_binary(
     op="pto.tshrs",
     name="template_tshrs",
     vector_op=pto.vshrs,
-    dtypes=[(dtype, "i16", dtype) for dtype in INT_DTYPES],
+    # The public TSHRS scalar follows the tile element type.  pto.vshrs
+    # performs the final i16 conversion required by the vector instruction.
+    dtypes=[(dtype, dtype, dtype) for dtype in INT_DTYPES],
 )
