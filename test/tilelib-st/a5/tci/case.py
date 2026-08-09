@@ -48,21 +48,45 @@ CASE_SHAPES = [
     ("i16_1x7", pto.i16, (1, 7), False),
     ("i16_1x192_desc", pto.i16, (1, 192), True),
     ("i16_1x257", pto.i16, (1, 257), False),
+    ("i32_1x600_desc", pto.i32, (1, 600), True),
+    ("i32_1x2560_desc", pto.i32, (1, 2560), True),
+    ("i32_1x3200", pto.i32, (1, 3200), False),
+    ("i16_1x800", pto.i16, (1, 800), False),
+    ("i32_1x8", pto.i32, (1, 8), False),
+    ("i16_1x128", pto.i16, (1, 128), False),
+    ("i16_1x128_desc", pto.i16, (1, 128), True),
+    ("i32_1x192_desc", pto.i32, (1, 192), True),
     ("ui32_1x7", pto.ui32, (1, 7), False),
     ("ui32_1x128_desc", pto.ui32, (1, 128), True),
     ("ui16_1x7", pto.ui16, (1, 7), False),
     ("ui16_1x128_desc", pto.ui16, (1, 128), True),
 ]
 
+# A5's mode-1 TCI ABI carries an additional 1x512xf32 scratch tile.  Keep
+# these cases separate from the scalar-only mode-0 forms so the migrated
+# coverage exercises the legacy three-operand contract directly.
+CASE_MODE1_SHAPES = [
+    ("i32_1x128_desc_mode1", pto.i32, (1, 128), True, 100),
+    ("i32_1x3200_mode1", pto.i32, (1, 3200), False, 0),
+    ("i16_1x128_desc_mode1", pto.i16, (1, 128), True, -1),
+    ("i16_1x800_mode1", pto.i16, (1, 800), False, 0),
+    ("i16_1x3840_desc_mode1", pto.i16, (1, 3840), True, 20),
+    ("i16_1x1408_mode1", pto.i16, (1, 1408), False, 50),
+]
 
-def _tci_body(start, dst_ptr, *, dst_rows, dst_cols, dtype, descending):
+
+def _tci_body(start, dst_ptr, *, dst_rows, dst_cols, dtype, descending, use_tmp=False):
     itemsize = np.dtype(npy_dtype(dtype)).itemsize
     block_size = 32 // itemsize
     aligned_cols = ((dst_cols + block_size - 1) // block_size) * block_size
 
     dst_view = pto.make_tensor_view(dst_ptr, shape=[dst_rows, dst_cols], strides=[dst_cols, 1])
     dst_tile = pto.alloc_tile(shape=[dst_rows, aligned_cols], dtype=dtype, valid_shape=[dst_rows, dst_cols])
-    pto.tile.ci(start, dst_tile, descending=descending)
+    if use_tmp:
+        tmp_tile = pto.alloc_tile(shape=[1, 512], dtype=pto.f32, valid_shape=[1, 512])
+        pto.tile.ci(start, dst_tile, tmp=tmp_tile, descending=descending)
+    else:
+        pto.tile.ci(start, dst_tile, descending=descending)
     pto.tile.store(dst_tile, dst_view)
 
 
@@ -90,6 +114,25 @@ for _name, _dtype, _dst_shape, _desc in CASE_SHAPES:
 
     _tci_kernels[_name] = _make()
 
+for _name, _dtype, _dst_shape, _desc, _start in CASE_MODE1_SHAPES:
+    _dr, _dc = _dst_shape
+
+    def _make_mode1(dr=_dr, dc=_dc, dtype=_dtype, desc=_desc, kernel_name=f"tci_{_name}"):
+        @pto.jit(name=kernel_name, target="a5")
+        def _kernel(
+            start: dtype,
+            dst_ptr: pto.ptr(dtype, "gm"),
+        ):
+            _tci_body(
+                start, dst_ptr,
+                dst_rows=dr, dst_cols=dc, dtype=dtype,
+                descending=desc, use_tmp=True,
+            )
+
+        return _kernel
+
+    _tci_kernels[_name] = _make_mode1()
+
 
 def _make_inputs(name, dtype):
     rng_seed = zlib.crc32(name.encode())
@@ -116,6 +159,18 @@ for _name, _dtype, _dst_shape, _desc in CASE_SHAPES:
             _tci_kernels[_name],
             inputs=lambda _n=_name, _d=_dtype: _make_inputs(_n, _d),
             expected=lambda src, _d=_dtype, _ds=_dst_shape, _dc=_desc: _make_expected(src, _d, _ds, _dc),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+    )
+
+for _name, _dtype, _dst_shape, _desc, _start in CASE_MODE1_SHAPES:
+    CASES.append(
+        golden_output_case(
+            "tci_" + _name,
+            _tci_kernels[_name],
+            inputs=lambda _d=_dtype, _s=_start: [np.asarray(_s, dtype=npy_dtype(_d))],
+            expected=lambda src, _d=_dtype, _ds=_dst_shape, _desc=_desc: _make_expected(src, _d, _ds, _desc),
             rtol=1e-6,
             atol=1e-6,
         )

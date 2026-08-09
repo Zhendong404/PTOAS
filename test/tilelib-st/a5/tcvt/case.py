@@ -57,7 +57,10 @@ _NP_TO_PTO = {
     np.float32: pto.f32,
     np.float16: pto.f16,
     bfloat16: pto.bf16,
-    np.int8: pto.i8,
+    # The legacy A5 tcvt cases use signed int8 tiles.  ``pto.i8`` is the
+    # signless MLIR integer spelling and causes TileLib selection to see
+    # ``i8`` instead of the legacy ``si8`` contract.
+    np.int8: pto.si8,
     np.uint8: pto.ui8,
     np.int16: pto.i16,
     "si16": pto.si16,
@@ -732,7 +735,13 @@ def _expected_for(case):
         if src_norm is bfloat16:
             src = np.asarray(src).view(bfloat16)
         converted = _convert(src, src_norm, dst_norm, round_mode)
-        return _apply_valid_shape(converted, valid_shape, dst_norm)
+        masked = _apply_valid_shape(converted, valid_shape, dst_norm)
+        # torch.from_numpy cannot materialize ml_dtypes.bfloat16.  Keep the
+        # public kernel ABI as bf16, but compare/output through its uint16
+        # storage representation, matching the legacy uint16 host buffers.
+        if dst_norm is bfloat16:
+            return np.asarray(masked).view(np.uint16)
+        return masked
 
     return expected
 

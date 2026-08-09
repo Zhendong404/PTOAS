@@ -64,11 +64,17 @@ def _trowexpanddiv_body(src0_ptr, src1_ptr, dst_ptr, *, rows, cols, src1_cols,
     src1_tile = pto.alloc_tile(shape=[rows, src1_cols], dtype=dtype,
                                valid_shape=[rows, 1])
     dst_tile = pto.alloc_tile(shape=[rows, cols], dtype=dtype)
+    tmp_tile = None
+    if high_precision:
+        # A5's high-precision TileOp contract requires the legacy tmp operand;
+        # the A5 implementation accepts it as an unused placeholder.
+        tmp_tile = pto.alloc_tile(shape=[rows, cols], dtype=dtype)
 
     pto.tile.load(src0_view, src0_tile)
     pto.tile.load(src1_view, src1_tile)
     if high_precision:
         pto.tile.rowexpanddiv(src0_tile, src1_tile, dst_tile,
+                              tmp=tmp_tile,
                               precision=pto.Precision.HighPrecision)
     else:
         pto.tile.rowexpanddiv(src0_tile, src1_tile, dst_tile)

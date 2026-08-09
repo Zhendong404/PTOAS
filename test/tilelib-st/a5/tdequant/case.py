@@ -26,15 +26,18 @@ _SRC_NP_TO_PTO = {
     np.dtype(np.int8): pto.i8,
 }
 
-# (case_name, src_np_dtype, flag_offset_zero, valid_row, valid_col).
+# (case_name, src_np_dtype, flag_offset_zero, valid_row, valid_col,
+#  physical_tile_rows, physical_tile_cols).  None keeps the aligned shape
+# inferred from the valid dimensions.  The non-None entries mirror the
+# legacy A5 cases whose physical tile is 128x128 with a smaller valid region.
 CASE_SPECS = [
-    ("i16_64x64_offzero", np.int16, True, 64, 64),
-    ("i16_64x64", np.int16, False, 64, 64),
-    ("i16_63x63", np.int16, False, 63, 63),
-    ("i8_64x64_offzero", np.int8, True, 64, 64),
-    ("i8_64x64", np.int8, False, 64, 64),
-    ("i8_63x63", np.int8, False, 63, 63),
-    ("i16_51x112_offzero", np.int16, True, 51, 112),
+    ("i16_64x64_offzero", np.int16, True, 64, 64, None, None),
+    ("i16_64x64", np.int16, False, 64, 64, 128, 128),
+    ("i16_63x63", np.int16, False, 63, 63, 128, 128),
+    ("i8_64x64_offzero", np.int8, True, 64, 64, None, None),
+    ("i8_64x64", np.int8, False, 64, 64, 128, 128),
+    ("i8_63x63", np.int8, False, 63, 63, 128, 128),
+    ("i16_51x112_offzero", np.int16, True, 51, 112, None, None),
 ]
 
 
@@ -44,10 +47,13 @@ def _aligned_cols(valid_cols, elemsize):
     return max(aligned, valid_cols)
 
 
-def _alloc_row_tile(rows, valid_cols, elemsize, dtype):
-    aligned_cols = _aligned_cols(valid_cols, elemsize)
-    kwargs = {"shape": [rows, aligned_cols], "dtype": dtype}
-    if aligned_cols != valid_cols:
+def _alloc_row_tile(rows, valid_cols, elemsize, dtype, tile_rows=None, tile_cols=None):
+    if tile_rows is None or tile_cols is None:
+        aligned_cols = _aligned_cols(valid_cols, elemsize)
+        tile_rows = rows if tile_rows is None else tile_rows
+        tile_cols = aligned_cols if tile_cols is None else tile_cols
+    kwargs = {"shape": [tile_rows, tile_cols], "dtype": dtype}
+    if tile_rows != rows or tile_cols != valid_cols:
         kwargs["valid_shape"] = [rows, valid_cols]
     return pto.alloc_tile(**kwargs)
 
@@ -62,17 +68,28 @@ def _alloc_col_tile(valid_rows, dtype, elemsize=4):
     return pto.alloc_tile(**kwargs)
 
 
-def _dequant_body(src_ptr, scale_ptr, off_ptr, dst_ptr, *, src_dtype, rows, cols):
+def _dequant_body(
+    src_ptr,
+    scale_ptr,
+    off_ptr,
+    dst_ptr,
+    *,
+    src_dtype,
+    rows,
+    cols,
+    tile_rows=None,
+    tile_cols=None,
+):
     src_view = pto.make_tensor_view(src_ptr, shape=[rows, cols], strides=[cols, 1])
     scale_view = pto.make_tensor_view(scale_ptr, shape=[rows, 1], strides=[1, 1])
     off_view = pto.make_tensor_view(off_ptr, shape=[rows, 1], strides=[1, 1])
     dst_view = pto.make_tensor_view(dst_ptr, shape=[rows, cols], strides=[cols, 1])
 
     src_esize = np.dtype(np.int16).itemsize if src_dtype is pto.i16 else np.dtype(np.int8).itemsize
-    src_tile = _alloc_row_tile(rows, cols, src_esize, src_dtype)
+    src_tile = _alloc_row_tile(rows, cols, src_esize, src_dtype, tile_rows, tile_cols)
     scale_tile = _alloc_col_tile(rows, pto.f32)
     off_tile = _alloc_col_tile(rows, pto.f32)
-    dst_tile = _alloc_row_tile(rows, cols, 4, pto.f32)
+    dst_tile = _alloc_row_tile(rows, cols, 4, pto.f32, tile_rows, tile_cols)
 
     pto.tile.load(src_view, src_tile)
     pto.tile.load(scale_view, scale_tile)
@@ -82,13 +99,30 @@ def _dequant_body(src_ptr, scale_ptr, off_ptr, dst_ptr, *, src_dtype, rows, cols
 
 
 _dequant_kernels = {}
-for _name, _npdt, _flag, _r, _c in CASE_SPECS:
+for _name, _npdt, _flag, _r, _c, _tr, _tc in CASE_SPECS:
     _sdt = _SRC_NP_TO_PTO[np.dtype(_npdt)]
-    def _make(src_dtype=_sdt, r=_r, c=_c, kernel_name=f"tdequant_{_name}"):
+    def _make(
+        src_dtype=_sdt,
+        r=_r,
+        c=_c,
+        tr=_tr,
+        tc=_tc,
+        kernel_name=f"tdequant_{_name}",
+    ):
         @pto.jit(name=kernel_name, target="a5")
         def _kernel(src_ptr: pto.ptr(src_dtype, "gm"), scale_ptr: pto.ptr(pto.f32, "gm"),
                     off_ptr: pto.ptr(pto.f32, "gm"), dst_ptr: pto.ptr(pto.f32, "gm")):
-            _dequant_body(src_ptr, scale_ptr, off_ptr, dst_ptr, src_dtype=src_dtype, rows=r, cols=c)
+            _dequant_body(
+                src_ptr,
+                scale_ptr,
+                off_ptr,
+                dst_ptr,
+                src_dtype=src_dtype,
+                rows=r,
+                cols=c,
+                tile_rows=tr,
+                tile_cols=tc,
+            )
         return _kernel
 
     _dequant_kernels[_name] = _make()
@@ -112,7 +146,7 @@ def _make_expected(src, scale, offset):
 
 
 CASES = []
-for _name, _npdt, _flag, _r, _c in CASE_SPECS:
+for _name, _npdt, _flag, _r, _c, _tr, _tc in CASE_SPECS:
     CASES.append(
         golden_output_case(
             "tdequant_" + _name,

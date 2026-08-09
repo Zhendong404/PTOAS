@@ -70,6 +70,11 @@ def _make_kernel(name, np_dtype, shape, src0_valid, src1_valid, dst_valid):
     src1_vr, src1_vc = src1_valid
     dst_vr, dst_vc = dst_valid
     pto_dtype = NP_TO_PTO[np_dtype]
+    # TileLib vector tiles use a row-major physical row stride aligned to a
+    # 32-byte burst.  Keep the legacy logical width in the GM views and
+    # valid_shape, but pad the physical tile width for narrow tails.
+    elem_bytes = np.dtype(np_dtype).itemsize
+    physical_cols = ((cols * elem_bytes + 31) // 32) * 32 // elem_bytes
 
     @pto.jit(name="tpartmax_" + name, target="a5")
     def _kernel(
@@ -82,13 +87,13 @@ def _make_kernel(name, np_dtype, shape, src0_valid, src1_valid, dst_valid):
         c_view = pto.make_tensor_view(c_ptr, shape=[rows, cols], strides=[cols, 1])
 
         a_tile = pto.alloc_tile(
-            shape=[rows, cols], dtype=pto_dtype, valid_shape=[src0_vr, src0_vc]
+            shape=[rows, physical_cols], dtype=pto_dtype, valid_shape=[src0_vr, src0_vc]
         )
         b_tile = pto.alloc_tile(
-            shape=[rows, cols], dtype=pto_dtype, valid_shape=[src1_vr, src1_vc]
+            shape=[rows, physical_cols], dtype=pto_dtype, valid_shape=[src1_vr, src1_vc]
         )
         c_tile = pto.alloc_tile(
-            shape=[rows, cols], dtype=pto_dtype, valid_shape=[dst_vr, dst_vc]
+            shape=[rows, physical_cols], dtype=pto_dtype, valid_shape=[dst_vr, dst_vc]
         )
 
         pto.tile.load(a_view, a_tile)
