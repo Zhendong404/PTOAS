@@ -17,7 +17,7 @@ from .div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
     op="pto.tdiv",
     target="a5",
     name="template_tdiv",
-    dtypes=[("f16", "f16", "f16"), ("f32", "f32", "f32")],
+    dtypes=[("f16", "f16", "f16"), ("f32", "f32", "f32"), ("i32", "i32", "i32")],
     iteration_axis="none",
     op_engine="vector",
     op_class="elementwise",

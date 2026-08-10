@@ -965,7 +965,7 @@ class TileLibCatalogTest(unittest.TestCase):
                 self.assertEqual(selected.name, "template_tcvt_bf16_to_fp4")
                 self.assertIn("pto.vcvt", selected.specialize(**specs).mlir_text())
 
-    def test_tcolexpanddiv_i32_uses_float_divide_path(self):
+    def test_tcolexpanddiv_i32_uses_native_divide_path(self):
         specs = {
             "src0": TileSpec(shape=(8, 64), dtype=ScalarType("i32")),
             "src1": TileSpec(shape=(1, 64), dtype=ScalarType("i32")),
@@ -974,8 +974,8 @@ class TileLibCatalogTest(unittest.TestCase):
         selected = select("pto.tcolexpanddiv", "a5", specs)
         self.assertEqual(selected.name, "template_tcolexpanddiv_i32")
         mlir = selected.specialize(**specs).mlir_text()
-        self.assertIn("pto.vcvt", mlir)
         self.assertIn("pto.vdiv", mlir)
+        self.assertNotIn("pto.vcvt", mlir)
 
     def test_tmrgsort_multi_list3_and_4_render(self):
         cases = (

@@ -85,7 +85,7 @@ for (int i = 0; i < N; i++)
 ### `pto.vdiv`
 
 - **syntax:** `%result = pto.vdiv %lhs, %rhs, %mask : !pto.vreg<NxT>, !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<NxT>`
-- **A5 types:** f16, f32 only (no integer division)
+- **A5 types:** u16, s16, u32, s32, f16, and f32.
 
 ```c
 for (int i = 0; i < N; i++)
@@ -95,9 +95,13 @@ for (int i = 0; i < N; i++)
 - **inputs:** `%lhs` is the numerator, `%rhs` is the denominator, and `%mask`
   selects active lanes.
 - **outputs:** `%result` is the lane-wise quotient.
-- **constraints and limitations:** Floating-point element types only. Active
-  denominators containing `+0` or `-0` follow the target's exceptional
-  behavior.
+- **constraints and limitations:** Integer operands use the native integer
+  division instruction. Signed quotients are rounded toward zero. The
+  overflowing pair `INT32_MIN / -1` follows the target's two's-complement
+  result representation. Division by zero is undefined. Other targets retain
+  their native type constraints.
+  Active floating-point denominators containing `+0` or `-0` follow the
+  target's exceptional behavior.
 
 ---
 

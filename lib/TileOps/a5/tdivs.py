@@ -17,6 +17,7 @@ from .div_hp import _div_ieee754_f32_impl, _div_ieee754_f16_impl
 _DTYPES = [
     ("f16", "f16", "f16"),
     ("f32", "f32", "f32"),
+    ("i32", "i32", "i32"),
 ]
 
 

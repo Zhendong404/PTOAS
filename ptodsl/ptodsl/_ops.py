@@ -52,6 +52,7 @@ from ._surface_values import (
     compose_partition_spec,
     emit_as_ptr,
     infer_tile_element_type,
+    is_tile_ir_type,
     parse_tile_type_metadata,
     resolve_address_access,
     unwrap_surface_value,
@@ -3371,12 +3372,16 @@ def tmuls(src, scalar, dst):
 
 def tdivs(src, scalar, dst, *, div_precision=None):
     """``pto.tdivs ins(src, scalar) outs(dst)``."""
-    _pto.tdivs(
-        unwrap_surface_value(src),
-        _coerce_tile_scalar_operand(src, scalar, context="tdivs"),
-        unwrap_surface_value(dst),
-        precision_type=div_precision,
-    )
+    # A5 supports both operand orders.  Infer the scalar type from whichever
+    # operand is the tile so scalar/tile division uses the same path.
+    src_value = unwrap_surface_value(src)
+    src_is_tile = is_tile_ir_type(src_value.type)
+    tile = src if src_is_tile else scalar
+    scalar_operand = scalar if src_is_tile else src
+    scalar_value = _coerce_tile_scalar_operand(tile, scalar_operand, context="tdivs")
+    tile_value = src_value if src_is_tile else unwrap_surface_value(tile)
+    operands = (tile_value, scalar_value) if src_is_tile else (scalar_value, tile_value)
+    _pto.tdivs(*operands, unwrap_surface_value(dst), precision_type=div_precision)
 
 
 def tmaxs(src, scalar, dst):
