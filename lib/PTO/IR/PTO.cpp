@@ -3530,9 +3530,9 @@ LogicalResult mlir::pto::SyncSetOp::verify() {
   auto verifyA5 = [&]() -> LogicalResult {
     if (IntegerAttr eventIdAttr = getEventIdAttr()) {
       int64_t eventId = eventIdAttr.getInt();
-      if (eventId < 0 || eventId > 31) {
+      if (eventId < 0 || eventId > 15) {
         return emitOpError()
-               << "A5 sync.set expects static event_id in [0, 31], but got "
+               << "A5 sync.set expects static FFTS event_id in [0, 15], but got "
                << eventId;
       }
     }
@@ -3661,14 +3661,20 @@ LogicalResult mlir::pto::SyncWaitOp::verify() {
   if (hasStatic == hasDynamic)
     return emitOpError()
            << "expects exactly one event-id form: static attr or dynamic index operand";
+  if (IntegerAttr fftsModeAttr = getFftsModeAttr()) {
+    int64_t fftsMode = fftsModeAttr.getInt();
+    if (fftsMode < 0 || fftsMode > 2)
+      return emitOpError() << "requires ffts_mode in range [0, 2], but got "
+                           << fftsMode;
+  }
 
   auto verifyA2A3 = [&]() -> LogicalResult { return success(); };
   auto verifyA5 = [&]() -> LogicalResult {
     if (IntegerAttr eventIdAttr = getEventIdAttr()) {
       int64_t eventId = eventIdAttr.getInt();
-      if (eventId < 0 || eventId > 31)
+      if (eventId < 0 || eventId > 15)
         return emitOpError()
-               << "A5 sync.wait expects static physical event_id in [0, 31], but got "
+               << "A5 sync.wait expects static FFTS event_id in [0, 15], but got "
                << eventId;
     }
     switch (getPipe().getPipe()) {
@@ -3685,6 +3691,108 @@ LogicalResult mlir::pto::SyncWaitOp::verify() {
     }
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+static LogicalResult verifyNamedSyncEventOp(Operation *op, PipeAttr pipe,
+                                            IntegerAttr eventIdAttr,
+                                            Value eventIdDyn,
+                                            int64_t maxEventId,
+                                            StringRef opName) {
+  if ((eventIdAttr != nullptr) == static_cast<bool>(eventIdDyn))
+    return op->emitOpError()
+           << "expects exactly one event-id form: static attr or dynamic index operand";
+  if (eventIdAttr && (eventIdAttr.getInt() < 0 ||
+                      eventIdAttr.getInt() > maxEventId))
+    return op->emitOpError() << "expects static event_id in [0, " << maxEventId
+                             << "], but got " << eventIdAttr.getInt();
+  switch (pipe.getPipe()) {
+  case PIPE::PIPE_FIX:
+  case PIPE::PIPE_MTE1:
+  case PIPE::PIPE_MTE2:
+  case PIPE::PIPE_MTE3:
+  case PIPE::PIPE_V:
+    return success();
+  default:
+    return op->emitOpError() << opName << " expects pipe to be one of "
+                              << "<PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE2>, "
+                              << "<PIPE_MTE3>, <PIPE_V>";
+  }
+}
+
+ParseResult mlir::pto::SetCrossCoreOp::parse(OpAsmParser &parser,
+                                              OperationState &result) {
+  return parseSyncEventOpCommon(parser, result,
+                                SetCrossCoreOp::getPipeAttrName(result.name),
+                                SetCrossCoreOp::getEventIdAttrName(result.name));
+}
+
+void mlir::pto::SetCrossCoreOp::print(OpAsmPrinter &p) {
+  printSyncEventOpCommon(p, getOperation(), getPipe(), getEventIdAttr(),
+                         getEventIdDyn(), getPipeAttrName().getValue(),
+                         getEventIdAttrName().getValue());
+}
+
+LogicalResult mlir::pto::SetCrossCoreOp::verify() {
+  if (IntegerAttr mode = getFftsModeAttr())
+    if (mode.getInt() != 0)
+      return emitOpError() << "requires ffts_mode 0, but got "
+                           << mode.getInt();
+  return verifyNamedSyncEventOp(getOperation(), getPipe(), getEventIdAttr(),
+                                getEventIdDyn(), 15, "pto.set_cross_core");
+}
+
+ParseResult mlir::pto::WaitFlagDevOp::parse(OpAsmParser &parser,
+                                             OperationState &result) {
+  return parseSyncEventOpCommon(parser, result,
+                                WaitFlagDevOp::getPipeAttrName(result.name),
+                                WaitFlagDevOp::getEventIdAttrName(result.name));
+}
+
+void mlir::pto::WaitFlagDevOp::print(OpAsmPrinter &p) {
+  printSyncEventOpCommon(p, getOperation(), getPipe(), getEventIdAttr(),
+                         getEventIdDyn(), getPipeAttrName().getValue(),
+                         getEventIdAttrName().getValue());
+}
+
+LogicalResult mlir::pto::WaitFlagDevOp::verify() {
+  return verifyNamedSyncEventOp(getOperation(), getPipe(), getEventIdAttr(),
+                                getEventIdDyn(), 15, "pto.wait_flag_dev");
+}
+
+ParseResult mlir::pto::SetIntraBlockOp::parse(OpAsmParser &parser,
+                                               OperationState &result) {
+  return parseSyncEventOpCommon(parser, result,
+                                SetIntraBlockOp::getPipeAttrName(result.name),
+                                SetIntraBlockOp::getEventIdAttrName(result.name));
+}
+
+void mlir::pto::SetIntraBlockOp::print(OpAsmPrinter &p) {
+  printSyncEventOpCommon(p, getOperation(), getPipe(), getEventIdAttr(),
+                         getEventIdDyn(), getPipeAttrName().getValue(),
+                         getEventIdAttrName().getValue());
+}
+
+LogicalResult mlir::pto::SetIntraBlockOp::verify() {
+  return verifyNamedSyncEventOp(getOperation(), getPipe(), getEventIdAttr(),
+                                getEventIdDyn(), 31, "pto.set_intra_block");
+}
+
+ParseResult mlir::pto::WaitIntraCoreOp::parse(OpAsmParser &parser,
+                                               OperationState &result) {
+  return parseSyncEventOpCommon(parser, result,
+                                WaitIntraCoreOp::getPipeAttrName(result.name),
+                                WaitIntraCoreOp::getEventIdAttrName(result.name));
+}
+
+void mlir::pto::WaitIntraCoreOp::print(OpAsmPrinter &p) {
+  printSyncEventOpCommon(p, getOperation(), getPipe(), getEventIdAttr(),
+                         getEventIdDyn(), getPipeAttrName().getValue(),
+                         getEventIdAttrName().getValue());
+}
+
+LogicalResult mlir::pto::WaitIntraCoreOp::verify() {
+  return verifyNamedSyncEventOp(getOperation(), getPipe(), getEventIdAttr(),
+                                getEventIdDyn(), 31, "pto.wait_intra_core");
 }
 
 LogicalResult TStoreOp::verify() {

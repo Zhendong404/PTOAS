@@ -372,6 +372,25 @@ struct PTOCanonicalizeIRPass
       }
     }
 
+    // VPTO consumes the shared FFTS sync representation.  Preserve the
+    // distinct intra-block ops (which lower directly to CCE intrinsics), but
+    // normalize named cross-core ops to sync.set/wait in FFTS mode 0.
+    SmallVector<SetCrossCoreOp> crossSets;
+    SmallVector<WaitFlagDevOp> crossWaits;
+    func.walk([&](SetCrossCoreOp op) { crossSets.push_back(op); });
+    func.walk([&](WaitFlagDevOp op) { crossWaits.push_back(op); });
+    auto mode0 = IntegerAttr::get(IntegerType::get(func.getContext(), 32), 0);
+    for (SetCrossCoreOp op : crossSets) {
+      rewriter.setInsertionPoint(op);
+      rewriter.replaceOpWithNewOp<SyncSetOp>(
+          op, op.getPipe(), op.getEventIdAttr(), mode0, op.getEventIdDyn());
+    }
+    for (WaitFlagDevOp op : crossWaits) {
+      rewriter.setInsertionPoint(op);
+      rewriter.replaceOpWithNewOp<SyncWaitOp>(
+          op, op.getPipe(), op.getEventIdAttr(), mode0, op.getEventIdDyn());
+    }
+
     // Post-canonicalization verification: ensure no low-rank view types
     // survived. If any do, it means an op with rank-dependent operands
     // was not given a structural rewrite.
