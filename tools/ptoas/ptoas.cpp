@@ -2902,6 +2902,8 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
                                             bool hasTileOpsToExpand) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
+  if (!hasTileOpsToExpand)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
   if (hasTileOpsToExpand)
