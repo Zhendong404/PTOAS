@@ -6195,20 +6195,11 @@ LogicalResult VbitcastOp::verify() {
   if (!inputType || !resultType)
     return emitOpError("input and result must be !pto.vreg<...>");
 
-  auto getStorageBits = [](VRegType type) -> std::optional<int64_t> {
-    Type elementType = type.getElementType();
-    if (auto intType = dyn_cast<IntegerType>(elementType))
-      return type.getElementCount() * static_cast<int64_t>(intType.getWidth());
-    if (auto floatType = dyn_cast<FloatType>(elementType))
-      return type.getElementCount() *
-             static_cast<int64_t>(floatType.getWidth());
-    return std::nullopt;
-  };
-
-  auto inputBits = getStorageBits(inputType);
-  auto resultBits = getStorageBits(resultType);
+  auto inputBits = getVRegStorageBitWidth(inputType);
+  auto resultBits = getVRegStorageBitWidth(resultType);
   if (!inputBits || !resultBits)
-    return emitOpError("requires integer or floating-point vreg element type");
+    return emitOpError("requires integer, floating-point, or supported "
+                       "low-precision vreg element type");
   if (*inputBits != *resultBits) {
     return emitOpError("requires source and result vectors to carry the same "
                        "total number of bits");
