@@ -1,8 +1,8 @@
 # 15. Special Scalar Memory Access
 
 This chapter covers scalar memory operations that are useful when a kernel
-needs one element at a time outside a tile transfer. It explains the two
-forms of `pto.load_scalar` / `pto.store_scalar` and how they differ from the
+needs one element at a time outside a tile transfer. It explains ordinary
+`pto.load` / `pto.store`, explicit L1-bypass access, and how they differ from the
 SIMT-only `scalar.load` / `scalar.store` and `pto.ldg` / `pto.stg` operations.
 
 ## 15.1 Choosing a scalar access form
@@ -12,8 +12,8 @@ behavior you need:
 
 | Operation | Execution context | Memory/type contract | Use it for |
 |-----------|-------------------|----------------------|------------|
-| `pto.load_scalar` / `pto.store_scalar` | Ordinary `@pto.jit` entry | One element through a typed pointer; the element type is inferred from the pointer | Scalar-pipeline access with the normal scalar-memory behavior |
-| `pto.load_scalar(..., bypass_l1=True)` / `pto.store_scalar(..., bypass_l1=True)` | Ordinary `@pto.jit` entry | GM pointer with an `i8`, `i16`, `i32`, or `i64` element type | Integer GM metadata or control values that must bypass the local L1 data cache |
+| `pto.load` / `pto.store` | Ordinary `@pto.jit` entry | One element through a typed pointer; the element type is inferred from the pointer | Scalar-pipeline access with the normal scalar-memory behavior |
+| `pto.ld_dev` / `pto.st_dev` | Ordinary `@pto.jit` entry | GM pointer with an `i8`, `i16`, `i32`, or `i64` element type | Integer GM metadata or control values that must bypass the local L1 data cache |
 | `scalar.load` / `scalar.store` | `@pto.simt` helper or SIMT scope | One scalar per work-item; supports typed pointer and tile-element forms | Per-work-item scalar computation |
 | `pto.ldg` / `pto.stg` | `@pto.simt` helper or SIMT scope | GM pointer, optional cache controls, and scalar or supported packed element types | SIMT GM access when cache policy or packed values matter |
 
@@ -23,22 +23,24 @@ element, not byte address `base + 3`.
 
 ## 15.2 Scalar-pipeline access
 
-### `pto.load_scalar(ptr, offset=0, *, bypass_l1=False) -> ScalarType`
+### `pto.load(ptr, offset=0) -> ScalarType`
 
 Loads one element from `ptr` and returns a runtime PTO scalar. The result type
 is always the element type of `ptr`; no separate result-type argument is
 needed.
 
-With the default `bypass_l1=False`, `ptr` may refer to the memory space
-appropriate for the normal scalar-pipeline access. With
-`bypass_l1=True`, `ptr` must be a GM pointer whose element type is one of
-`pto.i8`, `pto.i16`, `pto.i32`, or `pto.i64`.
+`ptr` may refer to the memory space appropriate for the normal scalar-pipeline
+access.
 
-### `pto.store_scalar(ptr, offset, value, *, bypass_l1=False) -> None`
+### `pto.store(value, ptr, offset=0) -> None`
 
 Stores one scalar `value` to `ptr[offset]`. The value must be compatible with
-the pointer element type. The `bypass_l1=True` form has the same GM and
-integer-type restrictions as the corresponding load.
+the pointer element type.
+
+### `pto.ld_dev(ptr, offset=0)` and `pto.st_dev(ptr, offset, value)`
+
+These explicit operations access one integer GM element while bypassing the
+local L1 data cache. `ptr` must point to `i8`, `i16`, `i32`, or `i64` in GM.
 
 Both operations are ordinary AICore scalar-pipeline operations. They must not
 be placed inside a `@pto.simt` helper or SIMT execution scope. The bypass form
@@ -58,25 +60,20 @@ def special_scalar_access_probe(
     dst: pto.ptr(pto.i32, "gm"),
 ):
     # Normal scalar-pipeline access.
-    value = pto.load_scalar(src, 1)
-    pto.store_scalar(dst, 1, value)
+    value = pto.load(src, 1)
+    pto.store(value, dst, 1)
 
     # Integer GM access that bypasses the local L1 data cache.
-    metadata = pto.load_scalar(src, 3, bypass_l1=True)
-    pto.store_scalar(dst, 3, metadata, bypass_l1=True)
+    metadata = pto.ld_dev(src, 3)
+    pto.st_dev(dst, 3, metadata)
 ```
-
-The two calls in the second pair still use the PTODSL
-`load_scalar`/`store_scalar` names. The `bypass_l1` flag selects their
-L1-bypassing memory behavior while preserving the scalar-pipeline API.
 
 ## 15.3 Constraints and diagnostics
 
 The following combinations are rejected during compilation:
 
-- `bypass_l1` is not a Python `bool`.
-- `bypass_l1=True` is used with a non-GM pointer.
-- `bypass_l1=True` is used with a floating-point or unsupported pointer
+- `pto.ld_dev` or `pto.st_dev` is used with a non-GM pointer.
+- `pto.ld_dev` or `pto.st_dev` is used with a floating-point or unsupported pointer
   element type.
 - Either bypass operation is placed in a SIMT execution scope.
 - A store value does not match the destination pointer's element type.
@@ -100,4 +97,4 @@ execution scope and should be chosen when those cache controls or packed
 values are part of the kernel contract.
 
 For a plain integer GM metadata access in an ordinary AICore entry, prefer
-`pto.load_scalar` / `pto.store_scalar` with `bypass_l1=True`.
+`pto.ld_dev` / `pto.st_dev`.

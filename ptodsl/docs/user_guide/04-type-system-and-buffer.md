@@ -365,7 +365,7 @@ reduce_col = pto.tile.reshape(reduce_tile, shape=[BR, 1], blayout="ColMajor")
 
 An MLIR `vector<size x dtype>` is a rank-1 builtin vector type with `size` elements of `dtype`. It is distinct from a PTO SIMD `vreg`.
 
-PTODSL uses builtin vector values in SIMT scalar code, including contiguous `scalar.load` / `scalar.store` paths and elementwise vector arithmetic. Create a builtin vector type descriptor or initialized vector value with `pto.Vec`:
+PTODSL uses builtin vector values in SIMT scalar code, including contiguous `pto.load` / `pto.store` paths and elementwise vector arithmetic. Create a builtin vector type descriptor or initialized vector value with `pto.Vec`:
 
 #### `pto.Vec(dtype, size, *, init=None)`
 
@@ -387,10 +387,10 @@ PTODSL uses builtin vector values in SIMT scalar code, including contiguous `sca
 
 <!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile scalar contiguous vector probes"} -->
 ```python
-x4 = scalar.load(ptr, offset, contiguous=4)
+x4 = pto.load(ptr, offset, contiguous=4)
 rstd4 = pto.Vec(pto.f32, 4, init=rstd)
 y4 = x4 * rstd4
-scalar.store(y4, ptr, offset)
+pto.store(y4, ptr, offset)
 ```
 
 Pass `init` a sequence to pack distinct runtime scalars, in order, into one

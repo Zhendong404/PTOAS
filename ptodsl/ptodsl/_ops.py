@@ -74,7 +74,7 @@ from ._types import (
     vreg_type,
 )
 
-from ptoas.mlir.dialects import arith, pto as _pto
+from ptoas.mlir.dialects import pto as _pto
 from ptoas.mlir.ir import (
     Attribute,
     BF16Type,
@@ -236,18 +236,16 @@ def _explicit_mode_only(surface: str):
 
 def const(value: int, *, dtype=None):
     """
-    Emit an ``arith.constant``.
+    Emit a frontend ``pto.constant``.
 
     ``dtype`` is a ``_DType`` descriptor or a concrete ``ptoas.mlir.ir.Type``.
     Defaults to ``index`` when omitted.
     """
     from ._types import index as _idx_dtype
     mlir_type = _resolve(dtype) if dtype is not None else _resolve(_idx_dtype)
-    if any(cls.isinstance(mlir_type) for cls in (F16Type, BF16Type, F32Type)):
-        return wrap_surface_value(arith.ConstantOp(mlir_type, FloatAttr.get(mlir_type, value)).result)
-    if IntegerType.isinstance(mlir_type):
-        return wrap_surface_value(_materialize_integer_literal(mlir_type, value))
-    return wrap_surface_value(arith.ConstantOp(mlir_type, value).result)
+    return wrap_surface_value(
+        materialize_scalar_literal(value, mlir_type, context="pto.const(...)")
+    )
 
 
 # ── Stack-local structs ──────────────────────────────────────────
@@ -2395,70 +2393,30 @@ def _resolve_l1_bypass_scalar_pointer(ptr_value, *, context: str):
     return raw_ptr, elem_type
 
 
-def _validate_scalar_l1_bypass(value, *, context: str) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError(f"{context} expects bypass_l1 to be a bool")
-    return value
-
-
-def load_scalar(ptr_value, offset=0, *, bypass_l1=False):
-    """Load one scalar through the scalar pipeline.
-
-    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
-    ``pto.ld_dev``.  The bypass form requires a GM pointer with an i8, i16,
-    i32, or i64 element type and is valid only in an ordinary AICore entry.
-    """
-    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="load_scalar(...)")
-    if bypass_l1:
-        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
-            ptr_value, context="load_scalar(..., bypass_l1=True)"
-        )
-        return wrap_surface_value(
-            _pto.PTOLdDevOp(
-                elem_type,
-                raw_ptr,
-                _coerce_index(offset, context="load_scalar(offset)"),
-            ).value
-        )
-
-    result_type = _pointer_element_type(ptr_value, context="load_scalar(ptr)")
+def ld_dev(ptr_value, offset=0):
+    """Load one integer GM element while bypassing the local L1 cache."""
+    raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+        ptr_value, context="ld_dev(...)"
+    )
     return wrap_surface_value(
-        _pto.LoadScalarOp(
-            _resolve(result_type),
-            unwrap_surface_value(ptr_value),
-            _coerce_index(offset, context="load_scalar(offset)"),
+        _pto.PTOLdDevOp(
+            elem_type,
+            raw_ptr,
+            _coerce_index(offset, context="ld_dev(offset)"),
         ).value
     )
 
 
-def store_scalar(ptr_value, offset, value, *, bypass_l1=False):
-    """Store one scalar through the scalar pipeline.
-
-    ``bypass_l1=True`` selects the AICore GM device-memory form and emits
-    ``pto.st_dev``.  The bypass form requires a GM pointer with an i8, i16,
-    i32, or i64 element type and is valid only in an ordinary AICore entry.
-    """
-    bypass_l1 = _validate_scalar_l1_bypass(bypass_l1, context="store_scalar(...)")
-    if bypass_l1:
-        raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
-            ptr_value, context="store_scalar(..., bypass_l1=True)"
-        )
-        raw_value = coerce_scalar_to_type(
-            value,
-            elem_type,
-            context="store_scalar(..., bypass_l1=True)",
-        )
-        _pto.PTOStDevOp(
-            raw_value,
-            raw_ptr,
-            _coerce_index(offset, context="store_scalar(offset)"),
-        )
-        return
-
-    _pto.StoreScalarOp(
-        unwrap_surface_value(ptr_value),
-        _coerce_index(offset, context="store_scalar(offset)"),
-        unwrap_surface_value(value),
+def st_dev(ptr_value, offset, value):
+    """Store one integer GM element while bypassing the local L1 cache."""
+    raw_ptr, elem_type = _resolve_l1_bypass_scalar_pointer(
+        ptr_value, context="st_dev(...)"
+    )
+    raw_value = coerce_scalar_to_type(value, elem_type, context="st_dev(...)")
+    _pto.PTOStDevOp(
+        raw_value,
+        raw_ptr,
+        _coerce_index(offset, context="st_dev(offset)"),
     )
 
 
@@ -4351,15 +4309,15 @@ def _constant_like(value, mlir_type):
     value = unwrap_surface_value(value)
     if hasattr(value, "type"):
         return value
-    if isinstance(value, float):
-        return arith.ConstantOp(mlir_type, FloatAttr.get(mlir_type, value)).result
-    if IntegerType.isinstance(mlir_type):
-        return _materialize_integer_literal(mlir_type, value)
-    return arith.ConstantOp(mlir_type, value).result
+    return materialize_scalar_literal(
+        value, mlir_type, context="PTO operation scalar operand"
+    )
 
 
 def _index_zero():
-    return arith.ConstantOp(IndexType.get(), 0).result
+    return materialize_scalar_literal(
+        0, IndexType.get(), context="PTO operation index operand"
+    )
 
 
 def _tile_slice_linear_offset(tile_slice: TileSliceValue):
@@ -4379,9 +4337,9 @@ def _tile_slice_linear_offset(tile_slice: TileSliceValue):
         return row * stride + col
 
     row_value = _coerce_index(row, context="tile slice pointer lowering")
-    row_stride = arith.MulIOp(row_value, arith.ConstantOp(IndexType.get(), stride).result).result
+    row_stride = emit_runtime_binary_op("mul", row_value, stride)
     col_value = _coerce_index(col, context="tile slice pointer lowering")
-    return arith.AddIOp(row_stride, col_value).result
+    return emit_runtime_binary_op("add", row_stride, col_value)
 
 
 def _tile_slice_ptr(tile_slice: TileSliceValue):
@@ -4570,7 +4528,11 @@ def _coerce_i1(value, *, context: str):
 
 
 def _i64_zero():
-    return arith.ConstantOp(IntegerType.get_signless(64), 0).result
+    return materialize_scalar_literal(
+        0,
+        IntegerType.get_signless(64),
+        context="PTO operation i64 operand",
+    )
 
 
 def _coerce_scalar_like_vector_element(vector_value, scalar_value, *, context: str):
@@ -6225,9 +6187,6 @@ _ST_L2_CACHE_CONTROL_VALUES = {
     "wtsred": 15,
 }
 _ROUNDING_TOKENS = {"r", "a", "f", "c", "z", "o", "h"}
-_SATURATION_TOKENS = {"sat", "nosat"}
-
-
 def _optional_signedness_attr(signedness, *, context: str):
     if signedness is None:
         return None
@@ -6262,16 +6221,6 @@ def _normalize_mte_store_l2_cache(l2_cache, *, context: str):
 
 def _rounding_attr(value, *, context: str):
     return _simt_enum_attr("rounding", value, supported=_ROUNDING_TOKENS, context=context)
-
-
-def _saturation_attr(value, *, context: str):
-    normalized = _normalize_token(value, context=context)
-    aliases = {"on": "sat", "off": "nosat", "sat": "sat", "nosat": "nosat"}
-    token = aliases.get(normalized)
-    if token is None:
-        expected = ", ".join(sorted((*_SATURATION_TOKENS, "on", "off")))
-        raise ValueError(f"{context} does not support {value!r}; expected one of {expected}")
-    return _simt_enum_attr("saturation", token, supported=_SATURATION_TOKENS, context=context)
 
 
 def _simt_enum_attr(kind, value, *, supported: set[str], context: str):
@@ -6392,34 +6341,39 @@ def shuffle_bfly(value, mask, *, width=32):
     ).result)
 
 
-def redux_add(value, *, signedness=None):
+def redux_add(value):
     """``pto.redux_add`` – SIMT lane sum reduction."""
     raw_value = unwrap_surface_value(value)
-    _validate_redux_signedness(raw_value.type, signedness, require_for_integer=False, context="redux_add(value)")
-    return wrap_surface_value(_pto.ReduxAddOp(
-        raw_value,
-        signedness=_optional_signedness_attr(signedness, context="redux_add(..., signedness)"),
-    ).result)
+    op_cls = _pto.ReduxAddIOp if IntegerType.isinstance(raw_value.type) else _pto.ReduxAddFOp
+    return wrap_surface_value(op_cls(raw_value).result)
 
 
 def redux_max(value, *, signedness=None):
     """``pto.redux_max`` – SIMT lane max reduction."""
     raw_value = unwrap_surface_value(value)
     _validate_redux_signedness(raw_value.type, signedness, require_for_integer=True, context="redux_max(value)")
-    return wrap_surface_value(_pto.ReduxMaxOp(
-        raw_value,
-        signedness=_optional_signedness_attr(signedness, context="redux_max(..., signedness)"),
-    ).result)
+    if IntegerType.isinstance(raw_value.type):
+        return wrap_surface_value(_pto.ReduxMaxIOp(
+            raw_value,
+            signedness=_required_signedness_attr(
+                signedness, context="redux_max(..., signedness)"
+            ),
+        ).result)
+    return wrap_surface_value(_pto.ReduxMaxFOp(raw_value).result)
 
 
 def redux_min(value, *, signedness=None):
     """``pto.redux_min`` – SIMT lane min reduction."""
     raw_value = unwrap_surface_value(value)
     _validate_redux_signedness(raw_value.type, signedness, require_for_integer=True, context="redux_min(value)")
-    return wrap_surface_value(_pto.ReduxMinOp(
-        raw_value,
-        signedness=_optional_signedness_attr(signedness, context="redux_min(..., signedness)"),
-    ).result)
+    if IntegerType.isinstance(raw_value.type):
+        return wrap_surface_value(_pto.ReduxMinIOp(
+            raw_value,
+            signedness=_required_signedness_attr(
+                signedness, context="redux_min(..., signedness)"
+            ),
+        ).result)
+    return wrap_surface_value(_pto.ReduxMinFOp(raw_value).result)
 
 
 def ldg(ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
@@ -6465,60 +6419,108 @@ def _atomic_binary(op_cls, ptr, value, *, l2cache, signedness, context: str):
     elem_type = _pointer_element_type(raw_ptr, context=context)
     _validate_integer_signedness_only(elem_type, signedness, context=context)
     raw_value = coerce_scalar_to_type(value, elem_type, context=context)
-    return wrap_surface_value(op_cls(
-        raw_value.type,
-        raw_ptr,
-        raw_value,
-        l2cache=_st_l2_cache_attr(l2cache, context=f"{context} l2cache"),
-        signedness=_optional_signedness_attr(signedness, context=f"{context} signedness"),
-    ).old)
+    kwargs = {"l2cache": _st_l2_cache_attr(l2cache, context=f"{context} l2cache")}
+    if signedness is not None:
+        kwargs["signedness"] = _optional_signedness_attr(
+            signedness, context=f"{context} signedness"
+        )
+    return wrap_surface_value(
+        op_cls(raw_value.type, raw_ptr, raw_value, **kwargs).old
+    )
 
 
-def atomic_exch(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_exch(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_exch`` – SIMT scalar atomic exchange."""
-    return _atomic_binary(_pto.AtomicExchOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_exch(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicExchOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_exch(ptr, value)",
+    )
 
 
-def atomic_add(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_add(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_add`` – SIMT scalar atomic add."""
-    return _atomic_binary(_pto.AtomicAddOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_add(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicAddOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_add(ptr, value)",
+    )
 
 
-def atomic_sub(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_sub(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_sub`` – SIMT scalar atomic subtract."""
-    return _atomic_binary(_pto.AtomicSubOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_sub(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicSubOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_sub(ptr, value)",
+    )
 
 
 def atomic_min(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_min`` – SIMT scalar atomic min."""
+    elem_type = _pointer_element_type(unwrap_surface_value(ptr), context="atomic_min(ptr, value)")
+    if IntegerType.isinstance(elem_type) and signedness is None:
+        raise TypeError("atomic_min(ptr, value) requires signedness='signed' or 'unsigned' for integer values")
     return _atomic_binary(_pto.AtomicMinOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_min(ptr, value)")
 
 
 def atomic_max(ptr, value, *, l2cache="nmfv", signedness=None):
     """``pto.atomic_max`` – SIMT scalar atomic max."""
+    elem_type = _pointer_element_type(unwrap_surface_value(ptr), context="atomic_max(ptr, value)")
+    if IntegerType.isinstance(elem_type) and signedness is None:
+        raise TypeError("atomic_max(ptr, value) requires signedness='signed' or 'unsigned' for integer values")
     return _atomic_binary(_pto.AtomicMaxOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_max(ptr, value)")
 
 
-def atomic_and(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_and(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_and`` – SIMT scalar atomic bitwise and."""
-    return _atomic_binary(_pto.AtomicAndOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_and(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicAndOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_and(ptr, value)",
+    )
 
 
-def atomic_or(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_or(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_or`` – SIMT scalar atomic bitwise or."""
-    return _atomic_binary(_pto.AtomicOrOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_or(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicOrOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_or(ptr, value)",
+    )
 
 
-def atomic_xor(ptr, value, *, l2cache="nmfv", signedness=None):
+def atomic_xor(ptr, value, *, l2cache="nmfv"):
     """``pto.atomic_xor`` – SIMT scalar atomic bitwise xor."""
-    return _atomic_binary(_pto.AtomicXorOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_xor(ptr, value)")
+    return _atomic_binary(
+        _pto.AtomicXorOp,
+        ptr,
+        value,
+        l2cache=l2cache,
+        signedness=None,
+        context="atomic_xor(ptr, value)",
+    )
 
 
-def atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None):
+def atomic_cas(ptr, compare, value, *, l2cache="nmfv"):
     """``pto.atomic_cas`` – SIMT scalar atomic compare-and-swap."""
     raw_ptr = unwrap_surface_value(ptr)
     elem_type = _pointer_element_type(raw_ptr, context="atomic_cas(ptr, compare, value)")
-    _validate_integer_signedness_only(elem_type, signedness, context="atomic_cas(ptr, compare, value)")
     raw_compare = coerce_scalar_to_type(compare, elem_type, context="atomic_cas(compare)")
     raw_value = coerce_scalar_to_type(value, elem_type, context="atomic_cas(value)")
     return wrap_surface_value(_pto.AtomicCasOp(
@@ -6526,7 +6528,6 @@ def atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None):
         raw_compare,
         raw_value,
         l2cache=_st_l2_cache_attr(l2cache, context="atomic_cas(..., l2cache)"),
-        signedness=_optional_signedness_attr(signedness, context="atomic_cas(..., signedness)"),
     ).old)
 
 
@@ -6590,7 +6591,7 @@ def cos(value):
 
 
 def pow(lhs, rhs):
-    """``pto.pow`` – SIMT floating power."""
+    """``pto.pow`` – common floating-point power."""
     return _same_type_binary(_pto.PowOp, lhs, rhs, context="pow(lhs, rhs)")
 
 
@@ -6614,33 +6615,9 @@ def round(value):
     return _same_type_unary(_pto.RoundOp, value)
 
 
-def fmin(lhs, rhs):
-    """``pto.fmin`` – SIMT floating minimum."""
-    return _same_type_binary(_pto.FMinOp, lhs, rhs, context="fmin(lhs, rhs)")
-
-
-def fmax(lhs, rhs):
-    """``pto.fmax`` – SIMT floating maximum."""
-    return _same_type_binary(_pto.FMaxOp, lhs, rhs, context="fmax(lhs, rhs)")
-
-
 def fma(lhs, rhs, acc):
-    """``pto.fma`` – SIMT floating fused multiply-add."""
+    """``pto.fma`` – common floating-point fused multiply-add."""
     return _same_type_ternary(_pto.FmaOp, lhs, rhs, acc, context="fma(lhs, rhs, acc)")
-
-
-def convert(src, dst_type, *, rounding, saturation, signedness=None):
-    """``pto.convert`` – SIMT scalar or packed conversion."""
-    raw_src = unwrap_surface_value(src)
-    raw_dst_type = _resolve(dst_type)
-    _validate_convert_signedness(raw_src.type, raw_dst_type, signedness, context="convert(src, dst_type)")
-    return wrap_surface_value(_pto.ConvertOp(
-        raw_dst_type,
-        raw_src,
-        _rounding_attr(rounding, context="convert(..., rounding)"),
-        _saturation_attr(saturation, context="convert(..., saturation)"),
-        signedness=_optional_signedness_attr(signedness, context="convert(..., signedness)"),
-    ).dst)
 
 
 def syncthreads():
@@ -6954,7 +6931,7 @@ __all__ = [
     "atomic_and", "atomic_or", "atomic_xor", "atomic_cas",
     "prmt", "mulhi", "mul_i32toi64",
     "absf", "sqrt", "exp", "log", "sin", "cos", "pow", "ceil", "floor", "rint", "round",
-    "fmin", "fmax", "fma", "convert",
+    "fma", "convert",
     "syncthreads", "threadfence", "threadfence_block", "trap", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",
     "set_cross_block", "wait_cross_block", "set_intra_block", "wait_intra_block",

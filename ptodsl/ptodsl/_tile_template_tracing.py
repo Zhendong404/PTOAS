@@ -34,7 +34,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
-from . import scalar as _scalar
+from . import _scalar
 from ._surface_types import Tile
 from ._tracing import (
     KernelModuleSpec,
@@ -58,8 +58,8 @@ from ._types import (
     vreg_type as _vreg_type,
 )
 
-from ptoas.mlir.dialects import arith, pto as _pto, scf
-from ptoas.mlir.ir import InsertionPoint, IntegerType, Type
+from ptoas.mlir.dialects import pto as _pto, scf
+from ptoas.mlir.ir import InsertionPoint, IntegerAttr, IntegerType, Operation, Type
 
 
 @dataclass(frozen=True)
@@ -392,7 +392,10 @@ class _TraceBuilder(TracingRuntime):
         cached = self._const_cache.get(cache_key)
         if cached is not None:
             return cached
-        const = _Value(arith.ConstantOp(mlir_type, value).result, const_value=value)
+        const = _Value(Operation.create(
+            "pto.constant", results=[mlir_type],
+            attributes={"value": IntegerAttr.get(mlir_type, value)},
+        ).results[0], const_value=value)
         self._const_cache[cache_key] = const
         return const
 
@@ -414,7 +417,7 @@ class _TraceBuilder(TracingRuntime):
             return self.index_const(row.const_value * cols + col.const_value)
         row_stride = self.index_const(cols)
         row_off = self._materialize_row_offset(row, row_stride)
-        return _Value(_scalar.addi(row_off.value, col.value))
+        return _Value(_scalar.add(row_off.value, col.value))
 
     def _enter_vecscope(self):
         if self._inside_vecscope:
@@ -502,7 +505,7 @@ class _TraceBuilder(TracingRuntime):
         cached = self._row_offset_cache.get(cache_key)
         if cached is not None:
             return cached
-        result = _Value(_scalar.muli(row.value, row_stride.value))
+        result = _Value(_scalar.mul(row.value, row_stride.value))
         self._row_offset_cache[cache_key] = result
         return result
 
@@ -609,7 +612,7 @@ def make_mask(dtype: ScalarType, remained) -> tuple[_MaskValue, _Value]:
         )
     plt_op = op_cls(mask_ty, scalar_ty, remained_val.value)
     lanes = trace.scalar_const(dtype.lanes, _scalar_type_for_mask(dtype))
-    next_value = _Value(_scalar.subi(remained_val.value, lanes.value))
+    next_value = _Value(_scalar.sub(remained_val.value, lanes.value))
     return _MaskValue(plt_op.mask, dtype), next_value
 
 

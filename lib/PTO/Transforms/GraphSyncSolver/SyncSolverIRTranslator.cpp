@@ -123,14 +123,16 @@ llvm::SmallVector<Value> IRTranslator::tracebackMemValsStep(Value val) {
     out.push_back(select.getFalseValue());
   } else if (auto addPtr = dyn_cast<pto::AddPtrOp>(defOp)) {
     out.push_back(addPtr.getPtr());
-  } else if (auto intToPtr = dyn_cast<pto::IntToPtrOp>(defOp)) {
-    if (auto ptrToInt = intToPtr.getAddr().getDefiningOp<pto::PtrToIntOp>())
-      out.push_back(ptrToInt.getPtr());
   } else if (auto castPtr = dyn_cast<pto::CastPtrOp>(defOp);
-             castPtr &&
-             isa<pto::PtrType>(castPtr.getInput().getType()) &&
-             isa<pto::PtrType>(castPtr.getResult().getType())) {
-    out.push_back(castPtr.getInput());
+             castPtr && isa<pto::PtrType>(castPtr.getResult().getType())) {
+    if (isa<pto::PtrType>(castPtr.getInput().getType())) {
+      out.push_back(castPtr.getInput());
+    } else if (auto ptrToInt =
+                   castPtr.getInput().getDefiningOp<pto::CastPtrOp>();
+               ptrToInt && isa<pto::PtrType>(ptrToInt.getInput().getType()) &&
+               isa<IntegerType>(ptrToInt.getResult().getType())) {
+      out.push_back(ptrToInt.getInput());
+    }
   } else if (auto alias = pto::getOperationAliasInfo(defOp)) {
     if (alias->first == result)
       out.push_back(alias->second);
@@ -234,16 +236,6 @@ IRTranslator::getPipeInterfaceOp(pto::OpPipeInterface op,
   return std::make_unique<RWOperation>(
       op.getOperation(), parentOp, TCoreType::CUBE_OR_VECTOR, pipeRead,
       pipeWrite, reads, writes);
-}
-
-std::unique_ptr<OperationBase>
-IRTranslator::getScalarMemoryOp(Operation *op, OperationBase *parentOp) {
-  auto [reads, writes] = getReadWriteMemoryOps(op);
-  if (reads.empty() && writes.empty())
-    return nullptr;
-  return std::make_unique<RWOperation>(
-      op, parentOp, TCoreType::CUBE_OR_VECTOR, pto::PIPE::PIPE_S,
-      pto::PIPE::PIPE_S, reads, writes);
 }
 
 std::unique_ptr<OperationBase>
@@ -390,9 +382,6 @@ void IRTranslator::translateBlockIntoScope(Block &block, Scope *parScope,
 
     if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
       if (auto rw = getPipeInterfaceOp(pipeOp, parScope))
-        parScope->body.push_back(std::move(rw));
-    } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
-      if (auto rw = getScalarMemoryOp(&op, parScope))
         parScope->body.push_back(std::move(rw));
     } else if (auto extractOp = dyn_cast<tensor::ExtractOp>(op)) {
       if (auto rw = getTensorExtractOp(extractOp, parScope))

@@ -130,13 +130,13 @@ static std::optional<pto::AddressSpace> getValueAddressSpace(Value value) {
   return std::nullopt;
 }
 
-static MemInfo getConservativeIntToPtrMemInfo(pto::IntToPtrOp intToPtr) {
-  PointerLikeInfo pointerLikeInfo(intToPtr);
-  pointerLikeInfo.addressSpace = getValueAddressSpace(intToPtr.getResult());
+static MemInfo getConservativeIntegerToPtrMemInfo(pto::CastPtrOp castPtr) {
+  PointerLikeInfo pointerLikeInfo(castPtr);
+  pointerLikeInfo.addressSpace = getValueAddressSpace(castPtr.getResult());
   pointerLikeInfo.addresses.push_back(ShapedType::kDynamic);
   pointerLikeInfo.allocateSize = ShapedType::kDynamic;
   pointerLikeInfo.aliasesUnknownRange = true;
-  return MemInfo(intToPtr.getResult(), pointerLikeInfo);
+  return MemInfo(castPtr.getResult(), pointerLikeInfo);
 }
 
 static std::optional<int64_t> getConstantI64(Value value) {
@@ -197,8 +197,10 @@ static MemInfo getMemInfoForMultiTileGet(pto::MultiTileGetOp get) {
 
 MemInfo getMemInfo(Value val) {
   if (auto *defOp = val.getDefiningOp()) {
-    if (auto intToPtr = llvm::dyn_cast<pto::IntToPtrOp>(defOp)) {
-      return getConservativeIntToPtrMemInfo(intToPtr);
+    if (auto castPtr = llvm::dyn_cast<pto::CastPtrOp>(defOp);
+        castPtr && isa<IntegerType>(castPtr.getInput().getType()) &&
+        isa<pto::PtrType>(castPtr.getResult().getType())) {
+      return getConservativeIntegerToPtrMemInfo(castPtr);
     }
     if (auto allocMulti = llvm::dyn_cast<pto::AllocMultiTileOp>(defOp)) {
       return MemInfo(val, getPointerLikeInfo(allocMulti));

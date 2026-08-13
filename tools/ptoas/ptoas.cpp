@@ -3105,6 +3105,14 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
   kernelModulePM.addPass(createCanonicalizerPass());
   kernelModulePM.addPass(createCSEPass());
+  // SoftLib expansion can materialize frontend PTO scalar producers after the
+  // shared pre-backend lowering. Legalize those newly-created generic ops
+  // before VPTO LLVM emission and its final legality check.
+  kernelModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOLowerGenericOpsPass());
+  auto &expandedChildModulePM = kernelModulePM.nest<ModuleOp>();
+  expandedChildModulePM.addNestedPass<func::FuncOp>(
+      pto::createPTOLowerGenericOpsPass());
   if (vptoSchedulerMode != VPTOSchedulerCLIMode::Off) {
     pto::VPTOSchedulerOptions schedulerOptions;
     schedulerOptions.mode = vptoSchedulerMode == VPTOSchedulerCLIMode::Analyze
@@ -3139,6 +3147,11 @@ static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module) {
   kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createFoldTileBufIntrinsicsPass("shape-only"));
+  // TileLib expansion may introduce new frontend scalar ops. Legalize that
+  // expanded value flow before fusion analyses, which reason about standard
+  // scalar producers and index expressions.
+  kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOLowerGenericOpsPass());
   if (enableA5VPTOPostLoweringFusionLifecycle) {
     kernelModulePM.addPass(pto::createPTOLowLevelLoopFusionPass());
     kernelModulePM.addPass(mlir::createCanonicalizerPass());
@@ -3559,6 +3572,15 @@ int mlir::pto::compilePTOASModule(
     preBackendPM.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
     preBackendPM.addPass(
         pto::createPTOValidatePhysicalSectionBoundariesPass());
+    // Shared frontend analyses consume standard arith/index producer chains
+    // (for example, layout inference, fusion, memory planning, and sync
+    // analysis). Lower execution-domain-independent PTO scalar ops before
+    // those analyses, while keeping target-specialized PTO ops intact.
+    preBackendPM.addNestedPass<func::FuncOp>(
+        pto::createPTOLowerGenericOpsPass());
+    auto &preBackendChildModulePM = preBackendPM.nest<ModuleOp>();
+    preBackendChildModulePM.addNestedPass<func::FuncOp>(
+        pto::createPTOLowerGenericOpsPass());
     if (failed(preBackendPM.run(module.get()))) {
       llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
       return 1;
@@ -3610,9 +3632,6 @@ int mlir::pto::compilePTOASModule(
   if (!isA2A3) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   }
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOValidateIntToPtrUsesPass());
-
   // PTODSL legality discovery happens on tile-native PTO IR before fusion.
   // Fusion may later filter the ordered `candidates` array; ExpandTileOp
   // consumes the first candidate that remains.

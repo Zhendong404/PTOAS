@@ -33,10 +33,10 @@ module attributes {pto.target_arch = "a3"} {
     pto.tstore ins(%tile : !pto.tile_buf<vec, 1x32xui32>)
                outs(%dst_part : !pto.partition_tensor_view<1x32xui32>)
 
-    %raw_addr = pto.ptrtoint %dst : !pto.ptr<ui32> -> i64
-    %roundtrip = pto.inttoptr %raw_addr : i64 -> !pto.ptr<ui32>
-    %value = pto.load_scalar %roundtrip[%c0] : !pto.ptr<ui32> -> ui32
-    pto.store_scalar %value, %roundtrip[%c0] : !pto.ptr<ui32>, ui32
+    %raw_addr = pto.castptr %dst : !pto.ptr<ui32> -> i64
+    %roundtrip = pto.castptr %raw_addr : i64 -> !pto.ptr<ui32>
+    %value = pto.load %roundtrip[%c0] : !pto.ptr<ui32> -> ui32
+    pto.store %value, %roundtrip[%c0] : !pto.ptr<ui32>, ui32
     return
   }
 }
@@ -45,10 +45,10 @@ module attributes {pto.target_arch = "a3"} {
 // INSERT: pto.tstore
 // INSERT: pto.set_flag[<PIPE_MTE3>, <PIPE_S>,
 // INSERT: pto.wait_flag[<PIPE_MTE3>, <PIPE_S>,
-// INSERT-NEXT: pto.load_scalar
+// INSERT-NEXT: pto.load
 
 // GSS-LABEL: func.func @ptr_roundtrip_scalar_sync
 // GSS: pto.tstore
 // GSS: pto.set_flag[<PIPE_MTE3>, <PIPE_S>,
 // GSS: pto.wait_flag[<PIPE_MTE3>, <PIPE_S>,
-// GSS-NEXT: pto.load_scalar
+// GSS-NEXT: pto.load

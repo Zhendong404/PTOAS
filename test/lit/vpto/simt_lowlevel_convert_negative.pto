@@ -11,9 +11,9 @@
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @convert_negative() attributes {pto.aicore} {
     %f32 = arith.constant 2.000000e+00 : f32
-    %bad = pto.convert %f32 round(z) nosat signed : f32 -> i32
+    %bad = pto.ftoi %f32 signed round(z) : f32 -> i32
     return
   }
 }
 
-// CHECK: fp32-to-integer conversion requires saturation enable
+// CHECK: rounding mode is only valid in a SIMT execution scope for floating-point-to-integer conversion

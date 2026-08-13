@@ -304,10 +304,6 @@ std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
     return std::make_pair(partViewOp.getResult(), partViewOp.getSource());
   } else if (auto addPtrOp = dyn_cast<pto::AddPtrOp>(op)) {
     return std::make_pair(addPtrOp.getResult(), addPtrOp.getPtr());
-  } else if (auto ptrToIntOp = dyn_cast<pto::PtrToIntOp>(op)) {
-    return std::make_pair(ptrToIntOp.getResult(), ptrToIntOp.getPtr());
-  } else if (auto intToPtrOp = dyn_cast<pto::IntToPtrOp>(op)) {
-    return std::make_pair(intToPtrOp.getResult(), intToPtrOp.getAddr());
   } else if (auto castPtrOp = dyn_cast<pto::CastPtrOp>(op)) {
     return std::make_pair(castPtrOp.getResult(), castPtrOp.getInput());
   } else if (auto subViewOp = dyn_cast<pto::SubViewOp>(op)) {

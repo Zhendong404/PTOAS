@@ -86,7 +86,9 @@ Expose direct wrappers for:
 
 - `pto.vote_all/any/uni/ballot(pred)`
 - `pto.shuffle_idx/up/down/bfly(value, control, *, width=32)`
-- `pto.redux_add/max/min(value, *, signedness=None)`
+- `pto.redux_add(value)`
+- `pto.redux_max/min(value, *, signedness=None)`; integer values require an
+  explicit signedness
 
 ### Batch 3: SIMT Scalar Memory and Atomics
 
@@ -98,8 +100,10 @@ Expose direct wrappers for:
 
 - `pto.ldg(ptr, offset=0, *, l1cache="cache", l2cache="nmfv")`
 - `pto.stg(value, ptr, offset=0, *, l1cache="cache", l2cache="nmfv")`
-- `pto.atomic_exch/add/sub/min/max/and/or/xor(ptr, value, *, l2cache="nmfv", signedness=None)`
-- `pto.atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None)`
+- `pto.atomic_exch/add/sub/and/or/xor(ptr, value, *, l2cache="nmfv")`
+- `pto.atomic_min/max(ptr, value, *, l2cache="nmfv", signedness=None)`;
+  integer values require an explicit signedness
+- `pto.atomic_cas(ptr, compare, value, *, l2cache="nmfv")`
 
 Plain scalar memory remains available through `scalar.load(...)` and
 `scalar.store(...)`.
@@ -116,8 +120,8 @@ Expose direct wrappers for:
 - `pto.mul_i32toi64(...)`
 - `pto.absf(...)`, `pto.sqrt(...)`, `pto.exp(...)`, `pto.log(...)`,
   `pto.pow(...)`, `pto.ceil(...)`, `pto.floor(...)`, `pto.rint(...)`,
-  `pto.round(...)`, `pto.fmin(...)`, `pto.fmax(...)`, `pto.fma(...)`
-- `pto.convert(...)`
+  `pto.round(...)`, `pto.fma(...)`
+- `pto.ftof(...)`, `pto.ftoi(...)`, `pto.itof(...)`
 - `pto.syncthreads()`, `pto.threadfence()`, `pto.threadfence_block()`
 - `pto.keep(...)`, `pto.resume(...)`
 
@@ -213,7 +217,7 @@ This asymmetry is intentional:
 #### Example
 
 ```python
-from ptodsl import pto, scalar
+from ptodsl import pto
 
 
 @pto.simt
