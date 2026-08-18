@@ -1188,38 +1188,106 @@ class _ControlFlowRewriter:
         return rewritten_reversed
 
     def _rewrite_loop_body(self, stmts, *, live_after, live_after_slots=None, static_iters=None, control=None):
-        """Rewrite loop statements while keeping each authored statement atomic.
+        """Rewrite loop statements as independently guarded control-flow segments.
 
         A rewritten dynamic ``if`` may contain several setup/branch/merge
-        operations.  They must live in one ``scf.if`` region when the loop has
-        been stopped by break/continue; wrapping each generated operation
-        separately would create sibling-region SSA dominance violations.
+        operations.  Statements leading to a possible break/continue must stay
+        in the same segment.  Later segments are nested in the preceding
+        segment's active region so segment-local SSA values remain in scope.
         """
-        rewritten_reversed = []
+        segment_indices = []
+        segment_index = 0
+        for stmt in stmts:
+            segment_indices.append(segment_index)
+            if control is not None:
+                transfer = _loop_control_flags([stmt])
+                if transfer["break"] or transfer["continue"]:
+                    segment_index += 1
+
+        rewritten_segments = [[] for _ in range(segment_index + 1)]
         live = set(live_after)
         if control is not None:
-            live |= {control["active"], control["did_break"]}
+            live |= set(control["state_names"])
         live_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
-        for stmt in reversed(stmts):
+        for stmt_index in range(len(stmts) - 1, -1, -1):
+            stmt = stmts[stmt_index]
             live_before = _live_before_stmt(stmt, live)
             live_before_slots = _slot_live_before_stmt(stmt, live_slots, self._static_env, static_iters)
-            rewrite_live = live
-            if control is not None:
-                rewrite_live = set(rewrite_live) | {control["active"], control["did_break"]}
             group = self.rewrite_stmt(
                 stmt,
-                live_after=rewrite_live,
+                live_after=live,
                 live_after_slots=live_slots,
                 allow_loop_control=False,
                 static_iters=static_iters,
             )
-            rewritten_reversed[:0] = group
+            rewritten_segments[segment_indices[stmt_index]][:0] = group
             live = set(live_before)
             if control is not None:
-                live |= {control["active"], control["did_break"]}
+                live |= set(control["state_names"])
             live_slots = live_before_slots
-        return rewritten_reversed
+
+        rewritten = []
+        for index in range(len(rewritten_segments) - 1, -1, -1):
+            segment = rewritten_segments[index]
+            if not segment:
+                continue
+            if control is not None and index:
+                segment = self._guard_block(
+                    _name(control["active"]),
+                    segment + rewritten,
+                    merge_names=control["state_names"],
+                    assigned_names=control["state_names"],
+                )
+                rewritten = segment
+            else:
+                rewritten = segment + rewritten
+        return rewritten
+
+    def _rewrite_branch_block(
+        self,
+        stmts,
+        *,
+        live_after,
+        live_after_slots,
+        allow_loop_control,
+        static_iters,
+        control,
+    ):
+        if control is not None:
+            return self._rewrite_loop_body(
+                stmts,
+                live_after=live_after,
+                live_after_slots=live_after_slots,
+                static_iters=static_iters,
+                control=control,
+            )
+        return self.rewrite_block(
+            stmts,
+            live_after=live_after,
+            live_after_slots=live_after_slots,
+            allow_loop_control=allow_loop_control,
+            static_iters=static_iters,
+        )
+
+    def _rewrite_nested_block(
+        self,
+        stmts,
+        *,
+        live_after,
+        live_after_slots,
+        allow_loop_control,
+        static_iters,
+    ):
+        control = self._loop_control_stack[-1] if self._loop_control_stack else None
+        return self._rewrite_branch_block(
+            stmts,
+            live_after=live_after,
+            live_after_slots=live_after_slots,
+            allow_loop_control=allow_loop_control,
+            static_iters=static_iters,
+            control=control,
+        )
 
     def rewrite_stmt(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         live_after_slots = set(live_after_slots or ())
@@ -1289,12 +1357,18 @@ class _ControlFlowRewriter:
             return stmt
         if isinstance(stmt, (ast.Lambda, ast.ClassDef)):
             return stmt
+        if isinstance(stmt, ast.Try) and self._loop_control_stack:
+            transfer = _loop_control_flags([stmt])
+            if transfer["break"] or transfer["continue"]:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True does not support break/continue inside try blocks"
+                )
         for field, value in ast.iter_fields(stmt):
             if field in {"body", "orelse", "finalbody"} and isinstance(value, list):
                 setattr(
                     stmt,
                     field,
-                    self.rewrite_block(
+                    self._rewrite_nested_block(
                         value,
                         live_after=live_after,
                         live_after_slots=live_after_slots,
@@ -1325,20 +1399,23 @@ class _ControlFlowRewriter:
     def _rewrite_if(self, stmt, *, live_after, live_after_slots=None, allow_loop_control=False, static_iters=None):
         live_after_slots = set(live_after_slots or ())
         static_iters = dict(static_iters or {})
+        control_state = self._loop_control_stack[-1] if self._loop_control_stack else None
         if _is_pto_attr_call(stmt.test, "const_expr"):
-            stmt.body = self.rewrite_block(
+            stmt.body = self._rewrite_branch_block(
                 stmt.body,
                 live_after=live_after,
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                control=control_state,
             )
-            stmt.orelse = self.rewrite_block(
+            stmt.orelse = self._rewrite_branch_block(
                 stmt.orelse,
                 live_after=live_after,
                 live_after_slots=live_after_slots,
                 allow_loop_control=allow_loop_control,
                 static_iters=static_iters,
+                control=control_state,
             )
             return [stmt]
 
@@ -1364,7 +1441,6 @@ class _ControlFlowRewriter:
         )
         merge_slots = tuple(sorted(live_after_slots & assigned_slots))
         assigned_any = then_info.stores | else_info.stores
-        control_state = self._loop_control_stack[-1] if self._loop_control_stack else None
         then_control = _loop_control_flags(stmt.body) if control_state else {"break": False, "continue": False}
         else_control = _loop_control_flags(stmt.orelse) if control_state else {"break": False, "continue": False}
         if control_state:
@@ -1381,19 +1457,21 @@ class _ControlFlowRewriter:
 
         branch_live_after = set(live_after) | set(merge_names)
         branch_live_after_slots = set(live_after_slots) | set(merge_slots)
-        then_body = self.rewrite_block(
+        then_body = self._rewrite_branch_block(
             stmt.body,
             live_after=branch_live_after,
             live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
+            control=control_state,
         )
-        else_body = self.rewrite_block(
+        else_body = self._rewrite_branch_block(
             stmt.orelse,
             live_after=branch_live_after,
             live_after_slots=branch_live_after_slots,
             allow_loop_control=False,
             static_iters=static_iters,
+            control=control_state,
         )
         trace_time_if = ast.If(
             test=_name(cond_name),
@@ -1990,14 +2068,19 @@ class _ControlFlowRewriter:
             ]),
         )
 
-        self._loop_control_stack.append({"active": skip_name, "did_break": did_break_name})
+        loop_control = {
+            "active": skip_name,
+            "did_break": did_break_name,
+            "state_names": state_names,
+        }
+        self._loop_control_stack.append(loop_control)
         try:
             body = self._rewrite_loop_body(
                 stmt.body,
                 live_after=(set(live_after) | loop_carried | {iv_name} |
                             {skip_name, did_break_name}),
                 live_after_slots=set(),
-                control={"active": skip_name, "did_break": did_break_name},
+                control=loop_control,
                 static_iters=static_iters,
             )
         finally:
@@ -2009,11 +2092,7 @@ class _ControlFlowRewriter:
         ]
         # active is per-iteration execution state; did_break remains sticky.
         prologue.append(ast.Assign(targets=[_name(skip_name, ast.Store())], value=_flag_const(True)))
-        guarded_body = self._guard_block(
-            _name(skip_name), body,
-            merge_names=state_names,
-            assigned_names=state_names,
-        )
+        guarded_body = list(body)
         updates = [
             ast.keyword(arg=iv_name, value=ast.BinOp(left=_name(iv_name), op=ast.Add(), right=copy.deepcopy(step))),
             *[ast.keyword(arg=name, value=_name(name)) for name in sorted(loop_carried)],
@@ -2158,18 +2237,21 @@ class _ControlFlowRewriter:
             ),
         )
 
+        loop_control = None
         if controlled:
-            self._loop_control_stack.append({"active": active_name, "did_break": did_break_name})
+            loop_control = {
+                "active": active_name,
+                "did_break": did_break_name,
+                "state_names": state_names,
+            }
+            self._loop_control_stack.append(loop_control)
         try:
             body = self._rewrite_loop_body(
                 stmt.body,
                 live_after=(set(live_after) | set(carry_names) |
                             ({active_name, did_break_name} if controlled else set())),
                 live_after_slots=set(live_after_slots or ()),
-                control=(
-                    {"active": active_name, "did_break": did_break_name}
-                    if controlled else None
-                ),
+                control=loop_control,
                 static_iters=static_iters,
             )
         finally:
@@ -2188,11 +2270,6 @@ class _ControlFlowRewriter:
             # entry re-enables it.  ``did_break`` is sticky across iterations.
             prologue.append(ast.Assign(
                 targets=[_name(active_name, ast.Store())], value=_flag_const(True)))
-            body = self._guard_block(
-                _name(active_name), body,
-                merge_names=state_names,
-                assigned_names=state_names,
-            )
         update = ast.Expr(
             value=ast.Call(
                 func=ast.Attribute(value=_name(loop_name), attr="update",

@@ -7,9 +7,12 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+import ast
 import re
+import textwrap
 
 from ptodsl import pto
+from ptodsl._ast_rewrite import PTODSLAstRewriteError, _ControlFlowRewriter
 
 
 def _while_iter_arg_count(mlir_text: str) -> int:
@@ -17,6 +20,55 @@ def _while_iter_arg_count(mlir_text: str) -> int:
     match = re.search(r"scf\.while\s*\([^)]*\)\s*:\s*\(([^)]*)\)", mlir_text)
     assert match is not None, "scf.while signature not found in MLIR"
     return len([part for part in match.group(1).split(",") if part.strip()])
+
+
+def _rewrite_source(source: str):
+    """Rewrite a small source probe without requiring the MLIR runtime."""
+    tree = ast.parse(textwrap.dedent(source))
+    function_def = tree.body[0]
+    function_def.body = _ControlFlowRewriter({}).rewrite_block(
+        function_def.body,
+        live_after=set(),
+    )
+    ast.fix_missing_locations(tree)
+    return tree
+
+
+def _is_attr_call(node, owner: str, attribute: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == owner
+        and node.func.attr == attribute
+    )
+
+
+def _is_active_guard(node) -> bool:
+    if not _is_attr_call(node, "pto", "if_"):
+        return False
+    return bool(node.args) and isinstance(node.args[0], ast.Name) and "_active_" in node.args[0].id
+
+
+def _has_constant_add(node, value: int) -> bool:
+    return any(
+        isinstance(candidate, ast.BinOp)
+        and isinstance(candidate.op, ast.Add)
+        and any(
+            isinstance(descendant, ast.Constant) and descendant.value == value
+            for descendant in ast.walk(candidate)
+        )
+        for candidate in ast.walk(node)
+    )
+
+
+def _has_name_store(node, name: str) -> bool:
+    return any(
+        isinstance(candidate, ast.Name)
+        and isinstance(candidate.ctx, ast.Store)
+        and candidate.id == name
+        for candidate in ast.walk(node)
+    )
 
 
 @pto.jit(target="a5")
@@ -205,6 +257,47 @@ def issue_1256_exact_while_branch_cond(limit: pto.i32, pivot: pto.i32):
     _ = low
 
 
+# Issue #1259: a leading runtime break must skip the remaining body in the
+# current iteration, not only terminate the following iteration.
+@pto.jit(target="a5")
+def issue_1259_leading_break(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    while True:
+        should_break = value >= limit
+        if should_break:
+            break
+        value = value + pto.const(1, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def issue_1259_cross_segment_temp(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    while True:
+        if value >= limit:
+            break
+        temp = value + pto.const(1, dtype=pto.i32)
+        if temp >= limit:
+            break
+        value = temp + pto.const(1, dtype=pto.i32)
+    _ = value
+
+
+@pto.jit(target="a5")
+def issue_1259_cross_segment_continue(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    one = pto.const(1, dtype=pto.i32)
+    two = pto.const(2, dtype=pto.i32)
+    while value < limit:
+        if value == one:
+            continue
+        temp = value + one
+        if temp == two:
+            continue
+        value = temp + one
+    _ = value
+
+
 def unsupported_while_subscript(limit: pto.i32):
     values = [0]
     value = pto.const(0, dtype=pto.i32)
@@ -242,6 +335,8 @@ def main():
         issue_1256_exact_while_local_temp: 2,         # index, total
         issue_1256_exact_while_true_break: 3,         # value + control flags
         issue_1256_exact_while_branch_cond: 2,        # low, high
+        issue_1259_cross_segment_temp: 3,             # value + control flags
+        issue_1259_cross_segment_continue: 3,         # value + control flags
     }
     for fn, expected_carries in carry_contract.items():
         loop_text = fn.compile().mlir_text()
@@ -251,6 +346,108 @@ def main():
         assert actual == expected_carries, (
             f"{fn.__name__}: expected {expected_carries} loop-carried slots, got {actual}; "
             "loop-local temporaries must not enter the carry state")
+
+    leading_break_tree = _rewrite_source(
+        """
+        def leading_break(limit):
+            value = pto.const(0, dtype=pto.i32)
+            while True:
+                if value >= limit:
+                    break
+                value = value + pto.const(1, dtype=pto.i32)
+            return value
+        """
+    )
+    assert any(
+        _is_active_guard(node.items[0].context_expr) and _has_constant_add(node, 1)
+        for node in ast.walk(leading_break_tree)
+        if isinstance(node, ast.With) and node.items
+    ), "the body after a leading break must be inside an active guard"
+
+    cross_segment_tree = _rewrite_source(
+        """
+        def cross_segment_continue(limit):
+            value = pto.const(0, dtype=pto.i32)
+            one = pto.const(1, dtype=pto.i32)
+            two = pto.const(2, dtype=pto.i32)
+            while value < limit:
+                if value == one:
+                    continue
+                temp = value + one
+                if temp == two:
+                    continue
+                value = temp + one
+            return value
+        """
+    )
+    assert any(
+        isinstance(node, ast.With)
+        and node.items
+        and _is_active_guard(node.items[0].context_expr)
+        and _has_name_store(node, "temp")
+        and any(
+            child is not node
+            and isinstance(child, ast.With)
+            and child.items
+            and _is_active_guard(child.items[0].context_expr)
+            and any(
+                isinstance(use, ast.Name)
+                and isinstance(use.ctx, ast.Load)
+                and use.id == "temp"
+                for use in ast.walk(child)
+            )
+            for child in ast.walk(node)
+        )
+        for node in ast.walk(cross_segment_tree)
+    ), "cross-segment temporary must stay dominated by nested active guards"
+
+    with_tree = _rewrite_source(
+        """
+        def nested_with(limit):
+            value = pto.const(0, dtype=pto.i32)
+            while value < limit:
+                with marker():
+                    if value >= limit:
+                        break
+                    value = value + pto.const(1, dtype=pto.i32)
+                value = value + pto.const(2, dtype=pto.i32)
+            return value
+        """
+    )
+    marker_with = next(
+        node
+        for node in ast.walk(with_tree)
+        if isinstance(node, ast.With)
+        and node.items
+        and isinstance(node.items[0].context_expr, ast.Call)
+        and isinstance(node.items[0].context_expr.func, ast.Name)
+        and node.items[0].context_expr.func.id == "marker"
+    )
+    assert any(
+        isinstance(node, ast.With)
+        and node.items
+        and _is_attr_call(node.items[0].context_expr, "pto", "if_")
+        and _has_constant_add(node, 1)
+        for node in marker_with.body
+    ), "with-body statements after break must be active-guarded"
+
+    try:
+        _rewrite_source(
+            """
+            def nested_try(limit):
+                value = pto.const(0, dtype=pto.i32)
+                while value < limit:
+                    try:
+                        break
+                    finally:
+                        value = value + pto.const(1, dtype=pto.i32)
+                return value
+            """
+        )
+    except PTODSLAstRewriteError as exc:
+        assert "inside try blocks" in str(exc)
+    else:
+        raise AssertionError("break inside try must be diagnosed explicitly")
 
     def unsupported_break(limit: pto.i32):
         value = pto.const(0, dtype=pto.i32)
