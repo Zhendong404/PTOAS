@@ -8,6 +8,12 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # --------------------------------------------------------------------------------
+#
+# Build driver for the LLVM 19 snapshot tree (project ptoas, the GitHub PTOAS
+# layout). This is the entry point used by the gitcode smoke pipeline
+# (./build.sh --build / --pkg). It builds the external LLVM/MLIR 19 dependency
+# (reusing a cached LLVM source/build when available) and then builds and
+# installs PTOAS through the tree's native CMake build.
 
 set -e
 
@@ -21,59 +27,91 @@ export BASE_PATH=$(
   pwd
 )
 
-export INCLUDE_PATH="${ASCEND_HOME_PATH}/include"
-export ASCEND_ENV_PATH="${ASCEND_HOME_PATH}/bin"
 export BUILD_PATH="${BASE_PATH}/build"
 export BUILD_OUT_PATH="${BASE_PATH}/build_out"
-export SUPERBUILD_PATH="${BASE_PATH}/build_super"
+export INSTALL_PATH="${BASE_PATH}/install"
+export PACKAGE_STAGE_PATH="${BUILD_PATH}/package_runtime"
+export LLVM_SOURCE_VERSION="19.1.7"
+export PTOAS_GLIBCXX_ABI="${PTOAS_GLIBCXX_ABI:-0}"
+# The PTOAS tree is built against the vpto-dev LLVM/MLIR 19 "feature-vpto"
+# branch (source of custom calling conventions such as SimtEntry). Source it
+# from GitHub by default; override with LLVM_GIT_URL / LLVM_GIT_REF when a
+# mirror must be used.
+export LLVM_GIT_URL="${LLVM_GIT_URL:-https://github.com/vpto-dev/llvm-project.git}"
+export LLVM_GIT_REF="${LLVM_GIT_REF:-feature-vpto}"
+# The vpto calling conventions (SimtEntry, float8) can also be produced by
+# applying the feature-vpto patch to the upstream llvmorg-19.1.7 source that
+# the CI cache (ASCEND_3RD_LIB_PATH) and cann-cmake download. When the cached
+# source lacks SimtEntry we fetch the patch from the gitcode release asset and
+# apply it with patch -p1, matching the PATCH_COMMAND added to cann-cmake's
+# third_party/llvm.cmake.
+export LLVM_VPTO_PATCH_URL="${LLVM_VPTO_PATCH_URL:-https://gitcode.com/cann-src-third-party/llvm/releases/download/19.1.7-h0/feature-vpto-last3.patch}"
+export LLVM_VPTO_PATCH_SHA256="${LLVM_VPTO_PATCH_SHA256:-a49c1d3dd8ab78e93264712bc0d46deb536196a54abb2c2ee02abd914cd385e2}"
 # Prefer ASCEND_3RD_LIB_PATH when it points to a valid LLVM source cache
-# (CI images set this to /home/jenkins/opensource). Fall back to the
-# in-tree third_party directory for local builds where it is unset.
+# (CI images set this to /home/jenkins/opensource). Fall back to the in-tree
+# third_party directory for local builds where it is unset.
 if [ -n "${ASCEND_3RD_LIB_PATH}" ] && [ -d "${ASCEND_3RD_LIB_PATH}/llvm-19" ]; then
     CANN_3RD_LIB_PATH="${ASCEND_3RD_LIB_PATH}"
 else
     CANN_3RD_LIB_PATH="${BASE_PATH}/third_party"
 fi
 HARDENING_CACHE_FILE="${BASE_PATH}/cmake/LinuxHardeningCache.cmake"
-FORTIFY_MARKER_SOURCE="${BASE_PATH}/scripts/package/fortify_marker.c"
-CANN_CMAKE_SOURCE_DIR=""
-LLVM_PROJECT_URL="https://gitcode.com/cann-src-third-party/llvm/releases/download/19.1.7/llvm-project-llvmorg-19.1.7.tar.gz"
+LLVM_PROJECT_URL="${LLVM_GIT_URL}"
 # Only enable the CentOS7 devtoolset-7 sysroot + gcc-toolchain when the
-# toolchain is actually present. Manylinux 2.34 and other non-CentOS7
-# images do not ship /opt/rh/devtoolset-7, and forcing these flags there
-# breaks the build because clang cannot find the sysroot.
+# toolchain is actually present. Manylinux and non-CentOS7 images do not ship
+# /opt/rh/devtoolset-7, and forcing these flags there breaks the build because
+# clang cannot find the sysroot.
 if [ -d "/opt/rh/devtoolset-7/root" ]; then
   DEVTOOLSET_TOOLCHAIN_FLAGS="--sysroot=/opt/rh/devtoolset-7/root --gcc-toolchain=/opt/rh/devtoolset-7/root/usr"
 else
   DEVTOOLSET_TOOLCHAIN_FLAGS=""
 fi
 
-#print usage message
-usage() {
-  echo "Usage:"
-  echo ""
-  echo "    -h, --help  Print usage"
-  echo "    --build Build and run validation"
-  echo "    --pkg Build package (type controlled by --pkg-type, default run)"
-  echo "    --pkg-type=<TYPE>  Specify package type (TYPE option: run/rpm/deb/all), Default: run"
-  echo ""
-}
+# Internal builds provide a pinned clang-15 toolchain under /opt/buildtools,
+# while gitcode images provide clang-15 through PATH. Keep the internal
+# toolchain as the first choice, but require both drivers to exist before
+# selecting it so the same entry point works in both environments.
+resolve_ptoas_toolchain() {
+  local default_cc=""
+  local default_cxx=""
+  local internal_cc="/opt/buildtools/llvm-15.0.4/bin/clang"
+  local internal_cxx="/opt/buildtools/llvm-15.0.4/bin/clang++"
 
-# check value of pkg-type option
-# usage: check_pkg_type pkg-type
-check_pkg_type() {
-  arg_value="$1"
-  if [ "X$arg_value" != "Xrun" ] && [ "X$arg_value" != "Xrpm" ] && [ "X$arg_value" != "Xdeb" ] && [ "X$arg_value" != "Xall" ]; then
-    echo "Invalid value $arg_value for option --$2"
-    usage
+  if [ -x "${internal_cc}" ] && [ -x "${internal_cxx}" ]; then
+    default_cc="${internal_cc}"
+    default_cxx="${internal_cxx}"
+  elif command -v clang >/dev/null 2>&1 \
+       && command -v clang++ >/dev/null 2>&1; then
+    default_cc="$(command -v clang)"
+    default_cxx="$(command -v clang++)"
+  elif command -v clang-15 >/dev/null 2>&1 \
+       && command -v clang++-15 >/dev/null 2>&1; then
+    default_cc="$(command -v clang-15)"
+    default_cxx="$(command -v clang++-15)"
+  elif command -v gcc >/dev/null 2>&1 \
+       && command -v g++ >/dev/null 2>&1; then
+    default_cc="$(command -v gcc)"
+    default_cxx="$(command -v g++)"
+  fi
+
+  PTOAS_CC="${PTOAS_CC:-${default_cc}}"
+  PTOAS_CXX="${PTOAS_CXX:-${default_cxx}}"
+  PTOAS_CC="$(command -v "${PTOAS_CC}" 2>/dev/null || true)"
+  PTOAS_CXX="$(command -v "${PTOAS_CXX}" 2>/dev/null || true)"
+
+  if [ -z "${PTOAS_CC}" ] || [ -z "${PTOAS_CXX}" ]; then
+    echo "ERROR: no usable C/C++ compiler pair found" >&2
+    echo "Set PTOAS_CC and PTOAS_CXX to executable compiler paths." >&2
     exit 1
   fi
+
+  export PTOAS_CC PTOAS_CXX
+  echo "Using PTOAS toolchain: CC=${PTOAS_CC}, CXX=${PTOAS_CXX}"
 }
 
 print_success() {
   echo
   echo $dotted_line
-  local msg="$1"
   echo -e "${COLOR_GREEN}[SUCCESS] ${msg}${COLOR_RESET}"
   echo $dotted_line
   echo
@@ -88,72 +126,841 @@ print_error() {
   echo
 }
 
-ensure_hardening_cache() {
-  if [ ! -f "${HARDENING_CACHE_FILE}" ]; then
-    print_error "missing hardening cache: ${HARDENING_CACHE_FILE}"
+usage() {
+  echo "Usage:"
+  echo ""
+  echo "    -h, --help               Print usage"
+  echo "    --build                  Build and run validation"
+  echo "    --pkg                    Build and package (install tree under build_out)"
+  echo "    --pkg-type=<TYPE>        Package type (run/rpm/deb/all); accepted for"
+  echo "                             interface compatibility, all types stage the"
+  echo "                             install tree under build_out"
+  echo "    -j <N>                   Parallel jobs (default: nproc)"
+  echo "    --cann_3rd_lib_path <d>  Override the third-party/LLVM cache root"
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
+# LLVM/MLIR dependency handling
+# ---------------------------------------------------------------------------
+prepare_llvm_cache_layout() {
+  mkdir -p "${CANN_3RD_LIB_PATH}"
+  mkdir -p "${CANN_3RD_LIB_PATH}/lib_cache/llvm_${LLVM_SOURCE_VERSION}"
+
+  export LLVM_SOURCE_DIR="${CANN_3RD_LIB_PATH}/llvm-19"
+  export LLVM_BUILD_DIR="${CANN_3RD_LIB_PATH}/lib_cache/llvm_${LLVM_SOURCE_VERSION}/build-shared"
+}
+
+# Check whether the LLVM source carries the vpto custom calling conventions
+# (llvm::CallingConv::SimtEntry). Upstream llvmorg-19.1.7 does not; the vpto
+# fork and a patched upstream tree do.
+llvm_has_simt_entry() {
+  [ -f "${LLVM_SOURCE_DIR}/llvm/include/llvm/IR/CallingConv.h" ] \
+    && grep -q "SimtEntry" "${LLVM_SOURCE_DIR}/llvm/include/llvm/IR/CallingConv.h"
+}
+
+# Download the feature-vpto patch and apply it to the upstream LLVM source so
+# the tree gains the vpto calling conventions. The patch is a git-format-patch
+# series rooted at llvm/, so patch -p1 is the correct strip level (the same
+# PATCH_COMMAND used by cann-cmake's third_party/llvm.cmake).
+apply_vpto_patch() {
+  echo "${dotted_line}"
+  echo "Applying feature-vpto patch to upstream LLVM source"
+  local patch_file="${CANN_3RD_LIB_PATH}/pkg/feature-vpto-last3.patch"
+  if [ -f "${CANN_3RD_LIB_PATH}/feature-vpto-last3.patch" ]; then
+    patch_file="${CANN_3RD_LIB_PATH}/feature-vpto-last3.patch"
+  elif [ -f "${CANN_3RD_LIB_PATH}/pkg/feature-vpto-last3.patch" ]; then
+    patch_file="${CANN_3RD_LIB_PATH}/pkg/feature-vpto-last3.patch"
+  else
+    mkdir -p "${CANN_3RD_LIB_PATH}/pkg"
+    echo "Downloading vpto patch from ${LLVM_VPTO_PATCH_URL}"
+    curl -fL --retry 3 -o "${patch_file}" "${LLVM_VPTO_PATCH_URL}" || {
+      echo "ERROR: failed to download vpto patch" >&2
+      exit 1
+    }
+    local actual_sha
+    actual_sha="$(sha256sum "${patch_file}" | cut -d' ' -f1)"
+    if [ "${actual_sha}" != "${LLVM_VPTO_PATCH_SHA256}" ]; then
+      echo "ERROR: vpto patch SHA256 mismatch: ${actual_sha}" >&2
+      exit 1
+    fi
+  fi
+
+  (cd "${LLVM_SOURCE_DIR}" && patch -p1 < "${patch_file}") || {
+    echo "ERROR: failed to apply vpto patch to ${LLVM_SOURCE_DIR}" >&2
+    exit 1
+  }
+  echo "Applied vpto patch: ${patch_file}"
+}
+
+# Ensure the LLVM 19 source (vpto "feature-vpto" branch) is present under
+# ${LLVM_SOURCE_DIR}. Accepts an already-populated source tree (the usual CI
+# cache layout where llvm-19/llvm holds the top-level CMakeLists.txt) or
+# clones the vpto branch from ${LLVM_GIT_URL}. When the cached source is the
+# upstream (unpatched) snapshot, apply the vpto patch so SimtEntry/float8
+# resolve during the PTOAS build.
+ensure_llvm_source() {
+  if [ -f "${LLVM_SOURCE_DIR}/llvm/CMakeLists.txt" ]; then
+    # Git checkout layout: the project root is ${LLVM_SOURCE_DIR}/llvm.
+    export LLVM_CMAKE_SOURCE_DIR="${LLVM_SOURCE_DIR}/llvm"
+    if ! llvm_has_simt_entry; then
+      echo "${dotted_line}"
+      echo "Cached LLVM source lacks SimtEntry; applying feature-vpto patch"
+      apply_vpto_patch
+    fi
+    return 0
+  fi
+  if [ -f "${LLVM_SOURCE_DIR}/CMakeLists.txt" ]; then
+    export LLVM_CMAKE_SOURCE_DIR="${LLVM_SOURCE_DIR}"
+    if ! llvm_has_simt_entry; then
+      echo "${dotted_line}"
+      echo "Cached LLVM source lacks SimtEntry; applying feature-vpto patch"
+      apply_vpto_patch
+    fi
+    return 0
+  fi
+
+  echo "${dotted_line}"
+  echo "Cloning LLVM ${LLVM_SOURCE_VERSION} source (${LLVM_GIT_REF})"
+  mkdir -p "${CANN_3RD_LIB_PATH}"
+  git clone --depth 1 --single-branch \
+    --branch "${LLVM_GIT_REF}" \
+    "${LLVM_GIT_URL}" "${LLVM_SOURCE_DIR}"
+  export LLVM_CMAKE_SOURCE_DIR="${LLVM_SOURCE_DIR}"
+}
+
+# LLVM/MLIR and PTOAS are both built with the old libstdc++ ABI. Reject a
+# cached LLVM tree that exports the new-ABI Twine::str symbol.
+llvm_build_is_abi_compatible() {
+  local support_lib="${LLVM_BUILD_DIR}/lib/libLLVMSupport.so.19.1"
+  [ -f "${support_lib}" ] || return 1
+  # _ZNK4llvm5Twine3strEv -> _GLIBCXX_USE_CXX11_ABI=0
+  nm -D --defined-only "${support_lib}" 2>/dev/null \
+    | grep -q "_ZNK4llvm5Twine3strEv"
+}
+
+# BSPUB changes LLVM data types at compile time, so a cache produced without
+# the matching C/C++ definitions and LLVM option cannot be reused safely.
+llvm_build_has_bspub_npu_data_type() {
+  local cache_file="${LLVM_BUILD_DIR}/CMakeCache.txt"
+  [ -f "${cache_file}" ] || return 1
+  grep -Eq '^LLVM_BSPUB_NPU_DATA_TYPE:(BOOL|UNINITIALIZED)=ON$' "${cache_file}" \
+    && grep -Eq '^CMAKE_C_FLAGS:[^=]*=.*-DBSPUB_NPU_DATA_TYPE([[:space:]]|$)' "${cache_file}" \
+    && grep -Eq '^CMAKE_CXX_FLAGS:[^=]*=.*-DBSPUB_NPU_DATA_TYPE([[:space:]]|$)' "${cache_file}"
+}
+
+# PTOAS links LLVM and MLIR component targets directly. Keep those components
+# shared so the Python runtime loads one copy of LLVM's command-line registry.
+# A monolithic libLLVM alongside component DSOs can register options twice.
+llvm_build_uses_shared_components() {
+  local cache_file="${LLVM_BUILD_DIR}/CMakeCache.txt"
+  [ -f "${cache_file}" ] || return 1
+  grep -Eq '^BUILD_SHARED_LIBS:(BOOL|UNINITIALIZED)=ON$' "${cache_file}" \
+    && grep -Eq '^LLVM_BUILD_LLVM_DYLIB:(BOOL|UNINITIALIZED)=OFF$' "${cache_file}" \
+    && grep -Eq '^LLVM_LINK_LLVM_DYLIB:(BOOL|UNINITIALIZED)=OFF$' "${cache_file}"
+}
+
+# The BSPUB backport makes LLVMVectorize call llvm::Triple, but its LLVM 19
+# component metadata omits TargetParser. Add that DSO through LLVM's
+# target-specific linker-flags cache entry without modifying LLVM sources.
+llvm_build_links_vectorize_target_parser() {
+  local cache_file="${LLVM_BUILD_DIR}/CMakeCache.txt"
+  [ -f "${cache_file}" ] || return 1
+  grep -Eq '^LLVM_LLVMVectorize_LINKER_FLAGS:[^=]*=.*-lLLVMTargetParser([;[:space:]]|$)' \
+    "${cache_file}"
+}
+
+llvm_vectorize_has_target_parser_dependency() {
+  local vectorize_lib="${LLVM_BUILD_DIR}/lib/libLLVMVectorize.so.19.1"
+  local readelf_bin
+  [ -f "${vectorize_lib}" ] || return 1
+  readelf_bin="$(command -v readelf || command -v llvm-readelf || true)"
+  [ -n "${readelf_bin}" ] || return 1
+  "${readelf_bin}" -d "${vectorize_lib}" 2>/dev/null \
+    | grep -q 'libLLVMTargetParser\.so'
+}
+
+# Build LLVM/MLIR 19 (shared components + MLIR Python bindings) if the cached build
+# tree is not usable, mirroring the PTOAS development workflow.
+ensure_llvm_build() {
+  ensure_llvm_source
+
+  # The vpto patch changes CallingConv.h; a build-shared tree built from the
+  # unpatched upstream source must be rebuilt so SimtEntry is present in the
+  # installed headers (otherwise the PTOAS build fails at link/compile time).
+  local rebuild_llvm=FALSE
+  if llvm_has_simt_entry \
+     && [ -f "${LLVM_BUILD_DIR}/include/llvm/IR/CallingConv.h" ] \
+     && ! grep -q "SimtEntry" "${LLVM_BUILD_DIR}/include/llvm/IR/CallingConv.h"; then
+    echo "${dotted_line}"
+    echo "LLVM source was patched but cached build lacks SimtEntry; rebuilding"
+    rebuild_llvm=TRUE
+  fi
+
+  if [ "$rebuild_llvm" == "FALSE" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/llvm/LLVMConfig.cmake" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ] \
+     && ! llvm_build_is_abi_compatible; then
+    echo "${dotted_line}"
+    echo "Cached LLVM/MLIR build was compiled with an incompatible libstdc++ ABI"
+    echo "(expected _GLIBCXX_USE_CXX11_ABI=0); rebuilding with the current toolchain"
+    rebuild_llvm=TRUE
+  fi
+
+  if [ "$rebuild_llvm" == "FALSE" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/llvm/LLVMConfig.cmake" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ] \
+     && ! llvm_build_has_bspub_npu_data_type; then
+    echo "${dotted_line}"
+    echo "Cached LLVM/MLIR build lacks BSPUB NPU data type support; rebuilding"
+    rebuild_llvm=TRUE
+  fi
+
+  if [ "$rebuild_llvm" == "FALSE" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/llvm/LLVMConfig.cmake" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ] \
+     && ! llvm_build_uses_shared_components; then
+    echo "${dotted_line}"
+    echo "Cached LLVM/MLIR build does not use shared components; rebuilding"
+    rebuild_llvm=TRUE
+  fi
+
+  if [ "$rebuild_llvm" == "FALSE" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/llvm/LLVMConfig.cmake" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ] \
+     && { ! llvm_build_links_vectorize_target_parser \
+          || ! llvm_vectorize_has_target_parser_dependency; }; then
+    echo "${dotted_line}"
+    echo "Cached LLVM/MLIR build does not link LLVMVectorize with TargetParser; rebuilding"
+    rebuild_llvm=TRUE
+  fi
+
+  if [ "$rebuild_llvm" == "FALSE" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/llvm/LLVMConfig.cmake" ] \
+     && [ -f "${LLVM_BUILD_DIR}/lib/cmake/mlir/MLIRConfig.cmake" ]; then
+    echo "${dotted_line}"
+    echo "Reusing cached LLVM/MLIR build at ${LLVM_BUILD_DIR}"
+    return 0
+  fi
+
+  if [ "$rebuild_llvm" == "TRUE" ]; then
+    echo "Removing stale LLVM build tree ${LLVM_BUILD_DIR}"
+    rm -rf "${LLVM_BUILD_DIR}"
+  fi
+
+  echo "${dotted_line}"
+  echo "Building LLVM/MLIR ${LLVM_SOURCE_VERSION} (this can take a while)"
+  mkdir -p "${LLVM_BUILD_DIR}"
+
+  local python_bin
+  python_bin="$(command -v python3 || command -v python)"
+
+  local pybind_dir
+  pybind_dir="$("${python_bin}" -m pybind11 --cmakedir 2>/dev/null || true)"
+
+  local cmake_args=(
+    -G Ninja
+    -S "${LLVM_CMAKE_SOURCE_DIR}"
+    -B "${LLVM_BUILD_DIR}"
+    # PTOAS consumes LLVM/MLIR through CMake; Clang is not a PTOAS dependency.
+    # Keeping it out avoids building clangInterpreter, which is incompatible
+    # with the GCC 7 libstdc++ headers used by the ARM CI image.
+    -DLLVM_ENABLE_PROJECTS="mlir"
+    -DCMAKE_CXX_FLAGS="-DBSPUB_NPU_DATA_TYPE -D_GLIBCXX_USE_CXX11_ABI=0"
+    -DCMAKE_C_FLAGS="-DBSPUB_NPU_DATA_TYPE"
+    -DLLVM_BSPUB_NPU_DATA_TYPE=ON
+    -DBUILD_SHARED_LIBS=ON
+    -DLLVM_BUILD_LLVM_DYLIB=OFF
+    -DLLVM_LINK_LLVM_DYLIB=OFF
+    -DLLVM_LLVMVectorize_LINKER_FLAGS="-L${LLVM_BUILD_DIR}/lib;-Wl,--no-as-needed;-lLLVMTargetParser;-Wl,--as-needed"
+    -DLLVM_ENABLE_ASSERTIONS=ON
+    -DMLIR_ENABLE_BINDINGS_PYTHON=ON
+    -DCMAKE_BUILD_TYPE=Release
+    -DLLVM_TARGETS_TO_BUILD="host"
+    -DLLVM_ENABLE_ZSTD=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DCMAKE_C_COMPILER="${PTOAS_CC}"
+    -DCMAKE_CXX_COMPILER="${PTOAS_CXX}"
+    -DPython3_EXECUTABLE="${python_bin}"
+    -DPython_EXECUTABLE="${python_bin}"
+  )
+  if [ -n "${pybind_dir}" ]; then
+    cmake_args+=( -Dpybind11_DIR="${pybind_dir}" )
+  fi
+
+  if [ -f "${HARDENING_CACHE_FILE}" ]; then
+    # Process the BSPUB flags before the preload cache so the cache appends,
+    # rather than loses, the delivery hardening flags.
+    cmake "${cmake_args[@]}" -C "${HARDENING_CACHE_FILE}"
+  else
+    cmake "${cmake_args[@]}"
+  fi
+  # The linker-flags cache entry adds a linker input but not a Ninja target
+  # edge, so materialize TargetParser before the parallel Vectorize link.
+  cmake --build "${LLVM_BUILD_DIR}" --target LLVMTargetParser -- -j "${JOBS}"
+  cmake --build "${LLVM_BUILD_DIR}" -- -j "${JOBS}"
+  if ! llvm_vectorize_has_target_parser_dependency; then
+    echo "ERROR: LLVMVectorize was built without a dependency on LLVMTargetParser" >&2
     exit 1
   fi
 }
 
-prepare_fortify_marker_object() {
-  local output_dir="$1"
-  local marker_object="${output_dir}/fortify_marker.o"
+# ---------------------------------------------------------------------------
+# PTOAS build + install
+# ---------------------------------------------------------------------------
+compiler_rt_has_muloti4() {
+  local runtime_archive="$1"
+  local nm_bin="${LLVM_BUILD_DIR}/bin/llvm-nm"
 
-  mkdir -p "${output_dir}"
-
-  clang -O2 -D_FORTIFY_SOURCE=2 -fPIC -c "${FORTIFY_MARKER_SOURCE}" -o "${marker_object}"
-
-  export PTOAS_FORTIFY_MARKER_OBJECT="${marker_object}"
+  [ -f "${runtime_archive}" ] || return 1
+  if [ ! -x "${nm_bin}" ]; then
+    nm_bin="$(command -v llvm-nm || command -v nm || true)"
+  fi
+  [ -n "${nm_bin}" ] || return 1
+  "${nm_bin}" -g --defined-only "${runtime_archive}" 2>/dev/null \
+    | grep -E '(^|[[:space:]])__muloti4$' >/dev/null
 }
 
-prepare_llvm_cache_layout() {
-  mkdir -p "${CANN_3RD_LIB_PATH}"
-  mkdir -p "${CANN_3RD_LIB_PATH}/lib_cache/llvm_19.1.7"
+# Some internal aarch64 images ship clang without compiler-rt. Build only the
+# builtins archive from the matching LLVM source tree as a cached fallback.
+build_aarch64_compiler_rt() {
+  local compiler_rt_src="${LLVM_SOURCE_DIR}/compiler-rt"
+  local builtins_src="${compiler_rt_src}/lib/builtins"
+  local compiler_rt_build="${CANN_3RD_LIB_PATH}/lib_cache/compiler_rt_${LLVM_SOURCE_VERSION}/build-aarch64"
+  local compiler_target
 
-  export LLVM_SOURCE_DIR="${CANN_3RD_LIB_PATH}/llvm-19"
-  export LLVM_NATIVE_BUILD_DIR="${CANN_3RD_LIB_PATH}/lib_cache/llvm_19.1.7/build-native-tools"
-  export LLVM_BUILD_DIR="${CANN_3RD_LIB_PATH}/lib_cache/llvm_19.1.7/build-shared"
+  if [ ! -f "${builtins_src}/CMakeLists.txt" ]; then
+    echo "ERROR: compiler-rt builtins source not found: ${builtins_src}" >&2
+    exit 1
+  fi
+
+  compiler_target="$("${PTOAS_CC}" -print-target-triple 2>/dev/null || true)"
+  if [ -z "${compiler_target}" ]; then
+    compiler_target="$("${PTOAS_CC}" -dumpmachine 2>/dev/null || true)"
+  fi
+  case "${compiler_target}" in
+    aarch64-*|arm64-*) ;;
+    *)
+      echo "ERROR: ${PTOAS_CC} reported non-aarch64 target: ${compiler_target:-unknown}" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -d "${compiler_rt_build}" ]; then
+    PTOAS_COMPILER_RT="$(
+      find "${compiler_rt_build}" -name 'libclang_rt.builtins-aarch64.a' \
+        -type f 2>/dev/null | head -1 || true
+    )"
+    if compiler_rt_has_muloti4 "${PTOAS_COMPILER_RT}"; then
+      export PTOAS_COMPILER_RT
+      echo "Reusing LLVM compiler-rt: ${PTOAS_COMPILER_RT}"
+      return 0
+    fi
+  fi
+
+  echo "${dotted_line}"
+  echo "Building compiler-rt builtins for ${compiler_target}"
+  mkdir -p "${compiler_rt_build}"
+  cmake \
+    -G Ninja \
+    -S "${builtins_src}" \
+    -B "${compiler_rt_build}" \
+    -DLLVM_CMAKE_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm" \
+    -DLLVM_MAIN_SRC_DIR="${LLVM_SOURCE_DIR}/llvm" \
+    -DCMAKE_C_COMPILER="${PTOAS_CC}" \
+    -DCMAKE_ASM_COMPILER="${PTOAS_CC}" \
+    -DCMAKE_C_COMPILER_TARGET="${compiler_target}" \
+    -DCMAKE_ASM_COMPILER_TARGET="${compiler_target}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+    -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+  cmake --build "${compiler_rt_build}" --target builtins -- -j "${JOBS}"
+
+  PTOAS_COMPILER_RT="$(
+    find "${compiler_rt_build}" -name 'libclang_rt.builtins-aarch64.a' \
+      -type f 2>/dev/null | head -1 || true
+  )"
+  if ! compiler_rt_has_muloti4 "${PTOAS_COMPILER_RT}"; then
+    echo "ERROR: compiler-rt build did not produce an aarch64 archive with __muloti4" >&2
+    exit 1
+  fi
+
+  export PTOAS_COMPILER_RT
+  echo "Built LLVM compiler-rt: ${PTOAS_COMPILER_RT}"
 }
 
-checkopts() {
+# On aarch64, -ftrapv lowers __int128 multiplication to __muloti4 (compiler-rt).
+# Link the matching compiler-rt builtins so the PTOAS executables/libraries
+# resolve it. Accepts an explicit override via PTOAS_COMPILER_RT.
+resolve_compiler_rt() {
+  case "$(uname -m)" in
+    aarch64|arm64)
+      if [ -n "${PTOAS_COMPILER_RT:-}" ] && [ -f "${PTOAS_COMPILER_RT}" ]; then
+        export PTOAS_COMPILER_RT
+        echo "Using PTOAS_COMPILER_RT=${PTOAS_COMPILER_RT}"
+        return 0
+      fi
+
+      local clang_res
+      clang_res="$("${PTOAS_CC}" -print-resource-dir 2>/dev/null || true)"
+      if [ -z "${clang_res}" ]; then
+        echo "ERROR: failed to query compiler resource directory from ${PTOAS_CC}" >&2
+        exit 1
+      fi
+
+      PTOAS_COMPILER_RT="${clang_res}/lib/linux/libclang_rt.builtins-aarch64.a"
+      if [ ! -f "${PTOAS_COMPILER_RT}" ] && [ -d "${clang_res}" ]; then
+        PTOAS_COMPILER_RT="$(
+          find "${clang_res}" -name 'libclang_rt.builtins-aarch64.a' -type f 2>/dev/null \
+            | head -1 || true
+        )"
+      fi
+      if [ -z "${PTOAS_COMPILER_RT}" ] || [ ! -f "${PTOAS_COMPILER_RT}" ]; then
+        local runtime_search_roots=()
+        local runtime_root
+        for runtime_root in /opt/buildtools /usr /usr/local; do
+          [ -d "${runtime_root}" ] && runtime_search_roots+=("${runtime_root}")
+        done
+        PTOAS_COMPILER_RT="$(
+          find "${runtime_search_roots[@]}" \
+            -name 'libclang_rt.builtins-aarch64.a' -type f 2>/dev/null \
+            | head -1 || true
+        )"
+      fi
+      if [ -z "${PTOAS_COMPILER_RT}" ] || [ ! -f "${PTOAS_COMPILER_RT}" ]; then
+        echo "compiler-rt not found on host; building from ${LLVM_SOURCE_DIR}/compiler-rt"
+        build_aarch64_compiler_rt
+      fi
+
+      export PTOAS_COMPILER_RT
+      echo "Using LLVM compiler-rt: ${PTOAS_COMPILER_RT}"
+      ;;
+    *)
+      unset PTOAS_COMPILER_RT
+      return 0
+  esac
+}
+
+pip_install_runtime_deps() {
+  local python_bin="$1"
+  shift
+  local index_url="${PTOAS_PIP_INDEX_URL:-}"
+  local trusted_host="${PTOAS_PIP_TRUSTED_HOST:-}"
+
+  # Internal CI selects its pinned compiler from /opt/buildtools and cannot
+  # reach public PyPI. GitCode selects /usr/bin/clang and keeps pip defaults.
+  if [ -z "${index_url}" ] && [[ "${PTOAS_CC}" == /opt/buildtools/* ]]; then
+    index_url="http://mirrors.tools.huawei.com/pypi/simple"
+    trusted_host="mirrors.tools.huawei.com"
+  fi
+
+  if [ -n "${index_url}" ]; then
+    local index_args=(-i "${index_url}")
+    if [ -n "${trusted_host}" ]; then
+      index_args+=(--trusted-host "${trusted_host}")
+    fi
+    "${python_bin}" -m pip install --no-cache-dir "${index_args[@]}" "$@"
+  else
+    "${python_bin}" -m pip install --no-cache-dir "$@"
+  fi
+}
+
+configure_ptoas() {
+  local python_bin
+  python_bin="$(command -v python3 || command -v python)"
+  local pybind_dir
+  pybind_dir="$("${python_bin}" -m pybind11 --cmakedir 2>/dev/null || true)"
+
+  echo "Resetting PTOAS build tree: ${BUILD_PATH}"
+  rm -rf "${BUILD_PATH}"
+  mkdir -p "${BUILD_PATH}"
+  local ptoas_cmake_args=(
+    -G Ninja
+    -S "${BASE_PATH}"
+    -B "${BUILD_PATH}"
+    -DLLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm"
+    -DMLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
+    -DPython3_EXECUTABLE="${python_bin}"
+    -Dpybind11_DIR="${pybind_dir}"
+    -DPTO_ENABLE_PYTHON_BINDING=ON
+    -DBUILD_TESTING=ON
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_CXX_FLAGS="-DBSPUB_NPU_DATA_TYPE -D_GLIBCXX_USE_CXX11_ABI=0 -Wno-error=deprecated-declarations"
+    -DCMAKE_INSTALL_PREFIX="${INSTALL_PATH}"
+    -DCMAKE_C_COMPILER="${PTOAS_CC}"
+    -DCMAKE_CXX_COMPILER="${PTOAS_CXX}"
+  )
+
+  # Inject compiler-rt for __muloti4 (aarch64 -ftrapv __int128) into the
+  # linker flags applied to every PTOAS target. The static archive must be
+  # pulled in even though linker flags precede the object files: force the
+  # symbol with -Wl,-u so the linker extracts __muloti4 from the archive.
+  resolve_compiler_rt
+  echo "PTOAS_COMPILER_RT=${PTOAS_COMPILER_RT:-NOT_USED}"
+  if [ -n "${PTOAS_COMPILER_RT:-}" ]; then
+    ptoas_cmake_args+=(
+      -DCMAKE_EXE_LINKER_FLAGS="${CMAKE_EXE_LINKER_FLAGS:-} -Wl,-u,__muloti4 ${PTOAS_COMPILER_RT}"
+      -DCMAKE_SHARED_LINKER_FLAGS="${CMAKE_SHARED_LINKER_FLAGS:-} -Wl,-u,__muloti4 ${PTOAS_COMPILER_RT}"
+      -DCMAKE_MODULE_LINKER_FLAGS="${CMAKE_MODULE_LINKER_FLAGS:-} -Wl,-u,__muloti4 ${PTOAS_COMPILER_RT}"
+    )
+  fi
+
+  if [ -f "${HARDENING_CACHE_FILE}" ]; then
+    # Keep the PTOAS BSPUB definition together with the delivery hardening
+    # flags from the preload cache.
+    cmake "${ptoas_cmake_args[@]}" -C "${HARDENING_CACHE_FILE}"
+  else
+    cmake "${ptoas_cmake_args[@]}"
+  fi
+}
+
+build_only() {
+  echo $dotted_line
+  echo "build ptoas"
+  ensure_llvm_build
+  configure_ptoas
+  cmake --build "${BUILD_PATH}" -- -j "${JOBS}"
+  cmake --install "${BUILD_PATH}"
+
+  echo "execute samples success"
+}
+
+# Build the Python distribution used by the installed ptoas console entry.
+# The current tree intentionally does not ship a native _runtime/bin/ptoas:
+# pyproject.toml exposes ptoas._cli:main and the wheel owns the Python package,
+# native extensions, TileOps resources, and console script as one unit.
+stage_ptoas_wheel() {
+  local python_bin
+  python_bin="$(command -v python3 || command -v python)"
+  local wheel_dist="${BUILD_PATH}/wheel-dist"
+  local wheelhouse="${BUILD_PATH}/wheelhouse"
+  local python_scripts
+  python_scripts="$("${python_bin}" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+  local user_scripts
+  user_scripts="$("${python_bin}" -c 'import os, sysconfig; print(sysconfig.get_path("scripts", scheme=os.name + "_user"))')"
+  local python_tool_path="${python_scripts}:${user_scripts}:${PATH}"
+  local wheel_arch
+  local wheel_feature_args=()
+  local repair_plat
+  local repair_succeeded=false
+
+  case "$(uname -m)" in
+    aarch64|arm64) wheel_arch="aarch64" ;;
+    x86_64|amd64) wheel_arch="x86_64" ;;
+    *)
+      echo "ERROR: unsupported wheel architecture: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+
+  rm -rf "${wheel_dist}" "${wheelhouse}" "${PACKAGE_STAGE_PATH}"
+  mkdir -p "${wheel_dist}" "${wheelhouse}" \
+    "${PACKAGE_STAGE_PATH}/tools/ptoas/wheels"
+
+  echo "Building PTOAS wheel"
+  pip_install_runtime_deps "${python_bin}" \
+    numpy \
+    'pybind11<3' \
+    'scikit-build-core>=0.12.2,<2'
+  # pip 21.2 copies local projects out of tree unless this transitional
+  # feature is enabled, which conflicts with the existing CMake cache. Newer
+  # pip builds in tree by default and has removed the feature flag entirely.
+  if "${python_bin}" -m pip wheel \
+       --use-feature=in-tree-build --help >/dev/null 2>&1; then
+    wheel_feature_args+=(--use-feature=in-tree-build)
+  fi
+  CMAKE_BUILD_PARALLEL_LEVEL="${JOBS}" \
+  SKBUILD_BUILD_DIR="${BUILD_PATH}" \
+  LLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
+    "${python_bin}" -m pip wheel "${BASE_PATH}" \
+      "${wheel_feature_args[@]}" \
+      --no-build-isolation \
+      --no-deps \
+      --wheel-dir "${wheel_dist}"
+  "${python_bin}" "${BASE_PATH}/docker/validate_wheel_payload.py" \
+    "${wheel_dist}"
+
+  # The GitCode build uses the cached shared LLVM tree. Repairing the wheel
+  # makes those DSOs package-relative so the smoke job does not depend on the
+  # build cache still being mounted when the .run artifact is installed.
+  if ! "${python_bin}" -c 'import auditwheel' >/dev/null 2>&1 \
+     || ! PATH="${python_tool_path}" command -v patchelf >/dev/null 2>&1; then
+    pip_install_runtime_deps "${python_bin}" auditwheel patchelf
+  fi
+  if ! "${python_bin}" -c 'import auditwheel' >/dev/null 2>&1; then
+    echo "ERROR: auditwheel is not importable by ${python_bin}" >&2
+    exit 1
+  fi
+  if ! PATH="${python_tool_path}" command -v patchelf >/dev/null 2>&1; then
+    echo "ERROR: patchelf not found in ${python_scripts} or ${user_scripts}" >&2
+    exit 1
+  fi
+  # The shared LLVM cache is built by the GitCode image rather than the
+  # manylinux_2_34 container used by the release workflow. Its versioned
+  # symbols can therefore require a newer PEP 600 policy. Try supported
+  # policies in compatibility order and keep the oldest one auditwheel can
+  # honestly assign to this wheel.
+  for repair_plat in \
+    "manylinux_2_34_${wheel_arch}" \
+    "manylinux_2_35_${wheel_arch}" \
+    "manylinux_2_36_${wheel_arch}" \
+    "manylinux_2_37_${wheel_arch}" \
+    "manylinux_2_38_${wheel_arch}" \
+    "manylinux_2_39_${wheel_arch}"; do
+    echo "Trying auditwheel platform: ${repair_plat}"
+    if PATH="${python_tool_path}" \
+       LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+         "${python_bin}" -m auditwheel repair \
+           --plat "${repair_plat}" \
+           --wheel-dir "${wheelhouse}" \
+           "${wheel_dist}"/ptoas*.whl; then
+      repair_succeeded=true
+      break
+    fi
+  done
+  if [ "${repair_succeeded}" != true ]; then
+    echo "ERROR: auditwheel could not repair the PTOAS wheel with a supported policy" >&2
+    exit 1
+  fi
+  "${python_bin}" "${BASE_PATH}/docker/validate_wheel_payload.py" \
+    "${wheelhouse}"
+
+  cp "${wheelhouse}"/ptoas*.whl \
+    "${PACKAGE_STAGE_PATH}/tools/ptoas/wheels/"
+  echo "staged ptoas wheel: $(basename "${PACKAGE_STAGE_PATH}"/tools/ptoas/wheels/ptoas*.whl)"
+}
+
+# Package the wheel into a self-extracting .run installer under build_out. The
+# GitCode smoke pipeline invokes the artifact with --full / --uninstall. Keep
+# the wheel installer here because the legacy install-tree helper only extracts
+# files and cannot create the Python console entry required by runop.sh.
+make_ptoas_run() {
+  local arch
+  arch="$(uname -m)"
+  # The OBS uploader parses the artifact name as cann-pto-as_<ver>_linux-<arch>.run
+  # (underscore before the version, like master's CPack/makeself output), then
+  # strips the version and uploads it as cann-pto-as_linux-<arch>.run. Keep the
+  # underscore form so the uploader can resolve the package; the versioned file
+  # is the one the pipeline's pto-as_compile.sh drives with --full/--uninstall.
+  local run_file="${BUILD_OUT_PATH}/cann-pto-as_${PTOAS_PACKAGE_VERSION}_linux-${arch}.run"
+  local stub_file
+  stub_file="$(mktemp)"
+
+  cat > "${stub_file}" <<'STUB'
+#!/bin/bash
+set -e
+
+VERSION="@VERSION_AT_PACKAGE_TIME@"
+PACKAGE="ptoas"
+INSTALL_PATH=""
+ACTION=""
+
+usage() {
+  echo "Usage: $0 [--full|--install] [--uninstall] [--check] [--help] [--install-path=<dir>]"
+  echo "  --full, --install    Install the bundled PTOAS wheel"
+  echo "  --uninstall          Uninstall the PTOAS wheel"
+  echo "  --check              Verify the archive payload integrity"
+  echo "  --install-path=<dir> Store the bundled wheel under this directory"
+}
+
+for arg in "$@"; do
+  case "${arg}" in
+    --full|--install) ACTION="install" ;;
+    --uninstall) ACTION="uninstall" ;;
+    --check|--verify) ACTION="check" ;;
+    --install-path=*) INSTALL_PATH="${arg#--install-path=}" ;;
+    --quiet) ;;
+    --help|-h) usage; exit 0 ;;
+    *) echo "Warning: ignoring unknown argument: ${arg}" >&2 ;;
+  esac
+done
+
+[ -z "${INSTALL_PATH}" ] && INSTALL_PATH="/usr/local/Ascend/${PACKAGE}-${VERSION}"
+RECORD_DIR="${INSTALL_PATH}/tools/ptoas/.wheel-install"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+PAYLOAD_START="$(awk '/^#__PTOAS_ARCHIVE_MARKER__$/ { print NR + 1; exit }' "${SCRIPT_DIR}/${SCRIPT_NAME}")"
+
+if [ -z "${PAYLOAD_START}" ]; then
+  echo "ERROR: archive payload marker not found" >&2
+  exit 1
+fi
+
+resolve_python() {
+  if [ -n "${PTOAS_PYTHON:-}" ]; then
+    command -v "${PTOAS_PYTHON}"
+  else
+    command -v python3 || command -v python
+  fi
+}
+
+case "${ACTION}" in
+  install)
+    python_bin="$(resolve_python)"
+    mkdir -p "${INSTALL_PATH}"
+    tail -n +"${PAYLOAD_START}" "${SCRIPT_DIR}/${SCRIPT_NAME}" \
+      | tar xzf - -C "${INSTALL_PATH}"
+
+    shopt -s nullglob
+    wheels=("${INSTALL_PATH}"/tools/ptoas/wheels/ptoas*.whl)
+    shopt -u nullglob
+    if [ "${#wheels[@]}" -ne 1 ]; then
+      echo "ERROR: expected one bundled ptoas wheel, found ${#wheels[@]}" >&2
+      exit 1
+    fi
+
+    "${python_bin}" -m pip install --no-deps --force-reinstall "${wheels[0]}"
+    scripts_dir="$("${python_bin}" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+    entrypoint="${scripts_dir}/ptoas"
+    if [ ! -x "${entrypoint}" ]; then
+      echo "ERROR: pip did not create the ptoas console entry: ${entrypoint}" >&2
+      exit 1
+    fi
+
+    mkdir -p "${RECORD_DIR}"
+    printf '%s\n' "${python_bin}" > "${RECORD_DIR}/python"
+    resolved_entry="$(command -v ptoas 2>/dev/null || true)"
+    if [ "${resolved_entry}" != "${entrypoint}" ]; then
+      link_dir=""
+      if [[ ":${PATH}:" == *":/usr/local/bin:"* ]] && [ -w /usr/local/bin ]; then
+        link_dir="/usr/local/bin"
+      else
+        old_ifs="${IFS}"
+        IFS=':'
+        for path_dir in ${PATH}; do
+          if [ -n "${path_dir}" ] && [ -d "${path_dir}" ] && [ -w "${path_dir}" ]; then
+            link_dir="${path_dir}"
+            break
+          fi
+        done
+        IFS="${old_ifs}"
+      fi
+      if [ -z "${link_dir}" ]; then
+        echo "ERROR: ptoas was installed outside PATH and no writable PATH directory exists" >&2
+        exit 1
+      fi
+      ln -sfn "${entrypoint}" "${link_dir}/ptoas"
+      printf '%s\n' "${link_dir}/ptoas" > "${RECORD_DIR}/console-link"
+    fi
+
+    command -v ptoas >/dev/null
+    ptoas --version
+    echo "Install succeeded: ${INSTALL_PATH}"
+    ;;
+  uninstall)
+    python_bin="$(resolve_python)"
+    if [ -f "${RECORD_DIR}/python" ]; then
+      recorded_python="$(head -n 1 "${RECORD_DIR}/python")"
+      [ -x "${recorded_python}" ] && python_bin="${recorded_python}"
+    fi
+    if [ -f "${RECORD_DIR}/console-link" ]; then
+      console_link="$(head -n 1 "${RECORD_DIR}/console-link")"
+      [ -L "${console_link}" ] && rm -f "${console_link}"
+    fi
+    "${python_bin}" -m pip uninstall -y ptoas
+    rm -rf "${INSTALL_PATH}/tools/ptoas/wheels" "${RECORD_DIR}"
+    rmdir "${INSTALL_PATH}/tools/ptoas" 2>/dev/null || true
+    rmdir "${INSTALL_PATH}/tools" 2>/dev/null || true
+    rmdir "${INSTALL_PATH}" 2>/dev/null || true
+    echo "Uninstall succeeded: ptoas wheel removed"
+    ;;
+  check|*)
+    if tail -n +"${PAYLOAD_START}" "${SCRIPT_DIR}/${SCRIPT_NAME}" | tar tzf - >/dev/null; then
+      echo "Payload OK"
+    else
+      echo "ERROR: payload integrity check failed" >&2
+      exit 1
+    fi
+    ;;
+esac
+exit 0
+STUB
+
+  sed "s|@VERSION_AT_PACKAGE_TIME@|${PTOAS_PACKAGE_VERSION}|g" \
+    "${stub_file}" > "${run_file}"
+  rm -f "${stub_file}"
+  echo "#__PTOAS_ARCHIVE_MARKER__" >> "${run_file}"
+  tar czf - -C "${PACKAGE_STAGE_PATH}" . >> "${run_file}"
+  chmod 755 "${run_file}"
+  echo "Built ${run_file} ($(du -h "${run_file}" | cut -f1))"
+  echo "run package: ${run_file}"
+}
+
+package() {
+  echo $dotted_line
+  echo "package ptoas"
+  ensure_llvm_build
+  configure_ptoas
+  cmake --build "${BUILD_PATH}" -- -j "${JOBS}"
+
+  # Distill the version used for the .run package name. The CANN product version
+  # (9.2.0 for this release train) differs from project(ptoas VERSION 0.57), so
+  # default to the packaging version and allow an explicit override.
+  PTOAS_PACKAGE_VERSION="${PTOAS_PACKAGE_VERSION:-9.2.0}"
+
+  # Stage the .run installer(s) under build_out for the pipeline to consume.
+  rm -rf "${BUILD_OUT_PATH}"
+  mkdir -p "${BUILD_OUT_PATH}"
+  stage_ptoas_wheel
+  make_ptoas_run
+  echo "package staged under ${BUILD_OUT_PATH}"
+  # Diagnostics: the OBS uploader reads build_out via the host path
+  # /opt/cloud/slavespace/.../x86build/build_out; print what we actually
+  # ~created so a path mismatch is visible in the CI log.
+  echo "BUILD_OUT absolute: $(cd "${BUILD_OUT_PATH}" && pwd -P)"
+  ls -la "${BUILD_OUT_PATH}"
+}
+
+main() {
+  JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
   ENABLE_BUILD_ONLY=FALSE
   ENABLE_PACKAGE=FALSE
-  PACKAGE_TYPE="run"
 
-  parsed_args=$(getopt -a -o j:hvuO: -l help,pkg,pkg-type:,build,cann_3rd_lib_path: -- "$@") || {
-  usage
-  exit 1
-  }
-
-  eval set -- "$parsed_args"
-
-  while true; do
+  while [ $# -gt 0 ]; do
     case "$1" in
-      -h | --help)
+      -h|--help)
         usage
         exit 0
         ;;
       --build)
-        shift
         ENABLE_BUILD_ONLY=TRUE
-        ;;
-      --cann_3rd_lib_path)
-        shift
-        CANN_3RD_LIB_PATH="$1"
         shift
         ;;
       --pkg)
         ENABLE_PACKAGE=TRUE
         shift
         ;;
-      --pkg-type)
-        check_pkg_type "$2" pkg-type
-        PACKAGE_TYPE="$2"
+      --pkg-type|--pkg-type=*)
+        # Accepted for interface compatibility with the gitcode smoke pipeline.
+        # Package type does not change the staged install-tree output.
+        case "$1" in
+          --pkg-type=*)
+            PACKAGE_TYPE="${1#--pkg-type=}"
+            shift
+            ;;
+          *)
+            PACKAGE_TYPE="$2"
+            shift 2
+            ;;
+        esac
+        ;;
+      -j)
+        JOBS="$2"
         shift 2
         ;;
-      --)
+      -j=*)
+        JOBS="${1#-j=}"
         shift
-        break
+        ;;
+      --cann_3rd_lib_path)
+        CANN_3RD_LIB_PATH="$2"
+        shift 2
+        ;;
+      --cann_3rd_lib_path=*)
+        CANN_3RD_LIB_PATH="${1#--cann_3rd_lib_path=}"
+        shift
         ;;
       *)
         usage
@@ -161,96 +968,23 @@ checkopts() {
         ;;
     esac
   done
-}
 
-write_ptoas_test_env() {
-  local env_file="${BUILD_PATH}/ptoas-test-env.sh"
-
-  mkdir -p "${BUILD_PATH}"
-  cat > "${env_file}" <<EOF
-# Generated by build.sh. Source this file before running PTO-AS source-tree tests.
-export LLVM_BUILD_DIR="${LLVM_BUILD_DIR}"
-export MLIR_PYTHON_ROOT="${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core"
-export PTO_INSTALL_DIR="${PTO_INSTALL_DIR}"
-export PTO_PYTHON_ROOT="${PTO_INSTALL_DIR}"
-export PYTHONPATH="\${MLIR_PYTHON_ROOT}:\${PTO_PYTHON_ROOT}:\${PYTHONPATH:-}"
-export LD_LIBRARY_PATH="\${LLVM_BUILD_DIR}/lib:\${PTO_INSTALL_DIR}/lib:\${LD_LIBRARY_PATH:-}"
-EOF
-}
-
-configure_superbuild() {
-  export PTO_SOURCE_DIR=$BASE_PATH
-  export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
-  prepare_llvm_cache_layout
-  write_ptoas_test_env
-  prepare_fortify_marker_object "${BUILD_PATH}/fortify_marker"
-
-  cd $PTO_SOURCE_DIR
-  export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
-  cmake -S "${PTO_SOURCE_DIR}/cmake/superbuild" -B "${SUPERBUILD_PATH}" \
-    -DPTOAS_SOURCE_DIR="${PTO_SOURCE_DIR}" \
-    -DPTOAS_BUILD_DIR="${BUILD_PATH}" \
-    -DPTOAS_INSTALL_DIR="${PTO_INSTALL_DIR}" \
-    -DCANN_3RD_LIB_PATH="${CANN_3RD_LIB_PATH}" \
-    -DCANN_CMAKE_SOURCE_DIR="${CANN_CMAKE_SOURCE_DIR}" \
-    -DLLVM_PROJECT_URL="${LLVM_PROJECT_URL}" \
-    -DLLVM_SOURCE_DIR="${LLVM_SOURCE_DIR}" \
-    -DLLVM_NATIVE_BUILD_DIR="${LLVM_NATIVE_BUILD_DIR}" \
-    -DLLVM_BUILD_DIR="${LLVM_BUILD_DIR}" \
-    -DPython3_EXECUTABLE="$(which python3)" \
-    -DPYBIND11_CMAKE_DIR="${PYBIND11_CMAKE_DIR}" \
-    -DHARDENING_CACHE_FILE="${HARDENING_CACHE_FILE}" \
-    -DPTOAS_FORTIFY_MARKER_OBJECT="${PTOAS_FORTIFY_MARKER_OBJECT}" \
-    -DDEVTOOLSET_TOOLCHAIN_FLAGS="${DEVTOOLSET_TOOLCHAIN_FLAGS}" \
-    -DPACKAGE_TYPE="${PACKAGE_TYPE}"
-}
-
-build_only() {
-  echo $dotted_line
-  echo "build only"
-  ensure_hardening_cache
-  configure_superbuild
-  cmake --build "${SUPERBUILD_PATH}" --target ptoas_install
-
-  export MLIR_PYTHON_ROOT=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-  export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/
-  export PYTHONPATH=$MLIR_PYTHON_ROOT:$PTO_PYTHON_ROOT:$PYTHONPATH
-  export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
-  export PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
-
-  bash test/samples/runop.sh --enablebc all
-  STAGE="${STAGE:-run}" RUN_MODE='npu' SOC_VERSION='Ascend910' SKIP_CASES='mix_kernel,vadd_validshape,vadd_validshape_dynamic,print' bash test/npu_validation/scripts/run_remote_npu_validation.sh
-
-  echo "execute samples success"
-}
-
-clean_build_out() {
-  if [ -d "${BUILD_OUT_PATH}" ]; then
-    if [ -n "${BUILD_OUT_PATH}" ]; then
-      rm -rf -- "${BUILD_OUT_PATH}"
-    fi
+  if [ "$ENABLE_BUILD_ONLY" == "TRUE" ] || [ "$ENABLE_PACKAGE" == "TRUE" ]; then
+    resolve_ptoas_toolchain
   fi
-}
 
-package() {
-  echo $dotted_line
-  echo "package start"
-  ensure_hardening_cache
-  clean_build_out
-  mkdir -p "${BUILD_OUT_PATH}"
-  configure_superbuild
-  cmake --build "${SUPERBUILD_PATH}" --target ptoas_package
-}
+  prepare_llvm_cache_layout
 
-main() {
-  checkopts "$@"
   if [ "$ENABLE_BUILD_ONLY" == "TRUE" ]; then
     build_only
   fi
   if [ "$ENABLE_PACKAGE" == "TRUE" ]; then
     package
   fi
+  if [ "$ENABLE_BUILD_ONLY" != "TRUE" ] && [ "$ENABLE_PACKAGE" != "TRUE" ]; then
+    usage
+  fi
 }
 
 set -o pipefail
-main "$@" | gawk '{print strftime("[%Y-%m-%d %H:%M:%S]"), $0}'
+main "$@"
