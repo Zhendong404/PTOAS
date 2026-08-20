@@ -6,4 +6,4 @@ module {
   }
 }
 
-// CHECK: AICORE void hello() {
+// CHECK: __global__ AICORE void hello() {

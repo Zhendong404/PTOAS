@@ -24,7 +24,7 @@ add_test(NAME ptobc_to_ptoas_smoke
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>
     PTOBC_ALLOW_GENERIC=1
-    PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas
+    PTOAS_BIN=$<TARGET_FILE:pto-opt>
     TESTDATA_DIR=${PTObc_TESTDATA_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/ptobc_to_ptoas_smoke.sh
 )
@@ -33,7 +33,7 @@ add_test(NAME ptobc_opcode_coverage_check
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_LIST_DIR}/opcode_coverage_check.py
     ${CMAKE_SOURCE_DIR}/include/PTO/IR/PTOOps.td
-    ${CMAKE_SOURCE_DIR}/tools/ptobc/generated/ptobc_opcodes_v0.h
+    ${CMAKE_SOURCE_DIR}/tools/ptobc/generated/ptobc_opcodes_v0.cpp
 )
 
 add_test(NAME ptobc_trowexpandsub_v0_encode
@@ -48,13 +48,6 @@ add_test(NAME ptobc_tprint_v0_encode
     PTOBC_BIN=$<TARGET_FILE:ptobc>
     TESTDATA_DIR=${PTObc_TESTDATA_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/tprint_v0_encode.sh
-)
-
-add_test(NAME ptobc_tci_trowexpandadd_tmp_v0_encode
-  COMMAND ${CMAKE_COMMAND} -E env
-    PTOBC_BIN=$<TARGET_FILE:ptobc>
-    TESTDATA_DIR=${PTObc_TESTDATA_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/tci_trowexpandadd_tmp_v0_encode.sh
 )
 
 add_test(NAME ptobc_tpartarg_v0_encode
@@ -92,13 +85,6 @@ add_test(NAME ptobc_internal_pipe_v0_encode
     ${CMAKE_CURRENT_LIST_DIR}/internal_pipe_v0_encode.sh
 )
 
-add_test(NAME ptobc_aiv_subblockid_pipe_v0_encode
-  COMMAND ${CMAKE_COMMAND} -E env
-    PTOBC_BIN=$<TARGET_FILE:ptobc>
-    TESTDATA_DIR=${PTObc_TESTDATA_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/aiv_subblockid_pipe_v0_encode.sh
-)
-
 add_test(NAME ptobc_tconcat_set_validshape_v0_encode
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>
@@ -113,14 +99,6 @@ add_test(NAME ptobc_tstore_fp_v0_encode
     ${CMAKE_CURRENT_LIST_DIR}/tstore_fp_v0_encode.sh
 )
 
-add_test(NAME ptobc_comm_p2p_dynamic_v0_encode
-  COMMAND ${CMAKE_COMMAND} -E env
-    PTOBC_BIN=$<TARGET_FILE:ptobc>
-    PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas
-    TESTDATA_DIR=${PTObc_TESTDATA_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/comm_p2p_dynamic_v0_encode.sh
-)
-
 add_test(NAME ptobc_tdequant_v0_encode
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>
@@ -132,7 +110,6 @@ add_test(NAME ptobc_tscatter_maskpattern_v0_encode
   COMMAND ${CMAKE_COMMAND} -E env
     PTOBC_BIN=$<TARGET_FILE:ptobc>
     TESTDATA_DIR=${PTObc_TESTDATA_DIR}
-    PYTHON_EXECUTABLE=${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_LIST_DIR}/tscatter_maskpattern_v0_encode.sh
 )
 

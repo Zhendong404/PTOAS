@@ -20,7 +20,7 @@ The script builds four functions and asserts the inferred `layout` attribute
 on each make_tensor_view op.
 """
 
-from ptoas.mlir.ir import (
+from mlir.ir import (
     Context,
     InsertionPoint,
     Location,
@@ -29,7 +29,7 @@ from ptoas.mlir.ir import (
     IndexType,
     UnitAttr,
 )
-from ptoas.mlir.dialects import func, arith, pto
+from mlir.dialects import func, arith, pto
 from typing import Optional
 import sys
 

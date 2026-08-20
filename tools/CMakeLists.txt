@@ -13,4 +13,3 @@
 
 add_subdirectory(ptobc)
 add_subdirectory(ptoas)
-add_subdirectory(pto-test-opt)

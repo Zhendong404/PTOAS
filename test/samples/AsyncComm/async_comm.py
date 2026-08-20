@@ -6,8 +6,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, F32Type, IntegerType, IntegerAttr, IndexType, Operation, UnitAttr
-from ptoas.mlir.dialects import arith, func, pto, scf
+from mlir.ir import Context, Location, Module, InsertionPoint, F32Type, IntegerType, IntegerAttr, IndexType, Operation
+from mlir.dialects import arith, func, pto, scf
 
 
 def _build_async_session(scratch, workspace, i32, ctx, sync_id=0):
@@ -65,7 +65,6 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_i8, i32], [])
             with InsertionPoint(module.body):
                 fn = func.FuncOp("async_comm_kernel", fn_ty)
-                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

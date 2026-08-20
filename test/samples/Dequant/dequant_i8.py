@@ -23,7 +23,7 @@ Note: i8 tiles require Cols*sizeof(T) to be a multiple of 32 bytes
 f32 parameter tiles: Cols*4 >= 32 means Cols >= 8.
 """
 
-from ptoas.mlir.ir import (
+from mlir.ir import (
     Attribute,
     Context,
     Location,
@@ -34,7 +34,7 @@ from ptoas.mlir.ir import (
     IntegerType,
     UnitAttr,
 )
-from ptoas.mlir.dialects import func, arith, pto
+from mlir.dialects import func, arith, pto
 
 
 # Tile shapes

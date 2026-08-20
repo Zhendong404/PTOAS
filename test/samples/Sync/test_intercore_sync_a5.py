@@ -7,8 +7,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from ptoas.mlir.ir import (
-    UnitAttr,
+from mlir.ir import (
     Context,
     F32Type,
     IndexType,
@@ -16,7 +15,7 @@ from ptoas.mlir.ir import (
     Location,
     Module,
 )
-from ptoas.mlir.dialects import arith, func, pto
+from mlir.dialects import arith, func, pto
 
 
 def build():
@@ -31,7 +30,6 @@ def build():
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a5", fn_ty)
-                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -48,7 +46,6 @@ def build():
                 sec_cube = pto.SectionCubeOp()
                 with InsertionPoint(sec_cube.body.blocks.append()):
                     pto.sync_set(pipe_fix, evt)
-                    pto.sync_set(pipe_fix, evt + 16)
 
                 sec_vec = pto.SectionVectorOp()
                 with InsertionPoint(sec_vec.body.blocks.append()):

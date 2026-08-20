@@ -1,12 +1,8 @@
 // RUN: ptoas %s | FileCheck %s
 
 module {
-  func.func @kernel(%arg0: !pto.ptr<f32>, %arg1: i32) attributes {pto.kernel} {
+  func.func @kernel(%arg0: !pto.ptr<f32>, %arg1: i32) attributes {pto.entry} {
     %0 = func.call @helper(%arg1) : (i32) -> i32
-    return
-  }
-
-  func.func @legacy_kernel(%arg0: !pto.ptr<f32>) attributes {pto.aicore} {
     return
   }
 
@@ -17,7 +13,6 @@ module {
   }
 }
 
-// CHECK-DAG: AICORE int32_t helper(
-// CHECK-DAG: __global__ AICORE void kernel(
-// CHECK-DAG: __global__ AICORE void legacy_kernel(
+// CHECK-LABEL: static AICORE int32_t helper(
+// CHECK-LABEL: __global__ AICORE void kernel(
 // CHECK: helper(
