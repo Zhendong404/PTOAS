@@ -223,8 +223,7 @@ from ptodsl import pto
 @pto.simt
 def write_tid(dst: pto.ptr(pto.i32, pto.MemorySpace.UB)):
     tid = pto.get_tid_x()
-    idx = scalar.index_cast(tid)
-    scalar.store(tid, dst, idx)
+    scalar.store(tid, dst, tid)
 
 
 @pto.jit(target="a5")

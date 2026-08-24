@@ -79,7 +79,7 @@ Use these rules when adding or classifying an interface:
   `index` retain the existing signed/floor convention and attach `signed`.
 - **Keep conversions unified:** source and destination types identify the
   conversion category and width; the `signedness` attribute identifies integer
-  interpretation. The same rule applies to `pto.index_cast`.
+  interpretation. The same rule applies to index/integer forms of `pto.cast`.
 - **Target-specific controls:** keep a separate interface when rounding,
   saturation, packed ABI, execution state, or another explicit control changes
   the observable contract.
@@ -178,7 +178,7 @@ that infrastructure as a prerequisite for frontend-interface completeness.
 | `arith.extf`, `arith.truncf` | `pto.ftof` | **Covered** | Floating format conversion supports fast-math; narrowing also supports an explicit rounding mode. |
 | `arith.sitofp`, `arith.uitofp` | `pto.itof signed/unsigned` | **Covered** | The required attribute selects integer interpretation. |
 | `arith.fptosi`, `arith.fptoui` | `pto.ftoi signed/unsigned` | **Covered** | The required attribute selects the destination integer range; conversion does not saturate. |
-| `arith.index_cast`, `arith.index_castui` | `pto.index_cast signed/unsigned` | **Covered** | One operation supports scalar and matching builtin-vector forms. |
+| `arith.index_cast`, `arith.index_castui` | `pto.cast` index/integer forms | **Covered** | The unified frontend form supports scalar and matching builtin-vector forms; no dedicated PTO index-cast op is needed. |
 | `arith.bitcast` | `pto.bitcast` | **Covered** | Equal-bit-width scalar and same-shape builtin-vector reinterpretation remains distinct from numeric conversion. |
 
 `arith.scaling_extf` and `arith.scaling_truncf` are not part of the LLVM 19
@@ -244,8 +244,9 @@ Completed in the scalar-surface unification implementation:
    behavior. `pto.maximum/minimum` remain the NaN-propagating variants.
 3. Kept comparison predicates type-independent and attached signedness
    separately for all integer and index comparisons.
-4. Unified signed and unsigned index conversion under `pto.index_cast` with a
-   required signedness attribute.
+4. Unified index/integer conversion under `pto.cast`; the frontend
+   derives signedness from the integer side and emits the corresponding
+   standard index conversion directly.
 5. Tightened all common integer carriers to signless `i*`; category conversion
    operations use signedness attributes instead of signed/unsigned carrier types.
 6. Added scalar-condition whole-vector `pto.select`.

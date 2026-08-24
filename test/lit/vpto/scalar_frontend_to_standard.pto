@@ -52,8 +52,8 @@ module attributes {pto.target_arch = "a5"} {
     %sqrt = pto.sqrt %log : f32 -> f32
     %wide = pto.ftof %half : f16 -> f32
     %selected = pto.select %cond, %sqrt, %wide : f32
-    %idx_i32 = pto.index_cast %idx signed : index -> i32
-    %roundtrip = pto.index_cast %idx_i32 signed : i32 -> index
+    %idx_i32 = arith.index_cast %idx : index to i32
+    %roundtrip = arith.index_cast %idx_i32 : i32 to index
       return %c0, %c1, %c2, %cf, %si_add, %ui_sub, %idx_mul, %f_add,
              %f_sub, %f_mul, %f_div, %si_div, %ui_div, %idx_div, %si_rem,
              %ui_rem, %bits_and, %bits_or, %bits_xor, %si_cmp, %ui_cmp,
@@ -192,9 +192,9 @@ module attributes {pto.target_arch = "a5"} {
       %sgt = pto.cmpi gt %si, %si_rhs signed : i32
       %ugt = pto.cmpi gt %ui, %ui_rhs unsigned : i32
       %whole = pto.select %cond, %values, %other_values : i1, vector<4xi32>
-      %signed_index = pto.index_cast %idx signed : index -> i32
-      %unsigned_index = pto.index_cast %idx unsigned : index -> i32
-      %vector_index = pto.index_cast %indices unsigned : vector<4xindex> -> vector<4xi32>
+      %signed_index = arith.index_cast %idx : index to i32
+      %unsigned_index = arith.index_castui %idx : index to i32
+      %vector_index = arith.index_castui %indices : vector<4xindex> to vector<4xi32>
       return %divsi, %divui, %floor, %ceilsi, %ceilui, %remsi, %remui,
              %shrsi, %shrui, %maxsi, %maxui, %minsi, %minui, %sgt, %ugt,
              %whole, %signed_index, %unsigned_index, %vector_index :

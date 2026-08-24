@@ -42,6 +42,7 @@ from .control_flow import (
 from .._types import _resolve, _strip_integer_signedness, int1
 from .module_builder import create_container_child_module
 
+from ptoas.mlir.dialects import arith
 from ptoas.mlir.dialects import func
 from ptoas.mlir.dialects import pto as _pto
 from ptoas.mlir.ir import (
@@ -1304,12 +1305,7 @@ def _coerce_i32_dim(value, *, context: str):
             attributes={"value": IntegerAttr.get(i32, raw_value)},
         ).results[0]
     if IndexType.isinstance(raw_value.type):
-        return Operation.create(
-            "pto.index_cast", results=[i32], operands=[raw_value],
-            attributes={
-                "signedness": Attribute.parse("#pto.signedness<signed>")
-            },
-        ).results[0]
+        return arith.IndexCastOp(i32, raw_value).result
     if IntegerType.isinstance(raw_value.type):
         width = IntegerType(raw_value.type).width
         if width != 32:

@@ -39,13 +39,15 @@ new `index` / integer mixed case at the individual operation emitter.
     result type.
 - Keep operation-specific emitters focused on operation lowering, not type
   reconciliation details.
-- Avoid backend changes. This is a PTODSL frontend refactor.
+- Keep `index`/integer conversion in the existing `pto.cast`
+  frontend surface; lower it directly to the appropriate standard `arith`
+  index cast instead of introducing a dedicated PTO operation.
 
 ## Non-Goals
 
-- Do not change PTO IR operation definitions or verifier behavior.
+- Do not change the semantics of ordinary numeric conversions.
 - Do not redesign signed/unsigned semantics.
-- Do not introduce a public user-facing API.
+- Do not introduce a second public index-cast API.
 - Do not change AST rewrite behavior.
 - Do not merge tile-template tracing's private `_Value(type_text)` prototype
   model into this helper. That path does not operate on the authored
@@ -99,6 +101,14 @@ Rules:
 - `float -> float` extends or truncates.
 - `float -> index/integer` and `index/integer -> float` remain invalid unless a
   future API explicitly asks for such a conversion.
+
+The public `pto.cast(value, dtype)` interface also accepts the
+`index <-> integer` pair. For `index -> unsigned integer`, it uses
+`arith.index_castui`; all other index/integer directions use
+`arith.index_cast`. The signedness comes from the integer side, and numeric
+conversion attributes do not apply to this type bridge. APIs whose semantic
+target is already `index` (such as pointer offsets, loop bounds, and memory
+access offsets) adapt integer runtime values automatically.
 
 ### Prefer Index
 

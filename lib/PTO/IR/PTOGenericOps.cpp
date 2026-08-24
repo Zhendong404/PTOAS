@@ -384,47 +384,6 @@ LogicalResult IToFOp::verify() {
                                       getSaturation(), getSignednessAttr());
 }
 
-static LogicalResult verifyIndexCast(Operation *op, Type srcType,
-                                     Type dstType) {
-  auto srcVector = dyn_cast<VectorType>(srcType);
-  auto dstVector = dyn_cast<VectorType>(dstType);
-  bool mixesScalarAndVector =
-      static_cast<bool>(srcVector) != static_cast<bool>(dstVector);
-  if (mixesScalarAndVector) {
-    return op->emitOpError() << "requires both types to be scalar or both to "
-                                "be builtin vectors; got "
-                             << srcType << " -> " << dstType;
-  }
-  if (srcVector &&
-      (srcVector.getShape() != dstVector.getShape() ||
-       srcVector.getScalableDims() != dstVector.getScalableDims())) {
-    return op->emitOpError() << "requires source and destination vectors to "
-                                "have the same shape; got "
-                             << srcType << " -> " << dstType;
-  }
-  Type srcElement = getElementTypeOrSelf(srcType);
-  Type dstElement = getElementTypeOrSelf(dstType);
-  bool convertsIndexToInteger =
-      isa<IndexType>(srcElement) && isa<IntegerType>(dstElement);
-  bool convertsIntegerToIndex =
-      isa<IntegerType>(srcElement) && isa<IndexType>(dstElement);
-  if (convertsIndexToInteger || convertsIntegerToIndex) {
-    return success();
-  }
-  return op->emitOpError() << "requires exactly one index element type and one "
-                              "integer element type; got "
-                           << srcType << " -> " << dstType;
-}
-
-LogicalResult IndexCastOp::verify() {
-  if (failed(rejectSemanticAttrs(
-          *this, {"fastmath", "roundingmode", "overflowFlags"}))) {
-    return failure();
-  }
-  return verifyIndexCast(getOperation(), getSrc().getType(),
-                         getDst().getType());
-}
-
 LogicalResult SelectOp::verify() {
   if (failed(rejectSemanticAttrs(*this, {"fastmath", "roundingmode",
                                          "overflowFlags", "signedness"}))) {

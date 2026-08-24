@@ -1234,7 +1234,7 @@ def dynamic_addr_tile_surface_probe(
     tile = pto.alloc_tile(
         shape=[1, 128],
         dtype=pto.f32,
-        addr=pto.index_cast(pto.i64, pto.index_cast(rows)),
+        addr=pto.cast(rows, pto.i64),
         valid_shape=[rows, cols],
     )
     _ = tile
@@ -1427,7 +1427,7 @@ def inline_simt_launch_dims_probe(
 ):
     with pto.simt(32, 2, 1):
         tid = pto.get_tid_x()
-        pto.stg(tid, gm, pto.index_cast(tid))
+        pto.stg(tid, gm, tid)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -1537,7 +1537,7 @@ def simt_collective_math_probe():
 def simt_memory_atomic_probe(
     gm: pto.ptr(pto.i32, "gm"),
 ):
-    idx = pto.index_cast(pto.get_tid_x())
+    idx = pto.get_tid_x()
     value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
     pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
     pto.stg(1, gm, idx)
@@ -1564,7 +1564,7 @@ def simt_fp8_ext_ldg_stg_probe(
     gm_f8e5x4: pto.ptr(pto.f8e5m2x4, "gm"),
     gm_f8e5x8: pto.ptr(pto.f8e5m2x8, "gm"),
 ):
-    idx = pto.index_cast(pto.get_tid_x())
+    idx = pto.get_tid_x()
     v_f8e4x4 = pto.ldg(gm_f8e4x4, idx)
     v_f8e4x8 = pto.ldg(gm_f8e4x8, idx)
     v_f8e5x4 = pto.ldg(gm_f8e5x4, idx)
@@ -1603,7 +1603,7 @@ def simt_keep_stage():
 @pto.simt
 def simt_resume_stage(gm: pto.ptr(pto.i32, "gm")):
     resumed = pto.resume(pto.i32, slot=0)
-    idx = pto.index_cast(pto.get_tid_x())
+    idx = pto.get_tid_x()
     pto.store(resumed, gm, idx)
 
 
@@ -5103,9 +5103,10 @@ def main() -> None:
     )
     for name in (
         "load", "store", "max", "min", "exp", "log", "sqrt", "abs",
-        "cast", "select", "index_cast",
+        "cast", "select",
     ):
         expect(hasattr(pto, name), f"pto.{name} should be exported from the unified public namespace")
+    expect(not hasattr(pto, "index_cast"), "pto.index_cast should be removed in favor of pto.cast")
     expect(not hasattr(__import__("ptodsl"), "scalar"), "ptodsl.scalar should not remain as a compatibility namespace")
 
     with make_context() as ctx, Location.unknown(ctx):
@@ -6392,15 +6393,15 @@ def main() -> None:
     dynamic_addr_tile_text = dynamic_addr_tile_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(dynamic_addr_tile_text, "dynamic alloc_tile addr specialization")
     expect(
-        "pto.index_cast %arg0 signed : i32 -> index" in dynamic_addr_tile_text,
-        "alloc_tile(addr=runtime integer metadata) should first bridge the public i32 scalar to index",
+        "arith.index_cast" in dynamic_addr_tile_text,
+        "alloc_tile runtime metadata should adapt valid-shape integers to index",
     )
     expect(
         re.search(
-            r"pto\.index_cast %[a-zA-Z0-9_]+ signed : index -> i64",
+            r"pto\.exti %[a-zA-Z0-9_]+ signed : i32 -> i64",
             dynamic_addr_tile_text,
         ) is not None,
-        "alloc_tile(addr=runtime index) should still cast the bridged index metadata to i64 before lowering",
+        "alloc_tile(addr=runtime integer metadata) should preserve the explicit fixed-width pto.cast",
     )
     expect(
         re.search(
@@ -6470,7 +6471,7 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(fixed_integer_index_coercion_text, "fixed integer index coercion specialization")
     expect(
         re.search(
-            r"pto\.index_cast %[a-zA-Z0-9_]+ signed : index -> i32",
+            r"arith\.index_cast %[a-zA-Z0-9_]+ : index to i32",
             fixed_integer_index_coercion_text,
         ) is not None,
         "fixed-width integer parameters should coerce runtime index values through shared scalar adaptation",
@@ -7573,8 +7574,8 @@ def main() -> None:
     runtime_scalar_text = runtime_scalar_operator_probe.compile(BLOCK=8).mlir_text()
     expect_parse_roundtrip_and_verify(runtime_scalar_text, "runtime scalar operator specialization")
     expect(
-        "pto.index_cast" in runtime_scalar_text,
-        "mixed i64/index runtime arithmetic should materialize pto.index_cast",
+        "arith.index_cast" in runtime_scalar_text,
+        "mixed i64/index runtime arithmetic should materialize an arith index cast",
     )
     expect(
         "pto.floordiv" in runtime_scalar_text and " signed :" in runtime_scalar_text,
@@ -7698,8 +7699,8 @@ def main() -> None:
     integer_loop_text = integer_loop_bound_probe.compile(BLOCK=8).mlir_text()
     expect_parse_roundtrip_and_verify(integer_loop_text, "integer loop bound specialization")
     expect(
-        integer_loop_text.count("pto.index_cast") >= 2,
-        "integer runtime loop bounds should be normalized to index with pto.index_cast",
+        integer_loop_text.count("arith.index_cast") >= 2,
+        "integer runtime loop bounds should be normalized to index with arith.index_cast",
     )
     expect(
         integer_loop_text.count("scf.for") == 2,
@@ -7981,7 +7982,7 @@ def main() -> None:
         "addptr(...) should lower one PTO addptr op per authored pointer-advance call",
     )
     expect(
-        "pto.index_cast" in addptr_surface_text,
+        "arith.index_cast" in addptr_surface_text,
         "addptr(ptr, i32-value) should coerce integer runtime scalars to index",
     )
     expect(
@@ -8035,7 +8036,7 @@ def main() -> None:
     scalar_store_coercion_text = scalar_store_element_coercion_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(scalar_store_coercion_text, "scalar store coercion specialization")
     expect(
-        scalar_store_coercion_text.count("pto.index_cast") >= 2,
+        scalar_store_coercion_text.count("arith.index_cast") >= 2,
         "pto.store(...) should coerce index runtime values to the destination integer element type",
     )
     expect(
@@ -8048,7 +8049,7 @@ def main() -> None:
     )
     expect(
         re.search(
-            r"(%\d+) = pto\.constant 0 : index\s+%\d+ = pto\.index_cast %\d+ signed : index -> i32\s+"
+            r"(%\d+) = pto\.constant 0 : index\s+%\d+ = arith\.index_cast %\d+ : index to i32\s+"
             r"pto\.store %\d+, %\d+\[\1\]",
             scalar_store_coercion_text,
         ) is not None,
@@ -8058,7 +8059,7 @@ def main() -> None:
     shared_index_coercion_text = shared_index_coercion_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(shared_index_coercion_text, "shared index coercion specialization")
     expect(
-        shared_index_coercion_text.count("pto.index_cast") >= 3,
+        shared_index_coercion_text.count("arith.index_cast") >= 3,
         "shared index coercion should cast one i32 value through loop bound, step, addptr, and event id paths",
     )
     expect("scf.for" in shared_index_coercion_text, "shared index coercion should lower i32 loop bounds to scf.for")
@@ -8589,7 +8590,7 @@ def main() -> None:
         "index & literal event id should stay in the index type domain",
     )
     expect(
-        "pto.index_cast" not in explicit_runtime_index_bitwise_event_text,
+        "arith.index_cast" not in explicit_runtime_index_bitwise_event_text,
         "index/literal bitwise event ids should not lower through fixed-width integer casts",
     )
     expect(
@@ -8601,7 +8602,7 @@ def main() -> None:
         "explicit pto.for_ index bitwise event id should lower to pto.set_flag_dyn",
     )
     expect(
-        explicit_runtime_index_integer_bitwise_event_text.count("pto.index_cast") >= 2,
+        explicit_runtime_index_integer_bitwise_event_text.count("arith.index_cast") >= 2,
         "index/integer bitwise event ids should coerce integer runtime scalars to index",
     )
     expect(
@@ -8734,7 +8735,7 @@ def main() -> None:
     expect("pto.vsldb" in data_movement_surface_text, "vsldb(...) should lower to pto.vsldb")
     expect("pto.vsstb" in data_movement_surface_text, "vsstb(...) should lower to pto.vsstb")
     expect(
-        re.search(r"pto\.index_cast %[a-zA-Z0-9_]+ signed : index -> i16", fixed_width_integer_text) is not None,
+        re.search(r"arith\.index_cast(?:ui)? %[a-zA-Z0-9_]+ : index to i16", fixed_width_integer_text) is not None,
         "vsldb/vsstb i16 operands should accept runtime index values through shared scalar adaptation",
     )
     expect(

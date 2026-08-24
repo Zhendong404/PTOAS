@@ -737,7 +737,7 @@ At the PTO micro Instruction level, these runtime-query ops are pure scalar prod
 %block = pto.get_block_idx
 %block_num = pto.get_block_num
 %block_len = pto.constant 2048 : index
-%base = pto.index_cast %block signed : i64 -> index
+%base = arith.index_cast %block : i64 to index
 %offset = pto.muli %base, %block_len : index
 %block_in = pto.addptr %gm_in, %offset : !pto.ptr<f32, gm> -> !pto.ptr<f32, gm>
 %block_out = pto.addptr %gm_out, %offset : !pto.ptr<f32, gm> -> !pto.ptr<f32, gm>
@@ -1421,7 +1421,7 @@ remain in Group 15.
 | Scalar and Builtin Vector Arithmetic | 14 | `pto.addi`, `pto.addf`, `pto.subi`, `pto.subf`, `pto.muli`, `pto.mulf`, `pto.negi`, `pto.negf`, `pto.divi`, `pto.divf`, `pto.floordiv`, `pto.ceildiv`, `pto.remi`, `pto.remf`, `pto.shl`, `pto.shr` |
 | Scalar Comparison / Bitwise | 14 | `pto.cmpi`, `pto.cmpf`, `pto.and`, `pto.or`, `pto.xor` |
 | PTO Scalar Extrema / Absolute Value | 14 | `pto.maxi`, `pto.maxf`, `pto.mini`, `pto.minf`, `pto.maximum`, `pto.minimum`, `pto.absi`, `pto.absf` |
-| PTO Scalar Conversion / Select | 14 | `pto.exti`, `pto.trunci`, `pto.ftof`, `pto.ftoi`, `pto.itof`, `pto.bitcast`, `pto.index_cast`, `pto.select` |
+| PTO Scalar Conversion / Select | 14 | `pto.exti`, `pto.trunci`, `pto.ftof`, `pto.ftoi`, `pto.itof`, `pto.bitcast`, `pto.select` |
 | PTO Scalar Floating Math | 14 | `pto.exp`, `pto.log`, `pto.sqrt`, `pto.pow`, `pto.fma` |
 | Kernel Execution Queries | 18 | `pto.get_block_idx`, `pto.get_subblock_idx`, `pto.get_block_num`, `pto.get_subblock_num` |
 | Typed Pointer / Address Operations | 18 | `pto.castptr`, `pto.addptr` |

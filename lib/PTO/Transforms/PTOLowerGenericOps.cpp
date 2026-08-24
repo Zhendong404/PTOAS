@@ -735,36 +735,6 @@ struct LowerFToFPattern final : OpRewritePattern<pto::FToFOp> {
   }
 };
 
-struct LowerIndexCastPattern final : OpRewritePattern<pto::IndexCastOp> {
-  using OpRewritePattern<pto::IndexCastOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(pto::IndexCastOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Type dstType = op.getDst().getType();
-    Value src = op.getSrc();
-    Type srcElement = getValueElementType(src.getType());
-    Type dstElement = getValueElementType(dstType);
-    Type loweredDst = dstType;
-    if (isa<IntegerType>(dstElement)) {
-      loweredDst = getSignlessIntegerType(rewriter, dstType);
-    }
-    if (isa<IntegerType>(srcElement)) {
-      src = stripIntegerSignedness(rewriter, loc, src);
-    }
-    Value result;
-    bool isUnsigned =
-        op.getSignednessAttr().getValue() == pto::Signedness::Unsigned;
-    if (isUnsigned) {
-      result = rewriter.create<arith::IndexCastUIOp>(loc, loweredDst, src);
-    } else {
-      result = rewriter.create<arith::IndexCastOp>(loc, loweredDst, src);
-    }
-    rewriter.replaceOp(op,
-                       castIntegerSignedness(rewriter, loc, result, dstType));
-    return success();
-  }
-};
-
 struct LowerValueBitcastPattern final : OpRewritePattern<pto::BitcastOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -878,7 +848,7 @@ struct PTOLowerGenericOpsPass final
         LowerMaximumPattern, LowerMinimumPattern, LowerAbsIPattern,
         LowerAbsFPattern, LowerExtIPattern, LowerTruncIPattern,
         LowerIToFPattern, LowerFToIPattern, LowerFToFPattern,
-        LowerIndexCastPattern, LowerSelectPattern, LowerValueBitcastPattern,
+        LowerSelectPattern, LowerValueBitcastPattern,
         LowerScalarMathPattern<pto::ExpOp, math::ExpOp>,
         LowerScalarMathPattern<pto::LogOp, math::LogOp>,
         LowerScalarMathPattern<pto::SqrtOp, math::SqrtOp>,

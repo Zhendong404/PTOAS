@@ -40,7 +40,7 @@ hardware-facing operation surface and are not accepted as common value types.
 | Comparison | `pto.cmpi`, `pto.cmpf` | matching integer/index or floating-point values |
 | Extrema | `pto.maxi`, `pto.maxf`, `pto.mini`, `pto.minf`, `pto.maximum`, `pto.minimum` | matching values of the operation's numeric category |
 | Absolute value | `pto.absi`, `pto.absf` | integer/index or floating-point value |
-| Conversion | `pto.exti`, `pto.trunci`, `pto.ftof`, `pto.ftoi`, `pto.itof`, `pto.bitcast`, `pto.index_cast` | compatible scalar or shape-preserving builtin-vector numeric types described below |
+| Conversion | `pto.exti`, `pto.trunci`, `pto.ftof`, `pto.ftoi`, `pto.itof`, `pto.bitcast` | compatible scalar or shape-preserving builtin-vector numeric types described below |
 | Selection | `pto.select` | scalar `i1` or same-shape builtin-vector `i1` condition and matching alternatives; scalar `i1` may select whole vectors |
 | Floating math | `pto.exp`, `pto.log`, `pto.sqrt`, `pto.pow`, `pto.fma` | supported floating-point values |
 
@@ -237,6 +237,19 @@ Scalar and builtin-vector forms share the same public numerical contract.
   these category operations through `pto.cast`, which carries explicit
   rounding or saturation controls when required.
 
+Index/integer adaptation is not a separate PTO value operation. The PTODSL
+`pto.cast` interface accepts these two type categories, and the resulting
+program uses the standard index conversion semantics:
+
+```mlir
+%offset = arith.index_cast %offset_i32 : i32 to index
+%count = arith.index_castui %count_idx : index to i64
+```
+
+The integer side determines signedness. `arith.index_castui` is used for an
+index-to-integer conversion whose integer destination is unsigned; all other
+index/integer directions use `arith.index_cast`.
+
 ```mlir
 %wide = pto.exti %small signed : i16 -> i32
 %half = pto.ftof %value : f32 -> f16
@@ -274,20 +287,6 @@ same-shape results.
 ```mlir
 %bits = pto.bitcast %value : f32 -> i32
 %values = pto.bitcast %bits4 : vector<4xi32> -> vector<4xf32>
-```
-
-### `pto.index_cast`
-
-- **Purpose:** Make a conversion between an `index` value and an integer value
-  explicit.
-- **Syntax:** `%result = pto.index_cast %value signedness : Src -> Dst`
-- **Constraints:** Exactly one of `Src` and `Dst` must be `index`; the other
-  must be an integer type. Integer-to-integer and index-to-index forms are
-  invalid.
-
-```mlir
-%offset = pto.index_cast %offset_i32 signed : i32 -> index
-%count = pto.index_cast %count_idx unsigned : index -> i64
 ```
 
 ### `pto.select`

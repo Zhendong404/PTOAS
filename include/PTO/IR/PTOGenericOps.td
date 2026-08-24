@@ -541,30 +541,6 @@ def PTO_IToFOp : PTO_GenericConversionOp<
   }];
 }
 
-def PTO_GenericIndexOrIntegerType : AnyTypeOf<[
-    AnySignlessInteger,
-    Index,
-    VectorOfAnyRankOf<[AnySignlessInteger, Index]>
-  ], "integer, index, or builtin vector thereof">;
-
-class PTO_GenericIndexCastBase<string mnemonic, string opSummary>
-    : PTO_GenericOp<mnemonic, [Pure]> {
-  let summary = opSummary;
-  let arguments = (ins
-    PTO_GenericIndexOrIntegerType:$src,
-    PTO_SignednessAttr:$signedness
-  );
-  let results = (outs PTO_GenericIndexOrIntegerType:$dst);
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    $src custom<Signedness>($signedness) attr-dict
-    `:` type($src) `->` type($dst)
-  }];
-}
-
-def PTO_IndexCastOp : PTO_GenericIndexCastBase<
-    "index_cast", "Signedness-aware conversion between index and integer values">;
-
 def PTO_SelectOp : PTO_GenericOp<"select", [
     Pure,
     AllTypesMatch<["true_value", "false_value", "result"]>
