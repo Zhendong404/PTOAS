@@ -398,17 +398,17 @@ vector for a single contiguous store:
 
 <!-- ptodsl-doc-pending: {"reason":"illustrative fragment; covered by test_jit_compile per-element Vec probes"} -->
 ```python
-v0 = scalar.load(ptr, index)
-v1 = scalar.load(ptr, index + 1)
+v0 = pto.load(ptr, index)
+v1 = pto.load(ptr, index + 1)
 pair = pto.Vec(pto.f32, 2, init=(v0, v1))
-scalar.store(pair, ptr, index)
+pto.store(pair, ptr, index)
 ```
 
 Vectors built with `pto.Vec(..., init=sequence)` or `pto.Vec(..., init=scalar)`
 always expose LLVM-compatible element types: signed / unsigned integer dtypes
 (`siN` / `uiN`) are built as same-width signless `iN` vectors, keeping the bit
 pattern (`pto.Vec(pto.ui32, 2, init=(a, b))` is a `vector<2xi32>`). In contrast,
-`scalar.load(..., contiguous=N)` keeps the declared pointer element type (a
+`pto.load(..., contiguous=N)` keeps the declared pointer element type (a
 `ui32` pointer yields a `vector<2xui32>`). Both store bit-compatibly to
 `siN`/`ui32` destinations, but elementwise `VecValue` arithmetic requires equal
 element types, so avoid mixing the two origins in one expression.

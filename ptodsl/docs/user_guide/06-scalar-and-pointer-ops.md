@@ -187,7 +187,7 @@ init=(...))` before storing; for example:
 
 ```python
 pair = pto.Vec(pto.f32, 2, init=(v0, v1))
-scalar.store(pair, ptr, offset)
+pto.store(pair, ptr, offset)
 ```
 
 Each `pto.Vec(..., init=sequence)` entry is coerced to the destination element
