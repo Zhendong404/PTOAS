@@ -1,0 +1,24 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Previously the packed FP4 pair types were rejected as VMI logical element
+// types ("packed FP4 ... not a supported VMI surface"). Since f4x2 is now a
+// first-class VMI element type (bf16x2 -> f4x2 vcvt), this is a positive test:
+// the vreg verifies OK and the function round-trips.
+
+// RUN: pto-test-opt %s -verify-diagnostics -split-input-file | FileCheck %s
+
+module {
+  func.func @vmi_fp4_packed_surface(
+      %arg0: !pto.vmi.vreg<256x!pto.f4E2M1x2>) -> !pto.vmi.vreg<256x!pto.f4E2M1x2> {
+    return %arg0 : !pto.vmi.vreg<256x!pto.f4E2M1x2>
+  }
+}
+
+// CHECK-LABEL: func.func @vmi_fp4_packed_surface
+// CHECK-NOT: error

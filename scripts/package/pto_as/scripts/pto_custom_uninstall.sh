@@ -1,4 +1,3 @@
-#!/bin/bash
 # --------------------------------------------------------------------------------
 # Copyright (c) 2025 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
@@ -53,3 +52,6 @@ if [ -z "$pto_kernel_version_dir" ]; then
         logandprint "[INFO]: Remove opapi softlinks successfully."
     fi
 fi
+
+
+

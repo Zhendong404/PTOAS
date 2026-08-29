@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IntegerType, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IntegerType, IndexType
 
 def build():
     with Context() as ctx:
@@ -50,6 +50,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_i8], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("tstore_fp_pass", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -63,7 +64,7 @@ def build():
 
                 acc_tile = pto.AllocTileOp(acc_tile_ty).result
                 fp_tile = pto.AllocTileOp(fp_tile_ty).result
-                pto.TStoreFPOp(acc_tile, fp_tile, sv)
+                pto.TStoreOp(None, acc_tile, sv, fp=fp_tile)
                 func.ReturnOp([])
 
             m.operation.verify()

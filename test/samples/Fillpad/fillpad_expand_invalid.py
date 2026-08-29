@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, InsertionPoint, Location, Module, MLIRError
-from mlir.dialects import func, pto
-from mlir.ir import F32Type
+from ptoas.mlir.ir import Context, InsertionPoint, Location, Module, MLIRError, UnitAttr
+from ptoas.mlir.dialects import func, pto
+from ptoas.mlir.ir import F32Type
 
 
 def build():
@@ -23,7 +23,6 @@ def build():
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
             pd = pto.PadValueAttr.get(pto.PadValue.Zero, ctx)
-
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             src_ty = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
@@ -32,12 +31,13 @@ def build():
             fn_ty = func.FunctionType.get([], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("fillpad_expand_invalid", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
                 src = pto.AllocTileOp(src_ty).result
                 dst = pto.AllocTileOp(dst_ty).result
-                pto.TFillPadExpandOp(src, dst)
+                pto.TFillPadOp(src, dst)
                 func.ReturnOp([])
 
             ok = m.operation.verify()

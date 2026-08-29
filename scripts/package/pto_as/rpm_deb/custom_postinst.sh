@@ -1,4 +1,3 @@
-#!/bin/bash
 # -----------------------------------------------------------------------------------------------------------
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
@@ -27,7 +26,7 @@
 # rpm -e / dpkg -r, so no extra cann_uninstall.sh entry or ascend_install.info record is
 # created here.
 #
-# What this script does: align installed file/dir permissions with the makeself run package's
+# What this script does: install the private PTOAS wheel runtime and align installed file/dir permissions with the makeself run package's
 # "install for all" mode (IS_FOR_ALL=y, root install), so the files are readable by every user.
 # The run package's pto_install.sh does this dynamically; rpm/deb have fixed permissions baked in at
 # pack time, so we replay the same mode bits here.
@@ -37,9 +36,9 @@
 #   package db file:                                 644
 #   directories:                                     755 (top-level + custom) or 555 (builtin subtrees)
 #
-# All commands tolerate missing paths (|| true) so a partial install or an unexpected layout never
-# breaks the postinst exit status -- the cann-cmake-generated postinst body runs under `set -e`, and a
-# single failing chmod/find here would otherwise abort the whole install with exit 1.
+# Permission cleanup is best-effort.  The CI placeholder package intentionally
+# has no wheel; pto_install_wheel treats that as a successful no-op.  A supplied
+# wheel is still validated and installed strictly.
 
 sourcedir="${INSTALL_PATH}"
 PTO_PLATFORM_DIR="pto_as"
@@ -48,6 +47,22 @@ ARCH_DIR="$(uname -m)-linux"
 
 # Only run when the install root actually exists.
 if [ -d "${INSTALL_ROOT}" ]; then
+
+    # Install a supplied wheel into the same private runtime used by the run
+    # package.  The helper skips cleanly when the placeholder package contains
+    # no wheel; when present, it selects exactly one wheel, installs it into
+    # tools/ptoas/python with --no-deps --target, and records the interpreter
+    # consumed by tools/ptoas/bin/ptoas.
+    PTOAS_COMMON="${INSTALL_ROOT}/share/info/${PTO_PLATFORM_DIR}/script/pto_common.sh"
+    if [ ! -r "${PTOAS_COMMON}" ]; then
+        echo "[pto-as] missing wheel runtime helper: ${PTOAS_COMMON}" >&2
+        exit 1
+    fi
+    . "${PTOAS_COMMON}"
+    if ! pto_install_wheel "${INSTALL_ROOT}" "${INSTALL_ROOT}/share/info/${PTO_PLATFORM_DIR}"; then
+        echo "[pto-as] failed to install PTOAS wheel runtime" >&2
+        exit 1
+    fi
 
     # 1. Builtin headers and scripts: align to 555.
     find "${INSTALL_ROOT}/${ARCH_DIR}/include" -type f ! -name "pto_as_version.h" 2>/dev/null -exec chmod 555 {} + 2>/dev/null || true

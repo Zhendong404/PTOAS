@@ -1,14 +1,17 @@
 if(NOT PROJECT_SOURCE_DIR)
+    # Temporary test pin for cann/cmake MR !277. Revert this URL/ref pair
+    # after validation and switch to the released cann/cmake tag once MR !277
+    # is merged.
     if(CANN_3RD_LIB_PATH AND IS_DIRECTORY "${CANN_3RD_LIB_PATH}/cann-cmake")
         include("${CANN_3RD_LIB_PATH}/cann-cmake/function/prepare.cmake")
     else()
         set(CANN_CMAKE_GIT_URL "$ENV{CANN_CMAKE_GIT_URL}" CACHE STRING "CANN cmake repository URL")
         set(CANN_CMAKE_GIT_REF "$ENV{CANN_CMAKE_GIT_REF}" CACHE STRING "CANN cmake repository ref")
         if(NOT CANN_CMAKE_GIT_URL)
-            set(CANN_CMAKE_GIT_URL "https://gitcode.com/cann/cmake.git")
+            set(CANN_CMAKE_GIT_URL "https://gitcode.com/zoujiangjiang/cmake.git")
         endif()
         if(NOT CANN_CMAKE_GIT_REF)
-            set(CANN_CMAKE_GIT_REF "master-042")
+            set(CANN_CMAKE_GIT_REF "fe/llvm-vpto-patch")
         endif()
         if(CMAKE_SCRIPT_MODE_FILE)
             if(NOT CANN_3RD_LIB_PATH)
@@ -33,7 +36,7 @@ if(NOT PROJECT_SOURCE_DIR)
 
         include(FetchContent)
 
-        set(CANN_CMAKE_TAG "master-042")
+        set(CANN_CMAKE_TAG "pr277")
         if(CANN_3RD_LIB_PATH AND EXISTS "${CANN_3RD_LIB_PATH}/cmake-${CANN_CMAKE_TAG}.tar.gz")
             FetchContent_Declare(
                 cann-cmake

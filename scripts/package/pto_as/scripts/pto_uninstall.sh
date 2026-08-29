@@ -157,6 +157,11 @@ get_installed_param() {
 }
 
 remove_module() {
+  # TARGET_MOULDE_DIR is <version-root>/share/info/pto_as; wheel runtime lives
+  # under the actual version root, not beneath share/info.
+  local pto_version_root
+  pto_version_root=$(readlink -f "${TARGET_MOULDE_DIR}/../../..")
+  pto_uninstall_wheel "${pto_version_root}" "${TARGET_MOULDE_DIR}"
   chmod u+w ${TARGET_MOULDE_DIR}/scene.info
 
   logandprint "[INFO]: Delete the installed pto source files in (${TARGET_VERSION_DIR})."

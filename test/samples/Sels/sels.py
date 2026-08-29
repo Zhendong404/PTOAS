@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, IntegerType
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, IntegerType, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IndexType
 
 def build():
     with Context() as ctx:
@@ -34,6 +34,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("sels_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -64,8 +65,8 @@ def build():
                 pto.TLoadOp(None, sv0, tb0)  # result=None
                 pto.TLoadOp(None, sv1, tb1)  # result=None
 
-                # TSELS(mask=tb0, src=tb1, tmp=tb2, scalar=c64)
-                pto.TSelSOp(tb0, tb1, tb2, c64, tb2)
+                # TSELS(mask=tb0, src=tb1, dst=tb2, tmp=tb2, scalar=c64)
+                pto.TSelSOp(tb0, tb1, c64, tb2, tmp=tb2)
 
                 # %8 = subview on output tensor_view
                 sv2 = pto.PartitionViewOp(tile_view_32, tv2, offsets=[c0, c0], sizes=[c32, c32]).result

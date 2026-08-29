@@ -74,6 +74,27 @@ ls $PTO_ISA_ROOT/tests/common
 
 建议直接使用当前 CI pin 的版本，避免本地和 CI 结果不一致。
 
+### 2.3 维护 pto-isa pin
+
+仓库按 remote 和兼容环境维护三个独立 target，不能把同一个 SHA 跨 target 广播：
+
+- `gitcode-default`：`.github/workflows/ci.yml`、`docker/Dockerfile`、本文档和 remote validation；每周 workflow 自动更新。
+- `github-ci-sim`：`.github/workflows/ci_sim.yml`；按 CPU simulator 兼容性手动更新。
+- `cann90-dev`：`docker/Dockerfile.dev`；按 CANN 9.0 开发镜像兼容性手动更新。
+
+手动更新时必须显式指定 target。脚本会在对应 remote 上验证候选 commit 是当前 pin
+的后继或相同 revision，拒绝回退和跨 remote SHA：
+
+```bash
+python3 .github/scripts/update_pto_isa_pin.py --target gitcode-default --commit <gitcode-sha>
+python3 .github/scripts/update_pto_isa_pin.py --target github-ci-sim --commit <github-sha>
+python3 .github/scripts/update_pto_isa_pin.py --target cann90-dev --commit <gitcode-cann90-sha>
+python3 .github/scripts/update_pto_isa_pin_test.py
+```
+
+`update_pto_isa_pin.yml` 只自动驱动 `gitcode-default`。另外两个 target 有意保持手动，
+避免 GitCode、GitHub CPU simulator 和 CANN 9.0 的兼容性边界被一次定时更新混在一起。
+
 ## 3. 单个 case 的 compile-only
 
 ### 3.1 A3 示例
@@ -168,7 +189,7 @@ cmake --build build --parallel
 ```bash
 export PAYLOAD_ROOT=/tmp/ptoas_payload
 export TARGET_SOC_VERSION=Ascend910
-export PTO_ISA_COMMIT=893e4b00a826231e776539512b5b17f82fc11838
+export PTO_ISA_COMMIT=27386d906e8fdcbd93aec84197939bc0b2c6caea
 
 rm -rf "$PAYLOAD_ROOT"
 mkdir -p "$PAYLOAD_ROOT/test/samples"
@@ -187,7 +208,7 @@ export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
 export PTOBC_BIN=$PWD/build/tools/ptobc/ptobc
 export PYTHON_BIN=/usr/bin/python3
 export PTOAS_OUT_DIR="$PAYLOAD_ROOT/test/samples"
-export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTO_INSTALL_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$PTO_INSTALL_DIR:${PYTHONPATH:-}"
 export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
 export SOC_VERSION="$TARGET_SOC_VERSION"
 
@@ -220,7 +241,7 @@ export STAGE=build
 export RUN_MODE=npu
 export SOC_VERSION="$TARGET_SOC_VERSION"
 export PTO_ISA_REPO=https://gitcode.com/cann/pto-isa.git
-export PTO_ISA_COMMIT=893e4b00a826231e776539512b5b17f82fc11838
+export PTO_ISA_COMMIT=27386d906e8fdcbd93aec84197939bc0b2c6caea
 
 # 参照 CI 的做法，按目标 SoC 排除非匹配的 A3/A5 变体。
 A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync"

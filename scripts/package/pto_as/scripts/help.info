@@ -1,4 +1,3 @@
-  --check-path=<path>               Specific the path of fwkacllib or atc to verify the relationships.
   --version                         Query the package version
   --pre-check                       Package installation/running pre-dependency check
   --run | --full | --devel          Install run | full | devel mode
@@ -18,3 +17,6 @@
     --install-for-all               Install for all user
     --quiet                         Quiet install mode, skip human-computer interactions
     --setenv                        Setting the Environment Variables Required at Run Time
+
+
+

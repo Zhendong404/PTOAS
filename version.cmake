@@ -18,3 +18,6 @@ set_cann_run_dependencies(ge-executor "CUR_MAJOR_MINOR_VER")
 set_cann_run_dependencies(bisheng-compiler "CUR_MAJOR_MINOR_VER")
 set_cann_run_dependencies(asc-tools "CUR_MAJOR_MINOR_VER")
 set_cann_run_dependencies(ge-compiler "CUR_MAJOR_MINOR_VER")
+
+
+

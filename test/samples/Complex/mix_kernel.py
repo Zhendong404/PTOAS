@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, Attribute, IntegerType
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, Attribute, IntegerType, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IndexType
 
 
 def build(M=32, N=32, K=32, TM=32, TN=32, TK=32):
@@ -64,6 +64,7 @@ def build(M=32, N=32, K=32, TM=32, TN=32, TK=32):
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("vector_cube_mixed_kernel", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -131,7 +132,7 @@ def build(M=32, N=32, K=32, TM=32, TN=32, TK=32):
                 pto.TLoadOp(None, sv_out, ubTile)
 
                 # pto.trowmax ins(%src, %tmp) outs(%dst)
-                pto.TRowMaxOp(ubTile, ubTmpTile, ubReduceTile)
+                pto.TRowMaxOp(ubTile, ubReduceTile, tmp=ubTmpTile)
                 pto.TStoreOp(None, ubReduceTile, sv_reduce)
 
                 func.ReturnOp([])

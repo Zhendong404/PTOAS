@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType, IntegerType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IndexType, IntegerType
 
 
 def build():
@@ -42,6 +42,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_i8, ptr_f32, ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("Sel_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -76,7 +77,7 @@ def build():
                 pto.TLoadOp(None, sv2, tb2)  # result=None
 
                 # pto.tsel ins(%mask,%src0,%src1,%tmp) outs(%dst)
-                pto.TSelOp(tb0, tb1, tb2, tb_tmp, tb3)
+                pto.TSelOp(tb0, tb1, tb2, tb3, tmp=tb_tmp)
 
                 # %8 = subview on output tensor_view
                 sv3 = pto.PartitionViewOp(tile_view_f32, tv3, offsets=[c0, c0], sizes=[c32, c32]).result

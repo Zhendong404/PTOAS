@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint
-from mlir.dialects import func, arith, pto
-from mlir.ir import IntegerType, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import IntegerType, IndexType
 
 
 def build():
@@ -35,6 +35,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_i16, ptr_i16], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("xor_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -63,8 +64,8 @@ def build():
                 pto.TLoadOp(None, sv_src0, tb_src0)  # result=None
                 pto.TLoadOp(None, sv_src1, tb_src1)
 
-                pto.TXorOp(tb_src0, tb_src1, tb_tmp, tb_dst)
-                pto.TXorOp(tb_src0, tb_src1, tb_dst, tb_dst)
+                pto.TXorOp(tb_src0, tb_src1, tb_dst, tmp=tb_tmp)
+                pto.TXorOp(tb_src0, tb_src1, tb_dst, tmp=tb_dst)
 
                 # output subview
                 sv_dst = pto.PartitionViewOp(tile_view_32, tv_dst, offsets=[c0, c0], sizes=[c32, c32]).result

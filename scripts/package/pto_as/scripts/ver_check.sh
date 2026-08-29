@@ -1,4 +1,3 @@
-#!/bin/bash
 # --------------------------------------------------------------------------------
 # Copyright (c) 2025 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
@@ -171,3 +170,6 @@ version_check() {
 
 version_check "${req_ver_path}"
 exit 0
+
+
+

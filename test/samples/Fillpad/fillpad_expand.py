@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, InsertionPoint, Location, Module
-from mlir.dialects import arith, func, pto
-from mlir.ir import F32Type, IndexType
+from ptoas.mlir.ir import Context, InsertionPoint, Location, Module, UnitAttr
+from ptoas.mlir.dialects import arith, func, pto
+from ptoas.mlir.ir import F32Type, IndexType
 
 
 def build():
@@ -28,7 +28,6 @@ def build():
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
             pd = pto.PadValueAttr.get(pto.PadValue.Zero, ctx)
-
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
             tile_buf_32_16 = pto.TileBufType.get([32, 16], f32, vec, [32, 16], cfg, ctx)
@@ -37,6 +36,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("fillpad_expand_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -61,7 +61,7 @@ def build():
                 dst_tb = pto.AllocTileOp(tile_buf_32_32).result
 
                 pto.TLoadOp(None, src_sv, src_tb)
-                pto.TFillPadExpandOp(src_tb, dst_tb)
+                pto.TFillPadOp(src_tb, dst_tb)
                 pto.TStoreOp(None, dst_tb, dst_sv)
 
                 func.ReturnOp([])

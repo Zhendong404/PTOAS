@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
 # --------------------------------------------------------------------------------
 # Copyright (c) 2025 Huawei Technologies Co., Ltd.
@@ -794,3 +793,6 @@ if __name__ == "__main__":
         CommLog.cilog_info("%s", traceback.format_exc())
         status = FAIL
     sys.exit(status)
+
+
+

@@ -624,6 +624,9 @@ install_pto() {
     "${INSTALL_TYPE}" "${TARGET_INSTALL_PATH}" "${FILELIST_FILE}"
   log_with_errorlevel "$?" "error" "[ERROR]: ERR_NO:${INSTALL_FAILED};ERR_DES:Install pto module files failed."
 
+  pto_install_wheel "${TARGET_VERSION_DIR}" "${TARGET_MOULDE_DIR}"
+  log_with_errorlevel "$?" "error" "[ERROR]: ERR_NO:${INSTALL_FAILED};ERR_DES:Install PTOAS private wheel failed."
+
   # Removed lib directory from package root
   if [ -d "${TARGET_VERSION_DIR}/lib" ]; then
     rm -rf "${TARGET_VERSION_DIR}/lib"

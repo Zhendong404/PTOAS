@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -120,7 +121,10 @@ get_installed_info() {
 
 clean_before_reinstall() {
   local installed_path=$(get_installed_info "${KEY_INSTALLED_PATH}")
-  local existed_files=$(find ${TARGET_MOULDE_DIR} -type f -print 2>/dev/null)
+  local existed_files=""
+  if [ -d "${TARGET_MOULDE_DIR}" ]; then
+    existed_files=$(find "${TARGET_MOULDE_DIR}" -type f -print 2>/dev/null)
+  fi
   if [ -z "${existed_files}" ]; then
     logandprint "[INFO]: Directory is empty, directly install pto module."
     return 0
@@ -352,7 +356,7 @@ check_install_path() {
   if [ x"${temp_path}" = "x" ]; then
     temp_path="/"
   fi
-  # covert relative path to absolute path
+  # convert relative path to absolute path
   local prefix=$(echo "${temp_path}" | cut -d"/" -f1 | cut -d"~" -f1)
   if [ "x${prefix}" = "x" ]; then
     TARGET_INSTALL_PATH="${temp_path}"
@@ -366,7 +370,7 @@ check_install_path() {
       exit 1
     fi
   fi
-  # covert '~' to home path
+  # convert '~' to home path
   local home=$(echo "${TARGET_INSTALL_PATH}" | cut -d"~" -f1)
   if [ "x${home}" = "x" ]; then
     local temp_path_value=$(echo "${TARGET_INSTALL_PATH}" | cut -d"~" -f2)
@@ -584,6 +588,8 @@ init_env() {
     TARGET_VERSION_DIR=${temp_path_val}${TARGET_VERSION_DIR}
   fi
 
+  TARGET_MOULDE_DIR="${TARGET_VERSION_DIR}/${PTO_PLATFORM_DIR}"
+
   UNINSTALL_SHELL_FILE="${TARGET_VERSION_DIR}/share/info/pto_as/script/pto_uninstall.sh"
   INSTALL_INFO_FILE="${TARGET_VERSION_DIR}/share/info/pto_as/${ASCEND_INSTALL_INFO}"
   is_multi_version_pkg "pkg_is_multi_version" "$VERSION_INFO_FILE"
@@ -691,8 +697,10 @@ install_package() {
 
   bash "${INSTALL_SHELL_FILE}" "${TARGET_INSTALL_PATH}" "${TARGET_USERNAME}" "${TARGET_USERGROUP}" "${IN_FEATURE}" \
     "${IN_INSTALL_TYPE}" "${IS_FOR_ALL}" "${IS_SETENV}" "${IS_DOCKER_INSTALL}" "${DOCKER_ROOT}" "$pkg_version_dir"
-  if [ "$?" != 0 ]; then
-    comm_log_operation "Install" "${IN_INSTALL_TYPE}" "PTO" "$?" "${CMD_LIST}"
+  local install_ret="$?"
+  if [ "${install_ret}" != 0 ]; then
+    comm_log_operation "Install" "${IN_INSTALL_TYPE}" "PTO" "${install_ret}" "${CMD_LIST}"
+    return "${install_ret}"
   fi
   if [ $(id -u) -eq 0 ]; then
     chown -R "root":"root" "${TARGET_MOULDE_DIR}/script" 2>/dev/null
@@ -701,7 +709,8 @@ install_package() {
     chmod -R 550 "${TARGET_MOULDE_DIR}/script" 2>/dev/null
     chmod 440 "${TARGET_MOULDE_DIR}/script/filelist.csv" 2>/dev/null
   fi
-  comm_log_operation "Install" "${IN_INSTALL_TYPE}" "PTO" "$?" "${CMD_LIST}"
+  comm_log_operation "Install" "${IN_INSTALL_TYPE}" "PTO" "${install_ret}" "${CMD_LIST}"
+  return "${install_ret}"
 }
 
 uninstall_package() {
@@ -747,11 +756,19 @@ main() {
 
   init_env
 
+  if [ "${IS_UPGRADE}" = "y" ] && [ -z "${IN_INSTALL_TYPE}" ]; then
+    IN_INSTALL_TYPE=$(get_installed_info "${KEY_INSTALLED_TYPE}")
+  fi
+
   check_pre_install
 
   mkdir_install_path
 
   install_package
+  install_ret="$?"
+  if [ "${install_ret}" != 0 ]; then
+    exit "${install_ret}"
+  fi
 
   uninstall_package
 

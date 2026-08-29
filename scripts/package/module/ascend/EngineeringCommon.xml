@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <block name="EngineeringCommon" install_own="$username:$usergroup" install_mod="440" install_type="all">
     <dir_info value="common" install_mod="550">
         <path value="$(TARGET_ENV)"/>
@@ -12,3 +11,6 @@
         <path value="var" install_mod="750"/>
     </dir_info>
 </block>
+
+
+

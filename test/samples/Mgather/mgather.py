@@ -6,9 +6,11 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, StringAttr
-from mlir.dialects import func, arith, pto
-from mlir.ir import IndexType, IntegerType
+import os
+
+from ptoas.mlir.ir import Attribute, Context, Location, Module, InsertionPoint, StringAttr, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import IndexType, IntegerType
 
 
 def build():
@@ -17,7 +19,10 @@ def build():
 
         with Location.unknown(ctx):
             m = Module.create()
-            m.operation.attributes["pto.target_arch"] = StringAttr.get("a5")
+            # partition_view -> MGATHER reproduces issue #1165 on both A3 and A5.
+            # runop.sh threads the resolved arch in via PTOAS_SAMPLE_ARCH.
+            arch = os.environ.get("PTOAS_SAMPLE_ARCH", "a5")
+            m.operation.attributes["pto.target_arch"] = StringAttr.get(arch)
 
             i32 = IntegerType.get_signless(32, ctx)
             ptr_i32 = pto.PtrType.get(i32, ctx)
@@ -37,6 +42,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_i32, ptr_i32, ptr_i32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("mgather_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -58,7 +64,9 @@ def build():
                 tb2 = pto.AllocTileOp(tile_buf_data_i32).result
 
                 pto.TLoadOp(None, sv1, tb1)
-                pto.MGatherOp(sv0, tb1, tb2)
+                pto.MGatherOp(
+                    sv0, tb1, tb2,
+                    coalesce=Attribute.parse("#pto<coalesce row>"))
 
                 sv2 = pto.PartitionViewOp(tile_view_32, tv2, offsets=[c0, c0], sizes=[c32, c32]).result
                 pto.TStoreOp(None, tb2, sv2)
