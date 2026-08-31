@@ -26,7 +26,6 @@ export BASE_PATH=$(
   cd "$(dirname $0)"
   pwd
 )
-
 export BUILD_PATH="${BASE_PATH}/build"
 export BUILD_OUT_PATH="${BASE_PATH}/build_out"
 export INSTALL_PATH="${BASE_PATH}/install"
