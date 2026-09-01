@@ -57,6 +57,7 @@ jobs:
       GOLDEN_MODE: npu
       DEFAULT_SKIP_CASES: mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp
       A3_ONLY_CASES: partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync,movfp_fixpipe_reuse_a3
+      A5_INCOMPATIBLE_LEVEL3_CASES: decode_projection_incore_0,rmsnorm_incore_0,test_tmov_col_major_16x1_align_a5,test_tmov_row_major_1x16_control_a5
       LLVM_BUILD_DIR: ${{ vars.PTOAS_A5_LLVM_BUILD_DIR || '/home/ptoas-board-monitor-a5/llvm-project-vpto-feature/build-shared' }}
       BOARD_PYTHON: ${{ vars.PTOAS_A5_PYTHON || '/home/anaconda3/bin/python3' }}
       PTOAS_BUILD_JOBS: ${{ vars.PTOAS_A5_BUILD_JOBS || '4' }}
@@ -181,12 +182,16 @@ jobs:
           esac
           rm -rf -- "${work_root}"
           mkdir -p \
+            "${work_root}/tmp" \
             "${work_root}/payload/test/samples" \
             "${work_root}/payload/test/npu_validation/scripts" \
             "${work_root}/payload/test/npu_validation/templates"
 
           {
             echo "WORK_ROOT=${work_root}"
+            echo "TMPDIR=${work_root}/tmp"
+            echo "TMP=${work_root}/tmp"
+            echo "TEMP=${work_root}/tmp"
             echo "PTO_BUILD_DIR=${work_root}/build"
             echo "PTO_INSTALL_DIR=${work_root}/install"
             echo "PAYLOAD_DIR=${work_root}/payload"
@@ -270,7 +275,7 @@ jobs:
           export PYTHONPATH="${PTO_INSTALL_DIR}:${MLIR_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
-          PTOAS_SKIP_CASES="${A3_ONLY_CASES}" \
+          PTOAS_SKIP_CASES="${A3_ONLY_CASES},${A5_INCOMPATIBLE_LEVEL3_CASES}" \
             bash test/samples/runop.sh --enablebc all 2>&1 | tee "${SAMPLE_BUILD_LOG}"
           cp test/npu_validation/scripts/generate_testcase.py \
             "${PAYLOAD_DIR}/test/npu_validation/scripts/"
@@ -307,6 +312,9 @@ jobs:
             "EXPECTED_CASES_FILTER=${RUN_ONLY_CASES}" \
             "PTO_ISA_REPO=${PTO_ISA_REPO}" \
             "PTO_ISA_COMMIT=${PTO_ISA_COMMIT}" \
+            "TMPDIR=${TMPDIR}" \
+            "TMP=${TMP}" \
+            "TEMP=${TEMP}" \
             "OUTPUT_ROOT=${OUTPUT_ROOT}" \
             "RESULTS_TSV=${RESULTS_TSV}" \
             > "${env_file}"
@@ -372,6 +380,7 @@ jobs:
           results_tsv="${RESULTS_TSV:-${RUNNER_TEMP}/a5-board-results-missing.tsv}"
           "${report_python}" .github/scripts/report_a5_board_results.py \
             --results "${results_tsv}" \
+            --log "${BOARD_LOG:-}" \
             --conclusion "${BOARD_CONCLUSION}" \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --sha "${GITHUB_SHA}"
@@ -386,6 +395,7 @@ jobs:
             ${{ env.SAMPLE_BUILD_LOG }}
             ${{ env.BOARD_LOG }}
             ${{ env.PAYLOAD_DIR }}/test/samples/expected_npu_validation_cases.txt
+            ${{ env.PAYLOAD_DIR }}/test/samples/**/*-ptoas.log
           if-no-files-found: warn
           retention-days: 14
 

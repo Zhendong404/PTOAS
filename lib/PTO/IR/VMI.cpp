@@ -562,6 +562,72 @@ static LogicalResult verifyMemoryElementMatches(Operation *op, Type memoryType,
   return success();
 }
 
+// 8->16 gather promotion is a zero-extension (unsigned) operation. signless
+// i8/i16 are accepted and treated as unsigned bytes; sign-extension is not
+// supported (see VMIVgatherOp / Vgather2Op description).
+static bool isVMI8To16GatherPair(Type sourceElemType, Type resultElemType) {
+  auto srcInt = dyn_cast<IntegerType>(sourceElemType);
+  auto resInt = dyn_cast<IntegerType>(resultElemType);
+  if (!srcInt || !resInt ||
+      srcInt.getWidth() != mlir::pto::kValue8 ||
+      resInt.getWidth() != mlir::pto::kValue16) {
+    return false;
+  }
+  if (srcInt.isUnsigned()) {
+    return resInt.isUnsigned();
+  }
+  return !resInt.isUnsigned();
+}
+
+static LogicalResult verifyGatherMemoryElementMatches(
+    Operation *op, Type memoryType, VMIVRegType dataType, StringRef role) {
+  Type memoryElementType = getMemoryElementType(memoryType);
+  if (!memoryElementType) {
+    return success();
+  }
+  if (memoryElementType == dataType.getElementType()) {
+    return success();
+  }
+  if (isVMI8To16GatherPair(memoryElementType, dataType.getElementType())) {
+    return success();
+  }
+  return op->emitOpError()
+         << "requires memory " << role
+         << " element type to match VMI data element type"
+            " or be an 8-bit integer promoted to a matching 16-bit integer";
+}
+
+static bool isSameWidth16BitGatherPair(Type sourceElemType,
+                                       Type resultElemType) {
+  // Existing VMI f16/bf16 path: same-width 16-bit float gather.
+  if (sourceElemType == resultElemType &&
+      (sourceElemType.isF16() || sourceElemType.isBF16())) {
+    return true;
+  }
+  auto srcInt = dyn_cast<IntegerType>(sourceElemType);
+  auto resInt = dyn_cast<IntegerType>(resultElemType);
+  // Existing VMI ui16/i16 path: same-width 16-bit integer gather with matching
+  // integer semantics (signless i16 / i16 is accepted as the non-unsigned side).
+  if (!srcInt || !resInt ||
+      srcInt.getWidth() != mlir::pto::kValue16 ||
+      resInt.getWidth() != mlir::pto::kValue16) {
+    return false;
+  }
+  if (srcInt.isUnsigned()) {
+    return resInt.isUnsigned();
+  }
+  return !resInt.isUnsigned();
+}
+
+static bool isSupported16BitGatherResult(Type sourceElemType,
+                                         Type resultElemType) {
+  // New 8 -> 16 path: i8/ui8 -> i16/ui16 with matching integer semantics.
+  if (isVMI8To16GatherPair(sourceElemType, resultElemType)) {
+    return true;
+  }
+  return isSameWidth16BitGatherPair(sourceElemType, resultElemType);
+}
+
 static LogicalResult verifyContiguousIfLayoutAssigned(Operation *op,
                                                       VMIVRegType type,
                                                       StringRef role) {
@@ -813,7 +879,7 @@ lookupVMIFpToFpContract(Type srcElem, Type dstElem) {
     return VMIFpToFpContract{/*requiresRnd=*/false, /*requiresSat=*/false,
                             /*requiresPart=*/true,
                             /*allowedRndModes=*/StringRef()};
-}
+  }
   if (srcBits != dstBits) {
     return std::nullopt;
   }
@@ -822,7 +888,15 @@ lookupVMIFpToFpContract(Type srcElem, Type dstElem) {
     return VMIFpToFpContract{/*requiresRnd=*/true, /*requiresSat=*/true,
                             /*requiresPart=*/false,
                             /*allowedRndModes=*/StringRef()};
-}
+  }
+  // f16 -> bf16: same-width, rnd, NO sat, no part.
+  bool srcIsF16 = srcElem.isF16();
+  bool dstIsBF16 = dstElem.isBF16();
+  if (srcIsF16 && dstIsBF16) {
+    return VMIFpToFpContract{/*requiresRnd=*/true, /*requiresSat=*/false,
+                            /*requiresPart=*/false,
+                            /*allowedRndModes=*/StringRef()};
+  }
   return std::nullopt;
 }
 
@@ -2304,11 +2378,19 @@ LogicalResult VMISIToFPOp::verify() {
   if (!isVMIFloatLikeType(resultType.getElementType())) {
     return emitOpError("requires floating-point-like result element type");
   }
-  if (getVMIElementBitWidth(sourceType.getElementType()) != mlir::pto::kValue32) {
-    return emitOpError("requires 32-bit integer source element type");
-  }
-  if (!resultType.getElementType().isF32()) {
-    return emitOpError("requires f32 result element type");
+  unsigned srcBits = getVMIElementBitWidth(sourceType.getElementType());
+  if (srcBits == mlir::pto::kValue32) {
+    if (!resultType.getElementType().isF32()) {
+      return emitOpError("requires f32 result element type for 32-bit "
+                         "integer source");
+    }
+  } else if (srcBits == mlir::pto::kValue8) {
+    if (!resultType.getElementType().isF16()) {
+      return emitOpError("requires f16 result element type for 8-bit "
+                         "integer source");
+    }
+  } else {
+    return emitOpError("supports only si32 -> f32 or si8 -> f16");
   }
   return success();
 }
@@ -2582,7 +2664,7 @@ LogicalResult VMIGatherOp::verify() {
   auto maskType = cast<VMIMaskType>(getMask().getType());
   auto passthruType = cast<VMIVRegType>(getPassthru().getType());
   auto resultType = cast<VMIVRegType>(getResult().getType());
-  if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
+  if (failed(verifyGatherMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source"))) {
     return failure();
   }
@@ -2609,13 +2691,13 @@ LogicalResult VMIGatherOp::verify() {
     return failure();
   }
 
-  auto resultIntegerType = dyn_cast<IntegerType>(resultType.getElementType());
   if (indexElementType.getWidth() == mlir::pto::kValue16 &&
-      (!resultIntegerType || !resultIntegerType.isUnsigned() ||
-       resultIntegerType.getWidth() != mlir::pto::kValue16)) {
+      !isSupported16BitGatherResult(
+          getMemoryElementType(getSource().getType()),
+          resultType.getElementType())) {
     return emitOpError(
-        "requires ui16 result and passthru element type when using ui16 "
-        "indices");
+        "requires i16/ui16/f16/bf16 result and passthru element type when "
+        "using ui16 indices, or i8/ui8 -> i16/ui16 integer promotion");
   }
   return verifyMaskMatchesData(getOperation(), maskType, resultType);
 }
@@ -3219,8 +3301,12 @@ static bool isSupportedVCmpPredicate(StringRef cmpMode) {
 //===----------------------------------------------------------------------===//
 
 static const std::set<StringRef> &validDistModes() {
-  static const std::set<StringRef> modes = {"continuous", "unpack", "dintlv",
-                                            "brc"};
+  static const std::set<StringRef> modes = {"continuous", "dintlv", "brc"};
+  return modes;
+}
+
+static const std::set<StringRef> &validStoreDistModes() {
+  static const std::set<StringRef> modes = {"continuous", "intlv"};
   return modes;
 }
 
@@ -4022,7 +4108,7 @@ LogicalResult VMIVgatherOp::verify() {
     return failure();
   }
 
-  if (failed(verifyMemoryElementMatches(getOperation(), getSource().getType(),
+  if (failed(verifyGatherMemoryElementMatches(getOperation(), getSource().getType(),
                                         resultType, "source"))) {
     return failure();
   }
@@ -4044,16 +4130,15 @@ LogicalResult VMIVgatherOp::verify() {
     return failure();
   }
 
-  // 16-bit offsets only address the ui16 gather path (pto.vgather2 / b16 mask),
-  // which requires a ui16 result element type. Reject other 16-bit-offset
-  // results here so the error surfaces at the vgather op rather than later in
-  // the legacy gather it lowers to.
-  auto resultIntegerType = dyn_cast<IntegerType>(resultType.getElementType());
+  // 16-bit offsets address the pto.vgather2 / b16 mask path.  It supports
+  // i16/ui16/f16/bf16 same-width gather and i8/ui8 -> i16/ui16 promotion.
   if (indexElementType.getWidth() == mlir::pto::kValue16 &&
-      (!resultIntegerType || !resultIntegerType.isUnsigned() ||
-       resultIntegerType.getWidth() != mlir::pto::kValue16)) {
+      !isSupported16BitGatherResult(
+          getMemoryElementType(getSource().getType()),
+          resultType.getElementType())) {
     return emitOpError(
-        "requires ui16 result element type when using ui16 offsets");
+        "requires i16/ui16/f16/bf16 result element type when using ui16 "
+        "offsets, or i8/ui8 -> i16/ui16 integer promotion");
   }
 
   if (auto pmode = getPmode()) {
@@ -4691,8 +4776,8 @@ ParseResult VMIvStoreOp::parse(OpAsmParser &parser, OperationState &result) {
                             "expected at least one value and one destination");
   }
 
-  // Optional post-bracket operands: stride, block_stride/repeat_stride, mask.
-  // Up to 3, disambiguated after parsing attrs.
+  // Optional post-bracket operands: stride, block_stride, and/or mask.
+  // Up to 2, disambiguated after parsing attrs and the type list.
   while (succeeded(parser.parseOptionalComma())) {
     OpAsmParser::UnresolvedOperand postOp;
     if (parser.parseOperand(postOp)) {
@@ -4716,12 +4801,12 @@ ParseResult VMIvStoreOp::parse(OpAsmParser &parser, OperationState &result) {
   bool hasGroup = result.attributes.get("group") != nullptr;
   bool hasStride = false;
   bool hasBlock = false;
-  bool hasRepeat = false;
   bool hasMask = false;
   int strideIdx = -1;
   int blockIdx = -1;
-  int repeatIdx = -1;
   int maskIdx = -1;
+  size_t nValues = preBracketOperands.size() - 1;
+  size_t nTypes = types.size();
 
   if (hasGroup) {
     // Group mode: post-bracket ops are stride[, mask]
@@ -4733,24 +4818,23 @@ ParseResult VMIvStoreOp::parse(OpAsmParser &parser, OperationState &result) {
       hasMask = true;
       maskIdx = 1;
     }
-  } else if (postBracketOps.size() >= mlir::pto::kValue2) {
-    // Block-stride mode: post-bracket ops are block_stride, repeat_stride[, mask]
+  } else if (postBracketOps.size() == mlir::pto::kValue2) {
+    // Block-stride mode with a mask: block_stride, mask.
     hasBlock = true;
-    hasRepeat = true;
-    blockIdx = 0;
-    repeatIdx = 1;
-    if (postBracketOps.size() >= mlir::pto::kValue3) {
-      hasMask = true;
-      maskIdx = mlir::pto::kValue2;
-    }
-  } else if (postBracketOps.size() == 1) {
-    // Single post-bracket operand without group: mask
     hasMask = true;
-    maskIdx = 0;
+    blockIdx = 0;
+    maskIdx = 1;
+  } else if (postBracketOps.size() == 1) {
+    // The type list includes mask types, but never block-stride types.
+    if (nTypes == nValues + 2) {
+      hasMask = true;
+      maskIdx = 0;
+    } else {
+      hasBlock = true;
+      blockIdx = 0;
+    }
   }
 
-  size_t nValues = preBracketOperands.size() - 1;
-  size_t nTypes = types.size();
   size_t expectedTypes = nValues + 1 + (hasMask ? 1 : 0);
 
   if (nTypes != expectedTypes) {
@@ -4790,13 +4874,6 @@ ParseResult VMIvStoreOp::parse(OpAsmParser &parser, OperationState &result) {
                             result.operands)) {
     return failure();
   }
-  if (hasRepeat &&
-      parser.resolveOperand(postBracketOps[repeatIdx],
-                            parser.getBuilder().getIntegerType(mlir::pto::kValue16),
-                            result.operands)) {
-    return failure();
-  }
-
   if (hasMask) {
     Type maskType = types.back();
     if (parser.resolveOperand(postBracketOps[maskIdx], maskType,
@@ -4809,7 +4886,7 @@ ParseResult VMIvStoreOp::parse(OpAsmParser &parser, OperationState &result) {
                       parser.getBuilder().getDenseI32ArrayAttr(
                           {static_cast<int32_t>(nValues), 1, 1,
                            hasStride ? 1 : 0, hasBlock ? 1 : 0,
-                           hasRepeat ? 1 : 0, hasMask ? 1 : 0}));
+                           hasMask ? 1 : 0}));
   return success();
 }
 
@@ -4827,8 +4904,6 @@ void VMIvStoreOp::print(OpAsmPrinter &p) {
   if (getBlockStride()) {
     p << ", ";
     p.printOperand(getBlockStride());
-    p << ", ";
-    p.printOperand(getRepeatStride());
   }
   if (!getMask().empty()) {
     p << ", ";
@@ -4874,18 +4949,15 @@ LogicalResult VMIvStoreOp::verify() {
     }
   }
 
-  // block_stride / repeat_stride: paired, mutually exclusive with
-  // dist_mode and group
+  // block_stride is mutually exclusive with dist_mode and group.
   bool hasBlock = static_cast<bool>(getBlockStride());
-  bool hasRepeat = static_cast<bool>(getRepeatStride());
-  if (hasBlock != hasRepeat) {
-    return emitOpError(
-        "block_stride and repeat_stride must both be present or absent");
-  }
   if (hasBlock) {
     if (getDistMode()) {
       return emitOpError(
           "block_stride and dist_mode are mutually exclusive");
+    }
+    if (getGroup()) {
+      return emitOpError("block_stride and group are mutually exclusive");
     }
     if (getValues().size() != 1) {
       return emitOpError("block-stride mode requires exactly 1 value");
@@ -4893,15 +4965,18 @@ LogicalResult VMIvStoreOp::verify() {
   }
 
   auto distMode = getDistMode();
-  bool isDintlv = distMode && *distMode == "dintlv";
+  if (distMode && !validStoreDistModes().count(*distMode)) {
+    return emitOpError("invalid dist-mode: \"") << *distMode << "\"";
+  }
+  bool isIntlv = distMode && *distMode == "intlv";
   size_t nValues = getValues().size();
   if (nValues < 1) {
     return emitOpError("requires at least 1 value");
   }
-  if (isDintlv && nValues != mlir::pto::kValue2) {
-    return emitOpError("dist-mode \"dintlv\" requires exactly 2 values");
+  if (isIntlv && nValues != mlir::pto::kValue2) {
+    return emitOpError("dist-mode \"intlv\" requires exactly 2 values");
   }
-  if (!isDintlv && nValues != 1) {
+  if (!isIntlv && nValues != 1) {
     return emitOpError("requires exactly 1 value for dist-mode \"")
            << (distMode ? *distMode : "continuous") << "\"";
   }
@@ -4909,14 +4984,6 @@ LogicalResult VMIvStoreOp::verify() {
   bool hasMask = !getMask().empty();
   if (getMask().size() > 1) {
     return emitOpError("at most one mask allowed");
-  }
-
-  if (distMode && !validDistModes().count(*distMode)) {
-    return emitOpError("invalid dist-mode: \"") << *distMode << "\"";
-  }
-  if (distMode && (*distMode == "unpack" || *distMode == "brc")) {
-    return emitOpError("dist-mode \"")
-           << *distMode << "\" is not valid for vstore";
   }
 
   auto pmode = getPmode();
@@ -5214,7 +5281,6 @@ ParseResult VMIvLoadOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand offsetOperand;
   OpAsmParser::UnresolvedOperand strideOperand;
   OpAsmParser::UnresolvedOperand blockStrideOperand;
-  OpAsmParser::UnresolvedOperand repeatStrideOperand;
 
   // Parse: %source[%offset]
   if (parser.parseOperand(sourceOperand) || parser.parseLSquare() ||
@@ -5223,21 +5289,14 @@ ParseResult VMIvLoadOp::parse(OpAsmParser &parser, OperationState &result) {
   }
 
   // Optional comma-separated post-bracket operands.
-  // 1 operand  + group attr   → stride (group mode)
-  // 2 operands                → block_stride, repeat_stride (block-stride mode)
+  // 1 operand + group attr → stride; otherwise → block_stride.
   int numPostBracket = 0;
-  OpAsmParser::UnresolvedOperand postOp1, postOp2;
+  OpAsmParser::UnresolvedOperand postOp1;
   if (succeeded(parser.parseOptionalComma())) {
     if (parser.parseOperand(postOp1)) {
       return failure();
     }
     numPostBracket = 1;
-    if (succeeded(parser.parseOptionalComma())) {
-      if (parser.parseOperand(postOp2)) {
-        return failure();
-      }
-      numPostBracket = mlir::pto::kValue2;
-    }
   }
 
   if (parser.parseOptionalAttrDict(result.attributes)) {
@@ -5261,20 +5320,15 @@ ParseResult VMIvLoadOp::parse(OpAsmParser &parser, OperationState &result) {
   // Disambiguate post-bracket operands
   bool hasStride = false;
   bool hasBlock = false;
-  bool hasRepeat = false;
 
-  if (numPostBracket == mlir::pto::kValue2) {
-    // block_stride + repeat_stride pair
-    hasBlock = true;
-    hasRepeat = true;
-    blockStrideOperand = postOp1;
-    repeatStrideOperand = postOp2;
-  } else if (numPostBracket == 1) {
-    // Single post-bracket operand: only valid as group stride.
-    // block_stride without repeat_stride is invalid; verifier catches
-    // stride without group attr.
-    hasStride = true;
-    strideOperand = postOp1;
+  if (numPostBracket == 1) {
+    if (result.attributes.get("group")) {
+      hasStride = true;
+      strideOperand = postOp1;
+    } else {
+      hasBlock = true;
+      blockStrideOperand = postOp1;
+    }
   }
 
   if (parser.resolveOperand(sourceOperand, sourceType, result.operands)) {
@@ -5295,17 +5349,9 @@ ParseResult VMIvLoadOp::parse(OpAsmParser &parser, OperationState &result) {
                             result.operands)) {
     return failure();
   }
-  if (hasRepeat &&
-      parser.resolveOperand(repeatStrideOperand,
-                            parser.getBuilder().getIntegerType(mlir::pto::kValue16),
-                            result.operands)) {
-    return failure();
-  }
-
   result.addAttribute("operandSegmentSizes",
                       parser.getBuilder().getDenseI32ArrayAttr(
-                          {1, 1, hasStride ? 1 : 0, hasBlock ? 1 : 0,
-                           hasRepeat ? 1 : 0}));
+                          {1, 1, hasStride ? 1 : 0, hasBlock ? 1 : 0}));
 
   result.addTypes(resultTypes);
   return success();
@@ -5322,8 +5368,6 @@ void VMIvLoadOp::print(OpAsmPrinter &p) {
   if (getBlockStride()) {
     p << ", ";
     p.printOperand(getBlockStride());
-    p << ", ";
-    p.printOperand(getRepeatStride());
   }
   p.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
   p << " : " << getSource().getType() << " -> " << getResults().getTypes();
@@ -5356,18 +5400,15 @@ LogicalResult VMIvLoadOp::verify() {
     }
   }
 
-  // block_stride and repeat_stride must be paired, mutually exclusive
-  // with dist_mode and group
+  // block_stride is mutually exclusive with dist_mode and group.
   bool hasBlock = static_cast<bool>(getBlockStride());
-  bool hasRepeat = static_cast<bool>(getRepeatStride());
-  if (hasBlock != hasRepeat) {
-    return emitOpError(
-        "block_stride and repeat_stride must both be present or absent");
-  }
   if (hasBlock) {
     if (getDistMode()) {
       return emitOpError(
           "block_stride and dist_mode are mutually exclusive");
+    }
+    if (getGroup()) {
+      return emitOpError("block_stride and group are mutually exclusive");
     }
     if (getResults().size() != 1) {
       return emitOpError("block-stride mode requires exactly 1 result");
@@ -5376,6 +5417,9 @@ LogicalResult VMIvLoadOp::verify() {
 
   // result count vs dist-mode
   auto distMode = getDistMode();
+  if (distMode && !validDistModes().count(*distMode)) {
+    return emitOpError("invalid dist-mode: \"") << *distMode << "\"";
+  }
   bool isDintlv = distMode && *distMode == "dintlv";
   size_t nResults = getResults().size();
   if (isDintlv && nResults != mlir::pto::kValue2) {
@@ -5386,20 +5430,14 @@ LogicalResult VMIvLoadOp::verify() {
            << (distMode ? *distMode : "continuous") << "\"";
   }
 
-  if (distMode && !validDistModes().count(*distMode)) {
-    return emitOpError("invalid dist-mode: \"") << *distMode << "\"";
-  }
   auto pmode = getPmode();
   if (pmode && !validPModes().count(*pmode)) {
     return emitOpError("invalid pmode: \"") << *pmode << "\"";
   }
 
-  bool isUnpack = distMode && *distMode == "unpack";
   for (auto res : getResults()) {
     auto resType = cast<VMIVRegType>(res.getType());
-    // unpack: source element type intentionally differs from result
-    if (!isUnpack &&
-        failed(verifyMemoryElementMatches(getOperation(),
+    if (failed(verifyMemoryElementMatches(getOperation(),
                                           getSource().getType(), resType,
                                           "source"))) {
       return failure();

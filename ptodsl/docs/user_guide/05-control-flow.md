@@ -156,6 +156,38 @@ with col_loop:
 
 `make_mask(dtype, n)` returns two values: the predicate mask for the current chunk and the updated remaining count. Passing the updated count back via `col_loop.update(remained=...)` feeds it into the next iteration, so each chunk correctly computes how many elements are left. If `n` is an `index`, the updated remaining count stays an `index`; PTODSL hides the hardware `i32` tail-mask bookkeeping internally.
 
+### Loop unroll hints
+
+Device-side loops accept optional unroll hints, `unroll=` or `unroll_factor=` (mutually exclusive), on every loop construction path:
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"unroll_hint_probe","compile":{"BLOCK":8}} -->
+```python
+@pto.jit(target="a5")
+def unroll_hint_probe(*, BLOCK: pto.const_expr = 8):
+    acc = pto.const(0, dtype=pto.i32)
+    # AST-rewrite path: pto.range marks a device loop with a hint.
+    for i in pto.range(BLOCK, unroll="full"):
+        acc = acc + pto.const(1, dtype=pto.i32)
+    # Explicit pto.for_ path (the .carry(...) form takes the same keywords).
+    with pto.for_(0, BLOCK, step=1, unroll="enable") as i:
+        acc = acc + pto.const(2, dtype=pto.i32)
+    _ = acc
+```
+
+| Hint | Meaning |
+|---|---|
+| `unroll="enable"` | Keep the loop and emit `llvm.loop.unroll.enable` metadata; the compiler's cost model decides whether/how to unroll (equivalent to a no-factor `#pragma unroll`). |
+| `unroll="full"` | Unroll completely when the trip count is a compile-time constant; otherwise the hint is dropped with a remark. |
+| `unroll_factor=N` | Unroll by N when the step is a compile-time constant (dynamic upper bounds are supported and produce an epilogue loop); otherwise the hint is dropped with a remark. |
+
+Rules and limitations:
+
+- `unroll_factor` must be a positive Python `int` no larger than `2**31 - 1` (the hint is encoded as an i32 attribute).
+- **A hint never changes program semantics.** When the loop cannot be unrolled natively the hint is dropped with a compiler remark and the loop is compiled unchanged. This happens for: a dynamic trip count with `unroll="full"`; a dynamic step with `unroll_factor`; `unroll_factor=1` (a no-op); a factor above the `pto-unroll-loops` pass's `max-unroll-factor` (default 1024); an empty loop body; a statically empty iteration space (`stop <= start`); and a loop whose induction variable is not `index` (PTODSL loops are `index`-typed, so this only applies to hand-written IR). This is unlike `pto.static_range`, which always unrolls at trace time and requires compile-time-constant bounds.
+- Plain `range(...)` / `pto.range(...)` loops require a positive step (they lower to `scf.for`, which only supports ascending iteration); a constant non-positive step is rejected. Loops with `break` / `continue` / `else` lower through `pto._while` and cannot carry hints — using one raises an error.
+- Loops without any hint are compiled exactly as before.
+- Unroll hints are honored by the VPTO LLVM backends only (the default `pto-backend=vpto` pipelines). The EmitC backend (`PTOToEmitC`) does not consume `pto.unroll` / `pto.unroll_factor` — hints are silently dropped there.
+
 ## 5.3 `pto.if_` — device-side conditionals
 
 `pto.if_` records a device-side conditional branch. Unlike a Python `if`, the condition can be a runtime PTO scalar, and both branches are recorded into the program so the hardware can choose at runtime.
@@ -339,6 +371,58 @@ def ast_rewrite_side_effect_kernel():
     if cond:
         pto.pipe_barrier(pto.Pipe.ALL)
 ```
+
+### Short-circuit `and` / `or`
+
+Python `and` / `or` between PTODSL runtime values are not bitwise
+operations: they keep Python's short-circuit semantics, so the right-hand
+side is only evaluated on the device where Python would actually need it.
+The AST rewrite turns `a and b` / `a or b` into a result-bearing `scf.if`
+whose guarded region contains exactly the RHS:
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"ast_rewrite_short_circuit_kernel","compile":{}} -->
+```python
+@pto.jit(target="a5")
+def ast_rewrite_short_circuit_kernel():
+    value = pto.const(10, dtype=pto.i32)
+    divisor = pto.const(2, dtype=pto.i32)
+
+    pred = (divisor != 0) and ((value // divisor) > 0)
+    if pred:
+        pto.pipe_barrier(pto.Pipe.ALL)
+```
+
+`and` returns the left operand when it is falsy and the right operand
+otherwise; `or` returns the left operand when it is truthy and the right
+operand otherwise. Integer-typed operands are tested with non-zero
+truthiness. When one merged branch yields an `i1` and the other an
+integer-like value, the integer type is kept and the `i1` side widens to its
+0/1 integer value, so the integer operand value is preserved; a merge of two
+`i1` values stays `i1`. Python `bool` literals materialize as `i1` and widen
+like any other `i1` when the opposite branch is integer-typed. A Python
+`int` literal can join a runtime merge only when the opposite branch already
+has an integer type to anchor its width (e.g. `x or 2` with `x: pto.i32`);
+against an `i1` branch there is no width to infer, so `flag and 2` /
+`flag or 2` raise an error prompting you to anchor the type explicitly,
+e.g. `flag and pto.const(2, dtype=pto.i32)`. Incompatible branch types keep
+the usual branch-merge diagnostics.
+
+Statically known `bool` / `int` / float operands short-circuit at trace time
+with native Python truthiness: `False and rhs`, `True or rhs`, and
+`0.0 or rhs` never trace the RHS at all. Runtime floating-point controls are
+not valid short-circuit predicates and raise a clear error. Python float
+literals on the RHS of a runtime short-circuit merge are also rejected: the
+merge currently accepts only `bool`/`int` literals and PTO runtime scalar
+values, because a float literal (for example, `flag and 0.5`) has no
+compatible result type when the other branch preserves the left operand. Use
+an explicit `pto.if_` merge with same-typed branch values when a floating-point
+result is required.
+Assignment expressions (`:=`) on a lazily evaluated RHS are rejected because
+the rewrite uses a helper lambda and cannot preserve the Python binding scope.
+
+`and` / `or` compose with every rewritten expression context: assignments,
+call arguments, `return`, and `if` / `while` conditions.
+
 
 ### Runtime loops
 
@@ -560,10 +644,10 @@ Do not pass conflicting values through both spellings. For example,
 `@pto.jit(ast_rewrite=False, frontend_options={"ast_rewrite": True})` is
 rejected.
 
-When this mode is disabled for a function, native Python `if` / `for` executes
-while tracing that function. Runtime device-side control flow should still use
-the default rewrite mode, or explicit `pto.if_` / `pto.for_` APIs when you need
-manual control.
+When this mode is disabled for a function, native Python `if` / `for` / `and` /
+`or` executes while tracing that function. Runtime device-side control flow
+should still use the default rewrite mode, or explicit `pto.if_` / `pto.for_`
+APIs when you need manual control.
 
 The structured `frontend_options` argument is reserved for frontend rewrite
 debugging and future rewrite passes. Today it accepts the same AST rewrite
@@ -607,3 +691,4 @@ do not use Python `return` as a dynamic loop exit.
 | `pto.for_` | Device-side | Dynamic bounds, runtime loop counts |
 | `pto.for_(...).carry(...)` | Device-side | Loops with accumulated state across iterations |
 | `pto.if_` | Device-side | Runtime conditions, data-dependent branching |
+| Python `and` / `or` | Device-side short-circuit `scf.if` | Runtime predicates with Python short-circuit semantics |

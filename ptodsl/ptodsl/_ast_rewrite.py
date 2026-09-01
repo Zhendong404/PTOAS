@@ -29,8 +29,10 @@ def rewrite_jit_function(
 ):
     """Return a function with PTODSL lexical sections lowered safely.
 
-    ``pto.section`` is a physical SSA region, not a Python ``with`` hint.  The
-    section body therefore gets a small source-level lexical rewrite even when
+    ``rewrite_control_flow`` controls both runtime statement rewriting and the
+    ``and``/``or`` short-circuit rewrite.  ``pto.section`` is a physical SSA
+    region, not a Python ``with`` hint.  Its body therefore gets a small
+    source-level lexical rewrite even when
     the optional control-flow rewrite is disabled.  This keeps Python's
     function-local assignment rules from leaking a section-local SSA value into
     a sibling physical section.
@@ -68,6 +70,8 @@ def rewrite_jit_function(
     static_env.update(static_bindings or {})
     _inject_closure_defaults(function_def, closure_vars.nonlocals)
     _sanitize_signature_for_exec(function_def)
+    if rewrite_control_flow:
+        function_def = _BoolOpRewriter().visit(function_def)
     function_def = _ConditionalExpressionNormalizer().visit(function_def)
     section_rewriter = _SectionLexicalRewriter()
     function_def = section_rewriter.visit(function_def)
@@ -381,6 +385,77 @@ class _ConditionalExpressionNormalizer(ast.NodeTransformer):
         return ast.copy_location(self.generic_visit(if_stmt), stmt)
 
 
+def _zero_arg_lambda(body):
+    return ast.Lambda(
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        ),
+        body=body,
+    )
+
+
+class _BoolOpRewriter(ast.NodeTransformer):
+    """Rewrite Python ``and``/``or`` into device-side short-circuit helpers.
+
+    Python ``and``/``or`` are not overloadable operators: evaluating ``a and b``
+    forces a truth check on ``a``, which calls ``__bool__`` on a PTODSL runtime
+    value during tracing and raises.  This pass replaces every ``ast.BoolOp``
+    with a right-nested lazy helper call so the RHS is only traced inside a
+    device-side ``scf.if`` region::
+
+        a and b and c  ->  pto._short_circuit_and(a, lambda: pto._short_circuit_and(b, lambda: c))
+        a or  b or  c  ->  pto._short_circuit_or(a,  lambda: pto._short_circuit_or(b,  lambda: c))
+
+    The transformation is purely syntactic and composes with every expression
+    context: assignments, call arguments, ``return``, and ``if``/``while``
+    conditions.  Nested function bodies are rewritten as well, mirroring the
+    control-flow rewriter.  Statically-known ``bool``/``int`` operands are
+    short-circuited at trace time by the helpers themselves, so the RHS is not
+    traced at all when Python semantics would skip it.
+    """
+
+    @staticmethod
+    def _reject_rhs_assignment_expressions(node):
+        """Reject walrus expressions that would move into a generated lambda."""
+        if any(
+            isinstance(child, ast.NamedExpr)
+            for value in node.values[1:]
+            for child in ast.walk(value)
+        ):
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True cannot rewrite an and/or expression containing "
+                "an assignment expression (walrus operator) on the RHS; the "
+                "assignment would bind inside the generated helper lambda"
+            )
+
+    def visit_BoolOp(self, node):
+        self._reject_rhs_assignment_expressions(node)
+        node = self.generic_visit(node)
+        if isinstance(node.op, ast.And):
+            helper = "_short_circuit_and"
+        elif isinstance(node.op, ast.Or):
+            helper = "_short_circuit_or"
+        else:
+            return node
+        values = list(node.values)
+        if len(values) < 2:
+            return values[0] if values else node
+        result = values[-1]
+        for value in reversed(values[:-1]):
+            result = ast.Call(
+                func=_pto_attr(helper),
+                args=[value, _zero_arg_lambda(result)],
+                keywords=[],
+            )
+        return result
+
+
 @dataclass(frozen=True)
 class _NameInfo:
     loads: set[str]
@@ -601,6 +676,19 @@ def _slot_live_before_block(stmts, live_after, static_env, static_iters=None) ->
 
 
 def _slot_live_before_stmt(stmt, live_after, static_env, static_iters) -> set[_SubscriptSlot]:
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        live = _slot_live_before_block(stmt.body, live_after, static_env, static_iters)
+        # Python evaluates with-items from left to right and binds each
+        # optional_vars immediately.  Reverse the sequence for liveness so a
+        # context expression can use a binding produced by an earlier item
+        # without incorrectly turning that use into a live-in.
+        for item in reversed(stmt.items):
+            if item.optional_vars is not None:
+                live = _kill_slots_for_with_target(
+                    live, item.optional_vars, static_env, static_iters
+                )
+            live |= _slot_info(item.context_expr, static_env, static_iters).loads
+        return live
     if isinstance(stmt, ast.If):
         test_info = _slot_info(stmt.test, static_env, static_iters)
         return (
@@ -646,6 +734,37 @@ def _kill_slots_for_assigned_bases(slots, stmt) -> set[_SubscriptSlot]:
         for slot in slots
         if slot.base not in assigned_bases
     }
+
+
+def _kill_slots_for_with_target(
+    slots, target, static_env, static_iters
+) -> set[_SubscriptSlot]:
+    target_info = _slot_info(target, static_env, static_iters)
+    bound_bases = _simple_name_targets(target)
+    dynamic_subscript_bases = set()
+    for subscript in _target_subscripts(target):
+        if not _resolve_subscript_slots(
+            subscript, static_env, static_iters, require_static=True
+        ) and isinstance(subscript.value, ast.Name):
+            dynamic_subscript_bases.add(subscript.value.id)
+    killed_bases = bound_bases | dynamic_subscript_bases
+    return {
+        slot
+        for slot in slots
+        if slot.base not in killed_bases and slot not in target_info.stores
+    }
+
+
+def _target_subscripts(target):
+    if isinstance(target, ast.Subscript):
+        yield target
+        return
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for element in target.elts:
+            yield from _target_subscripts(element)
+        return
+    if isinstance(target, ast.Starred):
+        yield from _target_subscripts(target.value)
 
 
 def _assigned_name_targets(stmt) -> set[str]:
@@ -1070,18 +1189,44 @@ def _is_range_call(node) -> bool:
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "range"
 
 
-def _range_triplet(call):
-    if not _is_range_call(call):
-        raise PTODSLAstRewriteError("ast_rewrite=True only rewrites for-loops over range(...)")
-    if call.keywords:
-        raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops do not support keyword arguments")
+def _is_pto_range_call(node) -> bool:
+    return _is_pto_attr_call(node, "range")
+
+
+_UNROLL_HINT_KWARGS = ("unroll", "unroll_factor")
+
+
+def _range_triplet_and_hints(call):
+    """Return (start, stop, step, hint_keywords) for a loop iterable call.
+
+    Accepts plain ``range(...)`` (no keyword arguments, as before) and the
+    ``pto.range(...)`` marker, which additionally takes the ``unroll`` /
+    ``unroll_factor`` hint keywords forwarded to the generated ``pto.for_``.
+    """
+    if _is_range_call(call):
+        if call.keywords:
+            raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops do not support keyword arguments")
+        hint_keywords = []
+    elif _is_pto_range_call(call):
+        hint_keywords = []
+        for keyword in call.keywords:
+            if keyword.arg not in _UNROLL_HINT_KWARGS:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True pto.range(...) loops only support the "
+                    f"'unroll' and 'unroll_factor' keyword arguments; got {keyword.arg!r}"
+                )
+            hint_keywords.append(keyword)
+    else:
+        raise PTODSLAstRewriteError(
+            "ast_rewrite=True only rewrites for-loops over range(...) or pto.range(...)"
+        )
     args = call.args
     if len(args) == 1:
-        return ast.Constant(0), args[0], ast.Constant(1)
+        return ast.Constant(0), args[0], ast.Constant(1), hint_keywords
     if len(args) == 2:
-        return args[0], args[1], ast.Constant(1)
+        return args[0], args[1], ast.Constant(1), hint_keywords
     if len(args) == 3:
-        return args[0], args[1], args[2]
+        return args[0], args[1], args[2], hint_keywords
     raise PTODSLAstRewriteError("ast_rewrite=True range(...) loops require 1 to 3 arguments")
 
 
@@ -2080,7 +2225,42 @@ class _ControlFlowRewriter:
                 f"use explicit pto.for_(...) for {stmt.target.id!r}"
             )
 
-        start, stop, step = _range_triplet(stmt.iter)
+        start, stop, step, hint_keywords = _range_triplet_and_hints(stmt.iter)
+        # The plain path lowers to scf.for, whose control-flow lowering
+        # compares the induction variable with the upper bound using a signed
+        # less-than: a non-positive step would silently produce zero
+        # iterations instead of Python range's descending iteration.  Only
+        # loops with break/continue (the pto._while path) support negative
+        # steps, so reject a constant non-positive step here.  Note that a
+        # negative literal is a UnaryOp(USub, Constant), not a Constant, so
+        # use literal_eval to see through it.  bool is an int subclass:
+        # step=False (== 0) must be rejected like an explicit 0 (Python range
+        # raises ValueError for it), while step=True (== 1) is legal Python -
+        # normalize the literal to int 1 because downstream index coercion
+        # rejects bool values.
+        try:
+            step_const = ast.literal_eval(step)
+        except (ValueError, TypeError, SyntaxError):
+            step_const = None
+        if isinstance(step_const, bool):
+            if not step_const:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True range(...) / pto.range(...) loops require a non-zero step; "
+                    "got step=0 (Python range raises ValueError for a zero step)."
+                )
+            if isinstance(step, ast.Constant):
+                step.value = 1
+        elif isinstance(step_const, int) and step_const <= 0:
+            if step_const == 0:
+                raise PTODSLAstRewriteError(
+                    "ast_rewrite=True range(...) / pto.range(...) loops require a non-zero step; "
+                    "got step=0 (Python range raises ValueError for a zero step)."
+                )
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True range(...) / pto.range(...) loops require a positive step; "
+                f"got step={step_const}. Loops with break/continue support negative steps "
+                "via the pto._while lowering; a dynamic step must be positive at runtime."
+            )
         body_info = _name_info(stmt.body)
         body_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
         if body_slot_info.invalid_stores:
@@ -2175,7 +2355,7 @@ class _ControlFlowRewriter:
                         value=ast.Call(
                             func=_pto_attr("for_"),
                             args=[start, stop],
-                            keywords=[ast.keyword(arg="step", value=step)],
+                            keywords=[ast.keyword(arg="step", value=step), *hint_keywords],
                         ),
                         attr="carry",
                         ctx=ast.Load(),
@@ -2287,7 +2467,7 @@ class _ControlFlowRewriter:
                     context_expr=ast.Call(
                         func=_pto_attr("for_"),
                         args=[start, stop],
-                        keywords=[ast.keyword(arg="step", value=step)],
+                        keywords=[ast.keyword(arg="step", value=step), *hint_keywords],
                     ),
                     optional_vars=_name(stmt.target.id, ast.Store()),
                 )
@@ -2353,7 +2533,12 @@ class _ControlFlowRewriter:
             raise PTODSLAstRewriteError(
                 "ast_rewrite=True does not support dynamic return inside runtime for"
             )
-        start, stop, step = _range_triplet(stmt.iter)
+        start, stop, step, hint_keywords = _range_triplet_and_hints(stmt.iter)
+        if hint_keywords:
+            raise PTODSLAstRewriteError(
+                "ast_rewrite=True pto.range(...) unroll hints are not supported on loops with "
+                "break/continue or else clauses (these lower through pto._while)"
+            )
         body_info = _name_info(stmt.body)
         body_slot_info = _slot_info(stmt.body, self._static_env, static_iters)
         if body_slot_info.invalid_stores:

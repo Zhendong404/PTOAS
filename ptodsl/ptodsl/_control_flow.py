@@ -16,21 +16,31 @@ Public API
 ``vecscope()``            – ``pto.vecscope { … }``
 ``for_(lo, hi, step)``
                           – ``scf.for`` with optional named carry state via ``.carry(...)``
+                          and an optional loop-unroll hint (``unroll=`` / ``unroll_factor=``)
 ``if_(cond)``             – ``scf.if`` via explicit branch handle + automatic named merge
 ``yield_(*vals)``         – ``scf.yield``
 ``static_range(...)``     – trace-time ``range(...)`` escape hatch for AST rewrite
+``range(...)``            – AST-rewrite marker carrying loop-unroll hints for native ``for``
 ``const_expr(value)``     – trace-time ``if`` escape hatch for AST rewrite
+``_short_circuit_and/or``  – internal device-side ``and``/``or`` helpers used by the AST rewriter
 """
 
+import builtins
 import warnings
 
 from ._diagnostics import explicit_mode_required_with_context_error
 from ._runtime_index_ops import coerce_runtime_index
-from ._scalar_adaptation import coerce_runtime_integer_to_i1
+from ._scalar_adaptation import coerce_integer_like, coerce_runtime_i1_value, coerce_runtime_integer_to_i1
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_types import const_expr
 from ._tracing.active import current_session, require_active_session
-from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
+from ._tracing.control_flow import apply_unroll_hint, normalize_unroll_hint
+from ._surface_values import (
+    RuntimeValue,
+    unwrap_surface_value,
+    wrap_like_surface_value,
+    wrap_surface_value,
+)
 from ._types import _StructDescriptor
 
 from ptoas.mlir.dialects import arith, pto as _pto, scf
@@ -98,7 +108,41 @@ def section(kind: str) -> _SectionCM:
 
 def static_range(*args):
     """Return ``range(*args)`` for trace-time unrolling under AST rewrite."""
-    return range(*args)
+    return builtins.range(*args)
+
+
+class _PtoRangeMarker:
+    """Marker for ``for i in pto.range(...)`` loops under AST rewrite.
+
+    The AST rewriter recognizes ``pto.range(...)`` as a native-``for`` loop
+    iterable that may carry a loop-unroll hint and rewrites the whole loop to
+    ``pto.for_(..., unroll=..., unroll_factor=...)``.  The call itself is
+    never evaluated in that flow; reaching this marker at runtime means the
+    enclosing kernel was not AST-rewritten (or the marker was used outside a
+    ``for`` statement).
+    """
+
+    def __init__(self, args, kwargs):
+        self._args = args
+        self._kwargs = kwargs
+
+    def __iter__(self):
+        raise RuntimeError(
+            "pto.range(...) may only be used as the iterable of a 'for' loop "
+            "inside an AST-rewritten kernel; use 'with pto.for_(...)' for "
+            "explicitly authored loops"
+        )
+
+
+def range(*args, **kwargs):
+    """AST-rewrite marker: ``for i in pto.range(start, stop[, step], unroll=...)``.
+
+    Accepts the same positional start/stop/step arguments as the builtin
+    ``range`` plus optional ``unroll=`` / ``unroll_factor=`` hints with the
+    same semantics as ``pto.for_``.  The enclosing loop must be processed by
+    the PTODSL AST rewriter; the marker itself is not a runtime iterable.
+    """
+    return _PtoRangeMarker(args, kwargs)
 
 # ── for_ ──────────────────────────────────────────────────────────────────────
 
@@ -137,10 +181,12 @@ class LoopHandle:
 
 
 class _ForCM:
-    def __init__(self, start, stop, step, iter_args):
+    def __init__(self, start, stop, step, iter_args, unroll=None, unroll_factor=None):
         self._start = start
         self._stop = stop
         self._step = step
+        self._unroll = unroll
+        self._unroll_factor = unroll_factor
         self._iter_arg_templates = tuple(iter_args) if iter_args is not None else ()
         self._iter_args = [unwrap_surface_value(value) for value in self._iter_arg_templates]
         self._for_op = None
@@ -153,6 +199,7 @@ class _ForCM:
             _coerce_index(self._step),
             self._iter_args if self._iter_args else None,
         )
+        apply_unroll_hint(self._for_op, self._unroll, self._unroll_factor)
         self._ip = InsertionPoint(self._for_op.body)
         self._ip.__enter__()
         if not self._iter_args:
@@ -165,7 +212,7 @@ class _ForCM:
         self._ip.__exit__(*exc)
 
 
-def for_(start, stop, *, step):
+def for_(start, stop, *, step, unroll=None, unroll_factor=None):
     """
     ``scf.for`` context manager.
 
@@ -181,8 +228,24 @@ def for_(start, stop, *, step):
             cur = loop.acc
             loop.update(acc=cur)
         out = loop.final("acc")
+
+    An optional loop-unroll hint is forwarded to the compiler::
+
+        with pto.for_(c0, c16, step=c1, unroll="enable") as i:
+            ...
+
+    ``unroll="enable"`` keeps the loop and forwards
+    ``llvm.loop.unroll.enable`` metadata, letting the compiler's cost model
+    decide whether and how to unroll (equivalent to a no-factor
+    ``#pragma unroll``).  ``unroll="full"`` asks PTOAS to unroll the loop
+    completely when the trip count is a compile-time constant (otherwise the
+    hint is dropped with a remark).  ``unroll_factor=N`` asks PTOAS to
+    unroll by ``N`` (an epilogue loop handles the remainder; dynamic upper
+    bounds are supported).  The two arguments are mutually exclusive.
+    Loops without a hint are unchanged.
     """
-    return _ForBuilder(start, stop, step)
+    normalize_unroll_hint(unroll, unroll_factor, context="pto.for_(...)")
+    return _ForBuilder(start, stop, step, unroll=unroll, unroll_factor=unroll_factor)
 
 
 class _WhileStateView:
@@ -317,13 +380,14 @@ class _CarryLoopStateView:
 
 
 class _CarryForCM(_ForCM):
-    def __init__(self, start, stop, step, state_items):
+    def __init__(self, start, stop, step, state_items, unroll=None, unroll_factor=None):
         self._state_items = tuple(state_items)
         self._state_names = tuple(name for name, _ in self._state_items)
         self._state_templates = tuple(value for _, value in self._state_items)
         self._session = None
         self._session_frame = None
-        super().__init__(start, stop, step, self._state_templates)
+        super().__init__(start, stop, step, self._state_templates,
+                         unroll=unroll, unroll_factor=unroll_factor)
         self._yield_values = None
         self._entered = False
 
@@ -335,6 +399,8 @@ class _CarryForCM(_ForCM):
                 self._stop,
                 self._step,
                 self._state_items,
+                unroll=self._unroll,
+                unroll_factor=self._unroll_factor,
             )
             self._for_op = self._session_frame.for_op
             handle = LoopHandle(self._for_op, iter_arg_templates=self._state_templates)
@@ -412,13 +478,16 @@ class _CarryForCM(_ForCM):
 
 
 class _ForBuilder:
-    def __init__(self, start, stop, step):
+    def __init__(self, start, stop, step, unroll=None, unroll_factor=None):
         self._start = start
         self._stop = stop
         self._step = step
+        self._unroll = unroll
+        self._unroll_factor = unroll_factor
 
     def __enter__(self):
-        self._cm = _ForCM(self._start, self._stop, self._step, None)
+        self._cm = _ForCM(self._start, self._stop, self._step, None,
+                          unroll=self._unroll, unroll_factor=self._unroll_factor)
         return self._cm.__enter__()
 
     def __exit__(self, *exc):
@@ -435,7 +504,8 @@ class _ForBuilder:
                     "pto.for_(...).carry(...) does not accept pto.struct_type(...) descriptors; "
                     "declare the struct outside the loop and mutate it in place inside the loop body"
                 )
-        return _CarryForCM(self._start, self._stop, self._step, tuple(kwargs.items()))
+        return _CarryForCM(self._start, self._stop, self._step, tuple(kwargs.items()),
+                           unroll=self._unroll, unroll_factor=self._unroll_factor)
 
 
 def _coerce_index(value):
@@ -480,6 +550,44 @@ def _move_block_ops(src_block, dst_block, *, yield_values):
         if op.operation.name == "scf.yield":
             continue
         op.move_before(yield_anchor)
+
+
+def _validate_matching_branch_names(then_assignment, else_assignment):
+    """Validate merge names and return the authored result order."""
+    then_names = set(then_assignment["raw_values"])
+    else_names = set(else_assignment["raw_values"])
+    if then_names == else_names:
+        return then_assignment["order"]
+
+    pieces = []
+    missing_in_else = sorted(then_names - else_names)
+    missing_in_then = sorted(else_names - then_names)
+    if missing_in_else:
+        pieces.append(f"missing in else: {', '.join(missing_in_else)}")
+    if missing_in_then:
+        pieces.append(f"missing in then: {', '.join(missing_in_then)}")
+    raise RuntimeError(
+        "br.assign(...) names must match across branches; " + "; ".join(pieces)
+    )
+
+
+def _resolved_branch_values(name, then_assignment, else_assignment, *, then_block,
+                            else_block, short_circuit_merge=False):
+    """Reconcile one pair of branch values and require matching result types."""
+    then_value, else_value = _reconcile_branch_assignment_values(
+        name,
+        then_assignment["raw_values"][name],
+        else_assignment["raw_values"][name],
+        then_block=then_block,
+        else_block=else_block,
+        short_circuit_merge=short_circuit_merge,
+    )
+    if then_value.type != else_value.type:
+        raise RuntimeError(
+            f"br.assign(...) type mismatch for '{name}': "
+            f"then branch yields {then_value.type}, else branch yields {else_value.type}"
+        )
+    return then_value, else_value
 
 
 class _IfBranchCM:
@@ -543,8 +651,9 @@ class BranchHandle:
 
 
 class _IfCM:
-    def __init__(self, cond):
+    def __init__(self, cond, *, short_circuit_merge: bool = False):
         self._cond = cond
+        self._short_circuit_merge = short_circuit_merge
         self._cond_value = None
         self._tmp_if = None
         self._parent_block = None
@@ -672,37 +781,19 @@ class _IfCM:
                 "automatic branch merge requires both br.then_ and br.else_ to call br.assign(...)"
             )
 
-        then_names = set(then_assignment["raw_values"].keys())
-        else_names = set(else_assignment["raw_values"].keys())
-        if then_names != else_names:
-            missing_in_else = sorted(then_names - else_names)
-            missing_in_then = sorted(else_names - then_names)
-            pieces = []
-            if missing_in_else:
-                pieces.append(f"missing in else: {', '.join(missing_in_else)}")
-            if missing_in_then:
-                pieces.append(f"missing in then: {', '.join(missing_in_then)}")
-            raise RuntimeError("br.assign(...) names must match across branches; " + "; ".join(pieces))
-
-        order = then_assignment["order"]
+        order = _validate_matching_branch_names(then_assignment, else_assignment)
         resolved_then_values = {}
         resolved_else_values = {}
         result_types = []
         for name in order:
-            then_value = then_assignment["raw_values"][name]
-            else_value = else_assignment["raw_values"][name]
-            then_value, else_value = _reconcile_branch_assignment_values(
+            then_value, else_value = _resolved_branch_values(
                 name,
-                then_value,
-                else_value,
+                then_assignment,
+                else_assignment,
                 then_block=self._tmp_if.then_block,
                 else_block=self._tmp_if.else_block,
+                short_circuit_merge=self._short_circuit_merge,
             )
-            if then_value.type != else_value.type:
-                raise RuntimeError(
-                    f"br.assign(...) type mismatch for '{name}': "
-                    f"then branch yields {then_value.type}, else branch yields {else_value.type}"
-                )
             resolved_then_values[name] = then_value
             resolved_else_values[name] = else_value
             result_types.append(then_value.type)
@@ -787,6 +878,95 @@ def if_(cond) -> _IfCM:
     return _IfCM(cond)
 
 
+# ── short-circuit and/or (AST-rewrite targets) ──────────────────────────────
+
+def _branch_rhs_value(value, kind):
+    """Validate a short-circuit RHS evaluated inside a runtime branch.
+
+    A branch may only yield a PTO runtime scalar value, an i1-materializable
+    bool literal, or a Python integer literal.  Python float literals are
+    intentionally excluded because the short-circuit merge has no type anchor
+    for a floating-point result; static float operands still use native Python
+    short-circuiting before this helper is called.
+    """
+    if isinstance(value, (bool, int, RuntimeValue)):
+        return value
+    raise TypeError(
+        "pto short-circuit " + kind + " RHS must be a PTO runtime scalar value or a "
+        "Python bool/int literal; Python float literals are not supported in "
+        "runtime branch merges, got " + type(value).__name__,
+    )
+
+
+def _materialize_bool_branch_value(value, *, context):
+    """Materialize a Python ``bool`` operand to a signless ``i1`` constant.
+
+    Python ``and``/``or`` may legally return a plain ``bool`` literal from one
+    branch (``flag and True``).  Branch assignment needs a typed value when the
+    opposite branch is typed, so literals are materialized here before
+    ``br.assign``; all runtime operands pass through unchanged.
+    """
+    if isinstance(value, bool):
+        return coerce_runtime_i1_value(value, context=context)
+    return value
+
+
+def _short_circuit_and(lhs, rhs_fn):
+    """Internal device-side ``lhs and rhs()`` with Python short-circuit semantics.
+
+    Emits a result-bearing ``scf.if``: when ``lhs`` is truthy the RHS lambda is
+    traced inside the ``then`` region, otherwise the unmodified ``lhs`` operand
+    is the result.  Non-runtime operands (plain Python values, including static
+    floats) keep native Python truthiness and short-circuit at trace time
+    without tracing the RHS.  Runtime left operands use non-zero truthiness for
+    the control condition; the branch merge keeps Python operand semantics, so
+    an ``i1`` next to an integer-like value widens to that integer's 0/1 value
+    instead of collapsing the integer to a boolean.  Incompatible branch types
+    keep their existing diagnostics.
+    """
+    if not callable(rhs_fn):
+        raise TypeError("pto._short_circuit_and expects a zero-argument callable RHS")
+    if not hasattr(lhs, "type"):
+        return rhs_fn() if lhs else lhs
+    raw_lhs = unwrap_surface_value(lhs)
+    cond = coerce_runtime_i1_value(raw_lhs, context="pto short-circuit and condition")
+    with _IfCM(cond, short_circuit_merge=True) as br:
+        with br.then_:
+            br.assign(value=_materialize_bool_branch_value(
+                _branch_rhs_value(rhs_fn(), "and"), context="pto short-circuit and RHS"))
+        with br.else_:
+            br.assign(value=raw_lhs)
+    return br.value
+
+
+def _short_circuit_or(lhs, rhs_fn):
+    """Internal device-side ``lhs or rhs()`` with Python short-circuit semantics.
+
+    When ``lhs`` is truthy the unmodified ``lhs`` operand is the result and the
+    RHS lambda is never traced; otherwise the RHS runs inside the ``else``
+    region.  Non-runtime operands (plain Python values, including static
+    floats) keep native Python truthiness and short-circuit at trace time.
+    Runtime left operands use non-zero truthiness for the control condition;
+    the branch merge keeps Python operand semantics, so an ``i1`` next to an
+    integer-like value widens to that integer's 0/1 value instead of
+    collapsing the integer to a boolean.  Incompatible branch types keep their
+    existing diagnostics.
+    """
+    if not callable(rhs_fn):
+        raise TypeError("pto._short_circuit_or expects a zero-argument callable RHS")
+    if not hasattr(lhs, "type"):
+        return lhs if lhs else rhs_fn()
+    raw_lhs = unwrap_surface_value(lhs)
+    cond = coerce_runtime_i1_value(raw_lhs, context="pto short-circuit or condition")
+    with _IfCM(cond, short_circuit_merge=True) as br:
+        with br.then_:
+            br.assign(value=raw_lhs)
+        with br.else_:
+            br.assign(value=_materialize_bool_branch_value(
+                _branch_rhs_value(rhs_fn(), "or"), context="pto short-circuit or RHS"))
+    return br.value
+
+
 def _is_branch_assign_literal(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -804,26 +984,104 @@ def _coerce_integer_to_i1_at(value, *, block, context):
         return coerce_runtime_integer_to_i1(value, context=context)
 
 
-def _reconcile_branch_assignment_values(name, then_value, else_value, *, then_block=None, else_block=None):
+def _coerce_i1_to_integer_at(value, *, block, target_type, context):
+    """Widen an i1 branch value to *target_type* inside *block*.
+
+    Fixed-width integer targets use ``arith.extui``, which zero-extends the
+    0/1 truth value.  ``index`` is not a valid extui result type and a direct
+    ``arith.index_cast`` from ``i1`` sign-extends (``1`` becomes ``-1``), so
+    the truth value is first zero-extended to ``i32`` and then index-cast,
+    keeping it bit-exact.
+    """
+    with InsertionPoint(block):
+        if IndexType.isinstance(target_type):
+            i32 = IntegerType.get_signless(32)
+            widened = coerce_integer_like(value, i32)
+            return arith.IndexCastOp(IndexType.get(), widened).result
+        return coerce_integer_like(value, target_type)
+
+
+def _reconcile_branch_assignment_values(
+    name,
+    then_value,
+    else_value,
+    *,
+    then_block=None,
+    else_block=None,
+    short_circuit_merge: bool = False,
+):
+    """Reconcile one named value across both branches of ``br.assign``.
+
+    The default merge is predicate-oriented (``pto.if_`` semantics): an
+    integer-like operand next to an ``i1`` is normalized to its non-zero i1.
+    ``short_circuit_merge=True`` instead keeps Python operand semantics for
+    ``and``/``or``: when one branch yields an ``i1`` and the other an
+    integer-like value, the integer type wins and the ``i1`` side is widened
+    to its 0/1 integer value.
+    """
     then_is_typed = hasattr(then_value, "type")
     else_is_typed = hasattr(else_value, "type")
+
+    if short_circuit_merge and (then_is_typed != else_is_typed):
+        # A Python bool literal against a typed branch materializes to i1
+        # first; the typed-vs-typed rules below then pick the result type.
+        if then_is_typed and isinstance(else_value, bool):
+            else_value = coerce_runtime_i1_value(
+                else_value,
+                context=f"br.assign(...) else branch value for '{name}'",
+            )
+            else_is_typed = True
+        elif else_is_typed and isinstance(then_value, bool):
+            then_value = coerce_runtime_i1_value(
+                then_value,
+                context=f"br.assign(...) then branch value for '{name}'",
+            )
+            then_is_typed = True
+        elif then_is_typed and isinstance(else_value, int) and _is_i1_type(then_value.type):
+            raise TypeError(
+                "short-circuit merge cannot infer an integer width for the Python "
+                f"literal {else_value!r} against an i1 branch value; materialize it "
+                "explicitly with pto.const(..., dtype=...)",
+            )
+        elif else_is_typed and isinstance(then_value, int) and _is_i1_type(else_value.type):
+            raise TypeError(
+                "short-circuit merge cannot infer an integer width for the Python "
+                f"literal {then_value!r} against an i1 branch value; materialize it "
+                "explicitly with pto.const(..., dtype=...)",
+            )
 
     if then_is_typed and else_is_typed:
         then_is_i1 = _is_i1_type(then_value.type)
         else_is_i1 = _is_i1_type(else_value.type)
         if then_is_i1 != else_is_i1:
             if then_is_i1 and _is_integer_like_type(else_value.type):
-                else_value = _coerce_integer_to_i1_at(
-                    else_value,
-                    block=else_block,
-                    context=f"br.assign(...) else branch value for '{name}'",
-                )
+                if short_circuit_merge:
+                    then_value = _coerce_i1_to_integer_at(
+                        then_value,
+                        block=then_block,
+                        target_type=else_value.type,
+                        context=f"br.assign(...) then branch value for '{name}'",
+                    )
+                else:
+                    else_value = _coerce_integer_to_i1_at(
+                        else_value,
+                        block=else_block,
+                        context=f"br.assign(...) else branch value for '{name}'",
+                    )
             elif else_is_i1 and _is_integer_like_type(then_value.type):
-                then_value = _coerce_integer_to_i1_at(
-                    then_value,
-                    block=then_block,
-                    context=f"br.assign(...) then branch value for '{name}'",
-                )
+                if short_circuit_merge:
+                    else_value = _coerce_i1_to_integer_at(
+                        else_value,
+                        block=else_block,
+                        target_type=then_value.type,
+                        context=f"br.assign(...) else branch value for '{name}'",
+                    )
+                else:
+                    then_value = _coerce_integer_to_i1_at(
+                        then_value,
+                        block=then_block,
+                        context=f"br.assign(...) then branch value for '{name}'",
+                    )
         return then_value, else_value
     if then_is_typed:
         return then_value, coerce_scalar_to_type(
@@ -852,6 +1110,6 @@ def yield_(*vals):
 
 
 __all__ = [
-    "section", "vecscope", "static_range", "const_expr", "LoopHandle", "BranchHandle",
+    "section", "vecscope", "static_range", "range", "const_expr", "LoopHandle", "BranchHandle",
     "for_", "while_", "_while", "if_", "yield_",
 ]

@@ -53,9 +53,6 @@ std::unique_ptr<Pass> createPTOInjectBarrierAllSyncPass();
 std::unique_ptr<Pass>
 createPTOBufidSyncPass(const PTOBufidSyncOptions &options = {});
 
-// Graph-based intra-core sync solver (coexists with PTOInsertSync).
-std::unique_ptr<Pass>
-createPTOGraphSyncSolverPass(const PTOGraphSyncSolverOptions &options = {});
 // Default arch is A3 unless overridden by callers.
 std::unique_ptr<Pass> createEmitPTOManualPass();
 // Explicitly select target arch for codegen.
@@ -93,7 +90,10 @@ std::unique_ptr<Pass> createPTOFusionRegionGenPass();
 
 LogicalResult validateIntToPtrUses(func::FuncOp func);
 
+std::unique_ptr<Pass> createPTOUnrollLoopsPass();
+/// Backward-compatible alias of createPTOUnrollLoopsPass().
 std::unique_ptr<Pass> createPTOUnrollSIMTForPass();
+std::unique_ptr<Pass> createPTOConvertSCFToCFWithLoopHintsPass();
 std::unique_ptr<Pass> createPTONarrowVPTOLoopCountersPass();
 std::unique_ptr<Pass> createPTOAnalyzeSIMTPersistentFragmentPass();
 std::unique_ptr<Pass> createPTOMaterializeSIMTPersistentFragmentPass();
@@ -101,11 +101,14 @@ std::unique_ptr<Pass> createPTOOutlineSIMTSectionsPass();
 std::unique_ptr<Pass> createPTOInferVPTOVecScopePass();
 std::unique_ptr<Pass> createVPTOExpandWrapperOpsPass();
 std::unique_ptr<Pass> createVPTOSoftPostUpdatePass();
+std::unique_ptr<Pass> createVPTOGuardedLICMPass();
+std::unique_ptr<Pass> createPTOPrintAddressAnalysisPass();
 std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 std::unique_ptr<Pass>
 createPTOLowLevelLoopFusionPass(const PTOLowLevelLoopFusionOptions &options = {});
 std::unique_ptr<Pass> createPTOFusionPredicateElisionPass();
 std::unique_ptr<Pass> createPTOFusionLoadStoreElisionPass();
+std::unique_ptr<Pass> createPTOVexpdifFusionPass();
 std::unique_ptr<Pass> createPTOUnrollAfterLoopFusionPass();
 std::unique_ptr<Pass> createPTOFlattenFusionRegionPass();
 std::unique_ptr<Pass> createVPTOPtrNormalizePass();
@@ -139,6 +142,7 @@ std::unique_ptr<Pass> createVMILegalizeArithSelectPass();
 std::unique_ptr<Pass> createVMILowerUnifiedToLegacyPass();
 std::unique_ptr<Pass> createVMINormalizeSignlessIntToUnsignedPass();
 std::unique_ptr<Pass> createVMIToVPTOPass();
+std::unique_ptr<Pass> createVPTOStatefulStreamFusionPass();
 std::unique_ptr<Pass> createPTOExpandSoftLibPass();
 std::unique_ptr<Pass> createInsertTemplateAttributesPass();
 std::unique_ptr<Pass> createExpandTileOpPass();

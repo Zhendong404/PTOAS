@@ -218,9 +218,9 @@ selection):
 
 The slot count is part of `!pto.multi_tile_buf`. In level1/level2,
 `PTOPlanMemory` plans all slots and records their physical addresses in the
-internal `pto.multi_buffer_addrs` attribute. `PTOResolveBufferSelect`,
-InsertSync, and GraphSyncSolver consume the tile-native allocation and slot
-selection directly; no memref allocation is introduced.
+internal `pto.multi_buffer_addrs` attribute. `PTOResolveBufferSelect` and
+InsertSync consume the tile-native allocation and slot selection directly; no
+memref allocation is introduced.
 
 See `docs/designs/ptoas-multi-buffer-explicit-design.md` for the full
 design.
@@ -7621,7 +7621,10 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<.
   - `src` and `dst` element types must match and be one of `i16/i32/f16/f32`.
   - `indices` element type must be `i32`.
   - `tmp` is required; `tmp` element type must match `indices`.
-  - `indices` and `tmp` must have the same valid shape.
+  - `dst`, `indices`, and `tmp` must use row-major layout.
+  - `dst` and `indices` must have the same valid shape.
+  - `indices` and `tmp` must have the same valid shape; their allocated row
+    widths may differ and are used as independent physical strides.
 - **Index gather: implementation checks (A5)**:
   - `src` and `dst` element types must match and be one of `i8/i16/i32/f16/f32`, or a target-supported fp8 type (`f8E4M3*`/`f8E5M2*`).
   - `indices` element type must be `i16` or `i32`.
@@ -7669,31 +7672,41 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<P1111>} : !pto.tile_buf<.
 
 ---
 
-##### `pto.tgatherb` - Gather by Byte Offsets
+##### `pto.tgatherb` - Gather 32-Byte Blocks
 
-**Summary:** Gathers elements using per-element byte offsets.
+**Summary:** Gathers 32-byte source blocks using byte addresses.
 
 **Semantics:**
 
-```
-dst[i, j] = src[byte_offsets[i, j]]
-```
+Each `offsets[i, k]` is a 32-byte-aligned byte address relative to the source
+UB base. It selects one complete 32-byte source block, which is copied to the
+corresponding output block. This is not a scalar per-element gather; use the
+index form of `pto.tgather` for arbitrary element indices.
 
 **Arguments:**
 
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile |
-| `offsets` | `pto.tile_buf` | Byte offset tile |
+| `offsets` | `pto.tile_buf` | Compact 32-bit source block-address tile |
 | `dst` | `pto.tile_buf` | Destination tile |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- **Implementation checks (A2A3)**
-  - `dst` must use row-major layout (`blayout=row_major`).
-  - `dst` element size must be `1`, `2`, or `4` bytes.
+- **Implementation checks (A2/A3)**
+  - `src` and `dst` must have the same valid shape.
+  - `dst` and `offsets` must use row-major layout (`blayout=row_major`).
+  - `dst` element size must be `2` or `4` bytes.
+  - `offsets` must use a 32-bit integer element type.
+  - `offsets.v_row` must equal `dst.v_row`.
+  - For destination element size `E`, each row needs
+    `ceil(dst.v_col / (32 / E))` block addresses. `offsets.v_col` is this
+    count rounded up to a multiple of eight because each hardware repeat
+    consumes eight addresses.
+  - Allocated `dst.cols` and `offsets.cols` are their independent physical row
+    strides and may exceed their valid widths.
 - **Implementation checks (A5)**
   - Destination element size must be `1`, `2`, or `4` bytes.
 
@@ -8286,6 +8299,9 @@ pto.tmrgsort ins(<src0>, <src1>[, <src2>[, <src3>]], <tmp> {exhausted = <bool>} 
   - `dst` and `tmp` must both be rank-2 single-row tiles (`rows == 1` when statically known).
   - Every `src` must also be a rank-2 single-row tile.
   - `tmp.cols >= dst.cols`.
+  - `tmp.cols` must be at least the sum of the sources' effective valid column
+    extents. For a subview, this uses the subview window's valid columns, not
+    the capacity of its backing tile.
   - `excuted` must be `vector<4xi16>`.
 
 **Hardware Mapping:**
@@ -9254,15 +9270,19 @@ frontend/framework generated IR. The detailed design document is:
 - `TILE_UP_DOWN_ODD` splits an odd valid-row count so AIV0 receives
   `ceil(valid_rows / 2)` rows and AIV1 receives `floor(valid_rows / 2)` rows.
   `TILE_LEFT_RIGHT_ODD` applies the same rule to valid columns.
-- Odd split modes are currently supported only by a unidirectional C2V
-  GM-backed tile pipe. The frontend initialize op must provide both
-  `gm_slot_tensor` and `c2v_consumer_buf`; local C2V, V2C, bidirectional, and
-  GlobalTensor-entry odd splits are rejected because the pinned pto-isa does
-  not implement those transfer paths.
+- Odd split modes are supported by GM-backed tile pipes in the C2V direction
+  on A2/A3/A5 and in the V2C direction on A2/A3. A2/A3 also supports odd V2C
+  on the enabled direction of a bidirectional pipe. The initialize op must
+  provide GM slot backing and the matching direction's consumer buffer.
+  Local-only pipes, A5 odd V2C, and GlobalTensor-entry odd splits are rejected.
 - For an odd C2V tile pop, AIV0 and AIV1 must pass different
   `valid_row` / `valid_col` operands. The frontend must derive these operands
   from `pto.get_subblock_idx`: AIV0 supplies the `ceil` half and AIV1 supplies
   the `floor` half. PTO-ISA does not derive the two valid shapes automatically.
+- For an odd V2C tile push, the two AIV producers must likewise set their tile
+  valid shapes to the `ceil` and `floor` halves before `pto.tpush_to_aic`. The
+  Cube-side `pto.tpop_from_aiv` describes the complete unsplit tile and, when
+  its valid shape is dynamic, receives the full `valid_row` / `valid_col`.
 - `pto.tpop_from_aic` and `pto.tpop_from_aiv` are result-valued frontend ops.
 - Pipe entries support two forms:
   - tile entry: `!pto.tile_buf<...>` or the equivalent local memref after view
@@ -9280,18 +9300,17 @@ frontend/framework generated IR. The detailed design document is:
   and may carry `slot_num`; `gm_slot_buffer`, `c2v_consumer_buf`,
   `v2c_consumer_buf`, `local_slot_num`, `pto.reserve_buffer`, and
   `pto.import_reserved_buffer` are not used.
-- A C2V GM-backed tile pipe instead carries both `gm_slot_tensor` and
-  `c2v_consumer_buf`. The GM tensor describes the complete FIFO slot, while
-  the consumer buffer supplies the local vector-tile staging area. This mixed
-  form is currently limited to `dir_mask = 1`.
+- A GM-backed tile pipe carries GM slot backing plus the consumer buffer for
+  each enabled direction: `c2v_consumer_buf` for C2V and
+  `v2c_consumer_buf` for V2C. The GM descriptor describes the complete FIFO
+  slot, while each consumer buffer supplies its direction's local staging
+  area. `dir_mask = 3` requires both consumer buffers.
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
   one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
   stride, and layout must match the `tensor_view` returned by `talloc` /
-  `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN`,
-  `TILE_LEFT_RIGHT`, `TILE_UP_DOWN_ODD`, and `TILE_LEFT_RIGHT_ODD` split modes
-  derive each sub-core's GM view from the single-slot descriptor and the
-  runtime tile valid shape. For odd modes, the two sub-cores' valid shapes must
-  be the explicit `ceil` and `floor` halves described above.
+  `tpop` and form the pto-isa `GlobalData` template argument. Global entries
+  support `TILE_NO_SPLIT`, `TILE_UP_DOWN`, and `TILE_LEFT_RIGHT`; odd split
+  modes are limited to tile entries.
 - If a global-entry result op does not carry explicit stride/layout metadata,
   PTOAS treats it as a row-major contiguous GM view. Non-contiguous cases must
   preserve stride/layout through the producing op metadata, the source view, or
@@ -9459,14 +9478,14 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
   paths that also use a local consumer FIFO buffer
 - `gm_slot_tensor`: optional single-slot entry descriptor
   (`!pto.tensor_view<...>`), required by global-only GM FIFO and by the A5
-  C2V GM-backed tile path. For a global entry, its type describes the
+  GM-backed tile paths. For a global entry, its type describes the
   `tensor_view` returned by `talloc` / `tpop`. This descriptor is retained in
   IR for entry type validation; EmitC lowers the `TPipe` constructor argument
   to only the GM FIFO start address
 - `c2v_consumer_buf`: optional C2V consumer local base address; omitted for
   global-only GM FIFO, but required when `gm_slot_tensor` backs a C2V tile pipe
 - `v2c_consumer_buf`: optional V2C consumer local base address; omitted for
-  global-only GM FIFO
+  global-only GM FIFO, but required when `gm_slot_tensor` backs a V2C tile pipe
 
 **Results:** None.
 

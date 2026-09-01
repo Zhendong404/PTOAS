@@ -10,10 +10,12 @@
 #pragma GCC diagnostic ignored "-Woverloaded-virtual"
 
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "PTO/Transforms/VPTOLLVMEmitterHelper.h"
 
 #include "PTO/IR/PTO.h"
-#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
+#include "PTO/IR/PTOTypeUtils.h"
+#include "PTO/IR/VPTOMemoryDist.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Conversion/Passes.h"
@@ -1661,6 +1663,8 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
       return VcvtContract{"llvm.hivm.vcvtfi.f162s8.x", true, true, true, 16};
     case VcvtElemKind::U8:
       return VcvtContract{"llvm.hivm.vcvtfi.f162u8.x", true, true, true, 16};
+    case VcvtElemKind::BF16:
+      return VcvtContract{"llvm.hivm.vcvtff.f162bf16.x", true, false, false, 16};
     default:
       return std::nullopt;
     }
@@ -1826,191 +1830,32 @@ static uint64_t determineVsqzStoreHint(pto::VsqzOp vsqz) {
 
 static std::optional<uint64_t> parseLoadDistImmediate(StringRef dist,
                                                       Type elementType) {
-  auto width = getDistElementWidth(elementType);
-  if (dist.empty() || dist == "NORM")
-  {
-    return 0;
-  }
-  if (!width)
-  {
-    return std::nullopt;
-  }
-  if (dist == "BRC_B8")
-  {
-    return std::optional<uint64_t>(1);
-  }
-  if (dist == "BRC_B16")
-  {
-    return std::optional<uint64_t>(2);
-  }
-  if (dist == "BRC_B32")
-  {
-    return std::optional<uint64_t>(3);
-  }
-  if (dist == "US_B8")
-  {
-    return std::optional<uint64_t>(6);
-  }
-  if (dist == "US_B16")
-  {
-    return std::optional<uint64_t>(7);
-  }
-  if (dist == "DS_B8")
-  {
-    return std::optional<uint64_t>(8);
-  }
-  if (dist == "DS_B16")
-  {
-    return std::optional<uint64_t>(9);
-  }
-  if (dist == "UNPK_B8")
-  {
-    return std::optional<uint64_t>(13);
-  }
-  if (dist == "UNPK_B16")
-  {
-    return std::optional<uint64_t>(14);
-  }
-  if (dist == "UNPK_B32")
-  {
-    return std::optional<uint64_t>(18);
-  }
-  if (dist == "BRC_BLK")
-  {
-    return 15;
-  }
-  if (dist == "E2B_B16")
-  {
-    return std::optional<uint64_t>(16);
-  }
-  if (dist == "E2B_B32")
-  {
-    return std::optional<uint64_t>(17);
-  }
-  if (dist == "UNPK4")
-  {
-    return *width == 8 ? std::optional<uint64_t>(20) : std::nullopt;
-  }
-  if (dist == "SPLT4CHN")
-  {
-    return *width == 8 ? std::optional<uint64_t>(21) : std::nullopt;
-  }
-  if (dist == "SPLT2CHN_B8")
-  {
-    return std::optional<uint64_t>(22);
-  }
-  if (dist == "SPLT2CHN_B16")
-  {
-    return std::optional<uint64_t>(23);
-  }
-  return std::nullopt;
+  const auto *contract = lookupVPTOMemoryDist(VPTOMemoryOpFamily::Load, dist,
+                                              getDistElementWidth(elementType));
+  return contract ? std::optional<uint64_t>(contract->a5Immediate)
+                  : std::nullopt;
 }
 
 static std::optional<uint64_t> parseLoadX2DistImmediate(StringRef dist,
                                                         Type elementType) {
-  auto width = getDistElementWidth(elementType);
-  if (dist == "BDINTLV")
-  {
-    return 10;
-  }
-  if (!width)
-  {
-    return std::nullopt;
-  }
-  if (dist == "DINTLV_B8")
-  {
-    return std::optional<uint64_t>(11);
-  }
-  if (dist == "DINTLV_B16")
-  {
-    return std::optional<uint64_t>(12);
-  }
-  if (dist == "DINTLV_B32")
-  {
-    return std::optional<uint64_t>(19);
-  }
-  return std::nullopt;
+  const auto *contract = lookupVPTOMemoryDist(VPTOMemoryOpFamily::LoadX2, dist,
+                                              getDistElementWidth(elementType));
+  return contract ? std::optional<uint64_t>(contract->a5Immediate)
+                  : std::nullopt;
 }
 
 static std::optional<uint64_t> parseStoreDistImmediate(StringRef dist,
                                                        Type elementType) {
-  auto width = getDistElementWidth(elementType);
-  if (dist.empty()) {
-    if (!width)
-    {
-      return std::nullopt;
-    }
-    if (*width == 8)
-    {
-      return 0;
-    }
-    if (*width == 16)
-    {
-      return 1;
-    }
-    if (*width == 32)
-    {
-      return 2;
-    }
-    return std::nullopt;
-  }
-  if (dist == "NORM_B8")
-  {
-    return std::optional<uint64_t>(0);
-  }
-  if (dist == "NORM_B16")
-  {
-    return std::optional<uint64_t>(1);
-  }
-  if (dist == "NORM_B32")
-  {
-    return std::optional<uint64_t>(2);
-  }
-  if (dist == "1PT_B8")
-  {
-    return std::optional<uint64_t>(3);
-  }
-  if (dist == "1PT_B16")
-  {
-    return std::optional<uint64_t>(4);
-  }
-  if (dist == "1PT_B32")
-  {
-    return std::optional<uint64_t>(5);
-  }
-  if (dist == "PK_B16")
-  {
-    return std::optional<uint64_t>(6);
-  }
-  if (dist == "PK_B32")
-  {
-    return std::optional<uint64_t>(7);
-  }
-  if (dist == "PK_B64")
-  {
-    return std::optional<uint64_t>(10);
-  }
-  if (dist == "PK4_B32")
-  {
-    return std::optional<uint64_t>(12);
-  }
-  if (dist == "MRG4CHN_B8")
-  {
-    return std::optional<uint64_t>(13);
-  }
-  if (dist == "MRG2CHN_B8")
-  {
-    return std::optional<uint64_t>(14);
-  }
-  if (dist == "MRG2CHN_B16")
-  {
-    return std::optional<uint64_t>(15);
-  }
-  return std::nullopt;
+  const auto *contract = lookupVPTOMemoryDist(
+      VPTOMemoryOpFamily::Store, dist,
+      dist.empty() ? getDistElementWidth(elementType) : std::nullopt);
+  return contract ? std::optional<uint64_t>(contract->a5Immediate)
+                  : std::nullopt;
 }
 
 static bool isOnePointStoreDist(StringRef dist) {
-  return dist == "1PT_B8" || dist == "1PT_B16" || dist == "1PT_B32";
+  const auto *contract = lookupVPTOMemoryDist(VPTOMemoryOpFamily::Store, dist);
+  return contract && contract->isOnePointStore();
 }
 
 static bool isMaskOnlyUsedByOnePointStores(Value mask) {
@@ -2021,25 +1866,11 @@ static bool isMaskOnlyUsedByOnePointStores(Value mask) {
 }
 
 static std::optional<uint64_t> parseStoreX2DistImmediate(StringRef dist,
-                                                         Type elementType) {
-  auto width = getDistElementWidth(elementType);
-  if (!width)
-  {
-    return std::nullopt;
-  }
-  if (dist == "INTLV_B8")
-  {
-    return std::optional<uint64_t>(8);
-  }
-  if (dist == "INTLV_B16")
-  {
-    return std::optional<uint64_t>(9);
-  }
-  if (dist == "INTLV_B32")
-  {
-    return std::optional<uint64_t>(11);
-  }
-  return std::nullopt;
+                                                         Type) {
+  const auto *contract =
+      lookupVPTOMemoryDist(VPTOMemoryOpFamily::StoreX2, dist);
+  return contract ? std::optional<uint64_t>(contract->a5Immediate)
+                  : std::nullopt;
 }
 
 static Value packBlockRepeatStride(Operation *anchor, Value blockStride,
@@ -2815,40 +2646,6 @@ static FailureOr<Value> packVbitsortConfig(Operation *anchor, Value repeatTimes)
   }
   return builder
       .create<arith::ShLIOp>(loc, repeatI64, getI64Constant(builder, loc, 56))
-      .getResult();
-}
-
-static FailureOr<Value> convertElementOffsetToBytes(Operation *anchor, Value offset,
-                                                    Type elementType) {
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-
-  Value offsetI32 = castIntegerLikeTo(anchor, offset, builder.getI32Type());
-  if (!offsetI32)
-  {
-    return failure();
-  }
-
-  unsigned bitWidth = 0;
-  if (auto intType = dyn_cast<IntegerType>(elementType))
-  {
-    bitWidth = intType.getWidth();
-  }
-  else if (isLowpPayloadElementType(elementType)) {
-    bitWidth = 8;
-  } else if (auto floatType = dyn_cast<FloatType>(elementType)) {
-    bitWidth = floatType.getWidth();
-  } else if (pto::isPTOBF16x2Type(elementType)) {
-    bitWidth = 32;
-}
-  if (bitWidth == 0 || bitWidth % 8 != 0)
-  {
-    return failure();
-  }
-
-  Value scale = builder.create<arith::ConstantOp>(
-      anchor->getLoc(), builder.getI32IntegerAttr(bitWidth / 8));
-  return builder.create<arith::MulIOp>(anchor->getLoc(), offsetI32, scale)
       .getResult();
 }
 
@@ -6106,6 +5903,163 @@ private:
   LoweringState &state;
 };
 
+// pto.ub.vgatherb -> llvm.hivm.VGATHERB.b16/.b32(dst_ptr, offset_ptr, i64 config)
+// Config (decoded from bisheng IR, see docs/designs/a2a3-vpto-tgather.md):
+//   srcAddr[31:0] | dstRepeatStride[39:32] | dstBlockStride[47:40]
+//   | reserved[55:48]=0 | repeat[63:56]
+// The 2nd pointer operand is the offset buffer; the source data base address
+// (low 32 bits of the src pointer) is packed into config[31:0].
+class LowerUBVgatherbOpPattern final
+    : public OpConversionPattern<pto::UBVgatherbOp> {
+public:
+  explicit LowerUBVgatherbOpPattern(TypeConverter &typeConverter,
+                                    MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::UBVgatherbOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::UBVgatherbOp op, pto::UBVgatherbOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value dst = adaptor.getDst();
+    Value offset = adaptor.getOffset();
+    Value src = adaptor.getSrc();
+    if (!dst || !offset || !src ||
+        !isa<LLVM::LLVMPointerType>(dst.getType()) ||
+        !isa<LLVM::LLVMPointerType>(offset.getType()) ||
+        !isa<LLVM::LLVMPointerType>(src.getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "unexpected converted ub.vgatherb operand types");
+    }
+
+    auto ptrType = mlir::cast<pto::PtrType>(op.getDst().getType());
+    Type elemType = ptrType.getElementType();
+    unsigned width = pto::getPTOStorageElemBitWidth(elemType);
+    if (width != 16 && width != 32) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported element width for ub.vgatherb");
+    }
+    std::string calleeName =
+        std::string("llvm.hivm.VGATHERB.") + ((width == 16) ? "b16" : "b32");
+
+    Location loc = op.getLoc();
+    auto i64Ty = rewriter.getI64Type();
+    auto constI64 = [&](uint64_t v) -> Value {
+      return rewriter.create<arith::ConstantOp>(loc,
+                                                rewriter.getI64IntegerAttr(v));
+    };
+    auto getI64 = [&](Value v) -> Value {
+      return castIntegerLikeTo(op, v, i64Ty);
+    };
+    auto maskByte = [&](Value v) -> Value {
+      return rewriter.create<arith::AndIOp>(loc, v, constI64(0xff));
+    };
+    auto shl = [&](Value v, uint64_t amount) -> Value {
+      return rewriter.create<arith::ShLIOp>(loc, v, constI64(amount));
+    };
+
+    // config[31:0] = source data address (low 32 bits of the src pointer).
+    // Trace back through castptr to get the planned UB offset, matching the
+    // address loaded from Tile host_ptr metadata by the PTO-ISA reference.
+    Value srcAddr;
+    if (auto *defOp = op.getSrc().getDefiningOp()) {
+      if (auto castOp = dyn_cast<pto::CastPtrOp>(defOp)) {
+        srcAddr = castOp.getOperand();
+      }
+    }
+    if (!srcAddr) {
+      srcAddr = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, src);
+    }
+    Value config =
+        rewriter.create<arith::AndIOp>(loc, srcAddr, constI64(0xffffffff));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getDstRepeatStride())), 32));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getDstBlockStride())), 40));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getRepeat())), 56));
+
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{dst.getType(), offset.getType(), rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{dst, offset, config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
+// pto.ub.vgather -> llvm.hivm.VGATHER.b16/.b32(dst_ptr, src_ptr, i64 config)
+// Config: offsetAddr[31:0] | dstRepeatStride[39:32] | repeat[63:56].
+class LowerUBVgatherOpPattern final
+    : public OpConversionPattern<pto::UBVgatherOp> {
+public:
+  explicit LowerUBVgatherOpPattern(TypeConverter &typeConverter,
+                                   MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<pto::UBVgatherOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(pto::UBVgatherOp op, pto::UBVgatherOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value dst = adaptor.getDst();
+    Value src = adaptor.getSrc();
+    if (!dst || !src || !isa<LLVM::LLVMPointerType>(dst.getType()) ||
+        !isa<LLVM::LLVMPointerType>(src.getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "unexpected converted ub.vgather operand types");
+    }
+
+    auto ptrType = mlir::cast<pto::PtrType>(op.getDst().getType());
+    Type elemType = ptrType.getElementType();
+    unsigned width = pto::getPTOStorageElemBitWidth(elemType);
+    if (width != 16 && width != 32) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported element width for ub.vgather");
+    }
+    std::string calleeName =
+        std::string("llvm.hivm.VGATHER.") + ((width == 16) ? "b16" : "b32");
+
+    Location loc = op.getLoc();
+    auto i64Ty = rewriter.getI64Type();
+    auto constI64 = [&](uint64_t v) -> Value {
+      return rewriter.create<arith::ConstantOp>(loc,
+                                                rewriter.getI64IntegerAttr(v));
+    };
+    auto getI64 = [&](Value v) -> Value {
+      return castIntegerLikeTo(op, v, i64Ty);
+    };
+    auto maskByte = [&](Value v) -> Value {
+      return rewriter.create<arith::AndIOp>(loc, v, constI64(0xff));
+    };
+    auto shl = [&](Value v, uint64_t amount) -> Value {
+      return rewriter.create<arith::ShLIOp>(loc, v, constI64(amount));
+    };
+
+    Value config = rewriter.create<arith::AndIOp>(
+        loc, getI64(adaptor.getOffsetAddr()), constI64(0xffffffff));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getDstRepeatStride())), 32));
+    config = rewriter.create<arith::OrIOp>(
+        loc, config, shl(maskByte(getI64(adaptor.getRepeat())), 56));
+
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{dst.getType(), src.getType(), rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{dst, src, config});
+    state.plannedDecls.push_back(PlannedDecl{calleeName, funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename ShiftOp>
 class LowerUBufShiftOpPattern final : public OpConversionPattern<ShiftOp> {
 public:
@@ -8780,12 +8734,14 @@ public:
     {
       return rewriter.notifyMatchFailure(op, "unsupported vlds element type");
     }
-    auto offsetBytes = convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
-    auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource().getType());
+    bool usePostIntrinsic = static_cast<bool>(op.getUpdatedBase());
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getSource(), adaptor.getOffset(), elementType,
+        usePostIntrinsic, rewriter);
     auto dist =
         parseLoadDistImmediate(op.getDist().value_or("NORM"), elementType);
-    if (failed(offsetBytes) || !basePtr || !dist)
-    {
+    bool invalidAddress = failed(loweredOffset) || !dist;
+    if (invalidAddress) {
       return rewriter.notifyMatchFailure(op, "failed to materialize vlds operands");
     }
 
@@ -8795,7 +8751,6 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert vlds result types");
     }
 
-    bool usePostIntrinsic = static_cast<bool>(op.getUpdatedBase());
     if (usePostIntrinsic) {
       if (resultTypes.size() != 2 || resultTypes[1] != adaptor.getSource().getType()) {
         return rewriter.notifyMatchFailure(op,
@@ -8824,9 +8779,12 @@ public:
 
     Value distValue = getI32Constant(rewriter, op.getLoc(), *dist);
     Value postValue = getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
-    SmallVector<Value> args{adaptor.getSource(), *offsetBytes, distValue, postValue};
+    SmallVector<Value> args{loweredOffset->base,
+                            loweredOffset->intrinsicOffset, distValue,
+                            postValue};
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), (*offsetBytes).getType(),
+        TypeRange{loweredOffset->base.getType(),
+                  loweredOffset->intrinsicOffset.getType(),
                   distValue.getType(), postValue.getType()},
         callResultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
@@ -8836,10 +8794,13 @@ public:
         op.getLoc(), call.getResult(0), ptoResultType, resultTypes[0],
         rewriter);
     if (usePostIntrinsic) {
-      rewriter.replaceOp(op, ValueRange{loaded, call.getResult(1)});
+      Value updatedBase = loweredOffset->updatedBase
+                              ? loweredOffset->updatedBase
+                              : call.getResult(1);
+      rewriter.replaceOp(op, ValueRange{loaded, updatedBase});
     } else {
       rewriter.replaceOp(op, ValueRange{loaded});
-}
+    }
     return success();
   }
 
@@ -8863,16 +8824,17 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vldsx2 element type");
     }
 
-    auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
-    auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource().getType());
+    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getSource(), adaptor.getOffset(), elementType,
+        usePostIntrinsic, rewriter);
     auto dist = parseLoadX2DistImmediate(op.getDist(), elementType);
-    if (failed(offsetBytes) || !basePtr || !dist) {
+    bool invalidAddress = failed(loweredOffset) || !dist;
+    if (invalidAddress) {
       return rewriter.notifyMatchFailure(op,
                                          "failed to materialize vldsx2 operands");
     }
 
-    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
     SmallVector<Type> resultTypes;
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       resultTypes)) ||
@@ -8902,10 +8864,12 @@ public:
     Value distValue = getI32Constant(rewriter, op.getLoc(), *dist);
     Value postValue =
         getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
-    SmallVector<Value> args{adaptor.getSource(), *offsetBytes, distValue,
+    SmallVector<Value> args{loweredOffset->base,
+                            loweredOffset->intrinsicOffset, distValue,
                             postValue};
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), (*offsetBytes).getType(),
+        TypeRange{loweredOffset->base.getType(),
+                  loweredOffset->intrinsicOffset.getType(),
                   distValue.getType(), postValue.getType()},
         callResultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
@@ -8918,10 +8882,13 @@ public:
         op.getLoc(), call.getResult(1), op.getHigh().getType(), resultTypes[1],
         rewriter);
     if (usePostIntrinsic) {
-      rewriter.replaceOp(op, ValueRange{low, high, call.getResult(2)});
+      Value updatedBase = loweredOffset->updatedBase
+                              ? loweredOffset->updatedBase
+                              : call.getResult(2);
+      rewriter.replaceOp(op, ValueRange{low, high, updatedBase});
     } else {
       rewriter.replaceOp(op, ValueRange{low, high});
-}
+    }
     return success();
   }
 
@@ -9095,15 +9062,19 @@ public:
     intrinsicResultTypes.push_back(adaptor.getSource().getType());
 
     SmallVector<Value> args{adaptor.getSource(), adaptor.getAlign()};
+    Value explicitUpdatedBase;
     if (usePostIntrinsic) {
       Type elementType = getElementTypeFromVectorLike(op.getResult().getType());
-      auto incrementBytes =
-          convertElementOffsetToBytes(op, adaptor.getIncrement(), elementType);
-      if (failed(incrementBytes)) {
+      auto loweredIncrement = lowerVPTOElementOffsetForIntrinsic(
+          op, adaptor.getSource(), adaptor.getIncrement(), elementType,
+          /*isPostUpdate=*/true, rewriter);
+      if (failed(loweredIncrement)) {
         return rewriter.notifyMatchFailure(op,
                                            "failed to convert vldus increment");
       }
-      args.push_back(*incrementBytes);
+      args.front() = loweredIncrement->base;
+      args.push_back(loweredIncrement->intrinsicOffset);
+      explicitUpdatedBase = loweredIncrement->updatedBase;
     }
     SmallVector<Type> argTypes;
     for (Value arg : args)
@@ -9120,7 +9091,8 @@ public:
     SmallVector<Value> replacements{loaded, call.getResult(1)};
     if (usePostIntrinsic)
     {
-      replacements.push_back(call.getResult(2));
+      replacements.push_back(explicitUpdatedBase ? explicitUpdatedBase
+                                                 : call.getResult(2));
     }
     rewriter.replaceOp(op, replacements);
     return success();
@@ -9242,13 +9214,14 @@ public:
     } else if (auto memrefType = dyn_cast<BaseMemRefType>(op.getDestination().getType())) {
       offsetElementType = memrefType.getElementType();
     }
-    auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), offsetElementType);
-    auto basePtr = dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
+    bool usePostIntrinsic = static_cast<bool>(op.getUpdatedBase());
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getDestination(), adaptor.getOffset(), offsetElementType,
+        usePostIntrinsic, rewriter);
     auto dist =
         parseStoreDistImmediate(op.getDist().value_or(""), elementType);
-    if (failed(offsetBytes) || !basePtr || !dist)
-    {
+    bool invalidAddress = failed(loweredOffset) || !dist;
+    if (invalidAddress) {
       return rewriter.notifyMatchFailure(op, "failed to materialize vsts operands");
     }
 
@@ -9266,7 +9239,6 @@ public:
                                                       resultTypes))) {
       return rewriter.notifyMatchFailure(op, "failed to convert vsts result types");
     }
-    bool usePostIntrinsic = static_cast<bool>(op.getUpdatedBase());
     if (usePostIntrinsic) {
       if (resultTypes.size() != 1 ||
           resultTypes[0] != adaptor.getDestination().getType()) {
@@ -9293,10 +9265,11 @@ public:
     {
       mask = rewriter.create<LLVM::UndefOp>(op.getLoc(), mask.getType());
     }
-    SmallVector<Value> args{value, adaptor.getDestination(), *offsetBytes,
-                            distValue, zero, mask};
+    SmallVector<Value> args{value, loweredOffset->base,
+                            loweredOffset->intrinsicOffset, distValue, zero,
+                            mask};
     auto funcType = rewriter.getFunctionType(
-        TypeRange{value.getType(), adaptor.getDestination().getType(),
+        TypeRange{value.getType(), loweredOffset->base.getType(),
                   rewriter.getI32Type(), rewriter.getI32Type(),
                   rewriter.getI32Type(), mask.getType()},
         resultTypes);
@@ -9305,7 +9278,10 @@ public:
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     if (usePostIntrinsic)
     {
-      rewriter.replaceOp(op, call.getResults());
+      Value updatedBase = loweredOffset->updatedBase
+                              ? loweredOffset->updatedBase
+                              : call.getResult(0);
+      rewriter.replaceOp(op, updatedBase);
     }
     else
     {
@@ -9403,12 +9379,12 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vstsx2 element type");
     }
 
-    auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
-    auto basePtr =
-        dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getDestination(), adaptor.getOffset(), elementType,
+        /*isPostUpdate=*/false, rewriter);
     auto dist = parseStoreX2DistImmediate(op.getDist(), elementType);
-    if (failed(offsetBytes) || !basePtr || !dist) {
+    bool invalidAddress = failed(loweredOffset) || !dist;
+    if (invalidAddress) {
       return rewriter.notifyMatchFailure(op,
                                          "failed to materialize vstsx2 operands");
     }
@@ -9426,11 +9402,13 @@ public:
         op.getLoc(), adaptor.getLow(), op.getLow().getType(), rewriter);
     Value high = castToPayloadABI(
         op.getLoc(), adaptor.getHigh(), op.getHigh().getType(), rewriter);
-    SmallVector<Value> args{low, high, adaptor.getDestination(), *offsetBytes,
-                            distValue, zeroValue, adaptor.getMask()};
+    SmallVector<Value> args{low, high, loweredOffset->base,
+                            loweredOffset->intrinsicOffset, distValue,
+                            zeroValue, adaptor.getMask()};
     auto funcType = rewriter.getFunctionType(
         TypeRange{low.getType(), high.getType(),
-                  adaptor.getDestination().getType(), (*offsetBytes).getType(),
+                  loweredOffset->base.getType(),
+                  loweredOffset->intrinsicOffset.getType(),
                   distValue.getType(), zeroValue.getType(),
                   adaptor.getMask().getType()},
         TypeRange{});
@@ -9507,9 +9485,11 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vstus element type");
     }
 
-    auto offsetBytes = convertElementOffsetToBytes(op, adaptor.getOffset(), elementType);
-    if (failed(offsetBytes))
-    {
+    bool usePostIntrinsic = static_cast<bool>(op.getBaseOut());
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getBase(), adaptor.getOffset(), elementType,
+        usePostIntrinsic, rewriter);
+    if (failed(loweredOffset)) {
       return rewriter.notifyMatchFailure(op, "failed to convert vstus offset");
     }
 
@@ -9519,7 +9499,6 @@ public:
       return rewriter.notifyMatchFailure(op,
                                          "failed to convert vstus result types");
     }
-    bool usePostIntrinsic = static_cast<bool>(op.getBaseOut());
     auto baseType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getBase().getType());
     if (!baseType || resultTypes.size() != (usePostIntrinsic ? 2u : 1u) ||
         adaptor.getAlignIn().getType() != resultTypes[0] ||
@@ -9540,16 +9519,23 @@ public:
     }
     Value value = castToPayloadABI(
         op.getLoc(), adaptor.getValue(), op.getValue().getType(), rewriter);
-    SmallVector<Value> args{value, adaptor.getBase(), *offsetBytes,
+    SmallVector<Value> args{value, loweredOffset->base,
+                            loweredOffset->intrinsicOffset,
                             adaptor.getAlignIn()};
     auto funcType = rewriter.getFunctionType(
-        TypeRange{value.getType(), adaptor.getBase().getType(),
-                  (*offsetBytes).getType(), adaptor.getAlignIn().getType()},
+        TypeRange{value.getType(), loweredOffset->base.getType(),
+                  loweredOffset->intrinsicOffset.getType(),
+                  adaptor.getAlignIn().getType()},
         resultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
                                               resultTypes, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
+    if (usePostIntrinsic && loweredOffset->updatedBase) {
+      rewriter.replaceOp(
+          op, ValueRange{call.getResult(0), loweredOffset->updatedBase});
+    } else {
+      rewriter.replaceOp(op, call.getResults());
+    }
     return success();
   }
 
@@ -9652,14 +9638,14 @@ public:
                                          "unexpected converted vstas operand types");
     }
 
-    auto offsetBytes =
-        convertElementOffsetToBytes(op, adaptor.getOffset(), dstType.getElementType());
-    if (failed(offsetBytes))
-    {
+    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
+    auto loweredOffset = lowerVPTOElementOffsetForIntrinsic(
+        op, adaptor.getDestination(), adaptor.getOffset(),
+        dstType.getElementType(), usePostIntrinsic, rewriter);
+    if (failed(loweredOffset)) {
       return rewriter.notifyMatchFailure(op, "failed to convert vstas offset");
     }
 
-    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
     SmallVector<Type> resultTypes;
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       resultTypes)) ||
@@ -9672,18 +9658,22 @@ public:
         buildVstasCallee(op.getContext(), usePostIntrinsic);
     Value postValue =
         getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
-    SmallVector<Value> args{adaptor.getValue(), adaptor.getDestination(), *offsetBytes,
-                            postValue};
+    SmallVector<Value> args{adaptor.getValue(), loweredOffset->base,
+                            loweredOffset->intrinsicOffset, postValue};
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getValue().getType(), adaptor.getDestination().getType(),
-                  (*offsetBytes).getType(), postValue.getType()},
+        TypeRange{adaptor.getValue().getType(), loweredOffset->base.getType(),
+                  loweredOffset->intrinsicOffset.getType(),
+                  postValue.getType()},
         resultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName,
                                               resultTypes, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     if (usePostIntrinsic)
     {
-      rewriter.replaceOp(op, call.getResults());
+      Value updatedBase = loweredOffset->updatedBase
+                              ? loweredOffset->updatedBase
+                              : call.getResult(0);
+      rewriter.replaceOp(op, updatedBase);
     }
     else
     {
@@ -10442,13 +10432,15 @@ public:
           op, "unsupported predicate-store dist immediate");
     }
 
-    Value offset = castIntegerLikeTo(op, adaptor.getOffset(), rewriter.getI32Type());
-    if (!offset) {
+    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
+    auto loweredOffset = lowerVPTOPredicateOffsetForIntrinsic(
+        op, adaptor.getDestination(), adaptor.getOffset(), usePostIntrinsic,
+        rewriter);
+    if (failed(loweredOffset)) {
       return rewriter.notifyMatchFailure(
-          op, "failed to convert predicate-store offset to i32");
+          op, "failed to preserve predicate-store index offset");
     }
 
-    bool usePostIntrinsic = op.getUpdatedBase() != nullptr;
     SmallVector<Type> resultTypes;
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       resultTypes)) ||
@@ -10461,8 +10453,8 @@ public:
         getPredicateStoreCallee<StoreOp>(op.getContext(), usePostIntrinsic);
     SmallVector<Value> args;
     args.push_back(adaptor.getValue());
-    args.push_back(adaptor.getDestination());
-    args.push_back(offset);
+    args.push_back(loweredOffset->base);
+    args.push_back(loweredOffset->intrinsicOffset);
     args.push_back(rewriter.create<arith::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(*dist)));
     args.push_back(rewriter.create<arith::ConstantOp>(
@@ -10477,7 +10469,11 @@ public:
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
     if (usePostIntrinsic)
     {
-      rewriter.replaceOp(op, call.getResults());
+      if (loweredOffset->updatedBase) {
+        rewriter.replaceOp(op, loweredOffset->updatedBase);
+      } else {
+        rewriter.replaceOp(op, call.getResults());
+      }
     }
     else
     {
@@ -10522,17 +10518,19 @@ public:
           op, "unsupported predicate-load dist immediate");
     }
 
-    Value offset = castIntegerLikeTo(op, adaptor.getOffset(), rewriter.getI32Type());
-    if (!offset) {
+    auto loweredOffset = lowerVPTOPredicateOffsetForIntrinsic(
+        op, adaptor.getSource(), adaptor.getOffset(), usePostIntrinsic,
+        rewriter);
+    if (failed(loweredOffset)) {
       return rewriter.notifyMatchFailure(
-          op, "failed to convert predicate-load offset to i32");
+          op, "failed to preserve predicate-load index offset");
     }
 
     StringRef calleeName =
         getPredicateLoadCallee<LoadOp>(op.getContext(), usePostIntrinsic);
     SmallVector<Value> args;
-    args.push_back(adaptor.getSource());
-    args.push_back(offset);
+    args.push_back(loweredOffset->base);
+    args.push_back(loweredOffset->intrinsicOffset);
     args.push_back(rewriter.create<arith::ConstantOp>(
         op.getLoc(), rewriter.getI32IntegerAttr(*dist)));
     args.push_back(rewriter.create<arith::ConstantOp>(
@@ -10545,7 +10543,12 @@ public:
     auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName,
                                               resultTypes, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
+    if (loweredOffset->updatedBase) {
+      rewriter.replaceOp(
+          op, ValueRange{call.getResult(0), loweredOffset->updatedBase});
+    } else {
+      rewriter.replaceOp(op, call.getResults());
+    }
     return success();
   }
 
@@ -13445,6 +13448,10 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBufVdupPattern>(
         typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBVgatherbOpPattern>(
+        typeConverter, patterns.getContext(), state);
+    patterns.add<LowerUBVgatherOpPattern>(
+        typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskOpPattern>(
         typeConverter, patterns.getContext(), state);
     patterns.add<LowerUBSetMaskCountOpPattern>(
@@ -13598,6 +13605,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
     target.addIllegalOp<pto::UBVmaxSOp>();
     target.addIllegalOp<pto::UBVminSOp>();
     target.addIllegalOp<pto::UBVdupOp>();
+    target.addIllegalOp<pto::UBVgatherbOp>();
+    target.addIllegalOp<pto::UBVgatherOp>();
     target.addIllegalOp<pto::UBSetMaskOp>();
     target.addIllegalOp<pto::UBSetMaskCountOp>();
     target.addIllegalOp<pto::UBSetMaskNormOp>();
@@ -14192,7 +14201,13 @@ static LogicalResult runPipeline(ModuleOp module, const std::string &march,
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
   kernelModulePM.addPass(arith::createArithExpandOpsPass());
-  kernelModulePM.addPass(createConvertSCFToCFPass());
+  // pto-convert-scf-to-cf-with-loop-hints performs the SCF-to-CF conversion for this pipeline:
+  // it runs the upstream conversion patterns plus a higher-benefit lowering
+  // for {pto.unroll = "enable"} loops that attaches llvm.loop_annotation to
+  // the latch, so the !llvm.loop.unroll.enable metadata survives into the
+  // emitted LLVM IR.  It replaces createConvertSCFToCFPass here; running both
+  // would be redundant.
+  kernelModulePM.addNestedPass<func::FuncOp>(pto::createPTOConvertSCFToCFWithLoopHintsPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());
   kernelModulePM.addPass(createFinalizeMemRefToLLVMConversionPass());
