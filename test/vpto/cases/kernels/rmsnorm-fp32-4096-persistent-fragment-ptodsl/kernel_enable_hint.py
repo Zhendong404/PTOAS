@@ -6,17 +6,23 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+# Variant of kernel.py with handwritten unroll="enable" hints on the
+# persistent loops (init-section i and main-section i_2). "enable" alone is
+# too weak for persistent accesses (materialization needs the loop fully
+# unrolled); pto-promote-persistent-fragment-loops must override it to
+# "full" for these dependency loops, which is what this case verifies.
+
 from ptodsl import pto, scalar
 
 
 @pto.jit(
-    name="main_kernel",
+    name="main_kernel_c",
     kernel_kind="vector",
     target="a5",
     mode="explicit",
     ast_rewrite=False,
 )
-def main_kernel(
+def main_kernel_c(
     RSTD: pto.ptr(pto.f32, "gm"),
     W: pto.ptr(pto.f32, "gm"),
     X: pto.ptr(pto.f32, "gm"),
@@ -47,7 +53,7 @@ def main_kernel(
   w_frag = pto.alloc_buffer((32,), pto.f32)
   with pto.simt(128, 1, 1):
     simtvf_tx = pto.get_tid_x()
-    with pto.for_(0, 16, step=1, unroll="full") as i:
+    with pto.for_(0, 16, step=1, unroll="enable") as i:
       scalar.store(
           scalar.load(
               pto.castptr(buf_dyn_shmem, pto.ptr(pto.f32, "ub")),
@@ -120,7 +126,7 @@ def main_kernel(
           ((t & 1) * 8) + 20608,
       )
 
-      with pto.for_(0, 16, step=1, unroll="full") as i_2:
+      with pto.for_(0, 16, step=1, unroll="enable") as i_2:
         scalar.store(
             (
                 scalar.load(x_frag, i_2 * 2, contiguous=2)

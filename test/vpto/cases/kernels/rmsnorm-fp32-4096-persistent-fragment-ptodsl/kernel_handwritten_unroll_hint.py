@@ -6,17 +6,21 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+# Variant of kernel.py with handwritten unroll="full" hints on the
+# persistent loops (init-section i and main-section i_2). The
+# section-wrapping tile loop stays un-hinted.
+
 from ptodsl import pto, scalar
 
 
 @pto.jit(
-    name="main_kernel",
+    name="main_kernel_a",
     kernel_kind="vector",
     target="a5",
     mode="explicit",
     ast_rewrite=False,
 )
-def main_kernel(
+def main_kernel_a(
     RSTD: pto.ptr(pto.f32, "gm"),
     W: pto.ptr(pto.f32, "gm"),
     X: pto.ptr(pto.f32, "gm"),
