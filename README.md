@@ -63,7 +63,7 @@ mkdir -p $WORKSPACE_DIR
 # 先拉取 PTOAS 源码：venv 将创建在 PTOAS 工作区内（$PTO_SOURCE_DIR/.venv），
 # 保持工作区自包含，所以需要先有 $PTO_SOURCE_DIR 目录。
 cd $WORKSPACE_DIR
-git clone https://github.com/hw-native-sys/PTOAS.git PTOAS
+git clone --recurse-submodules https://github.com/hw-native-sys/PTOAS.git PTOAS
 cd $PTO_SOURCE_DIR
 
 # 推荐使用独立虚拟环境。后续 LLVM 和 PTOAS 构建必须使用同一个 Python。

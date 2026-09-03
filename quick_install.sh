@@ -40,6 +40,24 @@ LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-$(cd "${PTO_SOURCE_DIR}/.." && pwd)/llvm-pro
 LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${LLVM_SOURCE_DIR}/build-shared}"
 PTO_BUILD_DIR="${PTO_BUILD_DIR:-${PTO_SOURCE_DIR}/build}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+CANN_CMAKE_SUBMODULE_DIR="${PTO_SOURCE_DIR}/third_party/cann-cmake"
+
+if [[ ! -f "${CANN_CMAKE_SUBMODULE_DIR}/function/prepare.cmake" ]]; then
+  if ! git -C "${PTO_SOURCE_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "CANN CMake submodule is missing and the checkout has no Git metadata." >&2
+    echo "Check out the repository with recursive submodules enabled." >&2
+    exit 1
+  fi
+  if ! git -C "${PTO_SOURCE_DIR}" submodule update --init --recursive -- \
+    third_party/cann-cmake; then
+    echo "Failed to initialize the CANN CMake submodule." >&2
+    exit 1
+  fi
+fi
+if [[ ! -f "${CANN_CMAKE_SUBMODULE_DIR}/function/prepare.cmake" ]]; then
+  echo "CANN CMake submodule is missing at: ${CANN_CMAKE_SUBMODULE_DIR}" >&2
+  exit 1
+fi
 
 LLVM_DIR="${LLVM_BUILD_DIR}/lib/cmake/llvm"
 MLIR_DIR="${LLVM_BUILD_DIR}/lib/cmake/mlir"
