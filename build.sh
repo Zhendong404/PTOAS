@@ -26,6 +26,30 @@ export BASE_PATH=$(
   cd "$(dirname $0)"
   pwd
 )
+
+init_cann_cmake_submodule() {
+  local cann_cmake_dir="${BASE_PATH}/third_party/cann-cmake"
+  if [ -f "${cann_cmake_dir}/function/prepare.cmake" ]; then
+    return
+  fi
+  if ! git -C "${BASE_PATH}" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "CANN CMake submodule is missing and the checkout has no Git metadata." >&2
+    echo "Check out the repository with recursive submodules enabled." >&2
+    exit 1
+  fi
+  if ! git -C "${BASE_PATH}" submodule update --init --recursive -- \
+    third_party/cann-cmake; then
+    echo "Failed to initialize the CANN CMake submodule." >&2
+    exit 1
+  fi
+  if [ ! -f "${cann_cmake_dir}/function/prepare.cmake" ]; then
+    echo "CANN CMake submodule is missing at: ${cann_cmake_dir}" >&2
+    exit 1
+  fi
+}
+
+init_cann_cmake_submodule
+
 export BUILD_PATH="${BASE_PATH}/build"
 export BUILD_OUT_PATH="${BASE_PATH}/build_out"
 export INSTALL_PATH="${BASE_PATH}/install"

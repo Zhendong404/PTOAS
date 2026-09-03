@@ -1,0 +1,4 @@
+[submodule "third_party/cann-cmake"]
+	path = third_party/cann-cmake
+	url = https://gitcode.com/zoujiangjiang/cmake.git
+	branch = fe/llvm-vpto-patch
