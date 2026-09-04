@@ -60,15 +60,6 @@ namespace detail {
 inline constexpr llvm::StringLiteral kVectorSuffix = "_mix_aiv";
 inline constexpr llvm::StringLiteral kCubeSuffix = "_mix_aic";
 
-struct PlannedDecl {
-  std::string name;
-  FunctionType type;
-};
-
-struct LoweringState {
-  SmallVector<PlannedDecl> plannedDecls;
-};
-
 enum class VcvtElemKind {
   Invalid,
   F16,
@@ -109,21 +100,6 @@ struct LowpPayloadABI {
   StringRef intrinsicElementFragment;
 };
 
-class VPTOTypeConverter final : public TypeConverter {
-public:
-  explicit VPTOTypeConverter(MLIRContext *context) {
-    addConversion([](Type type) { return type; });
-    addConversion([](Type type) -> Type {
-      Builder builder(type.getContext());
-      return convertVPTOType(type, builder);
-    });
-    addSourceMaterialization(materializeVPTOCast);
-    addTargetMaterialization(materializeVPTOCast);
-  }
-};
-
-Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value);
-Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value);
 Value getI1Constant(OpBuilder &builder, Location loc, bool value);
 bool isMxElementType(Type ty);
 std::string getMadMxElementFragment(Type type);
@@ -132,9 +108,7 @@ bool isSignedOrSignlessInteger(IntegerType intType, unsigned width);
 std::string getMadRhsFragment(Type type);
 bool isMadE4M3ElementType(Type type);
 bool isMadE5M2ElementType(Type type);
-std::string getMadDstFragment(Type type);
 ArrayRef<MadCalleeContract> getMadCalleeContracts();
-std::string getMadLhsFragment(Type type);
 FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context, Type lhsElem, Type rhsElem, Type dstElem);
 FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context, Type resultType, StringRef stem, StringRef suffix);
 std::string getCANN900VectorElementFragment(Type type);
@@ -168,12 +142,6 @@ bool isCompatibleScalarForSemanticType(Type semanticType, Type scalarType);
 std::string getNd2NzCopyElementFragment(Type elementType);
 std::optional<uint64_t> parsePredicatePatternImmediate(StringRef pattern);
 std::optional<uint64_t> parseHiLoPartImmediate(StringRef part);
-std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode);
-std::optional<uint64_t> parseSaturationImmediate(StringRef sat);
-std::optional<uint64_t> parsePartImmediate(StringRef part);
-std::optional<uint64_t> parseVcvtPartImmediate(StringRef part);
-std::optional<uint64_t> parsePredicateStoreDistImmediate(StringRef dist);
-std::optional<uint64_t> parsePredicateLoadDistImmediate(StringRef dist);
 std::optional<int32_t> parsePostModeImmediate(StringRef mode);
 std::optional<uint64_t> parsePipeImmediate(StringRef pipe);
 std::optional<uint64_t> parseEventImmediate(StringRef event);

@@ -37,9 +37,10 @@ std::optional<uint64_t> parsePartImmediate(StringRef part) {
 
 std::optional<uint64_t> parseVcvtPartImmediate(StringRef part) {
   static constexpr std::pair<StringRef, uint64_t> vcvtPartValues[] = {
-      {"EVEN", 0},       {"PART_EVEN", 0}, {"ODD", 1},
-      {"PART_ODD", 1},   {"P2", 2},        {"PART_P2", 2},
-      {"P3", 3},         {"PART_P3", 3}};
+      {"EVEN", 0},       {"PART_EVEN", 0}, {"P0", 0},
+      {"PART_P0", 0},    {"ODD", 1},       {"PART_ODD", 1},
+      {"P1", 1},         {"PART_P1", 1},   {"P2", 2},
+      {"PART_P2", 2},    {"P3", 3},        {"PART_P3", 3}};
   return parseNamedImmediate(part, vcvtPartValues);
 }
 

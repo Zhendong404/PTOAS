@@ -448,6 +448,149 @@ private:
   const std::string &march;
 };
 
+// Packing helpers for the UBUF<->UBUF and CBUF<->UBUF copy ops. These copy
+// ops keep the old two-configuration (pre-c220) layout that was dropped when
+// the monolithic emitter was split, so the lowering is restored here.
+static FailureOr<Value> packCopyUbToUbConfig(Operation *anchor,
+                                             ValueRange operands) {
+  if (operands.size() != 7)
+  {
+    return failure();
+  }
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+  auto values =
+      castIntegerLikeOperands(anchor, operands, {3u, 4u, 5u, 6u},
+                              builder.getI64Type());
+  if (failed(values))
+  {
+    return failure();
+  }
+  return packShiftedI64Fields(
+      builder, loc, (*values)[0],
+      {{(*values)[1], 16}, {(*values)[2], 32}, {(*values)[3], 48}});
+}
+
+static FailureOr<Value> packCopyCbufToUbConfig(Operation *anchor,
+                                               ValueRange operands) {
+  if (operands.size() != 7)
+  {
+    return failure();
+  }
+  OpBuilder builder(anchor);
+  builder.setInsertionPoint(anchor);
+  Location loc = anchor->getLoc();
+  auto values =
+      castIntegerLikeOperands(anchor, operands, {2u, 3u, 4u, 5u, 6u},
+                              builder.getI64Type());
+  if (failed(values))
+  {
+    return failure();
+  }
+  return packShiftedI64Fields(
+      builder, loc, (*values)[0],
+      {{(*values)[1], 4}, {(*values)[2], 16}, {(*values)[3], 32},
+       {(*values)[4], 48}});
+}
+
+static FailureOr<Value> packCopyUbToCbufConfig(Operation *anchor,
+                                               ValueRange operands) {
+  return packCopyCbufToUbConfig(anchor, operands);
+}
+
+static StringRef buildCopyUbToUbCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.UB.v310").getValue();
+}
+
+static StringRef buildCopyCbufToUbCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.L1.TO.UB.v310").getValue();
+}
+
+static StringRef buildCopyUbToCbufCallee(MLIRContext *context) {
+  return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.L1.v310").getValue();
+}
+
+// Lowers the local UBUF/CBUF copy ops to their hivm move intrinsics. The
+// cbuf copies cross the MAT/VEC address spaces and need their pointers
+// retargeted before the call is planned.
+template <typename CopyOp>
+class LowerLocalCopyOpPattern final : public OpConversionPattern<CopyOp> {
+public:
+  explicit LowerLocalCopyOpPattern(TypeConverter &typeConverter,
+                                   MLIRContext *context,
+                                   LoweringState &state)
+      : OpConversionPattern<CopyOp>(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(CopyOp op, typename CopyOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    constexpr bool isUbToUb = std::is_same_v<CopyOp, pto::CopyUbufToUbufOp>;
+    constexpr unsigned ubufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::VEC);
+    constexpr unsigned cbufAddressSpace =
+        static_cast<unsigned>(pto::AddressSpace::MAT);
+
+    Value sourceRaw = adaptor.getSource();
+    Value destinationRaw = adaptor.getDestination();
+    if (!sourceRaw || !destinationRaw)
+    {
+      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    }
+    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+        !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
+      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    }
+
+    FailureOr<Value> config = failure();
+    StringRef calleeName;
+    if constexpr (isUbToUb) {
+      config = packCopyUbToUbConfig(op, adaptor.getOperands());
+      calleeName = buildCopyUbToUbCallee(op.getContext());
+    } else {
+      constexpr unsigned sourceAddressSpace =
+          std::is_same_v<CopyOp, pto::CopyCbufToUbufOp> ? cbufAddressSpace
+                                                        : ubufAddressSpace;
+      constexpr unsigned destinationAddressSpace =
+          std::is_same_v<CopyOp, pto::CopyCbufToUbufOp> ? ubufAddressSpace
+                                                        : cbufAddressSpace;
+      FailureOr<SmallVector<Value, 2>> pointers = reinterpretPointerOperands(
+          op, {sourceRaw, destinationRaw},
+          {sourceAddressSpace, destinationAddressSpace});
+      if (failed(pointers))
+      {
+        return rewriter.notifyMatchFailure(
+            op, "failed to map cbuf/ubuf pointer spaces");
+      }
+      sourceRaw = (*pointers)[0];
+      destinationRaw = (*pointers)[1];
+      if constexpr (std::is_same_v<CopyOp, pto::CopyCbufToUbufOp>) {
+        config = packCopyCbufToUbConfig(op, adaptor.getOperands());
+        calleeName = buildCopyCbufToUbCallee(op.getContext());
+      } else {
+        config = packCopyUbToCbufConfig(op, adaptor.getOperands());
+        calleeName = buildCopyUbToCbufCallee(op.getContext());
+      }
+    }
+    if (failed(config))
+    {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to materialize copy config");
+    }
+
+    planVPTOLLVMCall(op.getLoc(), calleeName,
+                     TypeRange{destinationRaw.getType(),
+                               sourceRaw.getType(), rewriter.getI64Type()},
+                     ValueRange{destinationRaw, sourceRaw, *config}, rewriter,
+                     state);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename UBOp>
 static FailureOr<Value> materializeUBufBinaryConfig(
     UBOp op, typename UBOp::Adaptor adaptor,
@@ -866,6 +1009,10 @@ void populateVPTOUbufPatterns(TypeConverter &typeConverter,
       typeConverter, patterns.getContext(), state, march);
   patterns.add<LowerCopyOpPattern<pto::CopyUbufToGmOp>>(
       typeConverter, patterns.getContext(), state, march);
+  patterns.add<LowerLocalCopyOpPattern<pto::CopyUbufToUbufOp>,
+               LowerLocalCopyOpPattern<pto::CopyCbufToUbufOp>,
+               LowerLocalCopyOpPattern<pto::CopyUbufToCbufOp>>(
+      typeConverter, patterns.getContext(), state);
 
   if (march == "dav-c220-vec") {
     populateVPTOUbufArithmeticPatterns(typeConverter, patterns, state);

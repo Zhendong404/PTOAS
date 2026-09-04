@@ -10,14 +10,6 @@
 
 namespace mlir::pto::detail {
 
-Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value) {
-  return builder.create<arith::ConstantOp>(loc, builder.getI64IntegerAttr(value)).getResult();
-}
-
-Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value) {
-  return builder.create<arith::ConstantOp>(loc, builder.getI32IntegerAttr(value)).getResult();
-}
-
 [[maybe_unused]] Value getI1Constant(OpBuilder &builder, Location loc, bool value) {
   return builder.create<arith::ConstantOp>(loc, builder.getIntegerAttr(builder.getI1Type(), value ? 1 : 0)).getResult();
 }
@@ -127,21 +119,6 @@ bool isMadE4M3ElementType(Type type) { return pto::isPTOFloat8E4M3LikeType(type)
 
 bool isMadE5M2ElementType(Type type) { return pto::isPTOFloat8E5M2LikeType(type); }
 
-std::string getMadDstFragment(Type type) {
-  if (type.isF16()) {
-    return "f16";
-  }
-  if (type.isF32()) {
-    return "f32";
-  }
-  if (auto intType = dyn_cast<IntegerType>(type)) {
-    if (isSignedOrSignlessInteger(intType, 32)) {
-      return "s32";
-    }
-  }
-  return {};
-}
-
 ArrayRef<MadCalleeContract> getMadCalleeContracts() {
   static constexpr MadCalleeContract contracts[] = {
       {"f16", "f16", "f32", "llvm.hivm.MAD.f162f32.c310"},    {"f16", "f16", "f16", "llvm.hivm.MAD.f162f16"},
@@ -154,31 +131,6 @@ ArrayRef<MadCalleeContract> getMadCalleeContracts() {
       {"f16", "e8m0", "", "llvm.hivm.MAD.f16e8m0.c310"},
   };
   return contracts;
-}
-
-std::string getMadLhsFragment(Type type) {
-  if (type.isF16()) {
-    return "f16";
-  }
-  if (type.isBF16()) {
-    return "bf16";
-  }
-  if (type.isF32()) {
-    return "f32";
-  }
-  if (isSignedOrSignlessInteger(dyn_cast<IntegerType>(type), 8)) {
-    return "s8";
-  }
-  if (isMadE4M3ElementType(type)) {
-    return "e4m3";
-  }
-  if (isMadE5M2ElementType(type)) {
-    return "e5m2";
-  }
-  if (pto::isPTOHiFloat8Type(type)) {
-    return "hif8";
-  }
-  return {};
 }
 
 FailureOr<StringRef> buildMadTypedCalleeName(MLIRContext *context, Type lhsElem, Type rhsElem, Type dstElem) {
@@ -612,90 +564,6 @@ std::optional<uint64_t> parseHiLoPartImmediate(StringRef part) {
   }
   if (part == "HIGHER") {
     return 1;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parseRoundModeImmediate(StringRef roundMode) {
-  if (roundMode == "R" || roundMode == "ROUND_R") {
-    return 0;
-  }
-  if (roundMode == "A" || roundMode == "ROUND_A") {
-    return 1;
-  }
-  if (roundMode == "F" || roundMode == "ROUND_F") {
-    return 2;
-  }
-  if (roundMode == "C" || roundMode == "ROUND_C") {
-    return 3;
-  }
-  if (roundMode == "Z" || roundMode == "ROUND_Z") {
-    return 4;
-  }
-  if (roundMode == "O" || roundMode == "ROUND_O") {
-    return 5;
-  }
-  if (roundMode == "H" || roundMode == "ROUND_H") {
-    return 6;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parseSaturationImmediate(StringRef sat) {
-  if (sat == "SAT") {
-    return 1;
-  }
-  if (sat == "NOSAT") {
-    return 0;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parsePartImmediate(StringRef part) {
-  if (part == "EVEN" || part == "PART_EVEN") {
-    return 0;
-  }
-  if (part == "ODD" || part == "PART_ODD") {
-    return 1;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parseVcvtPartImmediate(StringRef part) {
-  if (part == "EVEN" || part == "PART_EVEN" || part == "P0" || part == "PART_P0") {
-    return 0;
-  }
-  if (part == "ODD" || part == "PART_ODD" || part == "P1" || part == "PART_P1") {
-    return 1;
-  }
-  if (part == "P2" || part == "PART_P2") {
-    return 2;
-  }
-  if (part == "P3" || part == "PART_P3") {
-    return 3;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parsePredicateStoreDistImmediate(StringRef dist) {
-  if (dist == "NORM") {
-    return 0;
-  }
-  if (dist == "PK") {
-    return 1;
-  }
-  return std::nullopt;
-}
-
-std::optional<uint64_t> parsePredicateLoadDistImmediate(StringRef dist) {
-  if (dist.empty() || dist == "NORM") {
-    return 0;
-  }
-  if (dist == "US") {
-    return 1;
-  }
-  if (dist == "DS") {
-    return 2;
   }
   return std::nullopt;
 }

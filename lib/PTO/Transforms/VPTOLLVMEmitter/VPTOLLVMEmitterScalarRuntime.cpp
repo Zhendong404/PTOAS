@@ -15,20 +15,15 @@
 namespace mlir::pto {
 namespace {
 
+static std::string getV2FloatBuiltinFragment(Type type, StringRef suffix);
+
 static std::string getAtomicElementTypeFragment(Type type,
                                                 Attribute signednessAttr) {
   if (auto vecType = dyn_cast<VectorType>(type)) {
     if (vecType.getRank() != 1 || vecType.getDimSize(0) != 2) {
       return {};
     }
-    Type elementType = vecType.getElementType();
-    if (elementType.isF16()) {
-      return "f16x2";
-    }
-    if (elementType.isBF16()) {
-      return "bf16x2";
-    }
-    return {};
+    return getV2FloatBuiltinFragment(type, "x2");
   }
   if (type.isF32()) {
     return "fp32";

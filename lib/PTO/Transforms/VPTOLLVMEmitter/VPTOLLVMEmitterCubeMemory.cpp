@@ -28,16 +28,10 @@ static std::string getLowerTypeText(Type type) {
 }
 
 static std::string getUnsignedIntWidthFragment(unsigned width) {
-  switch (width) {
-  case 8:
-    return "U8";
-  case 16:
-    return "U16";
-  case 32:
-    return "U32";
-  default:
+  if (width != 8 && width != 16 && width != 32) {
     return {};
   }
+  return "U" + std::to_string(width);
 }
 
 static std::string getL0LoadElementFragment(Type type) {

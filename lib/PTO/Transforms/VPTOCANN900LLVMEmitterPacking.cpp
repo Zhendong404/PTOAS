@@ -118,33 +118,9 @@ FailureOr<Value> packCopyUbToGmConfig0(Operation *anchor, ValueRange operands) {
   if (operands.size() != 8) {
     return failure();
   }
-
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  auto getI64Operand = [&](unsigned idx) -> Value {
-    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
-  };
-
-  Value sid = getI64Operand(2);
-  Value nBurst = getI64Operand(3);
-  Value lenBurst = getI64Operand(4);
-  Value l2CacheCtl = getI64Operand(5);
-  if (!sid || !nBurst || !lenBurst || !l2CacheCtl) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value, getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value { return builder.create<arith::OrIOp>(loc, lhs, rhs); };
-
-  Value config = sid;
-  config = bitOr(config, shl(nBurst, 4));
-  config = bitOr(config, shl(lenBurst, 25));
-  config = bitOr(config, shl(l2CacheCtl, 60));
-  return config;
+  SmallVector<std::pair<Value, uint64_t>, 3> fields = {
+      {operands[3], 4}, {operands[4], 25}, {operands[5], 60}};
+  return packShiftedFields(anchor, operands[2], fields);
 }
 
 FailureOr<Value> packCopyUbToGmConfig1(Operation *anchor, ValueRange operands) {
@@ -168,100 +144,25 @@ FailureOr<Value> packCopyUbToUbConfig(Operation *anchor, ValueRange operands) {
   if (operands.size() != 7) {
     return failure();
   }
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  auto getI64Operand = [&](unsigned idx) -> Value {
-    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
-  };
-
-  Value nBurst = getI64Operand(3);
-  Value lenBurst = getI64Operand(4);
-  Value srcStride = getI64Operand(5);
-  Value dstStride = getI64Operand(6);
-  if (!nBurst || !lenBurst || !srcStride || !dstStride) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value, getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value { return builder.create<arith::OrIOp>(loc, lhs, rhs); };
-
-  Value config = nBurst;
-  config = bitOr(config, shl(lenBurst, 16));
-  config = bitOr(config, shl(srcStride, 32));
-  config = bitOr(config, shl(dstStride, 48));
-  return config;
+  SmallVector<std::pair<Value, uint64_t>, 3> fields = {
+      {operands[4], 16}, {operands[5], 32}, {operands[6], 48}};
+  return packShiftedFields(anchor, operands[3], fields);
 }
 
 FailureOr<Value> packCopyCbufToUbConfig(Operation *anchor, ValueRange operands) {
   if (operands.size() != 7) {
     return failure();
   }
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  auto getI64Operand = [&](unsigned idx) -> Value {
-    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
-  };
-
-  Value sid = getI64Operand(2);
-  Value nBurst = getI64Operand(3);
-  Value lenBurst = getI64Operand(4);
-  Value srcStride = getI64Operand(5);
-  Value dstStride = getI64Operand(6);
-  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value, getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value { return builder.create<arith::OrIOp>(loc, lhs, rhs); };
-
-  Value config = sid;
-  config = bitOr(config, shl(nBurst, 4));
-  config = bitOr(config, shl(lenBurst, 16));
-  config = bitOr(config, shl(srcStride, 32));
-  config = bitOr(config, shl(dstStride, 48));
-  return config;
+  SmallVector<std::pair<Value, uint64_t>, 4> fields = {
+      {operands[3], 4}, {operands[4], 16}, {operands[5], 32}, {operands[6], 48}};
+  return packShiftedFields(anchor, operands[2], fields);
 }
 
 FailureOr<Value> packCopyUbToCbufConfig(Operation *anchor, ValueRange operands) {
   if (operands.size() != 7) {
     return failure();
   }
-  OpBuilder builder(anchor);
-  builder.setInsertionPoint(anchor);
-  Location loc = anchor->getLoc();
-
-  auto getI64Operand = [&](unsigned idx) -> Value {
-    return castIntegerLikeTo(anchor, operands[idx], builder.getI64Type());
-  };
-
-  Value sid = getI64Operand(2);
-  Value nBurst = getI64Operand(3);
-  Value lenBurst = getI64Operand(4);
-  Value srcStride = getI64Operand(5);
-  Value dstStride = getI64Operand(6);
-  if (!sid || !nBurst || !lenBurst || !srcStride || !dstStride) {
-    return failure();
-  }
-
-  auto shl = [&](Value value, uint64_t amount) -> Value {
-    return builder.create<arith::ShLIOp>(loc, value, getI64Constant(builder, loc, amount));
-  };
-  auto bitOr = [&](Value lhs, Value rhs) -> Value { return builder.create<arith::OrIOp>(loc, lhs, rhs); };
-
-  Value config = sid;
-  config = bitOr(config, shl(nBurst, 4));
-  config = bitOr(config, shl(lenBurst, 16));
-  config = bitOr(config, shl(srcStride, 32));
-  config = bitOr(config, shl(dstStride, 48));
-  return config;
+  return packCopyCbufToUbConfig(anchor, operands);
 }
 
 FailureOr<Value> packCopyGmToCbufConfig0(Operation *anchor, Value nBurst, Value lenBurst) {

@@ -23,6 +23,21 @@ static func::CallOp createPlannedCall(Location loc, StringRef callee,
   return call;
 }
 
+static LogicalResult replaceGatherCall(Operation *op, StringRef callee,
+                                       Value source, Value offsets, Value mask,
+                                       Type resultType,
+                                       ConversionPatternRewriter &rewriter,
+                                       LoweringState &state) {
+  auto funcType = rewriter.getFunctionType(
+      TypeRange{source.getType(), offsets.getType(), mask.getType()},
+      TypeRange{resultType});
+  auto call = createPlannedCall(op->getLoc(), callee, resultType,
+                                ValueRange{source, offsets, mask}, funcType,
+                                rewriter, state);
+  rewriter.replaceOp(op, call.getResults());
+  return success();
+}
+
 static FailureOr<StringRef> buildLaneTypedCallee(MLIRContext *context,
                                                  Type resultType,
                                                  StringRef stem,
@@ -366,16 +381,8 @@ public:
                                                  offsets);
     }
 
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), *offsetsCarrierType,
-                  adaptor.getMask().getType()},
-        TypeRange{resultType});
-    auto call = createPlannedCall(op.getLoc(), *calleeName, resultType,
-                                  ValueRange{adaptor.getSource(), offsets,
-                                             adaptor.getMask()},
-                                  funcType, rewriter, state);
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return replaceGatherCall(op, *calleeName, adaptor.getSource(), offsets,
+                             adaptor.getMask(), resultType, rewriter, state);
   }
 
 private:
@@ -407,16 +414,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vgather2_bc signature");
     }
 
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(),
-                  adaptor.getMask().getType()},
-        TypeRange{resultType});
-    auto call = createPlannedCall(
-        op.getLoc(), *calleeName, resultType,
-        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()},
-        funcType, rewriter, state);
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return replaceGatherCall(op, *calleeName, adaptor.getSource(),
+                             adaptor.getOffsets(), adaptor.getMask(),
+                             resultType, rewriter, state);
   }
 
 private:
@@ -448,16 +448,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vgatherb signature");
     }
 
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(),
-                  adaptor.getMask().getType()},
-        TypeRange{resultType});
-    auto call = createPlannedCall(
-        op.getLoc(), *calleeName, resultType,
-        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()},
-        funcType, rewriter, state);
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return replaceGatherCall(op, *calleeName, adaptor.getSource(),
+                             adaptor.getOffsets(), adaptor.getMask(),
+                             resultType, rewriter, state);
   }
 
 private:
