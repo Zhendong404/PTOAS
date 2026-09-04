@@ -6,11 +6,6 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# Please refer to the License for details. You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-# See LICENSE in the root of the software repository for the full text of the License.
-
 import os
 import platform
 import re
@@ -48,6 +43,16 @@ config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 
 if getattr(config, 'pto_enable_vfsim_costmodel', False):
     config.available_features.add('vfsim-costmodel')
+
+# VPTO fatobj emission needs a real CANN toolchain installed on the host;
+# GitHub-hosted CI runners do not ship one. Advertise the 'ascend-toolchain'
+# feature only when a CANN9 install is discoverable under ASCEND_HOME_PATH so
+# such tests are reported as UNSUPPORTED instead of failing.
+_ascend_home = os.environ.get('ASCEND_HOME_PATH', '')
+if (_ascend_home
+        and os.path.isfile(os.path.join(_ascend_home, 'bin', 'bisheng'))
+        and os.path.isfile(os.path.join(_ascend_home, 'bin', 'cce-ld'))):
+    config.available_features.add('ascend-toolchain')
 
 llvm_config.with_system_environment(
     ['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP',
