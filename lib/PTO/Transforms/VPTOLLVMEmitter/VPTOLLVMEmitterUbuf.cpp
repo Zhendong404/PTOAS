@@ -511,9 +511,72 @@ static StringRef buildCopyUbToCbufCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.MOV.UB.TO.L1.v310").getValue();
 }
 
-// Lowers the local UBUF/CBUF copy ops to their hivm move intrinsics. The
-// cbuf copies cross the MAT/VEC address spaces and need their pointers
-// retargeted before the call is planned.
+// Validates the converted copy operands and returns the source/destination
+// pointer pair. The cbuf copies cross the MAT/VEC address spaces and need
+// their pointers retargeted before the call is planned.
+template <typename CopyOp>
+static FailureOr<SmallVector<Value, 2>>
+prepareLocalCopyPointers(CopyOp op, typename CopyOp::Adaptor adaptor,
+                         ConversionPatternRewriter &rewriter) {
+  Value sourceRaw = adaptor.getSource();
+  Value destinationRaw = adaptor.getDestination();
+  if (!sourceRaw || !destinationRaw)
+  {
+    (void)rewriter.notifyMatchFailure(op, "expected converted operands");
+    return failure();
+  }
+  if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
+      !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
+    (void)rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    return failure();
+  }
+  if constexpr (std::is_same_v<CopyOp, pto::CopyUbufToUbufOp>) {
+    return SmallVector<Value, 2>{sourceRaw, destinationRaw};
+  }
+
+  constexpr unsigned sourceAddressSpace =
+      std::is_same_v<CopyOp, pto::CopyCbufToUbufOp>
+          ? static_cast<unsigned>(pto::AddressSpace::MAT)
+          : static_cast<unsigned>(pto::AddressSpace::VEC);
+  constexpr unsigned destinationAddressSpace =
+      std::is_same_v<CopyOp, pto::CopyCbufToUbufOp>
+          ? static_cast<unsigned>(pto::AddressSpace::VEC)
+          : static_cast<unsigned>(pto::AddressSpace::MAT);
+  FailureOr<SmallVector<Value, 2>> pointers = reinterpretPointerOperands(
+      op, {sourceRaw, destinationRaw},
+      {sourceAddressSpace, destinationAddressSpace});
+  if (failed(pointers))
+  {
+    (void)rewriter.notifyMatchFailure(
+        op, "failed to map cbuf/ubuf pointer spaces");
+    return failure();
+  }
+  return pointers;
+}
+
+template <typename CopyOp>
+static FailureOr<std::pair<StringRef, Value>>
+getLocalCopyCalleeAndConfig(CopyOp op, typename CopyOp::Adaptor adaptor) {
+  FailureOr<Value> config = failure();
+  StringRef calleeName;
+  if constexpr (std::is_same_v<CopyOp, pto::CopyUbufToUbufOp>) {
+    config = packCopyUbToUbConfig(op, adaptor.getOperands());
+    calleeName = buildCopyUbToUbCallee(op.getContext());
+  } else if constexpr (std::is_same_v<CopyOp, pto::CopyCbufToUbufOp>) {
+    config = packCopyCbufToUbConfig(op, adaptor.getOperands());
+    calleeName = buildCopyCbufToUbCallee(op.getContext());
+  } else {
+    config = packCopyUbToCbufConfig(op, adaptor.getOperands());
+    calleeName = buildCopyUbToCbufCallee(op.getContext());
+  }
+  if (failed(config))
+  {
+    return failure();
+  }
+  return std::pair<StringRef, Value>{calleeName, *config};
+}
+
+// Lowers the local UBUF/CBUF copy ops to their hivm move intrinsics.
 template <typename CopyOp>
 class LowerLocalCopyOpPattern final : public OpConversionPattern<CopyOp> {
 public:
@@ -525,63 +588,27 @@ public:
   LogicalResult
   matchAndRewrite(CopyOp op, typename CopyOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    constexpr bool isUbToUb = std::is_same_v<CopyOp, pto::CopyUbufToUbufOp>;
-    constexpr unsigned ubufAddressSpace =
-        static_cast<unsigned>(pto::AddressSpace::VEC);
-    constexpr unsigned cbufAddressSpace =
-        static_cast<unsigned>(pto::AddressSpace::MAT);
-
-    Value sourceRaw = adaptor.getSource();
-    Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw)
+    FailureOr<SmallVector<Value, 2>> pointers =
+        prepareLocalCopyPointers(op, adaptor, rewriter);
+    if (failed(pointers))
     {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) ||
-        !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+      return failure();
     }
 
-    FailureOr<Value> config = failure();
-    StringRef calleeName;
-    if constexpr (isUbToUb) {
-      config = packCopyUbToUbConfig(op, adaptor.getOperands());
-      calleeName = buildCopyUbToUbCallee(op.getContext());
-    } else {
-      constexpr unsigned sourceAddressSpace =
-          std::is_same_v<CopyOp, pto::CopyCbufToUbufOp> ? cbufAddressSpace
-                                                        : ubufAddressSpace;
-      constexpr unsigned destinationAddressSpace =
-          std::is_same_v<CopyOp, pto::CopyCbufToUbufOp> ? ubufAddressSpace
-                                                        : cbufAddressSpace;
-      FailureOr<SmallVector<Value, 2>> pointers = reinterpretPointerOperands(
-          op, {sourceRaw, destinationRaw},
-          {sourceAddressSpace, destinationAddressSpace});
-      if (failed(pointers))
-      {
-        return rewriter.notifyMatchFailure(
-            op, "failed to map cbuf/ubuf pointer spaces");
-      }
-      sourceRaw = (*pointers)[0];
-      destinationRaw = (*pointers)[1];
-      if constexpr (std::is_same_v<CopyOp, pto::CopyCbufToUbufOp>) {
-        config = packCopyCbufToUbConfig(op, adaptor.getOperands());
-        calleeName = buildCopyCbufToUbCallee(op.getContext());
-      } else {
-        config = packCopyUbToCbufConfig(op, adaptor.getOperands());
-        calleeName = buildCopyUbToCbufCallee(op.getContext());
-      }
-    }
-    if (failed(config))
+    FailureOr<std::pair<StringRef, Value>> plan =
+        getLocalCopyCalleeAndConfig(op, adaptor);
+    if (failed(plan))
     {
-      return rewriter.notifyMatchFailure(op,
-                                         "failed to materialize copy config");
+      return rewriter.notifyMatchFailure(
+          op, "failed to materialize copy config");
     }
 
-    planVPTOLLVMCall(op.getLoc(), calleeName,
-                     TypeRange{destinationRaw.getType(),
-                               sourceRaw.getType(), rewriter.getI64Type()},
-                     ValueRange{destinationRaw, sourceRaw, *config}, rewriter,
+    Value source = (*pointers)[0];
+    Value destination = (*pointers)[1];
+    planVPTOLLVMCall(op.getLoc(), plan->first,
+                     TypeRange{destination.getType(), source.getType(),
+                               rewriter.getI64Type()},
+                     ValueRange{destination, source, plan->second}, rewriter,
                      state);
     rewriter.eraseOp(op);
     return success();
