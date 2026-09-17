@@ -22,6 +22,11 @@
 #include <limits>
 #include <optional>
 
+namespace mlir::pto {
+#define GEN_PASS_DEF_VPTOSTATEFULSTREAMFUSION
+#include "PTO/Transforms/Passes.h.inc"
+} // namespace mlir::pto
+
 using namespace mlir;
 using namespace mlir::pto;
 
@@ -47,6 +52,40 @@ static std::optional<int64_t> getConstantInt64(Value value) {
     return std::nullopt;
   }
   return constant.getSExtValue();
+}
+
+/// Return the stateful store that continues \p store, or a null op when the
+/// single user of its alignment result is not a contiguous store in \p block.
+static VstusOp getContinuationStore(VstusOp store, Value baseOut,
+                                    Operation *alignUser, Operation *baseUser,
+                                    Block *block) {
+  auto nextStore = dyn_cast<VstusOp>(alignUser);
+  if (!nextStore) {
+    return {};
+  }
+  bool continuesStream = baseUser == nextStore &&
+                         nextStore.getAlignIn() == store.getAlignOut() &&
+                         nextStore.getBase() == baseOut &&
+                         nextStore->getBlock() == block;
+  if (!continuesStream) {
+    return {};
+  }
+  return nextStore;
+}
+
+/// Return whether \p flush terminates \p store's stream: it must consume both
+/// results of the last store with a zero offset in \p block.
+static bool isValidStatefulFlush(VstasOp flush, VstusOp store, Value baseOut,
+                                 Operation *baseUser, Block *block) {
+  bool consumesStream = flush && baseUser == flush &&
+                        flush.getValue() == store.getAlignOut() &&
+                        flush.getDestination() == baseOut &&
+                        !flush.getUpdatedBase() && flush->getBlock() == block;
+  if (!consumesStream) {
+    return false;
+  }
+  std::optional<int64_t> flushOffset = getConstantInt64(flush.getOffset());
+  return flushOffset && *flushOffset == 0;
 }
 
 static std::optional<StatefulStoreStream>
@@ -76,28 +115,15 @@ parseStatefulStoreStream(InitAlignOp init) {
 
     Operation *alignUser = *store.getAlignOut().getUsers().begin();
     Operation *baseUser = *baseOut.getUsers().begin();
-    if (auto nextStore = dyn_cast<VstusOp>(alignUser)) {
-      if (baseUser != nextStore ||
-          nextStore.getAlignIn() != store.getAlignOut() ||
-          nextStore.getBase() != baseOut ||
-          nextStore->getBlock() != init->getBlock()) {
-        return std::nullopt;
-      }
+    if (VstusOp nextStore = getContinuationStore(store, baseOut, alignUser,
+                                                 baseUser, init->getBlock())) {
       store = nextStore;
       continue;
     }
 
     auto flush = dyn_cast<VstasOp>(alignUser);
-    std::optional<int64_t> flushOffset;
-    if (flush) {
-      flushOffset = getConstantInt64(flush.getOffset());
-    }
-    bool isValidFlush =
-        flush && baseUser == flush && flush.getValue() == store.getAlignOut() &&
-        flush.getDestination() == baseOut && !flush.getUpdatedBase() &&
-        flushOffset && *flushOffset == 0 &&
-        flush->getBlock() == init->getBlock();
-    if (!isValidFlush) {
+    if (!isValidStatefulFlush(flush, store, baseOut, baseUser,
+                              init->getBlock())) {
       return std::nullopt;
     }
 
@@ -340,6 +366,103 @@ static std::optional<int64_t> getLoopTripCount(scf::ForOp loop) {
   return static_cast<int64_t>(count);
 }
 
+/// Combine the coefficients of a multiply by a constant: the constant scales
+/// the coefficient of the varying operand. Returns nothing when either the
+/// constant or the varying coefficient is unavailable, or on overflow.
+template <typename CoefficientFn>
+static std::optional<int64_t> combineMulCoefficient(arith::MulIOp mul,
+                                                    CoefficientFn coefficient) {
+  auto lhsConstant = getConstantInt64(mul.getLhs());
+  auto rhsConstant = getConstantInt64(mul.getRhs());
+  std::optional<int64_t> constant = lhsConstant ? lhsConstant : rhsConstant;
+  if (!constant) {
+    return std::nullopt;
+  }
+  Value varying = lhsConstant ? mul.getRhs() : mul.getLhs();
+  auto varyingCoefficient = coefficient(varying);
+  if (!varyingCoefficient) {
+    return std::nullopt;
+  }
+  int64_t combined = 0;
+  bool overflows = llvm::MulOverflow(*constant, *varyingCoefficient, combined) != 0;
+  if (overflows) {
+    return std::nullopt;
+  }
+  return combined;
+}
+
+/// Combine the induction-variable coefficients of the operands of a binary
+/// arithmetic definition. Returns nothing for another definition or when the
+/// combined coefficient overflows.
+template <typename CoefficientFn>
+static std::optional<int64_t>
+combineBinaryCoefficients(Operation *def, CoefficientFn coefficient) {
+  int64_t combined = 0;
+  if (auto add = dyn_cast_or_null<arith::AddIOp>(def)) {
+    auto lhs = coefficient(add.getLhs());
+    auto rhs = coefficient(add.getRhs());
+    if (lhs && rhs) {
+      bool overflows = llvm::AddOverflow(*lhs, *rhs, combined) != 0;
+      if (!overflows) {
+        return combined;
+      }
+    }
+    return std::nullopt;
+  }
+  if (auto sub = dyn_cast_or_null<arith::SubIOp>(def)) {
+    auto lhs = coefficient(sub.getLhs());
+    auto rhs = coefficient(sub.getRhs());
+    if (lhs && rhs) {
+      bool overflows = llvm::SubOverflow(*lhs, *rhs, combined) != 0;
+      if (!overflows) {
+        return combined;
+      }
+    }
+    return std::nullopt;
+  }
+  if (auto mul = dyn_cast_or_null<arith::MulIOp>(def)) {
+    return combineMulCoefficient(mul, coefficient);
+  }
+  if (auto addPtr = dyn_cast_or_null<AddPtrOp>(def)) {
+    auto pointer = coefficient(addPtr.getPtr());
+    auto offset = coefficient(addPtr.getOffset());
+    if (pointer && offset) {
+      bool overflows = llvm::AddOverflow(*pointer, *offset, combined) != 0;
+      if (!overflows) {
+        return combined;
+      }
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+/// Propagate the coefficient through a pointer or integer cast definition.
+template <typename CoefficientFn>
+static std::optional<int64_t>
+combineCastCoefficients(Operation *def, CoefficientFn coefficient) {
+  if (auto castPtr = dyn_cast_or_null<CastPtrOp>(def)) {
+    return coefficient(castPtr.getInput());
+  }
+  if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(def)) {
+    return coefficient(def->getOperand(0));
+  }
+  return std::nullopt;
+}
+
+/// Combine the induction-variable coefficients of \p def's operands according
+/// to the arithmetic that defines it. Returns nothing for an unsupported
+/// definition or when the combined coefficient overflows.
+template <typename CoefficientFn>
+static std::optional<int64_t>
+combineOperandCoefficients(Operation *def, CoefficientFn coefficient) {
+  if (std::optional<int64_t> combined =
+          combineBinaryCoefficients(def, coefficient)) {
+    return combined;
+  }
+  return combineCastCoefficients(def, coefficient);
+}
+
 static std::optional<int64_t>
 getLoopAddressCoefficient(Value value, scf::ForOp loop,
                           DenseMap<Value, int64_t> &cache,
@@ -360,46 +483,11 @@ getLoopAddressCoefficient(Value value, scf::ForOp loop,
     return std::nullopt;
   }
 
-  Operation *def = value.getDefiningOp();
-  auto coefficient = [loop, &cache, &failed](Value operand) {
+  auto coefficient = [&](Value operand) {
     return getLoopAddressCoefficient(operand, loop, cache, failed);
   };
-  std::optional<int64_t> result;
-  int64_t combined;
-  if (auto add = dyn_cast_or_null<arith::AddIOp>(def)) {
-    auto lhs = coefficient(add.getLhs());
-    auto rhs = coefficient(add.getRhs());
-    if (lhs && rhs && llvm::AddOverflow(*lhs, *rhs, combined) == 0) {
-      result = combined;
-    }
-  } else if (auto sub = dyn_cast_or_null<arith::SubIOp>(def)) {
-    auto lhs = coefficient(sub.getLhs());
-    auto rhs = coefficient(sub.getRhs());
-    if (lhs && rhs && llvm::SubOverflow(*lhs, *rhs, combined) == 0) {
-      result = combined;
-    }
-  } else if (auto mul = dyn_cast_or_null<arith::MulIOp>(def)) {
-    auto lhsConstant = getConstantInt64(mul.getLhs());
-    auto rhsConstant = getConstantInt64(mul.getRhs());
-    Value varying = lhsConstant ? mul.getRhs() : mul.getLhs();
-    std::optional<int64_t> constant = lhsConstant ? lhsConstant : rhsConstant;
-    auto varyingCoefficient = constant ? coefficient(varying) : std::nullopt;
-    if (constant && varyingCoefficient &&
-        llvm::MulOverflow(*constant, *varyingCoefficient, combined) == 0) {
-      result = combined;
-    }
-  } else if (auto addPtr = dyn_cast_or_null<AddPtrOp>(def)) {
-    auto pointer = coefficient(addPtr.getPtr());
-    auto offset = coefficient(addPtr.getOffset());
-    if (pointer && offset && llvm::AddOverflow(*pointer, *offset, combined) == 0) {
-      result = combined;
-    }
-  } else if (auto castPtr = dyn_cast_or_null<CastPtrOp>(def)) {
-    result = coefficient(castPtr.getInput());
-  } else if (isa_and_nonnull<arith::IndexCastOp, arith::IndexCastUIOp>(def)) {
-    result = coefficient(def->getOperand(0));
-  }
-
+  std::optional<int64_t> result =
+      combineOperandCoefficients(value.getDefiningOp(), coefficient);
   if (!result) {
     failed.insert(value);
     return std::nullopt;
@@ -719,8 +807,6 @@ static void runVPTOStatefulStreamFusionImpl(ModuleOp module) {
 } // namespace
 
 namespace mlir::pto {
-#define GEN_PASS_DEF_VPTOSTATEFULSTREAMFUSION
-#include "PTO/Transforms/Passes.h.inc"
 
 struct VPTOStatefulStreamFusionPass
     : public impl::VPTOStatefulStreamFusionBase<

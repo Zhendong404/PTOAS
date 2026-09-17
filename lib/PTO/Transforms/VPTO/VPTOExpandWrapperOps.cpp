@@ -963,16 +963,18 @@ struct DmaLoopPlan {
   Value loop2Count;
 };
 
-static DmaLoopPlan configureLoadToUbLoops(
-    pto::MteGmUbOp op, DmaArch dmaArch,
-    ArrayRef<pto::DmaLoopConfig> loops, Value one,
-    PatternRewriter &rewriter) {
-  DmaLoopPlan plan{{}, {}, one};
+/// Split the configured DMA loops into their hardware and software parts. On
+/// targets without hardware loops every loop stays in software and an empty
+/// range is returned.
+template <typename MteOp>
+static ArrayRef<pto::DmaLoopConfig> splitDmaHardwareLoops(MteOp op, DmaArch dmaArch,
+                                                          ArrayRef<pto::DmaLoopConfig> loops,
+                                                          DmaLoopPlan &plan) {
   if (dmaArch != DmaArch::A5) {
     plan.softwareLoops.append(loops.begin(), loops.end());
     plan.softwareLoops.push_back(
         {op.getNBurst(), op.getNburstSrcStride(), op.getNburstDstStride()});
-    return plan;
+    return {};
   }
 
   ArrayRef<pto::DmaLoopConfig> hardwareLoops =
@@ -980,6 +982,19 @@ static DmaLoopPlan configureLoadToUbLoops(
   ArrayRef<pto::DmaLoopConfig> softwareLoops =
       loops.drop_front(hardwareLoops.size());
   plan.softwareLoops.append(softwareLoops.begin(), softwareLoops.end());
+  return hardwareLoops;
+}
+
+static DmaLoopPlan configureLoadToUbLoops(
+    pto::MteGmUbOp op, DmaArch dmaArch,
+    ArrayRef<pto::DmaLoopConfig> loops, Value one,
+    PatternRewriter &rewriter) {
+  DmaLoopPlan plan{{}, {}, one};
+  ArrayRef<pto::DmaLoopConfig> hardwareLoops =
+      splitDmaHardwareLoops(op, dmaArch, loops, plan);
+  if (dmaArch != DmaArch::A5) {
+    return plan;
+  }
   bool hasTwoHardwareLoops = hardwareLoops.size() == mlir::pto::kValue2;
   if (hasTwoHardwareLoops) {
     rewriter.create<pto::SetLoop2StrideOutToUbOp>(
@@ -1005,18 +1020,11 @@ static DmaLoopPlan configureStoreFromUbLoops(
     ArrayRef<pto::DmaLoopConfig> loops, Value one,
     PatternRewriter &rewriter) {
   DmaLoopPlan plan{{}, {}, one};
+  ArrayRef<pto::DmaLoopConfig> hardwareLoops =
+      splitDmaHardwareLoops(op, dmaArch, loops, plan);
   if (dmaArch != DmaArch::A5) {
-    plan.softwareLoops.append(loops.begin(), loops.end());
-    plan.softwareLoops.push_back(
-        {op.getNBurst(), op.getNburstSrcStride(), op.getNburstDstStride()});
     return plan;
   }
-
-  ArrayRef<pto::DmaLoopConfig> hardwareLoops =
-      loops.take_front(mlir::pto::kValue2);
-  ArrayRef<pto::DmaLoopConfig> softwareLoops =
-      loops.drop_front(hardwareLoops.size());
-  plan.softwareLoops.append(softwareLoops.begin(), softwareLoops.end());
   bool hasTwoHardwareLoops = hardwareLoops.size() == mlir::pto::kValue2;
   if (hasTwoHardwareLoops) {
     rewriter.create<pto::SetLoop2StrideUbToOutOp>(
@@ -1496,56 +1504,89 @@ struct ExpandRightLoadPattern : public OpRewritePattern<pto::MteL1L0bOp> {
   }
 };
 
+struct MxLoadOperands {
+  Value source;
+  Value destination;
+  Type elementType;
+};
+
+/// Materialize and validate the L1 source/destination operands shared by the
+/// left/right MX load expansion patterns.
+template <typename MteOp>
+static FailureOr<MxLoadOperands> materializeMxLoadOperands(MteOp op,
+                                                           PatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
+  Value destination =
+      materializeBufferPointer(op.getDestination(), rewriter, loc);
+  auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
+  if (!sourceType) {
+    return rewriter.notifyMatchFailure(op, "expected typed L1 source");
+  }
+  if (!destination) {
+    return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
+  }
+  destination = deriveMxScaleDestination(destination, rewriter, loc);
+  if (!destination) {
+    return rewriter.notifyMatchFailure(
+        op, "failed to derive MX scale destination pointer");
+  }
+  return MxLoadOperands{source, destination, sourceType.getElementType()};
+}
+
+/// Build a load_cbuf_to_ca/cb_mx control from the explicit operand form or the
+/// shape-derived form, reporting \p deriveFailureMessage when the derivation
+/// fails.
+template <typename MteOp>
+static FailureOr<LoadCbufToMxControl>
+buildLoadCbufMxControl(MteOp op, Location loc, Type elementType, Value shapeM,
+                       Value shapeK, CbufMxSide side, StringRef deriveFailureMessage,
+                       PatternRewriter &rewriter) {
+  if (op.getXStart()) {
+    bool fullOperands = op.getYStart() && op.getXStep() && op.getYStep() &&
+                        op.getSrcStride() && op.getDstStride();
+    if (!fullOperands) {
+      return rewriter.notifyMatchFailure(op,
+                                         "expected complete full MX operands");
+    }
+    return LoadCbufToMxControl{op.getXStart(), op.getYStart(), op.getXStep(),
+                               op.getYStep(), op.getSrcStride(),
+                               op.getDstStride()};
+  }
+  bool shapeOperands = shapeM && shapeK && op.getStartRow() && op.getStartCol();
+  if (!shapeOperands) {
+    return rewriter.notifyMatchFailure(
+        op, "expected complete shape-derived MX operands");
+  }
+  FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufMxControl(
+      {loc, shapeM, shapeK, elementType, op.getStartRow(), op.getStartCol(), side,
+       rewriter});
+  if (failed(derived)) {
+    return rewriter.notifyMatchFailure(op, deriveFailureMessage);
+  }
+  return *derived;
+}
+
 struct ExpandLeftLoadMxPattern : public OpRewritePattern<pto::MteL1L0aMxOp> {
   using OpRewritePattern<pto::MteL1L0aMxOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(pto::MteL1L0aMxOp op,
                                 PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
-    Value destination =
-        materializeBufferPointer(op.getDestination(), rewriter, loc);
-    auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType) {
-      return rewriter.notifyMatchFailure(op, "expected typed L1 source");
+    FailureOr<MxLoadOperands> operands = materializeMxLoadOperands(op, rewriter);
+    if (failed(operands)) {
+      return failure();
     }
-    if (!destination) {
-      return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
-    }
-    destination = deriveMxScaleDestination(destination, rewriter, loc);
-    if (!destination) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to derive MX scale destination pointer");
-    }
-
-    LoadCbufToMxControl control;
-    if (op.getXStart()) {
-      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
-          !op.getSrcStride() || !op.getDstStride()) {
-        return rewriter.notifyMatchFailure(op,
-                                           "expected complete full MX operands");
-      }
-      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
-                 op.getSrcStride(), op.getDstStride()};
-    } else {
-      if (!op.getM() || !op.getK() || !op.getStartRow() || !op.getStartCol()) {
-        return rewriter.notifyMatchFailure(
-            op, "expected complete shape-derived MX operands");
-      }
-      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufMxControl(
-          {loc, op.getM(), op.getK(), sourceType.getElementType(),
-           op.getStartRow(), op.getStartCol(), CbufMxSide::Left, rewriter});
-      if (failed(derived)) {
-        return rewriter.notifyMatchFailure(
-            op, "failed to derive load_cbuf_to_ca_mx control");
-      }
-      control = *derived;
+    FailureOr<LoadCbufToMxControl> control = buildLoadCbufMxControl(
+        op, op.getLoc(), operands->elementType, op.getM(), op.getK(),
+        CbufMxSide::Left, "failed to derive load_cbuf_to_ca_mx control", rewriter);
+    if (failed(control)) {
+      return failure();
     }
 
     rewriter.create<pto::LoadCbufToCaMxOp>(
-        loc, source, destination, control.xStartPosition,
-        control.yStartPosition, control.xStep, control.yStep,
-        control.srcStride, control.dstStride);
+        op.getLoc(), operands->source, operands->destination,
+        control->xStartPosition, control->yStartPosition, control->xStep,
+        control->yStep, control->srcStride, control->dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1556,51 +1597,21 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
 
   LogicalResult matchAndRewrite(pto::MteL1L0bMxOp op,
                                 PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value source = materializeBufferPointer(op.getSource(), rewriter, loc);
-    Value destination =
-        materializeBufferPointer(op.getDestination(), rewriter, loc);
-    auto sourceType = dyn_cast_or_null<pto::PtrType>(source.getType());
-    if (!sourceType) {
-      return rewriter.notifyMatchFailure(op, "expected typed L1 source");
+    FailureOr<MxLoadOperands> operands = materializeMxLoadOperands(op, rewriter);
+    if (failed(operands)) {
+      return failure();
     }
-    if (!destination) {
-      return rewriter.notifyMatchFailure(op, "expected pointer-like destination");
-    }
-    destination = deriveMxScaleDestination(destination, rewriter, loc);
-    if (!destination) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to derive MX scale destination pointer");
-    }
-
-    LoadCbufToMxControl control;
-    if (op.getXStart()) {
-      if (!op.getYStart() || !op.getXStep() || !op.getYStep() ||
-          !op.getSrcStride() || !op.getDstStride()) {
-        return rewriter.notifyMatchFailure(op,
-                                           "expected complete full MX operands");
-      }
-      control = {op.getXStart(), op.getYStart(), op.getXStep(), op.getYStep(),
-                 op.getSrcStride(), op.getDstStride()};
-    } else {
-      if (!op.getK() || !op.getN() || !op.getStartRow() || !op.getStartCol()) {
-        return rewriter.notifyMatchFailure(
-            op, "expected complete shape-derived MX operands");
-      }
-      FailureOr<LoadCbufToMxControl> derived = deriveLoadCbufMxControl(
-          {loc, op.getN(), op.getK(), sourceType.getElementType(),
-           op.getStartRow(), op.getStartCol(), CbufMxSide::Right, rewriter});
-      if (failed(derived)) {
-        return rewriter.notifyMatchFailure(
-            op, "failed to derive load_cbuf_to_cb_mx control");
-      }
-      control = *derived;
+    FailureOr<LoadCbufToMxControl> control = buildLoadCbufMxControl(
+        op, op.getLoc(), operands->elementType, op.getN(), op.getK(),
+        CbufMxSide::Right, "failed to derive load_cbuf_to_cb_mx control", rewriter);
+    if (failed(control)) {
+      return failure();
     }
 
     rewriter.create<pto::LoadCbufToCbMxOp>(
-        loc, source, destination, control.xStartPosition,
-        control.yStartPosition, control.xStep, control.yStep,
-        control.srcStride, control.dstStride);
+        op.getLoc(), operands->source, operands->destination,
+        control->xStartPosition, control->yStartPosition, control->xStep,
+        control->yStep, control->srcStride, control->dstStride);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1705,33 +1716,66 @@ static void restoreAccStoreCtrl(Location loc, Value originalCtrl,
   }
 }
 
+struct AccStoreBase {
+  AccStorePointers pointers;
+  Value zero;
+  Value one;
+};
+
+/// Materialize the accumulator-store operands shared by the three accumulator
+/// store expansion patterns.
+template <typename StoreOp>
+static FailureOr<AccStoreBase> beginAccStoreExpansion(StoreOp op,
+                                                      PatternRewriter &rewriter) {
+  AccStorePointers pointers = materializeAccStorePointers(op, rewriter);
+  if (!pointers.source || !pointers.destination) {
+    return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+  }
+  Location loc = op.getLoc();
+  Value zero = getI64Constant(loc, rewriter, 0);
+  Value one = getI64Constant(loc, rewriter, 1);
+  configureAccStorePreOps(op, rewriter);
+  return AccStoreBase{pointers, zero, one};
+}
+
+struct AccStoreLoopSetup {
+  pto::DmaLoopConfig hardwareLoop;
+  AccStoreModeConfig mode;
+  AccStorePackedFields fields;
+};
+
+/// Emit the loop configuration shared by the three accumulator store expansion
+/// patterns and collect the values its consumers need.
+template <typename StoreOp>
+static AccStoreLoopSetup finishAccStoreSetup(StoreOp op, Location loc, Value zero,
+                                             Value one, PatternRewriter &rewriter) {
+  pto::DmaLoopConfig hardwareLoop = getAccStoreHardwareLoop(op, zero, one);
+  AccStoreModeConfig mode = getAccStoreModeConfig(op, zero, one);
+  emitAccStoreLoopConfig(loc, hardwareLoop, mode.channelLoop0Stride, rewriter);
+  AccStorePackedFields fields = getAccStorePackedFields(op, rewriter);
+  return AccStoreLoopSetup{hardwareLoop, mode, fields};
+}
+
 struct ExpandAccStorePattern : public OpRewritePattern<pto::MteL0cL1Op> {
   using OpRewritePattern<pto::MteL0cL1Op>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(pto::MteL0cL1Op op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    AccStorePointers pointers = materializeAccStorePointers(op, rewriter);
-    if (!pointers.source || !pointers.destination) {
-      return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    FailureOr<AccStoreBase> base = beginAccStoreExpansion(op, rewriter);
+    if (failed(base)) {
+      return failure();
     }
-    Value zero = getI64Constant(loc, rewriter, 0);
-    Value one = getI64Constant(loc, rewriter, 1);
-    configureAccStorePreOps(op, rewriter);
     Value originalCtrl = configureAccStoreCtrl(
         loc, {false, std::nullopt, std::nullopt, op.getSatMode()}, rewriter);
-    pto::DmaLoopConfig hardwareLoop =
-        getAccStoreHardwareLoop(op, zero, one);
-    AccStoreModeConfig mode = getAccStoreModeConfig(op, zero, one);
-    emitAccStoreLoopConfig(loc, hardwareLoop, mode.channelLoop0Stride,
-                           rewriter);
-    AccStorePackedFields fields = getAccStorePackedFields(op, rewriter);
+    AccStoreLoopSetup setup =
+        finishAccStoreSetup(op, loc, base->zero, base->one, rewriter);
     Value xm = packCopyMatrixCcToGmXm(
-        loc, {zero, op.getN(), op.getM(), op.getDstStride()}, rewriter);
+        loc, {base->zero, op.getN(), op.getM(), op.getDstStride()}, rewriter);
     Value xt = packCopyMatrixCcToGmXt(
-        loc, {op.getSrcStride(), zero, fields, mode}, rewriter);
+        loc, {op.getSrcStride(), base->zero, setup.fields, setup.mode}, rewriter);
     rewriter.create<pto::CopyMatrixCcToCbufOp>(
-        loc, pointers.source, pointers.destination, xm, xt);
+        loc, base->pointers.source, base->pointers.destination, xm, xt);
     restoreAccStoreCtrl(loc, originalCtrl, rewriter);
     rewriter.eraseOp(op);
     return success();
@@ -1744,28 +1788,22 @@ struct ExpandAccStoreGmPattern : public OpRewritePattern<pto::MteL0cGmOp> {
   LogicalResult matchAndRewrite(pto::MteL0cGmOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    AccStorePointers pointers = materializeAccStorePointers(op, rewriter);
-    if (!pointers.source || !pointers.destination) {
-      return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    FailureOr<AccStoreBase> base = beginAccStoreExpansion(op, rewriter);
+    if (failed(base)) {
+      return failure();
     }
-    Value zero = getI64Constant(loc, rewriter, 0);
-    Value one = getI64Constant(loc, rewriter, 1);
-    configureAccStorePreOps(op, rewriter);
     Value originalCtrl = configureAccStoreCtrl(
         loc, {true, op.getAtomicType(), op.getAtomicOp(), op.getSatMode()},
         rewriter);
-    pto::DmaLoopConfig hardwareLoop =
-        getAccStoreHardwareLoop(op, zero, one);
-    AccStoreModeConfig mode = getAccStoreModeConfig(op, zero, one);
-    emitAccStoreLoopConfig(loc, hardwareLoop, mode.channelLoop0Stride,
-                           rewriter);
-    AccStorePackedFields fields = getAccStorePackedFields(op, rewriter);
+    AccStoreLoopSetup setup =
+        finishAccStoreSetup(op, loc, base->zero, base->one, rewriter);
     Value xm = packCopyMatrixCcToGmXm(
         loc, {op.getSid(), op.getN(), op.getM(), op.getDstStride()}, rewriter);
     Value xt = packCopyMatrixCcToGmXt(
-        loc, {op.getSrcStride(), op.getL2CacheCtrl(), fields, mode}, rewriter);
+        loc, {op.getSrcStride(), op.getL2CacheCtrl(), setup.fields, setup.mode},
+        rewriter);
     rewriter.create<pto::CopyMatrixCcToGmOp>(
-        loc, pointers.source, pointers.destination, xm, xt);
+        loc, base->pointers.source, base->pointers.destination, xm, xt);
     restoreAccStoreCtrl(loc, originalCtrl, rewriter);
     rewriter.eraseOp(op);
     return success();
@@ -1778,32 +1816,25 @@ struct ExpandAccStoreUbPattern : public OpRewritePattern<pto::MteL0cUbOp> {
   LogicalResult matchAndRewrite(pto::MteL0cUbOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    AccStorePointers pointers = materializeAccStorePointers(op, rewriter);
-    if (!pointers.source || !pointers.destination) {
-      return rewriter.notifyMatchFailure(op, "expected pointer-like operands");
+    FailureOr<AccStoreBase> base = beginAccStoreExpansion(op, rewriter);
+    if (failed(base)) {
+      return failure();
     }
-    Value zero = getI64Constant(loc, rewriter, 0);
-    Value one = getI64Constant(loc, rewriter, 1);
-    configureAccStorePreOps(op, rewriter);
     Value originalCtrl = configureAccStoreCtrl(
         loc, {false, std::nullopt, std::nullopt, op.getSatMode()}, rewriter);
-    pto::DmaLoopConfig hardwareLoop =
-        getAccStoreHardwareLoop(op, zero, one);
-    AccStoreModeConfig mode = getAccStoreModeConfig(op, zero, one);
-    emitAccStoreLoopConfig(loc, hardwareLoop, mode.channelLoop0Stride,
-                           rewriter);
-    AccStorePackedFields fields = getAccStorePackedFields(op, rewriter);
+    AccStoreLoopSetup setup =
+        finishAccStoreSetup(op, loc, base->zero, base->one, rewriter);
 
     Value dualDstMode =
         getI64Constant(loc, rewriter, static_cast<int64_t>(op.getDstMode()));
-    Value subBlockId = op.getSubBlockid() ? op.getSubBlockid() : zero;
+    Value subBlockId = op.getSubBlockid() ? op.getSubBlockid() : base->zero;
     Value config0 = packCopyMatrixCcToGmXm(
-        loc, {zero, op.getN(), op.getM(), op.getDstStride()}, rewriter);
+        loc, {base->zero, op.getN(), op.getM(), op.getDstStride()}, rewriter);
     Value config1 = packCopyMatrixCcToUbConfig1(
-        loc, {op.getSrcStride(), dualDstMode, subBlockId, fields, mode},
+        loc, {op.getSrcStride(), dualDstMode, subBlockId, setup.fields, setup.mode},
         rewriter);
     rewriter.create<pto::CopyMatrixCcToUbOp>(
-        loc, pointers.source, pointers.destination, config0, config1);
+        loc, base->pointers.source, base->pointers.destination, config0, config1);
     restoreAccStoreCtrl(loc, originalCtrl, rewriter);
     rewriter.eraseOp(op);
     return success();

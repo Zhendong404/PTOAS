@@ -22,6 +22,21 @@ using namespace mlir::pto;
 
 namespace {
 
+/// Return the layout assignment of \p value, creating it and recording its
+/// discovery order when it is seen for the first time.
+static VMIValueLayoutAssignment &
+getOrCreateValueAssignment(DenseMap<Value, VMIValueLayoutAssignment> &assignments,
+                           SmallVector<Value, mlir::pto::kValue16> &orderedValues,
+                           Value value) {
+  auto it = assignments.find(value);
+  if (it == assignments.end()) {
+    auto inserted = assignments.try_emplace(value);
+    it = inserted.first;
+    orderedValues.push_back(value);
+  }
+  return it->second;
+}
+
 struct VMILayoutFact {
   Value value;
   OpOperand *operand = nullptr;
@@ -1303,13 +1318,8 @@ LogicalResult VMILayoutPropagator::request(Value value, VMILayoutAttr layout) {
     return success();
   }
 
-  auto it = assignments.find(value);
-  if (it == assignments.end()) {
-    auto inserted = assignments.try_emplace(value);
-    it = inserted.first;
-    orderedValues.push_back(value);
-  }
-  VMIValueLayoutAssignment &assignment = it->second;
+  VMIValueLayoutAssignment &assignment =
+      getOrCreateValueAssignment(assignments, orderedValues, value);
   if (!assignment.layout) {
     if (!canProduceValueLayout(value, layout)) {
       return success();
@@ -1334,14 +1344,8 @@ LogicalResult VMILayoutPropagator::request(OpOperand &operand,
     return success();
   }
 
-  auto it = assignments.find(value);
-  if (it == assignments.end()) {
-    auto inserted = assignments.try_emplace(value);
-    it = inserted.first;
-    orderedValues.push_back(value);
-  }
-
-  VMIValueLayoutAssignment &assignment = it->second;
+  VMIValueLayoutAssignment &assignment =
+      getOrCreateValueAssignment(assignments, orderedValues, value);
   if (assignment.layout == layout) {
     return propagateOperandFact(operand, layout);
   }

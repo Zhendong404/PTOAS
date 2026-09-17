@@ -724,98 +724,107 @@ static std::optional<int64_t> getReductionNumGroups(ReductionOp op) {
   return std::nullopt;
 }
 
+/// Shared inputs of the vcadd/vcmax/vcmin reduction lowering paths.
+struct ReductionPlan {
+  Location loc;
+  Type resultType;
+  Value source;
+  Value mask;
+  bool isFloat;
+  std::optional<int64_t> numGroups;
+};
+
+template <typename ReduceOp>
+static ReductionPlan planReduction(ReduceOp op) {
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  Type elemType = sourceType.getElementType();
+  return ReductionPlan{op.getLoc(),           op.getResult().getType(),
+                       op.getSource(),        op.getMask(),
+                       isa<FloatType>(elemType),
+                       getReductionNumGroups(op)};
+}
+
 /// Lower vcadd to legacy reduce_addf/reduce_addi or
 /// group_reduce_addf/group_reduce_addi.  Always succeeds for valid input
 /// (vcadd verifier guarantees reassoc for float, and group 整除 source lanes).
 static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
-  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
-  Type elemType = sourceType.getElementType();
-  bool isFloat = isa<FloatType>(elemType);
-  Location loc = op.getLoc();
-  Type resultType = op.getResult().getType();
-  Value source = op.getSource();
-  Value mask = op.getMask();
+  ReductionPlan plan = planReduction(op);
 
-  if (std::optional<int64_t> numGroups = getReductionNumGroups(op)) {
+  Value result;
+  if (plan.numGroups) {
     // Group reduce path
-    Value result;
-    if (isFloat) {
-      result =
-          builder
-              .create<VMIGroupReduceAddFOp>(loc, resultType, source, mask,
-                                            builder.getI64IntegerAttr(*numGroups),
-                                            op.getReassocAttr())
-              .getResult();
+    if (plan.isFloat) {
+      result = builder
+                   .create<VMIGroupReduceAddFOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups),
+                                                 op.getReassocAttr())
+                   .getResult();
     } else {
-      result =
-          builder
-              .create<VMIGroupReduceAddIOp>(loc, resultType, source, mask,
-                                            builder.getI64IntegerAttr(*numGroups))
-              .getResult();
-}
+      result = builder
+                   .create<VMIGroupReduceAddIOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups))
+                   .getResult();
+    }
     op.getResult().replaceAllUsesWith(result);
-  } else {
-    // Full reduce path
-    Value result;
-    if (isFloat) {
-      result =
-          builder
-              .create<VMIReduceAddFOp>(loc, resultType, source, mask,
-                                       op.getReassocAttr())
-              .getResult();
-    } else {
-      result =
-          builder
-              .create<VMIReduceAddIOp>(loc, resultType, source, mask)
-              .getResult();
-}
-    op.getResult().replaceAllUsesWith(result);
+    op->erase();
+    return success();
   }
+
+  // Full reduce path
+  if (plan.isFloat) {
+    result = builder
+                 .create<VMIReduceAddFOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask, op.getReassocAttr())
+                 .getResult();
+  } else {
+    result = builder
+                 .create<VMIReduceAddIOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask)
+                 .getResult();
+  }
+  op.getResult().replaceAllUsesWith(result);
   op->erase();
   return success();
 }
 
 /// Lower vcmax to legacy full or grouped float/integer maximum reduction.
 static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
-  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
-  Type elemType = sourceType.getElementType();
-  bool isFloat = isa<FloatType>(elemType);
-  Location loc = op.getLoc();
-  Type resultType = op.getResult().getType();
-  Value source = op.getSource();
-  Value mask = op.getMask();
+  ReductionPlan plan = planReduction(op);
 
-  if (std::optional<int64_t> numGroups = getReductionNumGroups(op)) {
+  Value result;
+  if (plan.numGroups) {
     // Group reduce path
-    Value result;
-    if (isFloat) {
-      result =
-          builder
-              .create<VMIGroupReduceMaxFOp>(loc, resultType, source, mask,
-                                            builder.getI64IntegerAttr(*numGroups))
-              .getResult();
+    if (plan.isFloat) {
+      result = builder
+                   .create<VMIGroupReduceMaxFOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups))
+                   .getResult();
     } else {
-      result =
-          builder
-              .create<VMIGroupReduceMaxIOp>(loc, resultType, source, mask,
-                                            builder.getI64IntegerAttr(*numGroups))
-              .getResult();
-}
+      result = builder
+                   .create<VMIGroupReduceMaxIOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups))
+                   .getResult();
+    }
     op.getResult().replaceAllUsesWith(result);
     op->erase();
     return success();
   }
 
-  Value result;
-  if (isFloat) {
+  if (plan.isFloat) {
     result = builder
-                 .create<VMIReduceMaxFOp>(loc, resultType, source, mask)
+                 .create<VMIReduceMaxFOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask)
                  .getResult();
   } else {
     result = builder
-                 .create<VMIReduceMaxIOp>(loc, resultType, source, mask)
+                 .create<VMIReduceMaxIOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask)
                  .getResult();
-}
+  }
   op.getResult().replaceAllUsesWith(result);
   op->erase();
   return success();
@@ -823,44 +832,39 @@ static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
 
 /// Lower vcmin to legacy full or grouped float/integer minimum reduction.
 static LogicalResult lowerVcmin(VMIvcminOp op, OpBuilder &builder) {
-  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
-  Type elemType = sourceType.getElementType();
-  bool isFloat = isa<FloatType>(elemType);
-  Location loc = op.getLoc();
-  Type resultType = op.getResult().getType();
-  Value source = op.getSource();
-  Value mask = op.getMask();
+  ReductionPlan plan = planReduction(op);
 
-  if (std::optional<int64_t> numGroups = getReductionNumGroups(op)) {
-    Value result;
-    if (isFloat) {
+  Value result;
+  if (plan.numGroups) {
+    if (plan.isFloat) {
       result = builder
-                   .create<VMIGroupReduceMinFOp>(
-                       loc, resultType, source, mask,
-                       builder.getI64IntegerAttr(*numGroups))
+                   .create<VMIGroupReduceMinFOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups))
                    .getResult();
     } else {
       result = builder
-                   .create<VMIGroupReduceMinIOp>(
-                       loc, resultType, source, mask,
-                       builder.getI64IntegerAttr(*numGroups))
+                   .create<VMIGroupReduceMinIOp>(plan.loc, plan.resultType, plan.source,
+                                                 plan.mask,
+                                                 builder.getI64IntegerAttr(*plan.numGroups))
                    .getResult();
-}
+    }
     op.getResult().replaceAllUsesWith(result);
     op->erase();
     return success();
   }
 
-  Value result;
-  if (isFloat) {
+  if (plan.isFloat) {
     result = builder
-                 .create<VMIReduceMinFOp>(loc, resultType, source, mask)
+                 .create<VMIReduceMinFOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask)
                  .getResult();
   } else {
     result = builder
-                 .create<VMIReduceMinIOp>(loc, resultType, source, mask)
+                 .create<VMIReduceMinIOp>(plan.loc, plan.resultType, plan.source,
+                                          plan.mask)
                  .getResult();
-}
+  }
   op.getResult().replaceAllUsesWith(result);
   op->erase();
   return success();

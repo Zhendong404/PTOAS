@@ -13,6 +13,29 @@
 
 namespace mlir::pto::detail {
 
+/// Create the planned callee call of a lowering pattern and record its
+/// declaration; the caller owns the rewrite that consumes the call.
+static func::CallOp emitPlannedCall(ConversionPatternRewriter &rewriter, Operation *op,
+                                    StringRef calleeName, TypeRange argumentTypes,
+                                    ValueRange arguments, TypeRange resultTypes,
+                                    LoweringState &state) {
+  auto funcType = rewriter.getFunctionType(argumentTypes, resultTypes);
+  auto call = rewriter.create<func::CallOp>(op->getLoc(), calleeName, resultTypes, arguments);
+  state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+  return call;
+}
+
+/// Finish a lowering pattern whose result depends on the emitted intrinsic
+/// variant: post-update results replace the op, the plain variant is erased.
+static void finishPlannedCall(ConversionPatternRewriter &rewriter, Operation *op,
+                              func::CallOp call, bool usePostIntrinsic) {
+  if (usePostIntrinsic) {
+    rewriter.replaceOp(op, call.getResults());
+  } else {
+    rewriter.eraseOp(op);
+  }
+}
+
 template <typename UnpackOp> class LowerUnpackOpPattern final : public OpConversionPattern<UnpackOp> {
 public:
   explicit LowerUnpackOpPattern(const TypeConverter &typeConverter, MLIRContext *context, LoweringState &state)
@@ -423,12 +446,11 @@ public:
     Value distValue = getI32Constant(rewriter, op.getLoc(), *dist);
     Value postValue = getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
     SmallVector<Value> args{loweredOffset->base, loweredOffset->intrinsicOffset, distValue, postValue};
-    auto funcType =
-        rewriter.getFunctionType(TypeRange{loweredOffset->base.getType(), loweredOffset->intrinsicOffset.getType(),
-                                           distValue.getType(), postValue.getType()},
-                                 callResultTypes);
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, callResultTypes, args);
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    func::CallOp call = emitPlannedCall(
+        rewriter, op, *calleeName,
+        TypeRange{loweredOffset->base.getType(), loweredOffset->intrinsicOffset.getType(),
+                  distValue.getType(), postValue.getType()},
+        args, callResultTypes, state);
     rewriter.replaceOp(op, getVldsReplacements(op, *loweredOffset, call, resultTypes, rewriter));
     return success();
   }
@@ -478,12 +500,11 @@ public:
     Value distValue = getI32Constant(rewriter, op.getLoc(), *dist);
     Value postValue = getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
     SmallVector<Value> args{loweredOffset->base, loweredOffset->intrinsicOffset, distValue, postValue};
-    auto funcType =
-        rewriter.getFunctionType(TypeRange{loweredOffset->base.getType(), loweredOffset->intrinsicOffset.getType(),
-                                           distValue.getType(), postValue.getType()},
-                                 callResultTypes);
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, callResultTypes, args);
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
+    func::CallOp call = emitPlannedCall(
+        rewriter, op, *calleeName,
+        TypeRange{loweredOffset->base.getType(), loweredOffset->intrinsicOffset.getType(),
+                  distValue.getType(), postValue.getType()},
+        args, callResultTypes, state);
     rewriter.replaceOp(op, getVldsx2Replacements(op, *loweredOffset, call, resultTypes, rewriter));
     return success();
   }
@@ -729,11 +750,7 @@ public:
                                              resultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName, resultTypes, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    if (usePostIntrinsic) {
-      rewriter.replaceOp(op, call.getResults());
-    } else {
-      rewriter.eraseOp(op);
-    }
+    finishPlannedCall(rewriter, op, call, usePostIntrinsic);
     return success();
   }
 
@@ -866,11 +883,7 @@ public:
                                  resultTypes);
     auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, resultTypes, args);
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    if (usePostIntrinsic) {
-      rewriter.replaceOp(op, call.getResults());
-    } else {
-      rewriter.eraseOp(op);
-    }
+    finishPlannedCall(rewriter, op, call, usePostIntrinsic);
     return success();
   }
 
@@ -1200,14 +1213,11 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vgather2_bc signature");
     }
 
-    auto funcType = rewriter.getFunctionType(
+    return emitPlannedCalleeCall(
+        rewriter, op, *calleeName,
         TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(), adaptor.getMask().getType()},
-        TypeRange{resultType});
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType},
-                                              ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()}, TypeRange{resultType}, state,
+        /*replaceResults=*/true);
   }
 
 private:
@@ -1232,14 +1242,11 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vgatherb signature");
     }
 
-    auto funcType = rewriter.getFunctionType(
+    return emitPlannedCalleeCall(
+        rewriter, op, *calleeName,
         TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(), adaptor.getMask().getType()},
-        TypeRange{resultType});
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType},
-                                              ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()}, TypeRange{resultType}, state,
+        /*replaceResults=*/true);
   }
 
 private:

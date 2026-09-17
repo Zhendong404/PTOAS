@@ -10,6 +10,21 @@
 
 namespace mlir::pto::detail {
 
+/// Validate the pointer operand of the pto store/stg patterns and normalize the
+/// byte offset to i64. The returned pointer type is used to build the GEP.
+static FailureOr<LLVM::LLVMPointerType> prepareStorePointerOperand(Operation *op, Value pointer,
+                                                                   Value &offset,
+                                                                   ConversionPatternRewriter &rewriter) {
+  auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(pointer.getType());
+  if (!llvmPtrType) {
+    return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
+  }
+  if (offset.getType().isIndex()) {
+    offset = rewriter.create<arith::IndexCastUIOp>(op->getLoc(), rewriter.getI64Type(), offset);
+  }
+  return llvmPtrType;
+}
+
 class ConvertVPTOUnrealizedCastOp final : public OpConversionPattern<UnrealizedConversionCastOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -454,19 +469,16 @@ public:
 
   LogicalResult matchAndRewrite(pto::PTOStoreOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
-    if (!llvmPtrType) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
-    }
-
     Value offset = adaptor.getOffset();
-    if (offset.getType().isIndex()) {
-      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(), rewriter.getI64Type(), offset);
+    FailureOr<LLVM::LLVMPointerType> llvmPtrType =
+        prepareStorePointerOperand(op, adaptor.getPtr(), offset, rewriter);
+    if (failed(llvmPtrType)) {
+      return failure();
     }
 
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
-      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType, adaptor.getValue().getType(), adaptor.getPtr(),
+      elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), *llvmPtrType, adaptor.getValue().getType(), adaptor.getPtr(),
                                              ValueRange{offset});
     }
 
@@ -523,20 +535,17 @@ public:
 
   LogicalResult matchAndRewrite(pto::PTOStgOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto llvmPtrType = dyn_cast<LLVM::LLVMPointerType>(adaptor.getPtr().getType());
-    if (!llvmPtrType) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer operand");
-    }
-
     Value offset = adaptor.getOffset();
-    if (offset.getType().isIndex()) {
-      offset = rewriter.create<arith::IndexCastUIOp>(op.getLoc(), rewriter.getI64Type(), offset);
+    FailureOr<LLVM::LLVMPointerType> llvmPtrType =
+        prepareStorePointerOperand(op, adaptor.getPtr(), offset, rewriter);
+    if (failed(llvmPtrType)) {
+      return failure();
     }
 
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(
-          op.getLoc(), llvmPtrType, normalizeGEPElementTypeForLLVMLowering(adaptor.getValue().getType(), rewriter),
+          op.getLoc(), *llvmPtrType, normalizeGEPElementTypeForLLVMLowering(adaptor.getValue().getType(), rewriter),
           adaptor.getPtr(), ValueRange{offset});
     }
 

@@ -468,6 +468,29 @@ static bool isFloatingPointTile(Value value) {
   return tileTy && isa<FloatType>(tileTy.getElementType());
 }
 
+/// Allocate the implicit tmp buffer described by \p tmpType next to \p op,
+/// reporting \p failureMessage when the tmp type could not be derived.
+static FailureOr<Value> allocateImplicitTmp(Operation *op,
+                                            FailureOr<pto::TileBufType> tmpType,
+                                            StringRef failureMessage) {
+  if (failed(tmpType)) {
+    return op->emitOpError(failureMessage);
+  }
+  OpBuilder builder(op);
+  return createAllocTmp(builder, op->getLoc(), *tmpType);
+}
+
+/// Report the explicit-tmp requirement on targets that cannot host an implicit
+/// tmp buffer and report whether the A5 placeholder type applies.
+static FailureOr<bool> resolveImplicitTmpArch(Operation *op,
+                                              bool requireExplicitTmp) {
+  bool isA5 = pto::getTargetArch(op) == pto::PTOArch::A5;
+  if (requireExplicitTmp && !isA5) {
+    return op->emitOpError("requires explicit tmp when PlanMemory is skipped");
+  }
+  return isA5;
+}
+
 static LogicalResult replaceTPowWithTmp(pto::TPowOp op,
                                         bool requireExplicitTmp,
                                         MLIRContext *ctx) {
@@ -478,13 +501,9 @@ static LogicalResult replaceTPowWithTmp(pto::TPowOp op,
     return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
   }
 
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getDst());
-  if (failed(tmpType)) {
-    return op.emitOpError(
-        "requires static tile_buf dst to materialize implicit tpow tmp");
-  }
-  OpBuilder builder(op);
-  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
+  FailureOr<Value> tmp = allocateImplicitTmp(
+      op, makeSameShapeTmpType(ctx, op.getDst()),
+      "requires static tile_buf dst to materialize implicit tpow tmp");
   if (failed(tmp)) {
     return failure();
   }
@@ -505,13 +524,9 @@ static LogicalResult replaceTPowSWithTmp(pto::TPowSOp op,
     return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
   }
 
-  FailureOr<pto::TileBufType> tmpType = makeSameShapeTmpType(ctx, op.getDst());
-  if (failed(tmpType)) {
-    return op.emitOpError(
-        "requires static tile_buf dst to materialize implicit tpows tmp");
-  }
-  OpBuilder builder(op);
-  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
+  FailureOr<Value> tmp = allocateImplicitTmp(
+      op, makeSameShapeTmpType(ctx, op.getDst()),
+      "requires static tile_buf dst to materialize implicit tpows tmp");
   if (failed(tmp)) {
     return failure();
   }
@@ -580,20 +595,13 @@ static LogicalResult replaceRowReductionWithTmp(OpTy op,
     return success();
   }
 
-  bool isA5 = pto::getTargetArch(op.getOperation()) == pto::PTOArch::A5;
-  if (requireExplicitTmp && !isA5) {
-    return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
+  FailureOr<bool> isA5 = resolveImplicitTmpArch(op.getOperation(), requireExplicitTmp);
+  if (failed(isA5)) {
+    return failure();
   }
-
-  FailureOr<pto::TileBufType> tmpType =
-      isA5 ? makeA5PlaceholderTmpType(ctx, op.getSrc())
-           : makeSameShapeTmpType(ctx, op.getSrc());
-  if (failed(tmpType)) {
-    return op.emitOpError(
-        "requires static tile_buf src to materialize implicit row-reduction tmp");
-  }
-  OpBuilder builder(op);
-  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
+  FailureOr<Value> tmp = allocateImplicitTmp(
+      op, *isA5 ? makeA5PlaceholderTmpType(ctx, op.getSrc()) : makeSameShapeTmpType(ctx, op.getSrc()),
+      "requires static tile_buf src to materialize implicit row-reduction tmp");
   if (failed(tmp)) {
     return failure();
   }
@@ -609,19 +617,13 @@ static LogicalResult replaceTXorWithTmp(pto::TXorOp op,
   if (op.getTmp()) {
     return success();
   }
-  bool isA5 = pto::getTargetArch(op.getOperation()) == pto::PTOArch::A5;
-  if (requireExplicitTmp && !isA5) {
-    return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
+  FailureOr<bool> isA5 = resolveImplicitTmpArch(op.getOperation(), requireExplicitTmp);
+  if (failed(isA5)) {
+    return failure();
   }
-  FailureOr<pto::TileBufType> tmpType =
-      isA5 ? makeA5PlaceholderTmpType(ctx, op.getDst())
-           : makeSameShapeTmpType(ctx, op.getDst());
-  if (failed(tmpType)) {
-    return op.emitOpError(
-        "requires static tile_buf dst to materialize implicit txor tmp");
-  }
-  OpBuilder builder(op);
-  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *tmpType);
+  FailureOr<Value> tmp = allocateImplicitTmp(
+      op, *isA5 ? makeA5PlaceholderTmpType(ctx, op.getDst()) : makeSameShapeTmpType(ctx, op.getDst()),
+      "requires static tile_buf dst to materialize implicit txor tmp");
   if (failed(tmp)) {
     return failure();
   }

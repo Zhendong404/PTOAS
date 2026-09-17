@@ -114,6 +114,39 @@ convertTypes(const TypeConverter &typeConverter, TypeRange types) {
   return convertedTypes;
 }
 
+/// Rebuild the converted operation with freshly converted result types and
+/// replace the original operation with it.
+static LogicalResult rebuildWithConvertedResults(Operation *op, ValueRange operands,
+                                                 const TypeConverter &typeConverter,
+                                                 ConversionPatternRewriter &rewriter) {
+  FailureOr<SmallVector<Type>> resultTypes =
+      convertTypes(typeConverter, op->getResultTypes());
+  if (failed(resultTypes)) {
+    return failure();
+  }
+  OperationState state(op->getLoc(), op->getName().getStringRef());
+  state.addOperands(operands);
+  state.addTypes(*resultTypes);
+  state.addAttributes(op->getAttrs());
+  Operation *newOp = rewriter.create(state);
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
+}
+
+/// Rebuild the converted operation preserving its result types and properties,
+/// then replace the original operation with it.
+static LogicalResult rebuildPreservingProperties(Operation *op, ValueRange operands,
+                                                 ConversionPatternRewriter &rewriter) {
+  OperationState state(op->getLoc(), op->getName().getStringRef());
+  state.addOperands(operands);
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  state.propertiesAttr = op->getPropertiesAsAttribute();
+  Operation *newOp = rewriter.create(state);
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
+}
+
 static bool isMemRefType(Type type) { return isa<BaseMemRefType>(type); }
 
 static Value materializeUnrealizedCast(OpBuilder &builder, Type resultType,
@@ -478,18 +511,8 @@ struct ConvertVldsSubviewOperandPattern : public OpConversionPattern<pto::VldsOp
       return failure();
     }
 
-    OperationState state(op.getLoc(), op->getName().getStringRef());
-    state.addOperands({adaptor.getSource(), adaptor.getOffset()});
-    FailureOr<SmallVector<Type>> resultTypes =
-        convertTypes(*getTypeConverter(), op->getResultTypes());
-    if (failed(resultTypes)) {
-      return failure();
-    }
-    state.addTypes(*resultTypes);
-    state.addAttributes(op->getAttrs());
-    Operation *newOp = rewriter.create(state);
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
+    return rebuildWithConvertedResults(op, ValueRange{adaptor.getSource(), adaptor.getOffset()},
+                                       *getTypeConverter(), rewriter);
   }
 };
 
@@ -503,20 +526,11 @@ struct ConvertVstsSubviewOperandPattern : public OpConversionPattern<pto::VstsOp
       return failure();
     }
 
-    OperationState state(op.getLoc(), op->getName().getStringRef());
-    state.addOperands(
-        {adaptor.getValue(), adaptor.getDestination(), adaptor.getOffset(),
-         adaptor.getMask()});
-    FailureOr<SmallVector<Type>> resultTypes =
-        convertTypes(*getTypeConverter(), op->getResultTypes());
-    if (failed(resultTypes)) {
-      return failure();
-    }
-    state.addTypes(*resultTypes);
-    state.addAttributes(op->getAttrs());
-    Operation *newOp = rewriter.create(state);
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
+    return rebuildWithConvertedResults(
+        op,
+        ValueRange{adaptor.getValue(), adaptor.getDestination(), adaptor.getOffset(),
+                   adaptor.getMask()},
+        *getTypeConverter(), rewriter);
   }
 };
 
@@ -531,20 +545,12 @@ struct ConvertVsstbSubviewOperandPattern
       return failure();
     }
 
-    OperationState state(op.getLoc(), op->getName().getStringRef());
-    state.addOperands({adaptor.getValue(), adaptor.getDestination(),
-                       adaptor.getBlockStride(), adaptor.getRepeatStride(),
-                       adaptor.getMask()});
-    FailureOr<SmallVector<Type>> resultTypes =
-        convertTypes(*getTypeConverter(), op->getResultTypes());
-    if (failed(resultTypes)) {
-      return failure();
-    }
-    state.addTypes(*resultTypes);
-    state.addAttributes(op->getAttrs());
-    Operation *newOp = rewriter.create(state);
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
+    return rebuildWithConvertedResults(
+        op,
+        ValueRange{adaptor.getValue(), adaptor.getDestination(),
+                   adaptor.getBlockStride(), adaptor.getRepeatStride(),
+                   adaptor.getMask()},
+        *getTypeConverter(), rewriter);
   }
 };
 
@@ -604,14 +610,7 @@ struct ConvertRawFillL1OperandPattern
                                 adaptor.getOperands().end());
     operands[0] = dst;
 
-    OperationState state(op.getLoc(), op->getName().getStringRef());
-    state.addOperands(operands);
-    state.addTypes(op->getResultTypes());
-    state.addAttributes(op->getAttrs());
-    state.propertiesAttr = op->getPropertiesAsAttribute();
-    Operation *newOp = rewriter.create(state);
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
+    return rebuildPreservingProperties(op, operands, rewriter);
   }
 };
 
@@ -822,14 +821,7 @@ struct ConvertSimtLaunchOp final : public OpConversionPattern<pto::SimtLaunchOp>
       operands.push_back(arg);
     }
 
-    OperationState state(op.getLoc(), op->getName().getStringRef());
-    state.addOperands(operands);
-    state.addTypes(op->getResultTypes());
-    state.addAttributes(op->getAttrs());
-    state.propertiesAttr = op->getPropertiesAsAttribute();
-    Operation *newOp = rewriter.create(state);
-    rewriter.replaceOp(op, newOp->getResults());
-    return success();
+    return rebuildPreservingProperties(op, operands, rewriter);
   }
 };
 

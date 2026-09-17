@@ -1483,6 +1483,20 @@ VMILayoutSupport::getDeinterleaveLoadLayoutFactForLayouts(
               "table row");
 }
 
+/// Return whether a preferred dense layout table row matches the element
+/// type/count pair of a value.
+template <typename PatternTy>
+static bool matchesPreferredLayoutPattern(const PatternTy &pattern, Type elementType,
+                                          int64_t elementCount) {
+  if (!pattern.preferred) {
+    return false;
+  }
+  if (!matchesElementBitsPattern(pattern.elementBits, elementType)) {
+    return false;
+  }
+  return matchesElementCountPattern(pattern.elementCounts, elementCount);
+}
+
 FailureOr<VMIStoreLayoutFact>
 VMILayoutSupport::getStoreLayoutFact(VMIVRegType valueType,
                                      std::string *reason) const {
@@ -1530,15 +1544,8 @@ VMILayoutSupport::getPreferredStoreLayoutFact(VMIVRegType valueType,
   }
 
   for (const DenseMemoryLayoutPattern &pattern : kDenseStoreLayoutPatterns) {
-    if (!pattern.preferred) {
-      continue;
-    }
-    if (!matchesElementBitsPattern(pattern.elementBits,
-                                   valueType.getElementType())) {
-      continue;
-    }
-    if (!matchesElementCountPattern(pattern.elementCounts,
-                                    valueType.getElementCount())) {
+    if (!matchesPreferredLayoutPattern(pattern, valueType.getElementType(),
+                                       valueType.getElementCount())) {
       continue;
     }
     VMILayoutAttr layout =
@@ -1611,15 +1618,8 @@ VMILayoutSupport::getPreferredMaskedStoreLayoutFact(
 
   for (const DenseMaskedStoreLayoutPattern &pattern :
        kDenseMaskedStoreLayoutPatterns) {
-    if (!pattern.preferred) {
-      continue;
-    }
-    if (!matchesElementBitsPattern(pattern.elementBits,
-                                   valueType.getElementType())) {
-      continue;
-    }
-    if (!matchesElementCountPattern(pattern.elementCounts,
-                                    valueType.getElementCount())) {
+    if (!matchesPreferredLayoutPattern(pattern, valueType.getElementType(),
+                                       valueType.getElementCount())) {
       continue;
     }
 

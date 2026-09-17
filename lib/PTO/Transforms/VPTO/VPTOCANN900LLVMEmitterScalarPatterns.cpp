@@ -13,6 +13,31 @@
 
 namespace mlir::pto::detail {
 
+/// Resolve the concrete pipe of a buffer sync pattern to its immediate value.
+template <typename BufSyncOp>
+static FailureOr<uint64_t> resolveBufSyncPipeImmediate(BufSyncOp op,
+                                                       ConversionPatternRewriter &rewriter) {
+  PIPE pipe = PIPE::PIPE_UNASSIGNED;
+  if (auto pipeAttr = dyn_cast<PipeAttr>(op.getOpTypeAttr())) {
+    pipe = pipeAttr.getPipe();
+  } else {
+    auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
+    if (failed(opTypeOr)) {
+      return rewriter.notifyMatchFailure(op, "buffer sync expects pipe/sync_op_type/pipe_event_type attr");
+    }
+    pipe = mapSyncOpTypeToPipe(*opTypeOr);
+  }
+  if (!isConcreteSyncPipe(pipe)) {
+    return rewriter.notifyMatchFailure(op, "buffer sync op_type cannot map to concrete pipe");
+  }
+
+  std::optional<uint64_t> pipeImm = parsePipeImmediate(stringifyPIPE(pipe));
+  if (!pipeImm) {
+    return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
+  }
+  return *pipeImm;
+}
+
 class LowerTrapOpPattern final : public OpConversionPattern<pto::TrapOp> {
 public:
   explicit LowerTrapOpPattern(const TypeConverter &typeConverter, MLIRContext *context, LoweringState &state)
@@ -814,12 +839,10 @@ public:
     Value srcValue = getI64Constant(rewriter, op.getLoc(), *src);
     Value dstValue = getI64Constant(rewriter, op.getLoc(), *dst);
     Value eventValue = getI64Constant(rewriter, op.getLoc(), *event);
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{srcValue, dstValue, eventValue});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()},
+        ValueRange{srcValue, dstValue, eventValue}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -868,12 +891,10 @@ public:
       return rewriter.notifyMatchFailure(op, "unexpected event_id type");
     }
 
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{srcValue, dstValue, eventValue});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()},
+        ValueRange{srcValue, dstValue, eventValue}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -1115,35 +1136,19 @@ public:
   LogicalResult matchAndRewrite(BufSyncOp op, typename BufSyncOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     (void)adaptor;
-    PIPE pipe = PIPE::PIPE_UNASSIGNED;
-    if (auto pipeAttr = dyn_cast<PipeAttr>(op.getOpTypeAttr())) {
-      pipe = pipeAttr.getPipe();
-    } else {
-      auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
-      if (failed(opTypeOr)) {
-        return rewriter.notifyMatchFailure(op, "buffer sync expects pipe/sync_op_type/pipe_event_type attr");
-      }
-      pipe = mapSyncOpTypeToPipe(*opTypeOr);
-    }
-    if (!isConcreteSyncPipe(pipe)) {
-      return rewriter.notifyMatchFailure(op, "buffer sync op_type cannot map to concrete pipe");
-    }
-
-    auto pipeImm = parsePipeImmediate(stringifyPIPE(pipe));
-    if (!pipeImm) {
-      return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
+    FailureOr<uint64_t> pipeImm = resolveBufSyncPipeImmediate(op, rewriter);
+    if (failed(pipeImm)) {
+      return failure();
     }
 
     StringRef calleeName = buildSyncCallee<BufSyncOp>(op.getContext());
     Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
     Value bufIdValue = getI64Constant(rewriter, op.getLoc(), op.getBufIdAttr().getInt());
     Value modeValue = getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{pipeValue, bufIdValue, modeValue});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()},
+        ValueRange{pipeValue, bufIdValue, modeValue}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -1157,23 +1162,9 @@ public:
 
   LogicalResult matchAndRewrite(BufDynSyncOp op, typename BufDynSyncOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    PIPE pipe = PIPE::PIPE_UNASSIGNED;
-    if (auto pipeAttr = dyn_cast<PipeAttr>(op.getOpTypeAttr())) {
-      pipe = pipeAttr.getPipe();
-    } else {
-      auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
-      if (failed(opTypeOr)) {
-        return rewriter.notifyMatchFailure(op, "buffer sync expects pipe/sync_op_type/pipe_event_type attr");
-      }
-      pipe = mapSyncOpTypeToPipe(*opTypeOr);
-    }
-    if (!isConcreteSyncPipe(pipe)) {
-      return rewriter.notifyMatchFailure(op, "buffer sync op_type cannot map to concrete pipe");
-    }
-
-    auto pipeImm = parsePipeImmediate(stringifyPIPE(pipe));
-    if (!pipeImm) {
-      return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
+    FailureOr<uint64_t> pipeImm = resolveBufSyncPipeImmediate(op, rewriter);
+    if (failed(pipeImm)) {
+      return failure();
     }
 
     Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
@@ -1189,12 +1180,10 @@ public:
     bool isGetBuf = std::is_same_v<BufDynSyncOp, pto::GetBufDynOp>;
     StringRef calleeName = buildBufDynSyncCallee(op.getContext(), isGetBuf);
     Value modeValue = getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{pipeValue, bufIdValue, modeValue});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(), rewriter.getI64Type()},
+        ValueRange{pipeValue, bufIdValue, modeValue}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -1597,12 +1586,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported mul_i32toi64 signature");
     }
 
-    auto funcType = rewriter.getFunctionType(TypeRange{lhsType, rhsType}, TypeRange{resultType});
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType},
-                                              ValueRange{adaptor.getLhs(), adaptor.getRhs()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return emitPlannedCalleeCall(rewriter, op, *calleeName, TypeRange{lhsType, rhsType},
+                                 ValueRange{adaptor.getLhs(), adaptor.getRhs()}, TypeRange{resultType},
+                                 state, /*replaceResults=*/true);
   }
 
 private:
@@ -1627,12 +1613,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported sqrt VPTO signature");
     }
 
-    auto funcType = rewriter.getFunctionType(TypeRange{valueType}, TypeRange{resultType});
-    auto call =
-        rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType}, ValueRange{adaptor.getValue()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return emitPlannedCalleeCall(rewriter, op, *calleeName, TypeRange{valueType},
+                                 ValueRange{adaptor.getValue()}, TypeRange{resultType}, state,
+                                 /*replaceResults=*/true);
   }
 
 private:
@@ -1657,12 +1640,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported unary scalar math signature");
     }
 
-    auto funcType = rewriter.getFunctionType(TypeRange{valueType}, TypeRange{resultType});
-    auto call =
-        rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType}, ValueRange{adaptor.getValue()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return emitPlannedCalleeCall(rewriter, op, *calleeName, TypeRange{valueType},
+                                 ValueRange{adaptor.getValue()}, TypeRange{resultType}, state,
+                                 /*replaceResults=*/true);
   }
 
 private:
@@ -1688,12 +1668,9 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported binary scalar math signature");
     }
 
-    auto funcType = rewriter.getFunctionType(TypeRange{lhsType, rhsType}, TypeRange{resultType});
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{resultType},
-                                              ValueRange{adaptor.getLhs(), adaptor.getRhs()});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
-    return success();
+    return emitPlannedCalleeCall(rewriter, op, *calleeName, TypeRange{lhsType, rhsType},
+                                 ValueRange{adaptor.getLhs(), adaptor.getRhs()}, TypeRange{resultType},
+                                 state, /*replaceResults=*/true);
   }
 
 private:

@@ -1710,93 +1710,129 @@ struct VPTOSoftPostUpdatePass
   }
 
 private:
+  /// Return the stride operand type when \p total satisfies the type and
+  /// constraint contract of \p postUpdate, otherwise nothing.
+  std::optional<Type>
+  resolveStrideType(const StrideExprRef &total,
+                    const pto::VPTOPostUpdateSemantics &postUpdate,
+                    OpBuilder &builder) const {
+    Type exprResultType;
+    if (!exprType(total, exprResultType)) {
+      return std::nullopt;
+    }
+    Value advanceOperand =
+        postUpdate.advanceOperand ? postUpdate.advanceOperand->get() : Value();
+    Type strideType =
+        advanceOperand ? advanceOperand.getType() : builder.getIndexType();
+    if (exprResultType && exprResultType != strideType) {
+      return std::nullopt;
+    }
+    // Reject strides whose constants do not fit the target operand type.
+    if (!constantsFitType(total, strideType)) {
+      return std::nullopt;
+    }
+    if (!satisfiesStrideConstraint(total, postUpdate.constraint)) {
+      return std::nullopt;
+    }
+    return strideType;
+  }
+
+  /// Reject rewrite candidates whose stride cannot be hoisted or whose initial
+  /// offset cannot be scaled at loop entry, then assemble the plan entry.
+  std::optional<PostUpdateCandidatePlan>
+  finalizeCandidate(Operation &op, scf::ForOp forOp,
+                    const pto::PTOAddressExpr &address, StrideExprRef total,
+                    Type strideType, int64_t advanceUnitBytes,
+                    pto::PTOAddressAnalysis &addressAnalysis) const {
+    SmallVector<Value> leaves;
+    collectLeaves(total, leaves);
+    DenseMap<Value, bool> canCache;
+    if (!llvm::all_of(leaves, [&](Value leaf) {
+          return canHoistBefore(leaf, &op, forOp, canCache);
+        })) {
+      return std::nullopt;
+    }
+
+    Value currentOffset =
+        address.offset ? address.offset->sourceValue : Value();
+    StrideUnit currentUnit =
+        address.offset ? address.offset->unit : StrideUnit::Element;
+    int64_t currentUnitBytes =
+        address.offset && address.offset->unitBytes
+            ? *address.offset->unitBytes
+            : address.elementBytes;
+    if (currentOffset &&
+        !canScaleInitialOffsetAtLoopEntry(
+            currentOffset, address.elementBytes, currentUnitBytes, forOp,
+            addressAnalysis.getValueEvolution())) {
+      return std::nullopt;
+    }
+    return PostUpdateCandidatePlan{&op,
+                                   address.currentBase,
+                                   currentOffset,
+                                   currentUnit,
+                                   address.elementBytes,
+                                   currentUnitBytes,
+                                   advanceUnitBytes,
+                                   strideType,
+                                   total};
+  }
+
+  /// Analyze one operation of \p forOp's body and return its rewrite
+  /// candidate, or nothing when the op cannot be rewritten.
+  std::optional<PostUpdateCandidatePlan>
+  analyzeForBodyOp(Operation &op, scf::ForOp forOp,
+                   pto::PTOAddressAnalysis &addressAnalysis,
+                   OpBuilder &builder) const {
+    auto postUpdate = getPostUpdateSemantics(&op);
+    if (!postUpdate || postUpdate->updatedBase ||
+        !isDirectlyInForBody(&op, forOp)) {
+      return std::nullopt;
+    }
+
+    auto addresses = addressAnalysis.getAddresses(&op);
+    bool hasSingleAddress = addresses && addresses.value->size() == 1;
+    if (!hasSingleAddress) {
+      return std::nullopt;
+    }
+    const pto::PTOAddressExpr &address = addresses.value->front();
+    auto advanceUnitBytes = pto::getVPTOAddressUnitBytes(
+        &op, postUpdate->advanceUnit, postUpdate->elementTypeSource);
+    if (!advanceUnitBytes) {
+      return std::nullopt;
+    }
+    auto delta =
+        addressAnalysis.getDeltaInUnit(address, forOp, *advanceUnitBytes);
+    if (!delta) {
+      return std::nullopt;
+    }
+    if (auto linear = pto::normalizePTOLinearExpr(*delta.value);
+        linear && pto::isZeroPTOLinearExpr(*linear)) {
+      return std::nullopt;
+    }
+    StrideExprRef total = importTypedExpr(*delta.value);
+    if (!total) {
+      return std::nullopt;
+    }
+
+    std::optional<Type> strideType =
+        resolveStrideType(total, *postUpdate, builder);
+    if (!strideType) {
+      return std::nullopt;
+    }
+    return finalizeCandidate(op, forOp, address, total, *strideType,
+                             *advanceUnitBytes, addressAnalysis);
+  }
+
   LoopPostUpdatePlan analyzeForOp(
       scf::ForOp forOp, pto::PTOAddressAnalysis &addressAnalysis,
       OpBuilder &builder) const {
     LoopPostUpdatePlan plan{forOp, {}};
     for (Operation &op : *forOp.getBody()) {
-      auto postUpdate = getPostUpdateSemantics(&op);
-      if (!postUpdate || postUpdate->updatedBase ||
-          !isDirectlyInForBody(&op, forOp)) {
-        continue;
+      if (std::optional<PostUpdateCandidatePlan> candidate =
+              analyzeForBodyOp(op, forOp, addressAnalysis, builder)) {
+        plan.candidates.push_back(*candidate);
       }
-
-      auto addresses = addressAnalysis.getAddresses(&op);
-      if (
-          !addresses || addresses.value->size() != 1) {
-        continue;
-      }
-      const pto::PTOAddressExpr &address = addresses.value->front();
-      auto advanceUnitBytes = pto::getVPTOAddressUnitBytes(
-          &op, postUpdate->advanceUnit, postUpdate->elementTypeSource);
-      if (!advanceUnitBytes) {
-        continue;
-      }
-      auto delta = addressAnalysis.getDeltaInUnit(
-          address, forOp, *advanceUnitBytes);
-      if (!delta) {
-        continue;
-      }
-      if (auto linear = pto::normalizePTOLinearExpr(*delta.value);
-          linear && pto::isZeroPTOLinearExpr(*linear)) {
-        continue;
-      }
-      StrideExprRef total = importTypedExpr(*delta.value);
-      if (!total) {
-        continue;
-      }
-
-      // Reject expressions whose subterms demand conflicting types, or whose
-      // dynamic result cannot be materialized exactly as the op's declared
-      // stride operand type.
-      Type exprResultType;
-      if (!exprType(total, exprResultType)) {
-        continue;
-      }
-      Value advanceOperand = postUpdate->advanceOperand
-                                 ? postUpdate->advanceOperand->get()
-                                 : Value();
-      Type strideType = advanceOperand ? advanceOperand.getType()
-                                       : builder.getIndexType();
-      if (exprResultType && exprResultType != strideType) {
-        continue;
-      }
-
-      // Reject strides whose constants do not fit the target operand type.
-      if (!constantsFitType(total, strideType)) {
-        continue;
-      }
-      if (!satisfiesStrideConstraint(total, postUpdate->constraint)) {
-        continue;
-      }
-
-      SmallVector<Value> leaves;
-      collectLeaves(total, leaves);
-      DenseMap<Value, bool> canCache;
-      if (!llvm::all_of(leaves, [&](Value leaf) {
-            return canHoistBefore(leaf, &op, forOp, canCache);
-          })) {
-        continue;
-      }
-
-      Value currentOffset =
-          address.offset ? address.offset->sourceValue : Value();
-      StrideUnit currentUnit = address.offset ? address.offset->unit
-                                              : StrideUnit::Element;
-      int64_t currentUnitBytes =
-          address.offset && address.offset->unitBytes
-              ? *address.offset->unitBytes
-              : address.elementBytes;
-      if (currentOffset &&
-          !canScaleInitialOffsetAtLoopEntry(
-              currentOffset, address.elementBytes, currentUnitBytes, forOp,
-              addressAnalysis.getValueEvolution())) {
-        continue;
-      }
-      plan.candidates.push_back(
-          {&op, address.currentBase, currentOffset, currentUnit,
-           address.elementBytes, currentUnitBytes, *advanceUnitBytes,
-           strideType, total});
     }
     return plan;
   }

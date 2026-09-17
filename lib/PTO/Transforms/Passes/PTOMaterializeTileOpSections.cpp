@@ -271,6 +271,23 @@ collectTileOpValidShapeRequirements(func::FuncOp helper,
   return status;
 }
 
+/// Look up the valid-shape requirement entry of the callee of \p call. Returns
+/// null when the call has no callee or the callee recorded no requirements.
+static const ValidShapeRequirements::mapped_type *
+getCalleeRequirements(func::CallOp call,
+                      const ValidShapeRequirements &requirements) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call.getOperation(), call.getCalleeAttr());
+  if (!callee) {
+    return nullptr;
+  }
+  auto required = requirements.find(callee.getOperation());
+  if (required == requirements.end()) {
+    return nullptr;
+  }
+  return &required->second;
+}
+
 static LogicalResult
 propagateValidShapeRequirements(ModuleOp module,
                                 ValidShapeRequirements &requirements) {
@@ -281,17 +298,13 @@ propagateValidShapeRequirements(ModuleOp module,
   while (changed) {
     changed = false;
     for (func::CallOp call : calls) {
-      auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-          call.getOperation(), call.getCalleeAttr());
-      if (!callee) {
-        continue;
-      }
-      auto required = requirements.find(callee.getOperation());
-      if (required == requirements.end()) {
+      const ValidShapeRequirements::mapped_type *required =
+          getCalleeRequirements(call, requirements);
+      if (!required) {
         continue;
       }
       SmallVector<unsigned, mlir::pto::kValue2> requiredArguments(
-          required->second);
+          *required);
 
       auto caller = call->getParentOfType<func::FuncOp>();
       if (!caller)
@@ -413,20 +426,16 @@ static LogicalResult expandValidShapeCallOperands(
   module.walk([&](func::CallOp call) { calls.push_back(call); });
 
   for (func::CallOp call : calls) {
-    auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-        call.getOperation(), call.getCalleeAttr());
-    if (!callee) {
-      continue;
-    }
-    auto required = requirements.find(callee.getOperation());
-    if (required == requirements.end()) {
+    const ValidShapeRequirements::mapped_type *required =
+        getCalleeRequirements(call, requirements);
+    if (!required) {
       continue;
     }
 
     auto caller = call->getParentOfType<func::FuncOp>();
     OpBuilder builder(call);
     SmallVector<Value> metadataOperands;
-    for (unsigned argumentIndex : required->second) {
+    for (unsigned argumentIndex : *required) {
       if (argumentIndex >= call.getNumOperands()) {
         return call.emitOpError(
             "TileOp call has fewer operands than its helper ABI");

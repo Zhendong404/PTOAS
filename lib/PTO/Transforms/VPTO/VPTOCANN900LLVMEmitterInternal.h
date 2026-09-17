@@ -66,6 +66,25 @@ struct LoweringState {
   SmallVector<PlannedDecl> plannedDecls;
 };
 
+/// Create the planned callee call of a lowering pattern, record its declaration
+/// and finish the rewrite. Shared by the pattern files so the call and
+/// declaration bookkeeping stays in one place.
+inline LogicalResult emitPlannedCalleeCall(ConversionPatternRewriter &rewriter,
+                                           Operation *op, StringRef calleeName,
+                                           TypeRange argumentTypes, ValueRange arguments,
+                                           TypeRange resultTypes, LoweringState &state,
+                                           bool replaceResults) {
+  auto funcType = rewriter.getFunctionType(argumentTypes, resultTypes);
+  auto call = rewriter.create<func::CallOp>(op->getLoc(), calleeName, resultTypes, arguments);
+  state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+  if (replaceResults) {
+    rewriter.replaceOp(op, call.getResults());
+  } else {
+    rewriter.eraseOp(op);
+  }
+  return success();
+}
+
 Value getI64Constant(OpBuilder &builder, Location loc, uint64_t value);
 Value getI32Constant(OpBuilder &builder, Location loc, uint64_t value);
 Value packShiftedI64Fields(OpBuilder &builder, Location loc, Value config,

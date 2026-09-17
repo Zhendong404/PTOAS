@@ -13,6 +13,78 @@
 
 namespace mlir::pto::detail {
 
+/// Validate the converted pointer operands shared by the copy/load lowering
+/// patterns: both operands must be present LLVM pointers.
+static LogicalResult checkConvertedPointerOperands(Operation *op,
+                                                   ConversionPatternRewriter &rewriter,
+                                                   bool operandsPresent, Value source,
+                                                   Value destination) {
+  if (!operandsPresent) {
+    return rewriter.notifyMatchFailure(op, "expected converted operands");
+  }
+  bool sourceIsPointer = isa<LLVM::LLVMPointerType>(source.getType());
+  bool destinationIsPointer = isa<LLVM::LLVMPointerType>(destination.getType());
+  if (!sourceIsPointer || !destinationIsPointer) {
+    return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+  }
+  return success();
+}
+
+/// Operands shared by the load_cbuf_to_ca/cb lowering patterns.
+struct LoadCbufOperands {
+  Value source;
+  Value destination;
+  Value mStart;
+  Value kStart;
+  Value mStep;
+  Value kStep;
+  Value srcStride;
+  Value dstStride;
+};
+
+/// Fetch the eight converted operands of a load_cbuf_to_ca/cb pattern and
+/// validate that they are present LLVM pointers.
+template <typename LoadOp>
+static FailureOr<LoadCbufOperands> parseLoadCbufOperands(LoadOp op,
+                                                         typename LoadOp::Adaptor adaptor,
+                                                         ConversionPatternRewriter &rewriter) {
+  LoadCbufOperands operands{adaptor.getSource(),    adaptor.getDestination(), adaptor.getMStart(),
+                            adaptor.getKStart(),    adaptor.getMStep(),       adaptor.getKStep(),
+                            adaptor.getSrcStride(), adaptor.getDstStride()};
+  if (!operands.source || !operands.destination || !operands.mStart || !operands.kStart ||
+      !operands.mStep || !operands.kStep || !operands.srcStride || !operands.dstStride) {
+    return rewriter.notifyMatchFailure(op, "expected converted operands");
+  }
+  bool sourceIsPointer = isa<LLVM::LLVMPointerType>(operands.source.getType());
+  bool destinationIsPointer = isa<LLVM::LLVMPointerType>(operands.destination.getType());
+  if (!sourceIsPointer || !destinationIsPointer) {
+    return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+  }
+  return operands;
+}
+
+/// Fetch the two converted operands of a load_cbuf_to_ca_mx/cb_mx pattern and
+/// validate the shared MX operand contract.
+template <typename AdaptorTy>
+static FailureOr<std::pair<Value, Value>> parseMxPointerOperands(Operation *op, AdaptorTy adaptor,
+                                                                 ConversionPatternRewriter &rewriter) {
+  Value source = adaptor.getSource();
+  Value destination = adaptor.getDestination();
+  bool operandsPresent =
+      source && destination && adaptor.getXStartPosition() &&
+      adaptor.getYStartPosition() && adaptor.getXStep() && adaptor.getYStep() &&
+      adaptor.getSrcStride() && adaptor.getDstStride();
+  if (!operandsPresent) {
+    return rewriter.notifyMatchFailure(op, "expected converted operands");
+  }
+  bool sourceIsPointer = isa<LLVM::LLVMPointerType>(source.getType());
+  bool destinationIsPointer = isa<LLVM::LLVMPointerType>(destination.getType());
+  if (!sourceIsPointer || !destinationIsPointer) {
+    return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+  }
+  return std::make_pair(source, destination);
+}
+
 template <typename UnaryOp> class LowerUnaryMaskedOpPattern final : public OpConversionPattern<UnaryOp> {
 public:
   explicit LowerUnaryMaskedOpPattern(const TypeConverter &typeConverter, MLIRContext *context, LoweringState &state)
@@ -448,11 +520,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
@@ -469,12 +539,10 @@ public:
     }
 
     StringRef calleeName = buildCopyCbufToUbCallee(op.getContext());
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{destination->getType(), source->getType(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{*destination, *source, *config});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{destination->getType(), source->getType(), rewriter.getI64Type()},
+        ValueRange{*destination, *source, *config}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -490,11 +558,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned ubufAddressSpace = static_cast<unsigned>(pto::AddressSpace::VEC);
@@ -511,12 +577,10 @@ public:
     }
 
     StringRef calleeName = buildCopyUbToCbufCallee(op.getContext());
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{destination->getType(), source->getType(), rewriter.getI64Type()}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{}, ValueRange{*destination, *source, *config});
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, calleeName,
+        TypeRange{destination->getType(), source->getType(), rewriter.getI64Type()},
+        ValueRange{*destination, *source, *config}, TypeRange{}, state, /*replaceResults=*/false);
   }
 
 private:
@@ -756,13 +820,11 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to pack copy_gm_to_cbuf config");
     }
 
-    auto funcType =
-        rewriter.getFunctionType(TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
-                                  ValueRange{*destination, *source, *config0, *config1});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, *calleeName,
+        TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty},
+        ValueRange{*destination, *source, *config0, *config1}, TypeRange{}, state,
+        /*replaceResults=*/false);
   }
 
 private:
@@ -778,11 +840,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned gmAddressSpace = static_cast<unsigned>(pto::AddressSpace::GM);
@@ -812,13 +872,11 @@ public:
     }
 
     Type i64Ty = rewriter.getI64Type();
-    auto funcType =
-        rewriter.getFunctionType(TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty}, TypeRange{});
-    rewriter.create<func::CallOp>(op.getLoc(), *calleeName, TypeRange{},
-                                  ValueRange{*destination, *source, *config0, *config1});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
+    return emitPlannedCalleeCall(
+        rewriter, op, *calleeName,
+        TypeRange{destination->getType(), source->getType(), i64Ty, i64Ty},
+        ValueRange{*destination, *source, *config0, *config1}, TypeRange{}, state,
+        /*replaceResults=*/false);
   }
 
 private:
@@ -834,11 +892,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
@@ -882,11 +938,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
@@ -923,34 +977,25 @@ public:
 
   LogicalResult matchAndRewrite(pto::LoadCbufToCaOp op, pto::LoadCbufToCaOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value sourceRaw = adaptor.getSource();
-    Value destinationRaw = adaptor.getDestination();
-    Value mStart = adaptor.getMStart();
-    Value kStart = adaptor.getKStart();
-    Value mStep = adaptor.getMStep();
-    Value kStep = adaptor.getKStep();
-    Value srcStride = adaptor.getSrcStride();
-    Value dstStride = adaptor.getDstStride();
-    if (!sourceRaw || !destinationRaw || !mStart || !kStart || !mStep || !kStep || !srcStride || !dstStride) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    FailureOr<LoadCbufOperands> operands = parseLoadCbufOperands(op, adaptor, rewriter);
+    if (failed(operands)) {
+      return failure();
     }
 
     Type i64Ty = rewriter.getI64Type();
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
     constexpr unsigned caAddressSpace = static_cast<unsigned>(pto::AddressSpace::LEFT);
-    FailureOr<Value> source = reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
-    FailureOr<Value> destination = reinterpretPointerToAddrSpace(op, destinationRaw, caAddressSpace);
+    FailureOr<Value> source = reinterpretPointerToAddrSpace(op, operands->source, cbufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, operands->destination, caAddressSpace);
     if (failed(source) || failed(destination)) {
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/ca pointer spaces");
     }
 
-    FailureOr<Value> config0 = packLoadCbufToCaConfig0(op, mStart, kStart, mStep, kStep);
-    FailureOr<Value> config1 = packLoadCbufToCaConfig1(op, srcStride, dstStride);
+    FailureOr<Value> config0 =
+        packLoadCbufToCaConfig0(op, operands->mStart, operands->kStart, operands->mStep, operands->kStep);
+    FailureOr<Value> config1 = packLoadCbufToCaConfig1(op, operands->srcStride, operands->dstStride);
     if (failed(config0) || failed(config1)) {
       return rewriter.notifyMatchFailure(op, "failed to pack load_cbuf_to_ca config");
     }
@@ -1049,35 +1094,26 @@ public:
 
   LogicalResult matchAndRewrite(pto::LoadCbufToCbOp op, pto::LoadCbufToCbOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value sourceRaw = adaptor.getSource();
-    Value destinationRaw = adaptor.getDestination();
-    Value mStart = adaptor.getMStart();
-    Value kStart = adaptor.getKStart();
-    Value mStep = adaptor.getMStep();
-    Value kStep = adaptor.getKStep();
-    Value srcStride = adaptor.getSrcStride();
-    Value dstStride = adaptor.getDstStride();
-    if (!sourceRaw || !destinationRaw || !mStart || !kStart || !mStep || !kStep || !srcStride || !dstStride) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    FailureOr<LoadCbufOperands> operands = parseLoadCbufOperands(op, adaptor, rewriter);
+    if (failed(operands)) {
+      return failure();
     }
 
     Type i64Ty = rewriter.getI64Type();
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
     constexpr unsigned cbAddressSpace = static_cast<unsigned>(pto::AddressSpace::RIGHT);
-    FailureOr<Value> source = reinterpretPointerToAddrSpace(op, sourceRaw, cbufAddressSpace);
-    FailureOr<Value> destination = reinterpretPointerToAddrSpace(op, destinationRaw, cbAddressSpace);
+    FailureOr<Value> source = reinterpretPointerToAddrSpace(op, operands->source, cbufAddressSpace);
+    FailureOr<Value> destination =
+        reinterpretPointerToAddrSpace(op, operands->destination, cbAddressSpace);
     if (failed(source) || failed(destination)) {
       return rewriter.notifyMatchFailure(op, "failed to map cbuf/cb pointer spaces");
     }
 
     bool transpose = op.getTranspose();
-    FailureOr<Value> config0 = packLoadCbufToCbConfig0(op, mStart, kStart, mStep, kStep);
-    FailureOr<Value> config1 = packLoadCbufToCbConfig1(op, srcStride, dstStride);
+    FailureOr<Value> config0 =
+        packLoadCbufToCbConfig0(op, operands->mStart, operands->kStart, operands->mStep, operands->kStep);
+    FailureOr<Value> config1 = packLoadCbufToCbConfig1(op, operands->srcStride, operands->dstStride);
     if (failed(config0) || failed(config1)) {
       return rewriter.notifyMatchFailure(op, "failed to pack load_cbuf_to_cb config");
     }
@@ -1107,15 +1143,12 @@ public:
 
   LogicalResult matchAndRewrite(pto::LoadCbufToCaMxOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value srcRaw = adaptor.getSource();
-    Value dstRaw = adaptor.getDestination();
-    if (!srcRaw || !dstRaw || !adaptor.getXStartPosition() || !adaptor.getYStartPosition() || !adaptor.getXStep() ||
-        !adaptor.getYStep() || !adaptor.getSrcStride() || !adaptor.getDstStride()) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    FailureOr<std::pair<Value, Value>> pointers = parseMxPointerOperands(op, adaptor, rewriter);
+    if (failed(pointers)) {
+      return failure();
     }
-    if (!isa<LLVM::LLVMPointerType>(srcRaw.getType()) || !isa<LLVM::LLVMPointerType>(dstRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
-    }
+    Value srcRaw = pointers->first;
+    Value dstRaw = pointers->second;
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
     constexpr unsigned caAddressSpace = static_cast<unsigned>(pto::AddressSpace::LEFT);
@@ -1158,15 +1191,12 @@ public:
 
   LogicalResult matchAndRewrite(pto::LoadCbufToCbMxOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value srcRaw = adaptor.getSource();
-    Value dstRaw = adaptor.getDestination();
-    if (!srcRaw || !dstRaw || !adaptor.getXStartPosition() || !adaptor.getYStartPosition() || !adaptor.getXStep() ||
-        !adaptor.getYStep() || !adaptor.getSrcStride() || !adaptor.getDstStride()) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
+    FailureOr<std::pair<Value, Value>> pointers = parseMxPointerOperands(op, adaptor, rewriter);
+    if (failed(pointers)) {
+      return failure();
     }
-    if (!isa<LLVM::LLVMPointerType>(srcRaw.getType()) || !isa<LLVM::LLVMPointerType>(dstRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
-    }
+    Value srcRaw = pointers->first;
+    Value dstRaw = pointers->second;
 
     constexpr unsigned cbufAddressSpace = static_cast<unsigned>(pto::AddressSpace::MAT);
     constexpr unsigned cbAddressSpace = static_cast<unsigned>(pto::AddressSpace::RIGHT);
@@ -1256,11 +1286,9 @@ public:
                                 ConversionPatternRewriter &rewriter) const override {
     Value sourceRaw = adaptor.getSource();
     Value destinationRaw = adaptor.getDestination();
-    if (!sourceRaw || !destinationRaw) {
-      return rewriter.notifyMatchFailure(op, "expected converted operands");
-    }
-    if (!isa<LLVM::LLVMPointerType>(sourceRaw.getType()) || !isa<LLVM::LLVMPointerType>(destinationRaw.getType())) {
-      return rewriter.notifyMatchFailure(op, "expected LLVM pointer src/dst");
+    if (failed(checkConvertedPointerOperands(op, rewriter, sourceRaw && destinationRaw, sourceRaw,
+                                             destinationRaw))) {
+      return failure();
     }
 
     constexpr unsigned ccAddressSpace = static_cast<unsigned>(pto::AddressSpace::ACC);

@@ -387,6 +387,32 @@ LogicalResult verifyNoHiddenVMIAttributeType(Operation *op, NamedAttribute attr,
   return success();
 }
 
+/// Verify the region argument types and the attributes of \p op with the given
+/// per-type tree verifier.
+static LogicalResult verifyRegionAndAttributeTypeTrees(
+    Operation *op, llvm::raw_ostream *diagOS,
+    LogicalResult (*verifyTypeTree)(Operation *, Type, llvm::raw_ostream *)) {
+  for (Region &region : op->getRegions()) {
+    for (Block &block : region) {
+      for (Type type : block.getArgumentTypes()) {
+        if (failed(verifyTypeTree(op, type, diagOS))) {
+          return failure();
+        }
+      }
+    }
+  }
+  for (NamedAttribute attr : op->getAttrs()) {
+    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS))) {
+      return failure();
+    }
+    if (failed(verifyAttributeTypes(op, attr.getValue(), diagOS,
+                                    verifyTypeTree))) {
+      return failure();
+    }
+  }
+  return success();
+}
+
 LogicalResult verifyOperationTypes(Operation *op, llvm::raw_ostream *diagOS) {
   if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
     FunctionType functionType = funcOp.getFunctionType();
@@ -412,25 +438,7 @@ LogicalResult verifyOperationTypes(Operation *op, llvm::raw_ostream *diagOS) {
       return failure();
     }
   }
-  for (Region &region : op->getRegions()) {
-    for (Block &block : region) {
-      for (Type type : block.getArgumentTypes()) {
-        if (failed(verifyBoundaryTypeTree(op, type, diagOS))) {
-          return failure();
-        }
-      }
-    }
-  }
-  for (NamedAttribute attr : op->getAttrs()) {
-    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS))) {
-      return failure();
-    }
-    if (failed(verifyAttributeTypes(op, attr.getValue(), diagOS,
-                                    verifyBoundaryTypeTree))) {
-      return failure();
-    }
-  }
-  return success();
+  return verifyRegionAndAttributeTypeTrees(op, diagOS, verifyBoundaryTypeTree);
 }
 
 LogicalResult verifyLayoutAssignedOperationTypes(Operation *op,
@@ -459,25 +467,8 @@ LogicalResult verifyLayoutAssignedOperationTypes(Operation *op,
       return failure();
     }
   }
-  for (Region &region : op->getRegions()) {
-    for (Block &block : region) {
-      for (Type type : block.getArgumentTypes()) {
-        if (failed(verifyLayoutAssignedTypeTree(op, type, diagOS))) {
-          return failure();
-        }
-      }
-    }
-  }
-  for (NamedAttribute attr : op->getAttrs()) {
-    if (failed(verifyNoHiddenVMIAttributeType(op, attr, diagOS))) {
-      return failure();
-    }
-    if (failed(verifyAttributeTypes(op, attr.getValue(), diagOS,
-                                    verifyLayoutAssignedTypeTree))) {
-      return failure();
-    }
-  }
-  return success();
+  return verifyRegionAndAttributeTypeTrees(op, diagOS,
+                                           verifyLayoutAssignedTypeTree);
 }
 
 LogicalResult verifyLayoutHelperSupport(Operation *op,

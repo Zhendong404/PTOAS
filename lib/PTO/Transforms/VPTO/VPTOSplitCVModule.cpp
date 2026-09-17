@@ -87,21 +87,39 @@ static bool flattenSingleUnpartitionedChild(ModuleOp module) {
 
 static bool isSectionSplitCandidate(func::FuncOp funcOp);
 
+/// Return true when \p funcOp contains a section operation accepted by
+/// \p matches.
+template <typename Predicate>
+static bool hasSectionMatching(func::FuncOp funcOp, Predicate matches) {
+  bool found = false;
+  funcOp.walk([&](Operation *op) {
+    if (!matches(op)) {
+      return WalkResult::advance();
+    }
+    found = true;
+    return WalkResult::interrupt();
+  });
+  return found;
+}
+
+static bool matchesKernelKind(Operation *op, FunctionKernelKind kind) {
+  return kind == FunctionKernelKind::Cube ? isa<SectionCubeOp>(op)
+                                          : isa<SectionVectorOp>(op);
+}
+
 static bool hasCVSections(ModuleOp module) {
   bool found = false;
   module.walk([&](func::FuncOp funcOp) {
     if (found || !isSectionSplitCandidate(funcOp)) {
       return WalkResult::advance();
     }
-    WalkResult result = funcOp.walk([&found](Operation *op) {
-      if (isa<SectionCubeOp, SectionVectorOp>(op)) {
-        found = true;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    return result.wasInterrupted() ? WalkResult::interrupt()
-                                   : WalkResult::advance();
+    if (hasSectionMatching(funcOp, [](Operation *op) {
+          return isa<SectionCubeOp, SectionVectorOp>(op);
+        })) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
   return found;
 }
@@ -112,46 +130,25 @@ static bool hasSectionKind(ModuleOp module, FunctionKernelKind kind) {
     if (found || !isSectionSplitCandidate(funcOp)) {
       return WalkResult::advance();
     }
-    WalkResult result = funcOp.walk([&found, &kind](Operation *op) {
-      bool matches = kind == FunctionKernelKind::Cube
-                         ? isa<SectionCubeOp>(op)
-                         : isa<SectionVectorOp>(op);
-      if (matches) {
-        found = true;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    return result.wasInterrupted() ? WalkResult::interrupt()
-                                   : WalkResult::advance();
+    if (hasSectionMatching(
+            funcOp, [kind](Operation *op) { return matchesKernelKind(op, kind); })) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
   return found;
 }
 
 static bool hasSectionKind(func::FuncOp funcOp, FunctionKernelKind kind) {
-  bool found = false;
-  funcOp.walk([&](Operation *op) {
-    bool matches = kind == FunctionKernelKind::Cube ? isa<SectionCubeOp>(op)
-                                                    : isa<SectionVectorOp>(op);
-    if (matches) {
-      found = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return found;
+  return hasSectionMatching(
+      funcOp, [kind](Operation *op) { return matchesKernelKind(op, kind); });
 }
 
 static bool hasAnySection(func::FuncOp funcOp) {
-  bool found = false;
-  funcOp.walk([&](Operation *op) {
-    if (isa<SectionCubeOp, SectionVectorOp>(op)) {
-      found = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+  return hasSectionMatching(funcOp, [](Operation *op) {
+    return isa<SectionCubeOp, SectionVectorOp>(op);
   });
-  return found;
 }
 
 static bool isSectionSplitCandidate(func::FuncOp funcOp) {

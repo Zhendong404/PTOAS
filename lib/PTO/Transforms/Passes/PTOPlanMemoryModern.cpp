@@ -917,6 +917,22 @@ struct PlannerAnalysis {
     }
   }
 
+  /// Keep every root carried across a loop-region back-edge live for the whole
+  /// loop, ignoring branch-exclusivity from a single iteration.
+  void markLoopCarriedRootsLive(const RootList &loopCarriedRoots,
+                                unsigned loopStartIndex, unsigned loopEndIndex) {
+    for (Value root : loopCarriedRoots) {
+      auto found = rootIndexByValue.find(root);
+      if (found == rootIndexByValue.end()) {
+        continue;
+      }
+      facts.loopCarriedRoots.insert(root);
+      RootInfo &info = roots[found->second];
+      info.allocIndex = std::min(info.allocIndex, loopStartIndex);
+      info.freeIndex = std::max(info.freeIndex, loopEndIndex);
+    }
+  }
+
   void finalizeForLoopLiveness(scf::ForOp forOp, unsigned loopStartIndex,
                                unsigned loopEndIndex) {
     // A root defined outside the loop and touched in the body remains live
@@ -943,16 +959,7 @@ struct PlannerAnalysis {
       // Every possible root of an iter arg may be consumed on a later
       // iteration. Conservatively keep the family live for the whole loop and
       // do not apply branch-exclusivity from one iteration across the back-edge.
-      for (Value root : loopCarriedRoots) {
-        auto found = rootIndexByValue.find(root);
-        if (found == rootIndexByValue.end()) {
-          continue;
-        }
-        facts.loopCarriedRoots.insert(root);
-        RootInfo &info = roots[found->second];
-        info.allocIndex = std::min(info.allocIndex, loopStartIndex);
-        info.freeIndex = std::max(info.freeIndex, loopEndIndex);
-      }
+      markLoopCarriedRootsLive(loopCarriedRoots, loopStartIndex, loopEndIndex);
     }
   }
 
@@ -984,16 +991,7 @@ struct PlannerAnalysis {
       }
     }
 
-    for (Value root : loopCarriedRoots) {
-      auto found = rootIndexByValue.find(root);
-      if (found == rootIndexByValue.end()) {
-        continue;
-      }
-      facts.loopCarriedRoots.insert(root);
-      RootInfo &info = roots[found->second];
-      info.allocIndex = std::min(info.allocIndex, loopStartIndex);
-      info.freeIndex = std::max(info.freeIndex, loopEndIndex);
-    }
+    markLoopCarriedRootsLive(loopCarriedRoots, loopStartIndex, loopEndIndex);
   }
 
   // Register a freshly-seen root-producing alloc (alloc_tile without a

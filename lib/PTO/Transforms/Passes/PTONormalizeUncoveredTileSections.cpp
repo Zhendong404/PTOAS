@@ -494,25 +494,8 @@ classifyTLoadByDestinationAddressSpace(Operation *op) {
   }
 
   auto tload = cast<TLoadOp>(op);
-  std::optional<AddressSpace> dstSpace =
-      getBufferAddressSpace(tload.getDst().getType());
-  if (!dstSpace) {
-    return std::nullopt;
-  }
-
-  switch (*dstSpace) {
-  case AddressSpace::VEC:
-    return InferredSectionKind::Vector;
-  case AddressSpace::MAT:
-  case AddressSpace::LEFT:
-  case AddressSpace::RIGHT:
-  case AddressSpace::ACC:
-  case AddressSpace::BIAS:
-  case AddressSpace::SCALING:
-    return InferredSectionKind::Cube;
-  default:
-    return std::nullopt;
-  }
+  return classifyTileSectionByAddressSpace(
+      getBufferAddressSpace(tload.getDst().getType()));
 }
 
 static std::optional<InferredSectionKind>
@@ -522,25 +505,8 @@ classifyTStoreBySourceAddressSpace(Operation *op) {
   }
 
   auto tstore = cast<TStoreOp>(op);
-  std::optional<AddressSpace> srcSpace =
-      getBufferAddressSpace(tstore.getSrc().getType());
-  if (!srcSpace) {
-    return std::nullopt;
-  }
-
-  switch (*srcSpace) {
-  case AddressSpace::VEC:
-    return InferredSectionKind::Vector;
-  case AddressSpace::MAT:
-  case AddressSpace::LEFT:
-  case AddressSpace::RIGHT:
-  case AddressSpace::ACC:
-  case AddressSpace::BIAS:
-  case AddressSpace::SCALING:
-    return InferredSectionKind::Cube;
-  default:
-    return std::nullopt;
-  }
+  return classifyTileSectionByAddressSpace(
+      getBufferAddressSpace(tstore.getSrc().getType()));
 }
 
 static std::optional<InferredSectionKind> classifyTileOp(Operation *op) {

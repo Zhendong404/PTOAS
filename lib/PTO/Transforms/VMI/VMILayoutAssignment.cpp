@@ -2065,18 +2065,26 @@ struct LayoutSolver {
     return success();
   }
 
+  /// Apply one recorded seed request to \p propagator; the request is skipped
+  /// when the value already carries a layout that the operand accepts.
+  template <typename RequestTy>
+  LogicalResult applySeedRequest(VMILayoutPropagator &propagator,
+                                 const RequestTy &request) {
+    if (hasLayoutAssignment(propagator, request.operand->get())) {
+      VMILayoutAttr assigned =
+          propagator.getRequestedOrCurrentLayout(request.operand->get());
+      if (propagator.canUseOperandLayout(*request.operand, assigned)) {
+        return success();
+      }
+    }
+    return propagator.request(*request.operand, request.layout);
+  }
+
   LogicalResult requestDataUseSeeds(VMILayoutPropagator &propagator,
                                     DataLayoutSeedPhase phase, bool late) {
     for (DataUseRequest request : dataUseRequests) {
       if (request.phase == phase && request.late == late) {
-        if (hasLayoutAssignment(propagator, request.operand->get())) {
-          VMILayoutAttr assigned =
-              propagator.getRequestedOrCurrentLayout(request.operand->get());
-          if (propagator.canUseOperandLayout(*request.operand, assigned)) {
-            continue;
-          }
-        }
-        if (failed(propagator.request(*request.operand, request.layout))) {
+        if (failed(applySeedRequest(propagator, request))) {
           return failure();
         }
       }
@@ -2088,14 +2096,7 @@ struct LayoutSolver {
                                     DataLayoutSeedPhase phase) {
     for (MaskUseRequest request : maskUseRequests) {
       if (request.phase == phase) {
-        if (hasLayoutAssignment(propagator, request.operand->get())) {
-          VMILayoutAttr assigned =
-              propagator.getRequestedOrCurrentLayout(request.operand->get());
-          if (propagator.canUseOperandLayout(*request.operand, assigned)) {
-            continue;
-          }
-        }
-        if (failed(propagator.request(*request.operand, request.layout))) {
+        if (failed(applySeedRequest(propagator, request))) {
           return failure();
         }
       }
