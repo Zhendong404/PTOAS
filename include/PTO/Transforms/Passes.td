@@ -199,7 +199,11 @@ def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
            "Planning mode. Supported value today: local">,
     Option<"orderBySize", "order-by-size", "bool", "false",
            "Plan larger buffers first inside one AddressSpace before applying "
-           "SPEC_LEVEL_0 first-fit reuse">
+           "SPEC_LEVEL_0 first-fit reuse">,
+    Option<"enabled", "enabled", "bool", "true",
+           "Run automatic planning. When false the pass does not assign any "
+           "address; it only verifies that every live pto.alloc_tile already "
+           "carries an explicit addr">
   ];
 
   let dependentDialects = [
