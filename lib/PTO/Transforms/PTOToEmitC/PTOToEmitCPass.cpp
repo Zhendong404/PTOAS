@@ -713,6 +713,14 @@ struct EmitPTOManualPass
       }
       if (isa<mlir::pto::PartitionViewOp>(op))
         flags.globalTensorData = true;
+      if (auto load = dyn_cast<mlir::pto::TLoadOp>(op)) {
+        auto policy = load.getCachePolicyAttr();
+        const bool hasBypassOffset = load.getOffset() && policy &&
+                                    policy.getValue() == pto::LoadCachePolicy::L2Bypass;
+        if (hasBypassOffset) {
+          flags.globalTensorData = true;
+        }
+      }
       if (isa<arith::BitcastOp, arith::MaximumFOp, arith::MinimumFOp>(op))
         flags.bitcast = true;
     });

@@ -508,6 +508,10 @@ def TLoadOp  : PTO_TOp<"tload", [
     Constraint: The product of partition view sizes must match the product of tile buffer valid dims.
     DPS form:
       pto.tload ins(%partition_view) outs(%tile_buf)
+
+    The optional offset is a byte displacement added to the source address
+    only when cache_policy is l2_bypass. It defaults to zero and does not
+    change the source view's shape, strides, or layout.
   }];
 
   let arguments = (ins 
@@ -519,7 +523,8 @@ def TLoadOp  : PTO_TOp<"tload", [
     Optional<AnyType>:$right_padding_num,
     DefaultValuedOptionalAttr<BoolAttr, "false">:$init_out_buffer,
     Optional<AnyType>:$init_condition,
-    OptionalAttr<PTO_LoadCachePolicyAttr>:$cache_policy
+    OptionalAttr<PTO_LoadCachePolicyAttr>:$cache_policy,
+    Optional<AnyTypeOf<[I64, Index]>>:$offset
   );
 
   let results = (outs
@@ -535,7 +540,7 @@ def TLoadOp  : PTO_TOp<"tload", [
             /*pad_mode=*/nullptr, /*pad_value=*/nullptr, 
             /*left=*/nullptr, /*right=*/nullptr, 
             /*init_out=*/nullptr, /*init_cond=*/nullptr,
-            /*cache_policy=*/nullptr);
+            /*cache_policy=*/nullptr, /*offset=*/nullptr);
     }]>,
 
     // 2. With left_padding_num
@@ -543,14 +548,15 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "Value":$left_padding_num), [{
       build($_builder, $_state, res, src, dst, 
             nullptr, nullptr, left_padding_num, nullptr, nullptr, nullptr,
-            nullptr);
+            nullptr, nullptr);
     }]>,
 
     // 3. With pad_mode, pad_value
     OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst,
                    "pto::PadModeAttr":$pad_mode, "Value":$pad_value), [{
       build($_builder, $_state, res, src, dst, 
-            pad_mode, pad_value, nullptr, nullptr, nullptr, nullptr, nullptr);
+            pad_mode, pad_value, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr);
     }]>,
 
     // 4. ... + left
@@ -559,7 +565,7 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "Value":$left_padding_num), [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, nullptr, nullptr, nullptr,
-            nullptr);
+            nullptr, nullptr);
     }]>,
 
     // 5. ... + left + right
@@ -568,7 +574,7 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "Value":$left_padding_num, "Value":$right_padding_num), [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, right_padding_num, nullptr,
-            nullptr, nullptr);
+            nullptr, nullptr, nullptr);
     }]>,
 
     // 6. ... + left + right + bool
@@ -578,7 +584,7 @@ def TLoadOp  : PTO_TOp<"tload", [
                    "bool":$init_out_buffer), [{
       build($_builder, $_state, res, src, dst, 
             pad_mode, pad_value, left_padding_num, right_padding_num, 
-            init_out_buffer, nullptr, nullptr);
+            init_out_buffer, nullptr, nullptr, nullptr);
     }]>
   ];
 
@@ -592,6 +598,7 @@ def TLoadOp  : PTO_TOp<"tload", [
     (`init_out_buffer` `=` $init_out_buffer^ )?
     (`right_padding_num` `=` $right_padding_num^ `:` type($right_padding_num))?
     (`init_condition` `=` $init_condition^ `:` type($init_condition))?
+    (`offset` `=` $offset^ `:` type($offset))?
     (`->` qualified(type($result))^)?
   }];
   
