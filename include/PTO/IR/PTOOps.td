@@ -2823,7 +2823,7 @@ def SyncWaitOp : PTO_Op<"sync.wait"> {
 
 // Named cross-/intra-block synchronization operations.  Cross-core operations
 // are canonicalized to sync.set/sync.wait with FFTS mode 0 in the VPTO path;
-// intra-block operations lower directly to their CCE builtins.
+// EmitC selects the public synchronization interfaces for each target.
 def PTO_SyncEventIdType : Type<
   CPred<"::mlir::isa<::mlir::IntegerType>($_self)">,
   "integer event id">;
@@ -2851,7 +2851,10 @@ def WaitCrossBlockOp : PTO_Op<"wait_cross_block"> {
 
 def SetIntraBlockOp : PTO_Op<"set_intra_block"> {
   let summary = "Signal an intra-block synchronization flag";
-  let description = [{ Lowers to `__builtin_cce_set_intra_block`. }];
+  let description = [{
+    Signals the event on the specified pipeline within the block. EmitC uses
+    the public `set_intra_block` interface on A5 and FFTS mode 2 on A2/A3.
+  }];
   let arguments = (ins PTO_PipeAttr:$pipe, OptionalAttr<I32Attr>:$event_id,
                        Optional<PTO_SyncEventIdType>:$event_id_dyn);
   let hasVerifier = 1;
@@ -2860,7 +2863,10 @@ def SetIntraBlockOp : PTO_Op<"set_intra_block"> {
 
 def WaitIntraBlockOp : PTO_Op<"wait_intra_block"> {
   let summary = "Wait for an intra-block synchronization flag";
-  let description = [{ Lowers to `__builtin_cce_wait_intra_block`. }];
+  let description = [{
+    Waits for the event on the specified pipeline within the block. EmitC uses
+    the public `wait_intra_block` interface on A5 and FFTS mode 2 on A2/A3.
+  }];
   let arguments = (ins PTO_PipeAttr:$pipe, OptionalAttr<I32Attr>:$event_id,
                        Optional<PTO_SyncEventIdType>:$event_id_dyn);
   let hasVerifier = 1;

@@ -420,9 +420,9 @@ struct PTONamedIntraSyncToEmitC : public OpConversionPattern<SyncOp> {
 
     StringRef callee;
     if constexpr (std::is_same_v<SyncOp, mlir::pto::SetIntraBlockOp>) {
-      callee = "__builtin_cce_set_intra_block";
+      callee = "set_intra_block";
     } else {
-      callee = "__builtin_cce_wait_intra_block";
+      callee = "wait_intra_block";
     }
 
     auto args = rewriter.getArrayAttr({
