@@ -543,6 +543,12 @@ public:
   LogicalResult getExtFSupport(VMIExtFOp op,
                                std::string *reason = nullptr) const;
 
+  LogicalResult getVUnzipSupport(VMIVUnzipOp op,
+                                std::string *reason = nullptr) const;
+
+  LogicalResult getVZipSupport(VMIVZipOp op,
+                              std::string *reason = nullptr) const;
+
   LogicalResult getExtSISupport(VMIExtSIOp op,
                                 std::string *reason = nullptr) const;
 

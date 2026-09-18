@@ -1098,6 +1098,20 @@ std::optional<WalkResult> verifySupportedVMIFloatOp(Operation *op) {
         "f16 group_slots(num_groups=G, slots=1)); non-f32 sources currently "
         "require dense contiguous layouts (");
   }
+  if (auto unzip = dyn_cast<VMIVUnzipOp>(op)) {
+    return verifySupportedShapeOp(
+        unzip, checkSupportedVUnzipShape,
+        "pto.vmi.vunzip splits one wide source into two half-width results "
+        "that keep the source lane count; both halves must be dense contiguous "
+        "and the wide source dense (");
+  }
+  if (auto zip = dyn_cast<VMIVZipOp>(op)) {
+    return verifySupportedShapeOp(
+        zip, checkSupportedVZipShape,
+        "pto.vmi.vzip merges two half-width operands back into the wide "
+        "type; both operands must be dense contiguous and the wide result "
+        "dense (");
+  }
   return std::nullopt;
 }
 

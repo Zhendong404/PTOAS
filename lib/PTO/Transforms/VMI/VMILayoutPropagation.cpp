@@ -221,7 +221,7 @@ static bool isSameLayoutOp(Operation *op) {
              VMIShrSOp, VMIVmullOp, VMIFPToSIOp, VMISIToFPOp, VMICmpFOp,
              VMICmpIOp, VMISelectOp, VMIMaskAndOp, VMIMaskOrOp, VMIMaskXOrOp,
              VMIMaskNotOp, VMIActivePrefixIndexOp, VMICompressOp,
-             VMIExpandLoadOp>(op);
+             VMIExpandLoadOp, VMIVUnzipOp, VMIVZipOp>(op);
 }
 
 static bool isCastOp(Operation *op) {

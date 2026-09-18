@@ -675,6 +675,7 @@ static void populateVMIReductionAndConversionPatterns(
       OneToNVMIReduceMinMaxOpPattern<VMIReduceMaxIOp, VcmaxOp, VmaxOp>,
       OneToNVMIReduceMinMaxOpPattern<VMIReduceMinIOp, VcminOp, VminOp>,
       OneToNVMIExtFOpPattern, OneToNVMITruncFOpPattern,
+      OneToNVMIVUnzipOpPattern, OneToNVMIVZipOpPattern,
       OneToNVMIExtIOpPattern<VMIExtSIOp>, OneToNVMIExtIOpPattern<VMIExtUIOp>,
       OneToNVMITruncIOpPattern, OneToNVMIFPToSIOpPattern,
       OneToNVMIFPToUIOpPattern,
@@ -799,6 +800,24 @@ LogicalResult checkSupportedTruncFShape(VMITruncFOp op,
                                         std::string *reason = nullptr) {
   VMILayoutSupport supports;
   if (failed(supports.getTruncFSupport(op, reason))) {
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult checkSupportedVUnzipShape(VMIVUnzipOp op,
+                                        std::string *reason = nullptr) {
+  VMILayoutSupport supports;
+  if (failed(supports.getVUnzipSupport(op, reason))) {
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult checkSupportedVZipShape(VMIVZipOp op,
+                                      std::string *reason = nullptr) {
+  VMILayoutSupport supports;
+  if (failed(supports.getVZipSupport(op, reason))) {
     return failure();
   }
   return success();
