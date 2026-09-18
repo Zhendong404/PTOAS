@@ -671,37 +671,37 @@ WalkResult emitMaskableUnsupported(Operation *op, StringRef opName,
 template <typename MaskableCheck>
 static std::optional<WalkResult> verifySupportedVMIUnaryBinaryArithmeticOp(
     Operation *op, MaskableCheck check) {
-#define PTO_VERIFY_MASKABLE(Op, Name)                                      \
-  if (auto value = dyn_cast<Op>(op)) {                                    \
-    return verifySupportedUnifiedMaskableOp(value, Name, check);            \
+#define PTO_VERIFY_MASKABLE(Op, Name, TargetOp, MaskCheck)                 \
+  if (auto value = dyn_cast<Op>(TargetOp)) {                               \
+    return verifySupportedUnifiedMaskableOp(value, Name, MaskCheck);       \
   }
-  PTO_VERIFY_MASKABLE(VMIVaddOp, "pto.vmi.vadd");
-  PTO_VERIFY_MASKABLE(VMIVsubOp, "pto.vmi.vsub");
-  PTO_VERIFY_MASKABLE(VMIVmulOp, "pto.vmi.vmul");
-  PTO_VERIFY_MASKABLE(VMIVdivOp, "pto.vmi.vdiv");
-  PTO_VERIFY_MASKABLE(VMIVminOp, "pto.vmi.vmin");
-  PTO_VERIFY_MASKABLE(VMIVmaxOp, "pto.vmi.vmax");
-  PTO_VERIFY_MASKABLE(VMIVandOp, "pto.vmi.vand");
-  PTO_VERIFY_MASKABLE(VMIVorOp, "pto.vmi.vor");
-  PTO_VERIFY_MASKABLE(VMIVxorOp, "pto.vmi.vxor");
-  PTO_VERIFY_MASKABLE(VMIAndIOp, "pto.vmi.andi");
-  PTO_VERIFY_MASKABLE(VMIOrIOp, "pto.vmi.ori");
-  PTO_VERIFY_MASKABLE(VMIXOrIOp, "pto.vmi.xori");
-  PTO_VERIFY_MASKABLE(VMINotOp, "pto.vmi.not");
-  PTO_VERIFY_MASKABLE(VMIVshlOp, "pto.vmi.vshl");
-  PTO_VERIFY_MASKABLE(VMIVshrOp, "pto.vmi.vshr");
-  PTO_VERIFY_MASKABLE(VMIVnegOp, "pto.vmi.vneg");
-  PTO_VERIFY_MASKABLE(VMIVabsOp, "pto.vmi.vabs");
-  PTO_VERIFY_MASKABLE(VMIVsqrtOp, "pto.vmi.vsqrt");
-  PTO_VERIFY_MASKABLE(VMIVexpOp, "pto.vmi.vexp");
-  PTO_VERIFY_MASKABLE(VMIVlnOp, "pto.vmi.vln");
-  PTO_VERIFY_MASKABLE(VMIVreluOp, "pto.vmi.vrelu");
-  PTO_VERIFY_MASKABLE(VMIVnotOp, "pto.vmi.vnot");
-  PTO_VERIFY_MASKABLE(VMIVmulaOp, "pto.vmi.vmula");
-  PTO_VERIFY_MASKABLE(VMIVaxpyOp, "pto.vmi.vaxpy");
-  PTO_VERIFY_MASKABLE(VMIVlreluOp, "pto.vmi.vlrelu");
-  PTO_VERIFY_MASKABLE(VMIVpreluOp, "pto.vmi.vprelu");
-  PTO_VERIFY_MASKABLE(VMISelectOp, "pto.vmi.select");
+  PTO_VERIFY_MASKABLE(VMIVaddOp, "pto.vmi.vadd", op, check);
+  PTO_VERIFY_MASKABLE(VMIVsubOp, "pto.vmi.vsub", op, check);
+  PTO_VERIFY_MASKABLE(VMIVmulOp, "pto.vmi.vmul", op, check);
+  PTO_VERIFY_MASKABLE(VMIVdivOp, "pto.vmi.vdiv", op, check);
+  PTO_VERIFY_MASKABLE(VMIVminOp, "pto.vmi.vmin", op, check);
+  PTO_VERIFY_MASKABLE(VMIVmaxOp, "pto.vmi.vmax", op, check);
+  PTO_VERIFY_MASKABLE(VMIVandOp, "pto.vmi.vand", op, check);
+  PTO_VERIFY_MASKABLE(VMIVorOp, "pto.vmi.vor", op, check);
+  PTO_VERIFY_MASKABLE(VMIVxorOp, "pto.vmi.vxor", op, check);
+  PTO_VERIFY_MASKABLE(VMIAndIOp, "pto.vmi.andi", op, check);
+  PTO_VERIFY_MASKABLE(VMIOrIOp, "pto.vmi.ori", op, check);
+  PTO_VERIFY_MASKABLE(VMIXOrIOp, "pto.vmi.xori", op, check);
+  PTO_VERIFY_MASKABLE(VMINotOp, "pto.vmi.not", op, check);
+  PTO_VERIFY_MASKABLE(VMIVshlOp, "pto.vmi.vshl", op, check);
+  PTO_VERIFY_MASKABLE(VMIVshrOp, "pto.vmi.vshr", op, check);
+  PTO_VERIFY_MASKABLE(VMIVnegOp, "pto.vmi.vneg", op, check);
+  PTO_VERIFY_MASKABLE(VMIVabsOp, "pto.vmi.vabs", op, check);
+  PTO_VERIFY_MASKABLE(VMIVsqrtOp, "pto.vmi.vsqrt", op, check);
+  PTO_VERIFY_MASKABLE(VMIVexpOp, "pto.vmi.vexp", op, check);
+  PTO_VERIFY_MASKABLE(VMIVlnOp, "pto.vmi.vln", op, check);
+  PTO_VERIFY_MASKABLE(VMIVreluOp, "pto.vmi.vrelu", op, check);
+  PTO_VERIFY_MASKABLE(VMIVnotOp, "pto.vmi.vnot", op, check);
+  PTO_VERIFY_MASKABLE(VMIVmulaOp, "pto.vmi.vmula", op, check);
+  PTO_VERIFY_MASKABLE(VMIVaxpyOp, "pto.vmi.vaxpy", op, check);
+  PTO_VERIFY_MASKABLE(VMIVlreluOp, "pto.vmi.vlrelu", op, check);
+  PTO_VERIFY_MASKABLE(VMIVpreluOp, "pto.vmi.vprelu", op, check);
+  PTO_VERIFY_MASKABLE(VMISelectOp, "pto.vmi.select", op, check);
 #undef PTO_VERIFY_MASKABLE
   return std::nullopt;
 }

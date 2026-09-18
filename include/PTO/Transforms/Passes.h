@@ -124,7 +124,7 @@ LogicalResult validateVMIProducerBoundaryIR(ModuleOp module,
                                             llvm::raw_ostream *diagOS = nullptr);
 LogicalResult validateVMILayoutAssignedIR(ModuleOp module,
                                           llvm::raw_ostream *diagOS = nullptr,
-                                          bool verifyHelperSupport = true);
+                                          bool verifyHelperSupports = true);
 std::unique_ptr<Pass> createPTOValidateVMIIRPass();
 std::unique_ptr<Pass> createPTOValidateVMILayoutIRPass();
 std::unique_ptr<Pass> createVMIPreAssignmentCombinePass();

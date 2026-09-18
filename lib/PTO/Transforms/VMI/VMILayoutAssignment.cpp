@@ -2069,7 +2069,7 @@ struct LayoutSolver {
   /// when the value already carries a layout that the operand accepts.
   template <typename RequestTy>
   LogicalResult applySeedRequest(VMILayoutPropagator &propagator,
-                                 const RequestTy &request) {
+                                 const RequestTy &request) const {
     if (hasLayoutAssignment(propagator, request.operand->get())) {
       VMILayoutAttr assigned =
           propagator.getRequestedOrCurrentLayout(request.operand->get());

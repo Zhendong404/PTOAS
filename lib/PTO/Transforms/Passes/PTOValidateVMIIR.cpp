@@ -899,7 +899,7 @@ struct PTOValidateVMILayoutIRPass
 LogicalResult
 mlir::pto::validateVMIProducerBoundaryIR(ModuleOp module,
                                          llvm::raw_ostream *diagOS) {
-  WalkResult result = module.walk([&](Operation *op) {
+  WalkResult result = module.walk([diagOS](Operation *op) {
     if (failed(verifyOperationBoundary(op, diagOS))) {
       return WalkResult::interrupt();
     }
@@ -910,7 +910,7 @@ mlir::pto::validateVMIProducerBoundaryIR(ModuleOp module,
 
 LogicalResult mlir::pto::validateVMILayoutAssignedIR(
     ModuleOp module, llvm::raw_ostream *diagOS, bool verifyHelperSupports) {
-  WalkResult result = module.walk([&](Operation *op) {
+  WalkResult result = module.walk([diagOS, verifyHelperSupports](Operation *op) {
     if (failed(verifyLayoutAssignedOperation(op, diagOS, verifyHelperSupports))) {
       return WalkResult::interrupt();
     }

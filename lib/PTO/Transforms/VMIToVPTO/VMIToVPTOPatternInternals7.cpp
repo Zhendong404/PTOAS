@@ -1044,7 +1044,7 @@ static LogicalResult lowerBinaryPhysicalResults(
 
 template <typename OpTy, typename LowerFn>
 static LogicalResult lowerPointwisePhysicalParts(
-    OpTy op, ArrayRef<Type> resultTypes, StringRef,
+    OpTy op, ArrayRef<Type> resultTypes, StringRef arityMessage,
     OneToNPatternRewriter &rewriter, LowerFn &&lowerFn,
     TypeConverter &typeConverter) {
   SmallVector<Value> results;

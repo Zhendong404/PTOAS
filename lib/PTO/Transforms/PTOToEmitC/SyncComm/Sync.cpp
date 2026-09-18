@@ -155,7 +155,7 @@ struct PTOSyncAllToEmitC : public OpConversionPattern<mlir::pto::SyncAllOp> {
     auto mode = op.getMode().getValue();
     auto coreType = op.getCoreType().getValue();
 
-    auto buildGmWorkspace = [&]() -> FailureOr<Value> {
+    auto buildGmWorkspace = [&adaptor, &op, &rewriter]() -> FailureOr<Value> {
       Value gm = adaptor.getGmWorkspace();
       if (isEmitCGlobalTensorLikeType(gm.getType()))
         return gm;

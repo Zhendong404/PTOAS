@@ -337,7 +337,7 @@ private:
   // Restore the logical state before `anchor` (or at the block end when
   // null) if a temporary active state is installed.
   void restoreBefore(BlockScanState &state, Block &block, Operation *anchor,
-                     OpBuilder &builder) {
+                     OpBuilder &builder) const {
     if (state.diverged && state.logical) {
       if (anchor) {
         builder.setInsertionPoint(anchor);
@@ -358,7 +358,7 @@ private:
   }
 
   void handleGuard(BlockScanState &state, pto::CtrlStateGuardOp guard,
-                   OpBuilder &builder) {
+                   OpBuilder &builder) const {
     auto guardIface = cast<StateGuardOpInterface>(guard.getOperation());
     uint64_t controlled = guardIface.getControlledStateBits();
     uint64_t required = guardIface.getRequiredStateBits();
@@ -543,7 +543,7 @@ struct VPTOOptimizeCtrlStatePass
 void VPTOOptimizeCtrlStatePass::runOnOperation() {
   func::FuncOp func = getOperation();
 
-  bool hasGuards = func.walk([&](pto::CtrlStateGuardOp) {
+  bool hasGuards = func.walk([](pto::CtrlStateGuardOp) {
                        return WalkResult::interrupt();
                      }).wasInterrupted();
   if (!hasGuards) {
@@ -555,7 +555,7 @@ void VPTOOptimizeCtrlStatePass::runOnOperation() {
   // ---- Analysis stage: summarize loops inner-to-outer. ------------------
   DenseMap<Operation *, LoopCtrlSummary> summaries;
   func.walk([&](scf::ForOp forOp) {
-    if (!summaries.count(forOp.getOperation())) {
+    if (summaries.count(forOp.getOperation()) == 0) {
       summaries[forOp.getOperation()] = summarizeLoop(forOp, summaries);
     }
     return WalkResult::advance();
@@ -568,7 +568,7 @@ void VPTOOptimizeCtrlStatePass::runOnOperation() {
   materializeRemainingGuards(func, builder);
 
   // All guards must be gone; leftovers indicate an analysis gap.
-  WalkResult leftover = func.walk([&](pto::CtrlStateGuardOp) {
+  WalkResult leftover = func.walk([](pto::CtrlStateGuardOp) {
     return WalkResult::interrupt();
   });
   if (leftover.wasInterrupted()) {
