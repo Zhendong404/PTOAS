@@ -131,7 +131,6 @@ static bool isCtrlTransparent(Operation *op) {
 // iterates the block's own op list and never descends into guard bodies,
 // so even a guard consumer (raw MAD) written bare in the loop body observes
 // the ambient state and marks the subtree dirty.
-//
 // Implementation contract: within the PTO dialect, CTRL access is exactly
 // what StateAccessOpInterface declares. PTO ops that do NOT implement the
 // interface are treated as CTRL-clean and may be crossed by a hoisted
@@ -170,7 +169,7 @@ struct LoopCtrlSummary {
   // Valid only while all collected guards share one requirement.
   bool uniqueRequirement = true;
   CtrlRequirement requirement;
-  SmallVector<pto::CtrlStateGuardOp, 4> guards;
+  SmallVector<pto::CtrlStateGuardOp, mlir::pto::kValue4> guards;
   // Statically proven that the loop body executes at least once.
   bool tripAtLeastOnce = false;
 };
@@ -471,7 +470,7 @@ static void hoistOneRoot(scf::ForOp root, const LoopCtrlSummary &s,
 // Per-block materialization for guards not covered by hoisting.
 static void materializeRemainingGuards(func::FuncOp func,
                                        OpBuilder &builder) {
-  SmallVector<Block *, 16> workBlocks;
+  SmallVector<Block *, mlir::pto::kValue16> workBlocks;
   func.walk([&](pto::CtrlStateGuardOp guard) {
     Block *block = guard->getBlock();
     if (!llvm::is_contained(workBlocks, block)) {
@@ -506,7 +505,7 @@ loopHoistEligible(scf::ForOp root, const LoopCtrlSummary &s,
 static void hoistLoopConfigurations(
     func::FuncOp func,
     DenseMap<Operation *, LoopCtrlSummary> &summaries, OpBuilder &builder) {
-  SmallVector<scf::ForOp, 8> preOrder;
+  SmallVector<scf::ForOp, mlir::pto::kValue8> preOrder;
   func.walk<WalkOrder::PreOrder>(
       [&](scf::ForOp forOp) { preOrder.push_back(forOp); });
 

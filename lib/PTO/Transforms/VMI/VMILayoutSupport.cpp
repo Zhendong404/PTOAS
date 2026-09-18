@@ -777,7 +777,6 @@ static LogicalResult matchEnsureLayoutPattern(VMIVRegType sourceType,
 
 /// Whether the deinterleaved narrowing relation the preference falls back to is
 /// representable for this shape.
-///
 /// Dropping the one-chunk lane-stride preference makes the cast take the
 /// deinterleaved relation the normal preferred table holds for its width pair
 /// (`d(2) -> c` or `d(4) -> c`).  That relation is materialized through the

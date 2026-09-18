@@ -500,7 +500,7 @@ std::optional<std::string> describeStridedGroupLoadGranularityViolation(
     VMIGroupLoadOp op, VMIVRegType type, int64_t groupSize,
     std::optional<int64_t> rowStride) {
   unsigned elementBits = pto::getPTOStorageElemBitWidth(type.getElementType());
-  if (elementBits == 0 || elementBits % 8 != 0) {
+  if (elementBits == 0 || elementBits % mlir::pto::kValue8 != 0) {
     return std::string("requires a byte-sized element type");
   }
   int64_t elementBytes = elementBits / 8;
@@ -547,7 +547,7 @@ std::optional<std::string> describeStridedGroupLoadGranularityViolation(
 bool isSupportedBlockStrideF32GroupLoad(VMIVRegType type, int64_t groupSize,
                                         std::optional<int64_t> rowStride,
                                         int64_t numGroups) {
-  if (!type.getElementType().isF32() || numGroups % 8 != 0) {
+  if (!type.getElementType().isF32() || numGroups % mlir::pto::kValue8 != 0) {
     return false;
   }
   FailureOr<int64_t> lanesPerPart = getDataLanesPerPart(type.getElementType());

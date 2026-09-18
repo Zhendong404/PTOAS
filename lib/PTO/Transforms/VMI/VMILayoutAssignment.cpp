@@ -867,7 +867,7 @@ struct LayoutSolver {
     // shape.
     unsigned elementBits =
         pto::getPTOStorageElemBitWidth(type.getElementType());
-    if (elementBits == 0 || elementBits % 8 != 0) {
+    if (elementBits == 0 || elementBits % mlir::pto::kValue8 != 0) {
       return success();
     }
     int64_t elementBytes = elementBits / 8;
