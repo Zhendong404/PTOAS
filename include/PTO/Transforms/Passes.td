@@ -84,14 +84,6 @@ def PTOBufidSync : Pass<"pto-bufid-sync", "func::FuncOp"> {
   ];
 }
 
-def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
-  let summary = "Convert Ops from other dialects to PTO Ops";
-  let constructor = "mlir::pto::createConvertToPTOOpPass()";
-  let dependentDialects = ["arith::ArithDialect", "pto::PTODialect",
-                           "tensor::TensorDialect",
-  ];
-}
-
 def PTOLowerGenericOps
     : Pass<"pto-lower-generic-ops", "func::FuncOp"> {
   let summary = "Lower frontend PTO generic operations to core MLIR dialects";

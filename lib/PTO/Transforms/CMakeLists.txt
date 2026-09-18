@@ -244,7 +244,6 @@ add_mlir_dialect_library(PTOTransforms
   Lowering/PTOArithRangeOptimize.cpp
   Lowering/PTOCanonicalizeIR.cpp
   Lowering/BufferizableOpInterfaceImpl.cpp
-  Lowering/ConvertToPTOOp.cpp
   Lowering/PTOLowerGenericOps.cpp
   Passes/PTOAssignDefaultFrontendPipeIdPass.cpp
   Lowering/PTOLowerFrontendPipeOpsPass.cpp

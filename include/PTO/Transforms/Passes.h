@@ -59,8 +59,6 @@ std::unique_ptr<Pass> createEmitPTOManualPass();
 std::unique_ptr<Pass> createEmitPTOManualPass(PTOArch arch);
 
 
-/// Create a pass to convert ops from other dialects to PTO Ops.
-std::unique_ptr<Pass> createConvertToPTOOpPass();
 std::unique_ptr<Pass> createPTOLowerGenericOpsPass();
 
 /// Create a pass to infer, propagate, and add memory scope information to
