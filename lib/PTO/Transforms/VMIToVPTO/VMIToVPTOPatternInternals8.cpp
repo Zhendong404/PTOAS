@@ -851,7 +851,8 @@ static std::optional<WalkResult> verifySupportedVMIIntegerConversionOp(
         trunci, checkSupportedTruncIShape,
         "pto.vmi.trunci supports integer deinterleaved source layouts whose "
         "factor is the 2x/4x narrowing multiple of the contiguous or "
-        "deinterleaved result layout factor, or matching group_slots "
+        "deinterleaved result layout factor, divided by the result lane stride "
+        "when the result carries one, or matching group_slots "
         "layouts and natural slots=8 narrowing layouts (");
   }
   if (auto bitcast = dyn_cast<VMIBitcastOp>(op)) {

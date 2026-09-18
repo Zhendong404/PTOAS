@@ -119,6 +119,7 @@ add_mlir_dialect_library(PTOTransforms
   VMI/VMINormalizeSignlessIntToUnsigned.cpp
   VMI/VMILayoutRematerializeWeakProducers.cpp
   VMI/VMILayoutAssignment.cpp
+  VMI/VMILayoutSpineAnalysis.cpp
   VMI/VMILayoutFold.cpp
   VMI/VMILayoutPropagation.cpp
   VMI/VMILayoutSupport.cpp
