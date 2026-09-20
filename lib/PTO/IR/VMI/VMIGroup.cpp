@@ -248,9 +248,15 @@ static LogicalResult verifyGroupReduceIntegerOp(OpTy op) {
     return op.emitOpError("requires integer-like VMI source element type");
   }
   auto intType = dyn_cast<IntegerType>(sourceType.getElementType());
-  if (!intType || !isVMIAnyI8I16I32Type(sourceType.getElementType())) {
+  // A5 has neither a row nor a VCG eight-bit reduction, so a grouped reduction
+  // over eight-bit elements has no execution strategy at all.  State that in the
+  // op contract instead of letting the layout tables admit a shape that can
+  // never lower: grouped integer reduction exists for 16- and 32-bit elements.
+  unsigned elementBits = intType ? intType.getWidth() : 0;
+  if (elementBits != kValue16 && elementBits != kValue32) {
     return op.emitOpError(
-        "requires 8-bit, 16-bit, or 32-bit integer source element type");
+        "requires 16-bit or 32-bit integer source element type; A5 has no "
+        "eight-bit grouped reduction");
   }
   return verifyGroupReduceCommon(op, sourceType, resultType, maskType);
 }

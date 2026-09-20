@@ -340,14 +340,6 @@ FailureOr<VMIGroupReduceLayoutFact>
 VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,
                                                     int64_t numGroups,
                                                     std::string *reason) const {
-  auto fail =
-      [reason](const Twine &message) -> FailureOr<VMIGroupReduceLayoutFact> {
-    if (reason) {
-      *reason = message.str();
-    }
-    return failure();
-  };
-
   FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
       sourceType, numGroups,
       "group_reduce layout supports group sizes of 1/4, 1/2, 1, 2, or 4 "
@@ -366,8 +358,8 @@ VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,
                                             *key, numGroups);
   }
 
-  return fail("group_reduce layout supports group sizes of 1/4, 1/2, 1, 2, "
-              "or 4 32B VCG blocks, or full physical chunk multiples");
+  return makeDenseRowsGroupReduceFact(sourceType.getContext(), *key,
+                                      numGroups);
 }
 
 FailureOr<VMIGroupReduceLayoutFact>
@@ -410,6 +402,13 @@ VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
     }
   }
 
+  VMIGroupReduceLayoutFact dense =
+      makeDenseRowsGroupReduceFact(sourceType.getContext(), *key, numGroups);
+  if (dense.sourceLayout == sourceLayout && dense.maskLayout == maskLayout &&
+      dense.resultLayout == resultLayout) {
+    return dense;
+  }
+
   return fail("group_reduce source/mask/result layouts do not match a legal "
               "layout table row for the group size");
 }
@@ -446,21 +445,22 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(
         sourceType.getContext(), pattern, *key, numGroups);
 
-    VMILayoutAttr candidateLayout;
-    switch (port) {
-    case VMIGroupReduceLayoutPort::Source:
-      candidateLayout = candidate.sourceLayout;
-      break;
-    case VMIGroupReduceLayoutPort::Mask:
-      candidateLayout = candidate.maskLayout;
-      break;
-    case VMIGroupReduceLayoutPort::Result:
-      candidateLayout = candidate.resultLayout;
-      break;
-    }
+    VMILayoutAttr candidateLayout = groupReduceLayoutForPort(candidate, port);
     if (candidateLayout == layout) {
       facts.push_back(candidate);
     }
+  }
+
+  VMIGroupReduceLayoutFact dense =
+      makeDenseRowsGroupReduceFact(sourceType.getContext(), *key, numGroups);
+  VMILayoutAttr denseLayout = groupReduceLayoutForPort(dense, port);
+  // The dense fallback exists only for shapes the table cannot describe.  If a
+  // table row already provides this port layout, adding the fallback as a second
+  // fact would make the layout assignment treat the result as weakly seeded and
+  // let a contiguous source drift into a deinterleaved form (and back again).
+  const bool denseFallbackApplies = denseLayout == layout && facts.empty();
+  if (denseFallbackApplies) {
+    facts.push_back(dense);
   }
 
   if (facts.empty()) {

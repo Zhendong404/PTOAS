@@ -26,6 +26,7 @@ std::optional<std::string> getX2MemoryDistToken(Type elementType,
 std::optional<std::string> getDenseLaneStrideLoadDistToken(VMIVRegType type);
 std::optional<std::string> getDenseLaneStrideStoreDistToken(VMIVRegType type);
 std::optional<std::string> getPointStoreDistToken(Type elementType);
+std::optional<std::string> getScalarBroadcastLoadDistToken(Type elementType);
 static int64_t getElementDeinterleaveFactor(VMILayoutAttr layout);
 static Type getMemoryElementType(Type type);
 static Attribute getMemorySpace(Type type);
