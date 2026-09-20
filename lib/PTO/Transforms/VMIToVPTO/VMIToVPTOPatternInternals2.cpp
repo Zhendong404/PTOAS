@@ -106,7 +106,8 @@ private:
                                          "masked_load physical arity mismatch");
     }
     return lowerPointwisePhysicalParts(
-        op, resultTypes, "masked_load physical arity mismatch", rewriter,
+        op, resultTypes,
+        rewriter,
         [&](int64_t index, Type resultType) -> FailureOr<Value> {
           return materializeMaskedLoadPart(op, rewriter, source, offset,
                                            maskParts[index],
@@ -197,7 +198,8 @@ private:
       return rewriter.notifyMatchFailure(op, "gather physical arity mismatch");
     }
     return lowerPointwisePhysicalParts(
-        op, resultTypes, "gather physical arity mismatch", rewriter,
+        op, resultTypes,
+        rewriter,
         [&](int64_t index, Type resultType) -> FailureOr<Value> {
           return materializeGatherPart(op, rewriter, source,
                                        indicesParts[index], maskParts[index],
@@ -372,7 +374,8 @@ private:
       return failure();
     }
     return lowerPointwisePhysicalParts(
-        op, resultTypes, "expand_load physical arity mismatch", rewriter,
+        op, resultTypes,
+        rewriter,
         [&](int64_t index, Type resultType) -> FailureOr<Value> {
           return materializeStaticExpandLoadPart(op, rewriter, source, offset,
                                                  resultType, index,

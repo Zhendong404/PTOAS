@@ -14,6 +14,11 @@
 using namespace mlir;
 using namespace mlir::pto;
 
+namespace {
+// A wide half-pair split is a two-to-one bit-width relation.
+constexpr unsigned kWideToHalfBitRatio = 2;
+} // namespace
+
 // NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated
 // verifier callbacks have a non-const signature.
 LogicalResult VMIGroupIotaOp::verify() {
@@ -481,7 +486,8 @@ LogicalResult verifyHalfWidthPair(Operation *op, VMIVRegType wideType,
   }
   unsigned wideBits = pto::getPTOStorageElemBitWidth(wideType.getElementType());
   unsigned halfBits = pto::getPTOStorageElemBitWidth(lowType.getElementType());
-  if (wideBits == 0 || halfBits == 0 || wideBits != 2 * halfBits) {
+  if (wideBits == 0 || halfBits == 0 ||
+      wideBits != kWideToHalfBitRatio * halfBits) {
     return op->emitOpError()
            << "requires the wide element width to be exactly twice the half "
               "element width; got "

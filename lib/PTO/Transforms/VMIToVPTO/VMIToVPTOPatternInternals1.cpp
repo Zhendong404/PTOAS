@@ -778,8 +778,7 @@ struct OneToNVMIGroupLoadOpPattern : OneToNOpConversionPattern<VMIGroupLoadOp> {
   using OneToNOpConversionPattern<VMIGroupLoadOp>::OneToNOpConversionPattern;
 
 private:
-  FailureOr<SmallVector<Type>> getResultTypes(
-      VMIGroupLoadOp op, OneToNPatternRewriter &rewriter) const {
+  FailureOr<SmallVector<Type>> getResultTypes(VMIGroupLoadOp op) const {
     FailureOr<SmallVector<Type>> resultTypes =
         getConvertedResultTypes(op, 0, *this->getTypeConverter());
     if (failed(resultTypes)) {
@@ -800,7 +799,7 @@ private:
     }
     std::optional<int64_t> constantRowStride =
         getConstantIndexValue(op.getRowStride());
-    FailureOr<SmallVector<Type>> resultTypes = getResultTypes(op, rewriter);
+    FailureOr<SmallVector<Type>> resultTypes = getResultTypes(op);
     if (failed(resultTypes)) {
       return failure();
     }
@@ -1027,7 +1026,7 @@ private:
     }
     int64_t constantRowStride = shape->first;
     int64_t factor = shape->second;
-    FailureOr<SmallVector<Type>> maybeResultTypes = getResultTypes(op, rewriter);
+    FailureOr<SmallVector<Type>> maybeResultTypes = getResultTypes(op);
     if (failed(maybeResultTypes)) {
       return failure();
     }

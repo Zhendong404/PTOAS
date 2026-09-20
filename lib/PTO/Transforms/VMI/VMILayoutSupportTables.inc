@@ -654,15 +654,6 @@ static constexpr HistogramLayoutPattern kVdhistLayoutPatterns[] = {
     {c(), c(), c(), c()},
 };
 
-struct WidthChangingBitcastLayoutPattern {
-  LayoutPattern layout;
-};
-
-static constexpr WidthChangingBitcastLayoutPattern
-    kWidthChangingBitcastLayoutPatterns[] = {
-    {c()},
-};
-
 //===----------------------------------------------------------------------===//
 
 #endif // VMILAYOUTSUPPORTTABLES_INC
