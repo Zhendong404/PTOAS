@@ -570,29 +570,17 @@ struct LayoutSolver {
     }
     VMILayoutSupport supports;
     FailureOr<VMIGroupReduceLayoutFact> fact =
-        supports.getPreferredGroupReduceLayoutFact(type, numGroups);
+        supports.getPreferredGroupReduceLayoutFact(VMIGroupReduceKind::Other,
+                                                   type, numGroups);
     if (succeeded(fact)) {
       return fact->resultLayout;
     }
     return getGroupSlotsLayout(numGroups);
   }
 
-  VMILayoutAttr getPreferredGroupReduceSourceLayout(VMIVRegType type,
-                                                    int64_t numGroups) const {
-    if (VMILayoutAttr existing = type.getLayoutAttr()) {
-      return existing;
-    }
-    VMILayoutSupport supports;
-    FailureOr<VMIGroupReduceLayoutFact> fact =
-        supports.getPreferredGroupReduceLayoutFact(type, numGroups);
-    if (succeeded(fact)) {
-      return fact->sourceLayout;
-    }
-    return getContiguousLayout();
-  }
-
   DataLayoutSeedPhase
-  getGroupReduceUseSeedPhase(VMIVRegType sourceType, int64_t numGroups,
+  getGroupReduceUseSeedPhase(VMIGroupReduceKind kind, VMIVRegType sourceType,
+                             int64_t numGroups,
                              VMIGroupReduceLayoutFact fact) const {
     if (!fact.sourceLayout || !fact.sourceLayout.isContiguous() ||
         fact.sourceLayout.getLaneStride() != 1) {
@@ -600,9 +588,9 @@ struct LayoutSolver {
     }
 
     VMILayoutSupport supports;
-    FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>> resultFacts =
-        supports.getGroupReduceLayoutFactsForLayout(
-            sourceType, numGroups, VMIGroupReduceLayoutPort::Result,
+    FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>>
+        resultFacts = supports.getGroupReduceLayoutFactsForLayout(
+            kind, sourceType, numGroups, VMIGroupReduceLayoutPort::Result,
             fact.resultLayout);
     if (succeeded(resultFacts) && resultFacts->size() > 1) {
       return DataLayoutSeedPhase::WeakReduce;
@@ -1156,13 +1144,14 @@ struct LayoutSolver {
     auto resultType = cast<VMIVRegType>(reduce.getResult().getType());
     int64_t numGroups = reduce.getNumGroupsAttr().getInt();
     FailureOr<VMIGroupReduceLayoutFact> fact =
-        VMILayoutSupport().getPreferredGroupReduceLayoutFact(sourceType,
-                                                             numGroups);
+        VMILayoutSupport().getPreferredGroupReduceLayoutFact(
+            getVMIGroupReduceKind(op), sourceType, numGroups);
     VMILayoutAttr sourceLayout =
         succeeded(fact) ? fact->sourceLayout : getContiguousLayout();
     DataLayoutSeedPhase usePhase =
         succeeded(fact)
-            ? getGroupReduceUseSeedPhase(sourceType, numGroups, *fact)
+            ? getGroupReduceUseSeedPhase(getVMIGroupReduceKind(op), sourceType,
+                                         numGroups, *fact)
             : DataLayoutSeedPhase::Reduce;
     requestDataUse(reduce.getSourceMutable(), sourceLayout, /*late=*/false,
                    usePhase);

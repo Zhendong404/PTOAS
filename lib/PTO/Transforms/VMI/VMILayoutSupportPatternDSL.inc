@@ -34,6 +34,8 @@ enum class CastTypeClass {
   Float,
   // Both source and result are integer element types.
   Integer,
+  // Integer conversion whose physical destination must be unsigned.
+  IntegerToUnsigned,
   // Packed E2M1 pairs widened to the register-only BF16-pair carrier.
   // Deliberately narrower than a generic "packed float" class: the only
   // 8-bit -> 32-bit packed-float cast in practice is f4E2M1x2 -> bf16x2.
@@ -151,6 +153,9 @@ inline bool matchesCastTypeClass(CastTypeClass typeClass, Type sourceType,
             pto::isPTOLowPrecisionType(resultType));
   case CastTypeClass::Integer:
     return isa<IntegerType>(sourceType) && isa<IntegerType>(resultType);
+  case CastTypeClass::IntegerToUnsigned:
+    return isa<IntegerType>(sourceType) && isa<IntegerType>(resultType) &&
+           cast<IntegerType>(resultType).isUnsigned();
   case CastTypeClass::F4E2M1x2ToBF16x2:
     // Only the exact packed pair -> packed pair widening is eligible for the
     // ls(4)/UNPK4 compact form.  A dense 8-bit cast at 128 elements must keep

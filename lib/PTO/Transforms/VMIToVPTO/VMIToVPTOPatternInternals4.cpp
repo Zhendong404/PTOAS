@@ -1879,14 +1879,13 @@ enum class GroupReduceLoweringPlan {
   ContiguousVcaddRows,
 };
 
-FailureOr<GroupReduceLoweringPlan>
-classifyGroupReduceLoweringPlan(VMIVRegType sourceType, VMIMaskType maskType,
-                                VMIVRegType resultType, int64_t numGroups,
-                                std::string *reason = nullptr) {
+FailureOr<GroupReduceLoweringPlan> classifyGroupReduceLoweringPlan(
+    VMIGroupReduceKind kind, VMIVRegType sourceType, VMIMaskType maskType,
+    VMIVRegType resultType, int64_t numGroups, std::string *reason = nullptr) {
   VMILayoutSupport supports;
   FailureOr<VMIGroupReduceLayoutFact> fact =
       supports.getGroupReduceLayoutFactForLayouts(
-          sourceType, maskType, resultType, numGroups, reason);
+          kind, sourceType, maskType, resultType, numGroups, reason);
   if (failed(fact)) {
     return failure();
   }

@@ -1287,25 +1287,33 @@ for (int i = 0; i < N; i++)
 
 **Example — pto.vcgadd (group reduction per VLane) semantics:**
 
+`U` is the hardware sum type: `i32/u32` for `i16/u16` input, otherwise `T`.
+`sum_view` aliases the destination register as elements of `U`; the VPTO
+operation retains the input-shaped register type.
+
 ```c
 int groups = 8;
 int K = 32 / sizeof(T);  // elements per 32-byte VLane
+int M = 256 / sizeof(U);
 for (int g = 0; g < 8; g++) {
-    T sum = 0;
+    U sum = 0;
     for (int i = 0; i < K; i++)
         if (mask[g*K + i])
-            sum += src[g*K + i];
-    dst[g] = sum;
+            sum += (U)src[g*K + i];
+    sum_view[g] = sum;
 }
-for (int i = groups; i < N; i++)
-    dst[i] = 0;
+for (int i = groups; i < M; i++)
+    sum_view[i] = 0;
 ```
 
 For A5 reduction result types:
 
-- `pto.vcadd` widens `i8 -> i16`, `u8 -> u16`, `i16 -> i32`, and `u16 -> u32`,
-  with the lane count halved in each widening case.
+- `pto.vcadd` widens `i16 -> i32` and `u16 -> u32`, with the lane count halved.
 - `pto.vcadd` keeps the same result type for `f16`, `f32`, `i32`, and `u32`.
+- A5 has no native 8-bit row or VLane reduction instruction.
+- For native 16-bit integer `pto.vcgadd`, VMI exposes the low halfwords as
+  `gs(8, 2)`. Consumers may convert them to consecutive slots, while the
+  producer itself emits no pack. See [Reduction Ops](isa/micro-isa/10-reduction-ops.md#ptovcgadd).
 
 ### Template Placeholder Conventions
 

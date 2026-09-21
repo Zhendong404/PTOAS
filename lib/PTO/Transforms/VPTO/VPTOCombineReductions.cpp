@@ -32,6 +32,7 @@ using namespace mlir::pto;
 namespace {
 
 constexpr unsigned kMinReductionLeaves = 2;
+constexpr unsigned kWidenedGroupSumInputBits = 16;
 
 bool areEquivalentMasks(Value lhs, Value rhs) {
   if (lhs == rhs) {
@@ -164,6 +165,16 @@ private:
                         SmallVectorImpl<ReductionLeaf> &reductions,
                         SmallVectorImpl<Value> &baseValues) const {
     if (auto reduction = value.getDefiningOp<ReduceOpTy>()) {
+      auto inputType = cast<VRegType>(reduction.getInput().getType());
+      auto integerType = dyn_cast<IntegerType>(inputType.getElementType());
+      // Integer vcgadd widens each sum even though its register is typed as
+      // 16-bit lanes. Distributing a 16-bit combine across it changes the
+      // 32-bit sums and can reuse a b32 reduction mask on a b16 arithmetic op.
+      // Preserve this native instruction boundary for every consumer.
+      if (isa<VcgaddOp>(reduction.getOperation()) && integerType &&
+          integerType.getWidth() == kWidenedGroupSumInputBits) {
+        return failure();
+      }
       reductions.push_back({reduction.getInput(), reduction.getMask()});
       return success();
     }

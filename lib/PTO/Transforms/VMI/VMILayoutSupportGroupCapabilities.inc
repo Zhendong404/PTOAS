@@ -12,14 +12,15 @@
 // Shape-only checks share the executable layout facts used by assignment and
 // lowering. Keep diagnostics about the logical request, not internal layouts.
 LogicalResult VMILayoutSupport::getGroupReduceShapeSupport(
-    VMIVRegType sourceType, int64_t numGroups, std::string *reason) const {
+    VMIGroupReduceKind kind, VMIVRegType sourceType, int64_t numGroups,
+    std::string *reason) const {
   bool supported;
   if (VMILayoutAttr layout = sourceType.getLayoutAttr()) {
     supported = succeeded(getGroupReduceLayoutFactsForLayout(
-        sourceType, numGroups, VMIGroupReduceLayoutPort::Source, layout));
+        kind, sourceType, numGroups, VMIGroupReduceLayoutPort::Source, layout));
   } else {
-    supported = succeeded(getPreferredGroupReduceLayoutFact(
-        sourceType, numGroups));
+    supported = succeeded(
+        getPreferredGroupReduceLayoutFact(kind, sourceType, numGroups));
   }
   if (supported) {
     return success();
@@ -51,7 +52,8 @@ VMILayoutSupport::getPreferredGroupBroadcastLayoutFact(
     return failure();
   }
   for (const GroupBroadcastLayoutPattern &pattern : kGroupBroadcastLayoutPatterns) {
-    if (matchesGroupBlockPattern(pattern.block, *key)) {
+    if (matchesGroupBroadcastLayoutPattern(
+            pattern, *key, resultType.getElementType())) {
       return materializeGroupBroadcastLayoutFact(
           resultType.getContext(), pattern, *key, numGroups);
     }
@@ -78,7 +80,8 @@ VMILayoutAttr VMILayoutSupport::getPreferredGroupBroadcastResultLayout(
     VMILayoutAttr preferred =
         materializeLayoutPattern(resultType.getContext(), memory.layout);
     for (const GroupBroadcastLayoutPattern &pattern : kGroupBroadcastLayoutPatterns) {
-      if (matchesGroupBlockPattern(pattern.block, *key) &&
+      if (matchesGroupBroadcastLayoutPattern(
+            pattern, *key, resultType.getElementType()) &&
           materializeLayoutPattern(resultType.getContext(), pattern.resultLayout) == preferred) {
         return preferred;
       }
@@ -104,13 +107,14 @@ LogicalResult VMILayoutSupport::getGroupOperationShapeSupport(
     Operation *op, std::string *reason) const {
   auto reduce = [this, reason](auto groupReduce) {
     return getGroupReduceShapeSupport(
+        getVMIGroupReduceKind(groupReduce),
         cast<VMIVRegType>(groupReduce.getSource().getType()),
         groupReduce.getNumGroupsAttr().getInt(), reason);
   };
   return llvm::TypeSwitch<Operation *, LogicalResult>(op)
-      .Case<VMIGroupReduceAddFOp, VMIGroupReduceAddIOp,
-            VMIGroupReduceMaxFOp, VMIGroupReduceMaxIOp,
-            VMIGroupReduceMinFOp, VMIGroupReduceMinIOp>(reduce)
+      .Case<VMIGroupReduceAddFOp, VMIGroupReduceAddIOp, VMIGroupReduceMaxFOp,
+            VMIGroupReduceMaxIOp, VMIGroupReduceMinFOp, VMIGroupReduceMinIOp>(
+          reduce)
       .Case<VMIGroupBroadcastOp>([&](VMIGroupBroadcastOp broadcast) {
         return getGroupBroadcastShapeSupport(
             cast<VMIVRegType>(broadcast.getResult().getType()),

@@ -3198,19 +3198,25 @@ pto.vmi.group_reduce_addi / group_reduce_maxi / group_reduce_mini:
     the result has one group-slot value per logical group
     integer addition has same-type wraparound semantics
   layout assignment:
-    use the same registered group-block table as floating-point group reduction
-    packed 32B-block cases use slots=8
+    query the registered group-block table with operation kind and element width
+    native 16-bit integer sums use slots=8, lane_stride=2: logical group g is
+    at chunk floor(g/8), halfword lane 2*(g%8), independently of consumers
+    native integer max/min and 32-bit sums use slots=8, lane_stride=1
     aligned full-row cases use slots=1
   current direct lowering:
-    packed cases use pto.vcgadd/pto.vcgmax/pto.vcgmin and same-type combines
+    native 16-bit integer sum cases use pto.vcgadd, followed by 32-bit vadd
+    combines with b32 masks for two/four-block partials; the final low
+    halfwords represent the logical result modulo 2^16 without producer packs
+    native max/min and 32-bit sum cases retain same-type combines
     aligned full-row max/min cases use pto.vcmax/pto.vcmin
-    aligned full-row i8/i16 add cases use widening pto.vcadd partials and
+    aligned full-row i16 add cases use widening pto.vcadd partials and
     widened pto.vadd combines, then pto.vbitcast the low bits back to the
     declared VMI result type
-    when the physical masks for one result group are equivalent, add/min/max
-    all combine the source parts elementwise first and execute one group or row
-    reduction; narrow integer add combines in the source type before the
-    widening pto.vcadd and final pto.vbitcast
+    native 16-bit integer vcgadd is excluded from source-first reduction
+    combining, even when masks are equivalent; other paths apply that
+    optimization only when the physical rewrite is legal
+    A5 has no native i8 reduction: supported one-carrier cases extend inputs
+    internally before reducing and preserve the logical i8 result semantics
     the widening is internal and is not exposed in the VMI type contract
   unsupported cases:
     element types other than i8/i16/i32

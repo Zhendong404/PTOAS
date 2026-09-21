@@ -46,6 +46,11 @@
 namespace mlir {
 namespace pto {
 
+VMIGroupReduceKind getVMIGroupReduceKind(Operation *op) {
+  return isa<VMIGroupReduceAddIOp>(op) ? VMIGroupReduceKind::IntegerAdd
+                                       : VMIGroupReduceKind::Other;
+}
+
 namespace {
 
 constexpr int64_t kLayoutBlockBitWidth = 256;
@@ -86,6 +91,7 @@ static llvm::cl::opt<bool> preferLaneStrideNarrowing(
 //===----------------------------------------------------------------------===//
 #include "VMILayoutSupportPatternDSL.inc"
 #include "VMILayoutSupportTables.inc"
+#include "VMILayoutSupportGroupBroadcastTables.inc"
 #include "VMILayoutSupportSpineTables.inc"
 #include "VMILayoutSupportMaterialization.inc"
 } // namespace
@@ -292,7 +298,8 @@ VMILayoutSupport::getVselrSupport(VMIVselrOp op,
 }
 
 FailureOr<VMIGroupReduceLayoutFact>
-VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,
+VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIGroupReduceKind kind,
+                                                    VMIVRegType sourceType,
                                                     int64_t numGroups,
                                                     std::string *reason) const {
   FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
@@ -310,17 +317,17 @@ VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,
       continue;
     }
     return materializeGroupReduceLayoutFact(sourceType.getContext(), pattern,
-                                            *key, numGroups);
+                                            *key, numGroups, kind,
+                                            sourceType.getElementType());
   }
 
-  return makeDenseRowsGroupReduceFact(sourceType.getContext(), *key,
-                                      numGroups);
+  return makeDenseRowsGroupReduceFact(sourceType.getContext(), *key, numGroups);
 }
 
 FailureOr<VMIGroupReduceLayoutFact>
 VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
-    VMIVRegType sourceType, VMIMaskType maskType, VMIVRegType resultType,
-    int64_t numGroups, std::string *reason) const {
+    VMIGroupReduceKind kind, VMIVRegType sourceType, VMIMaskType maskType,
+    VMIVRegType resultType, int64_t numGroups, std::string *reason) const {
   auto fail =
       [reason](const Twine &message) -> FailureOr<VMIGroupReduceLayoutFact> {
     if (reason) {
@@ -349,7 +356,8 @@ VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
       continue;
     }
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(
-        sourceType.getContext(), pattern, *key, numGroups);
+        sourceType.getContext(), pattern, *key, numGroups, kind,
+        sourceType.getElementType());
     if (candidate.sourceLayout == sourceLayout &&
         candidate.maskLayout == maskLayout &&
         candidate.resultLayout == resultLayout) {
@@ -370,8 +378,9 @@ VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
 
 FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>>
 VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
-    VMIVRegType sourceType, int64_t numGroups, VMIGroupReduceLayoutPort port,
-    VMILayoutAttr layout, std::string *reason) const {
+    VMIGroupReduceKind kind, VMIVRegType sourceType, int64_t numGroups,
+    VMIGroupReduceLayoutPort port, VMILayoutAttr layout,
+    std::string *reason) const {
   auto fail = [reason](const Twine &message)
       -> FailureOr<SmallVector<VMIGroupReduceLayoutFact, 4>> {
     if (reason) {
@@ -398,7 +407,8 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
       continue;
     }
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(
-        sourceType.getContext(), pattern, *key, numGroups);
+        sourceType.getContext(), pattern, *key, numGroups, kind,
+        sourceType.getElementType());
 
     VMILayoutAttr candidateLayout = groupReduceLayoutForPort(candidate, port);
     if (candidateLayout == layout) {
@@ -410,9 +420,10 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
       makeDenseRowsGroupReduceFact(sourceType.getContext(), *key, numGroups);
   VMILayoutAttr denseLayout = groupReduceLayoutForPort(dense, port);
   // The dense fallback exists only for shapes the table cannot describe.  If a
-  // table row already provides this port layout, adding the fallback as a second
-  // fact would make the layout assignment treat the result as weakly seeded and
-  // let a contiguous source drift into a deinterleaved form (and back again).
+  // table row already provides this port layout, adding the fallback as a
+  // second fact would make the layout assignment treat the result as weakly
+  // seeded and let a contiguous source drift into a deinterleaved form (and
+  // back again).
   const bool denseFallbackApplies = denseLayout == layout && facts.empty();
   if (denseFallbackApplies) {
     facts.push_back(dense);
@@ -452,7 +463,8 @@ VMILayoutSupport::getGroupBroadcastLayoutFactForLayouts(
 
   for (const GroupBroadcastLayoutPattern &pattern :
        kGroupBroadcastLayoutPatterns) {
-    if (!matchesGroupBlockPattern(pattern.block, *key)) {
+    if (!matchesGroupBroadcastLayoutPattern(
+            pattern, *key, sourceType.getElementType())) {
       continue;
     }
     VMIGroupBroadcastLayoutFact candidate = materializeGroupBroadcastLayoutFact(
@@ -494,7 +506,8 @@ VMILayoutSupport::getGroupBroadcastLayoutFactsForLayout(
   SmallVector<VMIGroupBroadcastLayoutFact, mlir::pto::kValue4> facts;
   for (const GroupBroadcastLayoutPattern &pattern :
        kGroupBroadcastLayoutPatterns) {
-    if (!matchesGroupBlockPattern(pattern.block, *key)) {
+    if (!matchesGroupBroadcastLayoutPattern(
+            pattern, *key, sourceType.getElementType())) {
       continue;
     }
     VMIGroupBroadcastLayoutFact candidate = materializeGroupBroadcastLayoutFact(

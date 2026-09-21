@@ -558,7 +558,7 @@ public:
 //
 // Group-slots logical layouts
 //   - slots = 1 preserves the layout for 2x/4x narrowing.
-//   - slots = 8 records the 2x/4x narrowing factor as the result lane_stride.
+//   - slots = 8 multiplies the source lane stride by the narrowing factor.
 //   - 2x narrowing lowers with part = EVEN; 4x narrowing uses part = P0.
 //   - 32-bit integer -> 8-bit integer, slots = 8, result lane_stride = 4
 //     Lowering shape: no vcvt; keep/bitcast the 32-bit carrier and let the
@@ -700,7 +700,8 @@ private:
     bool supportsPacked =
         sourceBits == 16 && resultBits == 8 && sourceLayout.getSlots() == 8 &&
         resultLayout.getSlots() == 8 && resultLayout.hasLaneStride() &&
-        resultLayout.getLaneStride() == 2;
+        resultLayout.getLaneStride() ==
+            sourceLayout.getLaneStride() * kPairWidth;
     bool invalidShape =
         sourceLayout.getNumGroups() != resultLayout.getNumGroups() ||
         sourceLayout.getSlots() != resultLayout.getSlots() ||
@@ -774,12 +775,13 @@ private:
     bool supportsPacked = modes->second;
 
     StringAttr sat = op->getAttrOfType<StringAttr>("saturate");
-    const char *activeSlotPattern =
-        sourceLayout.getSlots() == 1 ? "PAT_VL1" : "PAT_VL8";
+    // Native 16-bit sums occupy the even halfword lanes. Include the whole
+    // strided packet so all eight low halves reach the narrowing conversion.
+    int64_t activeLanes = sourceLayout.getSlots() * sourceLayout.getLaneStride();
     StringRef activeSlotGranularity = sourceLogicalBits == 16 ? "b16" : "b32";
-    FailureOr<Value> activeSlotMask = createPrefixMask(
+    FailureOr<Value> activeSlotMask = createPrefixMaskForActiveLanes(
         op.getLoc(), MaskType::get(rewriter.getContext(), activeSlotGranularity),
-        activeSlotPattern, rewriter);
+        activeLanes, rewriter);
     if (failed(activeSlotMask)) {
       return rewriter.notifyMatchFailure(
           op, "failed to build group-slot trunci active slot mask");

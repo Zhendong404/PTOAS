@@ -689,8 +689,8 @@ private:
     VMILayoutSupport supports;
     FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>> facts =
         supports.getGroupReduceLayoutFactsForLayout(
-            sourceType, reduce.getNumGroupsAttr().getInt(), port,
-            changedLayout);
+            getVMIGroupReduceKind(reduce), sourceType,
+            reduce.getNumGroupsAttr().getInt(), port, changedLayout);
     if (failed(facts) || facts->empty()) {
       return failure();
     }

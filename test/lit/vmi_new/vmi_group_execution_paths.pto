@@ -34,7 +34,8 @@ module {
   }
   // CHECK-LABEL: func.func @group_execution_ui16_64_8
   // CHECK: pto.vcgadd
-  // CHECK: pto.vpack
+  // CHECK-NOT: pto.vpack
+  // CHECK: pto.vselr
   func.func @group_execution_ui16_64_8(%src: !pto.ptr<ui16, ub>, %dst: !pto.ptr<ui16, ub>, %active: index) {
     %zero = arith.constant 0 : index
     %x = pto.vmi.vload %src[%zero] : !pto.ptr<ui16, ub> -> !pto.vmi.vreg<64xui16>

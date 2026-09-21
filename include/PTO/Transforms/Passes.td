@@ -1724,8 +1724,11 @@ def VPTOCombineReductions
     Reassociates conservative physical reduction trees emitted by VMI-to-VPTO
     lowering. When every chunk reduction uses an equivalent mask, the pass
     combines the source chunks first and emits one vcadd/vcmax/vcmin or
-    vcgadd/vcgmax/vcgmin operation. Run this after mask simplification, LICM,
-    and CSE so equivalent predicates have stable VPTO producers.
+    vcgadd/vcgmax/vcgmin operation. Native 16-bit integer vcgadd is excluded:
+    it produces widened sums despite retaining an input-shaped register type,
+    so source-type arithmetic cannot be distributed across that boundary.
+    Run this after mask simplification, LICM, and CSE so equivalent predicates
+    have stable VPTO producers.
   }];
   let constructor = "mlir::pto::createVPTOCombineReductionsPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];

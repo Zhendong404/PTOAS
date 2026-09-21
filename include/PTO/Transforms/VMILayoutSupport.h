@@ -227,6 +227,10 @@ struct VMIGroupSlotLayoutFact {
   int64_t slots = 0;
 };
 
+// Integer vcgadd widens its physical sums; other reductions keep their width.
+enum class VMIGroupReduceKind { IntegerAdd, Other };
+VMIGroupReduceKind getVMIGroupReduceKind(Operation *op);
+
 enum class VMIGroupReduceLayoutPort {
   Source,
   Mask,
@@ -448,7 +452,8 @@ public:
 
   // Shape-only capability checks for diagnostics before layout assignment.
   // Assigned source layouts are respected; lowering checks the full fact again.
-  LogicalResult getGroupReduceShapeSupport(VMIVRegType sourceType,
+  LogicalResult getGroupReduceShapeSupport(VMIGroupReduceKind kind,
+                                           VMIVRegType sourceType,
                                            int64_t numGroups,
                                            std::string *reason = nullptr) const;
   FailureOr<VMIGroupBroadcastLayoutFact>
@@ -461,16 +466,18 @@ public:
                                               std::string *reason = nullptr) const;
 
   FailureOr<VMIGroupReduceLayoutFact>
-  getPreferredGroupReduceLayoutFact(VMIVRegType sourceType, int64_t numGroups,
+  getPreferredGroupReduceLayoutFact(VMIGroupReduceKind kind,
+                                    VMIVRegType sourceType, int64_t numGroups,
                                     std::string *reason = nullptr) const;
 
   FailureOr<VMIGroupReduceLayoutFact> getGroupReduceLayoutFactForLayouts(
-      VMIVRegType sourceType, VMIMaskType maskType, VMIVRegType resultType,
-      int64_t numGroups, std::string *reason = nullptr) const;
+      VMIGroupReduceKind kind, VMIVRegType sourceType, VMIMaskType maskType,
+      VMIVRegType resultType, int64_t numGroups,
+      std::string *reason = nullptr) const;
 
   FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>>
-  getGroupReduceLayoutFactsForLayout(VMIVRegType sourceType,
-                                     int64_t numGroups,
+  getGroupReduceLayoutFactsForLayout(VMIGroupReduceKind kind,
+                                     VMIVRegType sourceType, int64_t numGroups,
                                      VMIGroupReduceLayoutPort port,
                                      VMILayoutAttr layout,
                                      std::string *reason = nullptr) const;

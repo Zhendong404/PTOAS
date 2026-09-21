@@ -314,36 +314,58 @@ private:
 
   Value createNativeGroupResult(OpTy op, VRegType resultType, Value source,
                                 Value mask, OneToNPatternRewriter &rewriter) const {
-    Value reduced = rewriter.create<GroupReduceOpTy>(op.getLoc(), resultType,
-                                                    source, mask);
-    if constexpr (std::is_same_v<OpTy, VMIGroupReduceAddIOp>) {
-      auto elementType = cast<IntegerType>(resultType.getElementType());
-      if (elementType.getWidth() == kElementBits16) {
-        // A5 VCG integer addition returns eight 32-bit sums. Restore the
-        // declared 16-bit group slots by truncating each sum, not by reading
-        // alternating low/high halves as distinct logical groups.
-        // VCG max/min retain 16-bit values and need no such narrowing.
-        // Compact vcadd also widens, but builds its packet one scalar at a
-        // time (see buildCompactGroupResult). Keep gs(8) here; exposing raw
-        // gs(8, 2) results requires a separate consumer-layout audit, described
-        // in docs/isa/vmi-isa/05-reduce.md.
-        auto wideElementType = IntegerType::get(
-            rewriter.getContext(), kElementBits32,
-            IntegerType::SignednessSemantics::Unsigned);
-        auto wideType = VRegType::get(
-            rewriter.getContext(), resultType.getElementCount() / 2,
-            wideElementType);
-        Value wide = rewriter.create<VbitcastOp>(op.getLoc(), wideType, reduced);
-        auto packedType = VRegType::get(
-            rewriter.getContext(), resultType.getElementCount(),
-            IntegerType::get(rewriter.getContext(), kElementBits16,
-                             IntegerType::SignednessSemantics::Unsigned));
-        Value packed = rewriter.create<VpackOp>(op.getLoc(), packedType, wide,
-                                                rewriter.getStringAttr("LOWER"));
-        return rewriter.create<VbitcastOp>(op.getLoc(), resultType, packed);
-      }
+    // The layout fact describes the native result. In particular, the low
+    // halfwords of integer vcgadd's eight 32-bit sums already form gs(8, 2).
+    return rewriter.create<GroupReduceOpTy>(op.getLoc(), resultType, source, mask);
+  }
+
+  FailureOr<Value> createNativeGroupCombineMask(
+      OpTy op, VRegType resultType, int64_t activeGroups,
+      OneToNPatternRewriter &rewriter) const {
+    FailureOr<VRegType> combineType = getRowResultType(resultType, resultType);
+    if (failed(combineType)) {
+      return failure();
     }
-    return reduced;
+    FailureOr<MaskType> maskType =
+        getMaskTypeForVReg(*combineType, rewriter.getContext());
+    if (failed(maskType)) {
+      return failure();
+    }
+    return createPrefixMaskForActiveLanes(op.getLoc(), *maskType, activeGroups,
+                                           rewriter);
+  }
+
+  FailureOr<Value> combineNativeGroupResults(
+      OpTy op, ArrayRef<Value> partials, VRegType resultType, Value mask,
+      OneToNPatternRewriter &rewriter) const {
+    if (partials.size() != kPairWidth && partials.size() != kQuadWidth) {
+      return rewriter.notifyMatchFailure(
+          op, "native group reduction requires two or four partials");
+    }
+    FailureOr<VRegType> combineType = getRowResultType(resultType, resultType);
+    if (failed(combineType)) {
+      return failure();
+    }
+    SmallVector<Value, kQuadWidth> values;
+    for (Value partial : partials) {
+      FailureOr<Value> view =
+          bitcastVReg(op.getLoc(), partial, *combineType, rewriter);
+      if (failed(view)) {
+        return failure();
+      }
+      values.push_back(*view);
+    }
+    // Sum the 32-bit partials with a b32 predicate before exposing their low
+    // halfwords again. A dense b16 predicate would include the gap halfwords.
+    while (values.size() > 1) {
+      SmallVector<Value, kQuadWidth> next;
+      for (size_t i = 0; i < values.size(); i += kPairWidth) {
+        next.push_back(rewriter.create<CombineOpTy>(
+            op.getLoc(), *combineType, values[i], values[i + 1], mask));
+      }
+      values = std::move(next);
+    }
+    return bitcastVReg(op.getLoc(), values.front(), resultType, rewriter);
   }
 
   FailureOr<Value> buildOneBlockGroupResult(
@@ -412,17 +434,15 @@ private:
           op, "two-block group_reduce requires uniform physical types");
     }
     int64_t activeGroups = std::min<int64_t>(8, numGroups - resultIndex * 8);
-    FailureOr<Value> combineMask = createPrefixMaskForActiveLanes(
-        op.getLoc(), maskType, activeGroups, rewriter);
+    FailureOr<Value> combineMask =
+        createNativeGroupCombineMask(op, resultType, activeGroups, rewriter);
     if (failed(combineMask)) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to create two-block group_reduce combine mask");
+      return failure();
     }
     Value lo = createNativeGroupResult(op, resultType, loSource, loMask, rewriter);
     Value hi = createNativeGroupResult(op, resultType, hiSource, hiMask, rewriter);
-    return rewriter
-        .create<CombineOpTy>(op.getLoc(), resultType, lo, hi, *combineMask)
-        .getResult();
+    return combineNativeGroupResults(op, {lo, hi}, resultType, *combineMask,
+                                     rewriter);
   }
 
   LogicalResult lowerTwoBlock(
@@ -467,11 +487,10 @@ private:
       int64_t numGroups, VRegType resultType, MaskType maskType,
       OneToNPatternRewriter &rewriter) const {
     int64_t activeGroups = std::min<int64_t>(8, numGroups - resultIndex * 8);
-    FailureOr<Value> combineMask = createPrefixMaskForActiveLanes(
-        op.getLoc(), maskType, activeGroups, rewriter);
+    FailureOr<Value> combineMask =
+        createNativeGroupCombineMask(op, resultType, activeGroups, rewriter);
     if (failed(combineMask)) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to create four-block group_reduce combine mask");
+      return failure();
     }
     SmallVector<Value, kQuadWidth> partials;
     partials.reserve(kQuadWidth);
@@ -489,18 +508,8 @@ private:
       partials.push_back(
           createNativeGroupResult(op, resultType, source, mask, rewriter));
     }
-    Value sum01 = rewriter
-                      .create<CombineOpTy>(op.getLoc(), resultType, partials[0],
-                                           partials[1], *combineMask)
-                      .getResult();
-    Value sum23 = rewriter
-                      .create<CombineOpTy>(op.getLoc(), resultType, partials[2],
-                                           partials[3], *combineMask)
-                      .getResult();
-    return rewriter
-        .create<CombineOpTy>(op.getLoc(), resultType, sum01, sum23,
-                             *combineMask)
-        .getResult();
+    return combineNativeGroupResults(op, partials, resultType, *combineMask,
+                                     rewriter);
   }
 
   LogicalResult lowerFourBlock(
@@ -1007,7 +1016,7 @@ public:
     }
     auto maskVMIType = cast<VMIMaskType>(op.getMask().getType());
     FailureOr<GroupReduceLoweringPlan> plan = classifyGroupReduceLoweringPlan(
-        sourceVMIType, maskVMIType, resultVMIType,
+        getVMIGroupReduceKind(op), sourceVMIType, maskVMIType, resultVMIType,
         op.getNumGroupsAttr().getInt(), &supportReason);
     if (failed(plan)) {
       return rewriter.notifyMatchFailure(

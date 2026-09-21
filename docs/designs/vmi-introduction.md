@@ -392,7 +392,8 @@ baseline assignment 保留 C2 已有的 natural layout；若没有 natural layou
 
 group_reduce:
   source 需要适配 group reduce 指令形态；
-  result 使用 group_slots(num_groups, slots) 描述 group-slot result。
+  result 使用 group_slots(num_groups, slots, lane_stride) 描述 group-slot result；
+  原生 16-bit 整数 vcgadd 输出的 lane_stride=2，由生产者决定。
 
 cast:
   widening/narrowing 根据 cast support 决定 source request 和 result layout。

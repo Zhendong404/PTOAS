@@ -45,8 +45,8 @@ for (int i = 1; i < M; i++)
 - **VMI compact use:** `!pto.vreg<128xui16>` reduces to
   `!pto.vreg<64xui32>` with one sum in lane zero. The compact lowering uses
   this widened type, combines partial sums before narrowing, and assembles
-  each logical group's low bits separately. It does not require the
-  eight-result normalization used for 16-bit integer `vcgadd`.
+  each logical group's low bits separately. Native `vcgadd` instead produces
+  eight sums at once; VMI exposes their low halfwords as `gs(8, 2)`.
 
 ---
 
@@ -204,7 +204,8 @@ for (int i = 0; i < N; i++) {
 The vector register is organized as **8 VLanes** of 32 bytes each. Group
 reductions operate within each VLane independently and produce one result per
 VLane. The eight results occupy the low portion of the destination register;
-the remaining bits are zero. Their element width depends on the operation:
+bits after those eight hardware-width results are zero. Their element width
+depends on the operation:
 16-bit integer `vcgadd` writes 32-bit sums, whereas `vcgmax` and `vcgmin`
 preserve the input element width.
 
@@ -245,9 +246,16 @@ for (int i = groups; i < M; i++)
 - **outputs:** `%result` contains one sum per 32-byte VLane group. For 16-bit
   integers, its first sixteen declared elements hold alternating low/high
   halves of eight 32-bit sums. A `vbitcast` to 32-bit integers exposes the sum
-  view without moving bits. The VMI lowering then uses unsigned `vpack LOWER`
-  to select each sum's low 16 bits and restores the logical signedness,
-  producing consecutive group slots with modulo, not saturating, narrowing.
+  view without moving bits. VMI represents its logical 16-bit results at
+  halfword lanes `0, 2, ..., 14` as `gs(8, 2)`, without a producer-side pack.
+  The high halfwords belong to the hardware sums and can be nonzero; they are
+  padding from the logical 16-bit value's perspective.
+- **VMI consumers:** Two- and four-block paths combine partial sums in a
+  32-bit view with `b32` predicates before exposing their low halfwords.
+  A consumer requiring consecutive 16-bit slots may request `gs(8)`, whose
+  conversion uses `vpack LOWER`. Integer extension instead uses `vcvt EVEN`
+  to extend the logical low halfwords, preserving modulo-2^16 reduction
+  semantics. See [Native integer sum layout](../vmi-isa/05-reduce.md#native-integer-sum-layout).
 - **constraints and limitations:** This is a per-32-byte VLane-group reduction.
   Inactive lanes are treated as zero. If all lanes in a VLane are inactive, the
   corresponding result element is `0` (`+0` for floating-point types).
@@ -280,8 +288,8 @@ for (int i = groups; i < N; i++)
   lanes.
 - **outputs:** `%result` contains one maximum per 32-byte VLane group, written
   contiguously to the low elements of the result vector. In particular,
-  16-bit integer extrema remain 16-bit values; the `vcgadd` sum-narrowing pack
-  does not apply. Unlike row `vcmax`, this operation does not return indices.
+  16-bit integer extrema remain consecutive 16-bit values, represented by
+  VMI as `gs(8)`. Unlike row `vcmax`, this operation does not return indices.
 - **constraints and limitations:** Grouping is by hardware 32-byte VLane, not by
   arbitrary software subvector. Inactive floating-point lanes are treated as
   `-INF`; inactive integer lanes are treated as the element type's minimum
@@ -317,8 +325,8 @@ for (int i = groups; i < N; i++)
   lanes.
 - **outputs:** `%result` contains one minimum per 32-byte VLane group, written
   contiguously to the low elements of the result vector. In particular,
-  16-bit integer extrema remain 16-bit values; the `vcgadd` sum-narrowing pack
-  does not apply. Unlike row `vcmin`, this operation does not return indices.
+  16-bit integer extrema remain consecutive 16-bit values, represented by
+  VMI as `gs(8)`. Unlike row `vcmin`, this operation does not return indices.
 - **constraints and limitations:** Grouping is by hardware 32-byte VLane, not by
   arbitrary software subvector. Inactive floating-point lanes are treated as
   `+INF`; inactive integer lanes are treated as the element type's maximum

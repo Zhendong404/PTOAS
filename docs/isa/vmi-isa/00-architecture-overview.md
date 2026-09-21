@@ -265,20 +265,25 @@ optional `{group=C}` attribute where `C` is the **number of groups** (not the
 per-group lane count):
 
 - **Reduce**: Splits `L` lanes into `C` groups, each producing one scalar.
-  Output is `V<C×T>` — a compact vector of `C` scalars.
-- **Broadcast**: Takes a compact `V<C×T>` and fans each scalar back across
-  `L/C` lanes, producing `V<L×T>`.
+  Output is `V<C×T>` with a group-slot layout. Native 16-bit integer `vcgadd`
+  uses `gs(8, 2)`; the logical scalars need not occupy consecutive lanes.
+- **Broadcast**: Takes `V<C×T>`, reads its assigned slot positions, and fans
+  each scalar back across `L/C` lanes, producing `V<L×T>`.
 
-Legal `C` values: `1`, `2`, `4`, `8` (must divide `L`; must match the result
-type's `C`).
+`C` must divide `L` and match the result type's `C`. The bounded one-carrier
+fallback supports `1`, `2`, `4`, `8`; native multi-carrier shapes can support
+more groups, with at most eight results per VCG packet. See [Reduce](05-reduce.md).
 
 **`group → Category` decision table** (W = bytes per sub-group):
 
 | W vs BlockLane (32B) | Category | Lowering |
 |---|---|---|
 | `W == 32B` (sub-group = 1 VLane) | B | `vcgadd`/`vcgmax`/`vcgmin` — one op per reg, no cross-reg combine |
-| `W > 32B`, aligned | B | Fold `(k-1)× vadd/vmax/vmin` then `vcg*` |
+| `W > 32B`, aligned | B | Native fragment reductions followed by a combine tree; equivalent-mask source folding is applied only when legal |
 | Unaligned | C | Materialize → contiguous → reduce |
+
+Native 16-bit integer sums combine their widened partial results with `b32`
+predicates. Their `vcgadd` boundary is preserved by the reduction combiner.
 
 ---
 

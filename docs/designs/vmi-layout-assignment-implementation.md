@@ -244,9 +244,9 @@ block_deinterleaved:
 group_slots:
   G > 0
   K > 0
-  G % K == 0
-  K fits in one physical vreg for element type
   LS > 0
+  (K - 1) * LS fits in one physical vreg for element type
+  physical packet count is ceil(G / K); the last packet may be partial
 ```
 
 Parser compatibility during migration:
@@ -423,10 +423,11 @@ cast boundary:
 compute / accumulator:
   floating compute baseline: f16/f32, with reassoc required for reductions
   that lower through pair-wise VPTO reductions.
-  integer compute baseline: i32 for grouped reduction; i8/i16 storage must
-  first cast to i32 because integer reduction instructions widen narrow inputs.
-  f8/i8 are not baseline accumulator/compute types. Supporting direct 8-bit
-  compute requires a target capability entry and a separate lowering family.
+  integer grouped reduction supports logical i8/i16/i32 within the target
+  shape limits. Narrow integer widening is internal; an explicit cast before
+  reduction changes the algorithm's logical result width.
+  Native i16 sums use gs(8, 2); supported i8 reductions use the bounded
+  internal-extension fallback. Direct f8 reduction remains unsupported.
 ```
 
 Important semantic split:
@@ -467,7 +468,8 @@ cast layout fact:
 group_reduce layout fact:
   shared by layout assignment, layout validation, and vmi-to-vpto.
   Example: S=2*VLaneElems means deinterleaved=2 source/mask and
-  group_slots(G, slots=8) result in every stage.
+  group_slots(G, slots=8, lane_stride=R) result in every stage, where R=2
+  for native 16-bit integer add and R=1 for floating-point or 32-bit add.
 
 histogram layout fact:
   shared by layout assignment, layout validation, and vmi-to-vpto.
@@ -582,12 +584,13 @@ group_store:
   whether slots=8 packed or slots=1 row-local stores are legal.
 
 group_reduce_add{f|i}:
-  define E = sizeof(accumulator T), VLaneElems = 32B / E, L = 256B / E,
-  S = N / G.  T is the accumulator/reduce element type after any required
-  storage cast.
-  S=VLaneElems uses contiguous source/mask and group_slots(G, slots=8).
-  S=2*VLaneElems uses deinterleaved=2 source/mask and group_slots(G, slots=8).
-  S=4*VLaneElems uses deinterleaved=4 source/mask and group_slots(G, slots=8).
+  define E = sizeof(logical input element T), VLaneElems = 32B / E,
+  L = 256B / E, S = N / G.  The native 16-bit integer vcgadd accumulator
+  is 32-bit, but E remains 2 bytes for source partitioning.
+  R=2 for native 16-bit integer add; R=1 for floating-point or 32-bit add.
+  S=VLaneElems uses contiguous source/mask and group_slots(G, slots=8, lane_stride=R).
+  S=2*VLaneElems uses deinterleaved=2 source/mask and group_slots(G, slots=8, lane_stride=R).
+  S=4*VLaneElems uses deinterleaved=4 source/mask and group_slots(G, slots=8, lane_stride=R).
   S>=L && S%L==0 uses contiguous source/mask and group_slots(G, slots=1).
 
 group_broadcast:
@@ -605,8 +608,11 @@ extf/truncf:
 extsi/extui/trunci:
   contiguous i8/i16 -> deinterleaved i32 according to widening factor.
   deinterleaved i32 -> contiguous i8/i16 according to narrowing factor.
-  packed group_slots integer width-changing cast is unsupported until a
-  slot-wise transform is represented explicitly.
+  native group_slots(G, slots=8, lane_stride=2) i16 -> i32 uses vcvt EVEN
+  and produces group_slots(G, slots=8), extending each logical low halfword.
+  integer i16 -> ui8 also supports group_slots(G, slots=8, lane_stride=2)
+  -> group_slots(G, slots=8, lane_stride=4).
+  Other packed casts must match a registered, type-compatible cast fact.
 
 bitcast:
   per-part vbitcast is valid when source/result layouts match, physical arity
@@ -671,7 +677,7 @@ incoming branch, yield, or call operand.
 
 ### 6.3 Constraint Generation
 
-Examples:
+Examples (the group-reduce sizes below use f32 input elements):
 
 ```text
 truncf f32->f16:
@@ -767,15 +773,16 @@ buildCastRequests:
   transform is explicitly represented
 
 buildGroupReduceRequests:
-  derive E = sizeof(accumulator type), VLaneElems = 32B / E,
+  derive E = sizeof(logical input element), VLaneElems = 32B / E,
   L = 256B / E, and S = logical_lanes / num_groups
-  S=VLaneElems -> contiguous source, group_slots(G,8) result
+  R=2 for native 16-bit integer add; R=1 for other native VCG reductions
+  S=VLaneElems -> contiguous source, group_slots(G,8,R) result
   S=2*VLaneElems -> deinterleaved=2 source,
-                    group_slots(G,8) result
+                    group_slots(G,8,R) result
   S=4*VLaneElems -> deinterleaved=4 source,
-                    group_slots(G,8) result
+                    group_slots(G,8,R) result
   S>=L && S%L==0 -> contiguous source, group_slots(G,1) result
-  8-bit storage must be cast to an accumulator type before this request builder
+  native requests exclude 8-bit inputs; the bounded fallback widens internally
   other S -> diagnostic unless an explicit fallback op/helper is enabled
 
 buildGroupMemoryRequests:
@@ -1084,7 +1091,7 @@ diagnostic family               builder / owner             required failure
 3.7.4 slots=1 unit-stride store buildStoreRequests          no aligned row-local store path
 3.9 dense store of group slots  buildStoreRequests          use group_store/group_broadcast
 3.11.2 S=32 unsafe tail         buildMaskRequests           missing full_footprint_readable/gather
-3.13 slots=8 width cast         buildCastRequests           no packed slot cast transform
+unregistered packed cast       buildCastRequests           no compatible cast layout fact
 3.14 unsupported group size     buildGroupReduceRequests    no supported reduce layout/lowering
 3.15.3 compact S=12            buildGroupMemoryRequests    no compact gather plan
 3.16.1 slots=8 non-unit load    buildGroupMemoryRequests    no packed strided slot load path
@@ -1114,8 +1121,9 @@ public VMI ABI enabled:
   add public call/return ABI cases before removing the public-boundary
   diagnostic.
 
-packed group-slot width cast enabled:
-  add slots=8 f32->f16 cast and downstream group_store/broadcast cases.
+new packed group-slot cast relations:
+  add downstream group_store/broadcast coverage for each newly supported pair;
+  registered f32->f16 and native i16->i32 relations already preserve slots.
 ```
 
 ## 7. OneToN Type Conversion
@@ -1207,33 +1215,37 @@ group_load, lowering=group_load_contiguous_chunks:
   emits one vlds per physical group chunk using row_stride address arithmetic
   covers the currently implemented full-chunk row-local group_load path
 
+Native group-reduce result rule:
+  R=2 for 16-bit integer addition, R=1 for floating-point and 32-bit sums.
+  Two/four-block i16 combines use 32-bit values and b32 predicates.
+
 group_reduce_add{f|i}, lowering=one_vlane_reduce_contiguous:
-  consumes contiguous accumulator type T with group size VLaneElems(T)
-  produces group_slots(G, slots=8)
+  consumes contiguous input type T with group size VLaneElems(T)
+  produces group_slots(G, slots=8, lane_stride=R)
   emits one vcgadd
 
 group_reduce_add{f|i}, lowering=two_vlane_reduce_deinterleaved:
   consumes deinterleaved=2
-  produces group_slots(G, slots=8)
+  produces group_slots(G, slots=8, lane_stride=R)
   emits two vcgadd operations and one vadd
 
 group_reduce_add{f|i}, lowering=two_vlane_reduce_block8:
   consumes block_deinterleaved=2
-  produces group_slots(G, slots=8)
+  produces group_slots(G, slots=8, lane_stride=R)
   emits two vcgadd operations and one vadd
 
 group_reduce_add{f|i}, lowering=four_vlane_reduce_dintlv4:
   consumes deinterleaved=4
-  produces group_slots(G, slots=8)
+  produces group_slots(G, slots=8, lane_stride=R)
   emits four vcgadd operations and a vadd tree
 
 group_reduce_add{f|i}, lowering=four_vlane_reduce_block8_stride:
   consumes block_deinterleaved=4
-  produces group_slots(G, slots=8)
+  produces group_slots(G, slots=8, lane_stride=R)
   emits four vcgadd operations and a vadd tree
 
 group_reduce_add{f|i}, lowering=full_chunk_reduce_row_local:
-  consumes contiguous accumulator type T with group size that is a multiple of
+  consumes contiguous input type T with group size that is a multiple of
   one physical chunk L(T)
   produces group_slots(G, slots=1)
   target lowering emits per-row vcgadd plus vcadd; the current prototype uses
@@ -1265,9 +1277,9 @@ group_slot_load, lowering=group_slot_load_slots1_row_local:
   emits one lane-0 vsldb per group
 
 group_broadcast, lowering=group_broadcast_slots8_vselr:
-  source group_slots(G, slots=8)
+  source group_slots(G, slots=8, lane_stride=R)
   result dense layout selected per use
-  emits vselr using assigned result layout
+  emits vselr using assigned result layout and source slot stride R
 
 group_broadcast, lowering=group_broadcast_slots1_vselr:
   source group_slots(G, slots=1)
@@ -1306,11 +1318,13 @@ group_reduce_addf:
   layout-assignment/vmi-to-vpto lit coverage; the explicit slots=1 generic
   VCADD row-local lowering is selected locally from the current op attrs and
   assigned layouts.
-  group_reduce_addi is implemented for i8/i16/i32 values over the registered
-  high-performance group-block classes. VCGADD paths preserve the logical
-  element type. Full-chunk row-local paths use widening VCADD intermediates
-  internally and bitcast the final low bits back to the declared VMI result
-  type; widening is not part of the VMI contract.
+  group_reduce_addi preserves the logical integer element type. Native i16
+  VCGADD paths select slots=8, lane_stride=2 and combine widened partials
+  with b32 masks. Native i32 sums and integer max/min retain lane_stride=1.
+  Full-chunk i16 row-local paths use widening VCADD intermediates internally
+  and expose the final low bits in slots=1; widening is not part of the VMI
+  result element type. A5 i8 reductions use the bounded internal-extension
+  fallback rather than native VCGADD/VCADD instructions.
 
 group_broadcast:
   explicit slots=8/1 source layouts select
@@ -1369,9 +1383,9 @@ ODS/verifiers:
   boundaries when an algorithm explicitly wants a wider accumulator.
 
 Layout assignment:
-  compute VLaneElems and L from the accumulator/reduce element type:
-    VLaneElems = 32B / sizeof(accumulator T)
-    L          = 256B / sizeof(accumulator T)
+  compute VLaneElems and L from the logical input element type:
+    VLaneElems = 32B / sizeof(input T)
+    L          = 256B / sizeof(input T)
   use the same S formula for f16/f32/i8/i16/i32 once the typed reduce op and target
   capability say the type is legal.
   route f8 storage through extf to f32 before group_reduce_addf.
@@ -1390,13 +1404,16 @@ Layout fact helpers:
     two_vlane_reduce_deinterleaved layout fact
     four_vlane_reduce_deinterleaved layout fact
     full_chunk_row_local_reduce layout fact
-  key legality on accumulator byte width, source/mask layout, result
-  group_slots layout, num_groups, and target instruction capability.
+  key legality on operation kind, element width, source/mask layout, result
+  group_slots layout, num_groups, and target instruction capability. Integer
+  16-bit sum facts select result lane_stride=2 independently of consumers.
 
 VMI-to-VPTO:
-  lower group_reduce_addi through the same VCGADD/VADD skeleton used for
-  floating-point where the target supports the integer accumulator type.
-  for full-chunk i8/i16 rows, use the widening VCADD result only as an internal
+  lower native group_reduce_addi through VCGADD partials and VADD combines.
+  For 16-bit integers, combine in a 32-bit view with b32 masks, then expose
+  the low halfwords as gs(8,2). Floating-point combines keep their element
+  width. The optimizer must preserve the widening integer VCGADD boundary.
+  for full-chunk i16 rows, use the widening VCADD result only as an internal
   partial type, combine partials at that width, then bitcast back to the
   declared slots=1 VMI result type.
   keep VPTO lowering local: it consumes assigned layouts and current-op
@@ -2161,7 +2178,7 @@ Diagnostic-only cases:
 3.9 dense store of group slots
 3.11.2 S=32 tail without full_footprint_readable
 3.7.4 S=64 slots=1 group_store with unit output stride
-3.13 packed group-slot f32 -> f16 cast
+unregistered packed group-slot cast relation
 3.14 unsupported group size
 3.15.3 compact source row stride 12
 3.16.1 group_slot_load slots=8 non-unit stride
@@ -2171,12 +2188,11 @@ Diagnostic-only cases:
 3.25.2 public/external VMI boundary
 ```
 
-Current checked-in diagnostic coverage for 3.9/3.13/3.14:
+Current checked-in diagnostic coverage for 3.9/3.14:
 
 ```text
 lit:
   test/lit/vmi_new/vmi_layout_assignment_dense_store_group_slots_invalid.pto
-  test/lit/vmi_new/vmi_layout_assignment_packed_group_slots_truncf_invalid.pto
   test/lit/vmi_new/vmi_layout_assignment_group_reduce_s12_invalid.pto
 ```
 

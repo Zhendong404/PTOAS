@@ -155,14 +155,13 @@ inline const GroupStoreLayoutPattern *selectPreferredGroupStorePattern(
 // Support-query adapters
 //===----------------------------------------------------------------------===//
 
-inline LogicalResult getGroupReduceAddSupportImpl(VMIVRegType sourceType,
-                                                  VMIMaskType maskType,
-                                                  VMIVRegType resultType,
-                                                  int64_t numGroups,
-                                                  std::string *reason) {
+inline LogicalResult
+getGroupReduceAddSupportImpl(VMIGroupReduceKind kind, VMIVRegType sourceType,
+                             VMIMaskType maskType, VMIVRegType resultType,
+                             int64_t numGroups, std::string *reason) {
   FailureOr<VMIGroupReduceLayoutFact> fact =
       VMILayoutSupport().getGroupReduceLayoutFactForLayouts(
-          sourceType, maskType, resultType, numGroups, reason);
+          kind, sourceType, maskType, resultType, numGroups, reason);
   if (failed(fact)) {
     return failure();
   }
@@ -173,7 +172,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceAddFSupport(VMIGroupReduceAddFOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);
@@ -183,7 +182,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceMaxFSupport(VMIGroupReduceMaxFOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);
@@ -193,7 +192,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceMinFSupport(VMIGroupReduceMinFOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);
@@ -203,7 +202,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceAddISupport(VMIGroupReduceAddIOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);
@@ -213,7 +212,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceMaxISupport(VMIGroupReduceMaxIOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);
@@ -223,7 +222,7 @@ LogicalResult
 VMILayoutSupport::getGroupReduceMinISupport(VMIGroupReduceMinIOp op,
                                             std::string *reason) const {
   return getGroupReduceAddSupportImpl(
-      cast<VMIVRegType>(op.getSource().getType()),
+      getVMIGroupReduceKind(op), cast<VMIVRegType>(op.getSource().getType()),
       cast<VMIMaskType>(op.getMask().getType()),
       cast<VMIVRegType>(op.getResult().getType()),
       op.getNumGroupsAttr().getInt(), reason);

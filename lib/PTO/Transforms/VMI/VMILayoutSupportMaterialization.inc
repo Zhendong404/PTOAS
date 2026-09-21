@@ -318,13 +318,21 @@ inline bool isExecutableGroupReducePattern(const GroupReduceLayoutPattern &patte
 inline VMIGroupReduceLayoutFact
 materializeGroupReduceLayoutFact(MLIRContext *ctx,
                                  const GroupReduceLayoutPattern &pattern,
-                                 GroupLayoutKey key, int64_t numGroups) {
+                                 GroupLayoutKey key, int64_t numGroups,
+                                 VMIGroupReduceKind kind, Type elementType) {
   VMIGroupReduceLayoutFact fact;
   fact.blockClass = getGroupBlockClassFromPattern(pattern.block);
   fact.sourceLayout = materializeLayoutPattern(ctx, pattern.sourceLayout);
   fact.maskLayout = fact.sourceLayout;
-  fact.resultLayout =
-      materializeLayoutPattern(ctx, pattern.resultLayout, numGroups);
+  // Each 16-bit integer vcgadd sum occupies 32 bits. Its logical low halves
+  // are at lanes 0, 2, ... regardless of which operations consume the result.
+  bool wideIntegerSum =
+      kind == VMIGroupReduceKind::IntegerAdd &&
+      getPTOStorageElemBitWidth(elementType) == mlir::pto::kValue16;
+  fact.resultLayout = materializeLayoutPattern(
+      ctx,
+      wideIntegerSum ? pattern.integer16AddResultLayout : pattern.resultLayout,
+      numGroups);
   fact.groupSize = key.groupSize;
   fact.lanesPerPart = key.lanesPerPart;
   fact.vcgBlockElems = key.vcgBlockElems;
@@ -366,6 +374,14 @@ makeDenseRowsGroupReduceFact(MLIRContext *ctx, GroupLayoutKey key,
   fact.lanesPerPart = key.lanesPerPart;
   fact.vcgBlockElems = key.vcgBlockElems;
   return fact;
+}
+
+inline bool matchesGroupBroadcastLayoutPattern(
+    const GroupBroadcastLayoutPattern &pattern, GroupLayoutKey key,
+    Type elementType) {
+  return matchesGroupBlockPattern(pattern.block, key) &&
+         matchesElementBitsPattern(pattern.elementBits, elementType) &&
+         (!pattern.integerOnly || isa<IntegerType>(elementType));
 }
 
 inline VMIGroupBroadcastLayoutFact materializeGroupBroadcastLayoutFact(

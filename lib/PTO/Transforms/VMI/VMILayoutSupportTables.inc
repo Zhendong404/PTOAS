@@ -86,12 +86,11 @@ static constexpr EnsureLayoutPattern kEnsureLayoutPatterns[] = {
     {bits<8>(), anyN(), c(), gsFitStride(4)},
     {bits<8>(), anyN(), gsFitStride(4), c()},
 
-    // The same carrier at a non-unit lane stride on both sides is the carrier
-    // identity itself, so it needs no normalization.  Only the 8-bit stride-4
-    // pair is reachable: the packed f8 read/write path is what puts a value in
-    // a lane-strided carrier and then hands it to a group packet, while no
-    // producer selects a lane-strided 16-bit dense value against a stride-2
-    // packet.
+    // Matching non-unit strides describe the same physical lanes. In
+    // particular, a native i16 sum packet can feed another half-block reduce
+    // through an ls(2) view without packing or reading the high halfwords.
+    {bits<8, 16>(), anyN(), ls(2), gsFitStride(2)},
+    {bits<8, 16>(), anyN(), gsFitStride(2), ls(2)},
     {bits<8>(), anyN(), ls(4), gsFitStride(4)},
     {bits<8>(), anyN(), gsFitStride(4), ls(4)},
 
@@ -162,16 +161,19 @@ struct GroupReduceLayoutPattern {
   GroupBlockPattern block;
   LayoutPattern sourceLayout;
   LayoutPattern resultLayout;
+  LayoutPattern integer16AddResultLayout = resultLayout;
 };
 
+// The fourth column is the native layout of 16-bit integer sums. Scalar row
+// results keep their default slots=1 form.
 static constexpr GroupReduceLayoutPattern kGroupReduceLayoutPatterns[] = {
-    {gb(1, 4), ls(4), gs(8)},
-    {gb(1, 2), ls(2), gs(8)},
-    {gb(1), c(), gs(8)},
-    {gb(2), d(2), gs(8)},
-    {gb(2), bd(2), gs(8)},
-    {gb(4), d(4), gs(8)},
-    {gb(4), bd(4), gs(8)},
+    {gb(1, 4), ls(4), gs(8), gs(8, 2)},
+    {gb(1, 2), ls(2), gs(8), gs(8, 2)},
+    {gb(1), c(), gs(8), gs(8, 2)},
+    {gb(2), d(2), gs(8), gs(8, 2)},
+    {gb(2), bd(2), gs(8), gs(8, 2)},
+    {gb(4), d(4), gs(8), gs(8, 2)},
+    {gb(4), bd(4), gs(8), gs(8, 2)},
     {gbFull(), c(), gs(1)},
     {gbFull(2), d(2), gs(1)},
     {gbFull(4), d(4), gs(1)},
@@ -326,6 +328,7 @@ static constexpr LegalCastLayoutPattern kLegalCastLayoutPatterns[] = {
     {bits<8>(), bits<32>(), gs(8), gs(8), CastTypeClass::Integer},
     {bits<16>(), bits<8>(), gs(1), gs(1)},
     {bits<16>(), bits<8>(), gs(8), gs(8, 2)},
+    {bits<16>(), bits<8>(), gs(8, 2), gs(8, 4), CastTypeClass::IntegerToUnsigned},
     {bits<32>(), bits<16>(), gs(1), gs(1)},
     {bits<32>(), bits<16>(), gs(8), gs(8, 2)},
     {bits<32>(), bits<8>(), gs(1), gs(1)},
@@ -370,6 +373,7 @@ static constexpr LegalMaskGranularityCastLayoutPattern
         {mb8(), mb32(), gs(8, 4), gs(8)},
         {mb16(), mb8(), gs(1), gs(1)},
         {mb16(), mb8(), gs(8), gs(8, 2)},
+        {mb16(), mb8(), gs(8, 2), gs(8, 4)},
         {mb32(), mb16(), gs(1), gs(1)},
         {mb32(), mb16(), gs(8), gs(8, 2)},
         {mb32(), mb8(), gs(1), gs(1)},
@@ -602,36 +606,6 @@ static constexpr GroupBroadcastLoadDirectPattern
          bits<8, 16, 32>(), memAny(), d(2)},
         {VMIGroupBroadcastLoadDirectKind::BRC, G<1>(), gbFull(),
          bits<8, 16, 32>(), memAny(), d(4)},
-};
-
-struct GroupBroadcastLayoutPattern {
-  GroupBlockPattern block;
-  LayoutPattern sourceLayout;
-  LayoutPattern resultLayout;
-};
-
-static constexpr GroupBroadcastLayoutPattern kGroupBroadcastLayoutPatterns[] = {
-    {gbCompact(), gs(8), c()},
-    {gbCompact(), gs(1), c()},
-    {gb(1, 4), gs(8), ls(4)},
-    {gb(1, 2), gs(8), ls(2)},
-    {gb(1), gs(8), c()},
-    {gb(1), gs(8), ls(2)},
-    {gb(1), gs(8, 2), c()},
-    {gb(1), gs(8, 4), c()},
-    {gb(2), gs(8), c()},
-    {gb(2), gs(8), d(2)},
-    {gb(2), gs(8), bd(2)},
-    // bf16 G=4 on L=128: groupSize=32 = two 32B blocks; slots=1 source.
-    {gb(2), gs(1), c()},
-    {gb(4), gs(8), c()},
-    {gb(4), gs(8), d(4)},
-    {gb(4), gs(8), bd(4)},
-    {gb(4), gs(1), c()},
-    {gbFull(), gs(8), c()},
-    {gbFull(), gs(1), c()},
-    {gbFull(2), gs(1), d(2)},
-    {gbFull(4), gs(1), d(4)},
 };
 
 struct VselrLayoutPattern {

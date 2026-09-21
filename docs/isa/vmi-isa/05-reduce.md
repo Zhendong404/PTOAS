@@ -3,7 +3,8 @@
 > **Category:** B (VLane-aligned), C (unaligned sub-VLane).
 > **Mask:** `Pg req` (governing mask is a required operand).
 >
-> Reduction ops collapse lanes into compact scalars, governed by a mask.
+> Reduction ops produce one logical scalar per group, governed by a mask.
+> The assigned layout determines each scalar's physical slot position.
 > `{group=C}` controls the number of sub-groups. Inactive lane behavior:
 > `vcadd` treats inactive as 0; `vcmax`/`vcmin` treat inactive as `-∞`/`+∞`
 > (fp) or type min/max (int).
@@ -32,7 +33,7 @@ inside instruction lowering. An empty min/max group retains the original
 (`group = L`), selection between the input and its identity replaces reduction.
 Floating singleton groups retain reduction semantics for NaNs and signed zero.
 Integer add results are narrowed modulo the result element width; native
-16-bit VCG sums are packed from 32-bit results into 16-bit group slots.
+16-bit VCG sums expose the low halfwords of 32-bit results as `gs(8, 2)`.
 Floating-point addition still requires `reassoc`.
 
 The dense fallback is bounded by one 256-byte input carrier and at most eight
@@ -46,12 +47,11 @@ before layout assignment and again during final conversion.
 
 The logical result keeps the input element width, but the hardware's sum may
 be wider. In particular, **both** 16-bit integer `vcgadd` and `vcadd` produce
-32-bit sums. Their different packing steps reflect how many independent
-results are produced by each instruction:
+32-bit sums. Their layouts reflect how many independent results each instruction produces:
 
 | Physical path | Hardware result for 16-bit integer input | VMI result handling |
 |---|---|---|
-| Native `vcgadd` | Eight 32-bit sums in one register | Take each sum's low 16 bits with `vpack LOWER`, yielding consecutive `gs(8)` slots |
+| Native `vcgadd` | Eight 32-bit sums in one register | Keep the low 16 bits at halfword lanes `0, 2, ..., 14`, yielding `gs(8, 2)` without a producer-side pack |
 | Native `vcgmax` / `vcgmin` | Eight consecutive 16-bit extrema | Keep the values at their original width; no sum-narrowing pack |
 | Compact `vcadd` | One 32-bit sum in lane zero per invocation | Use the widened result type, combine partial sums if needed, then select each group's low bits into the result packet |
 
@@ -72,31 +72,31 @@ logical result width; it is not saturation. Floating-point reductions keep
 their existing result types and semantics. See the physical contracts in
 [Reduction Ops](../micro-isa/10-reduction-ops.md).
 
-### Follow-up exploration: retain strided native sums
+### Native integer sum layout
 
-A possible optimization is to expose a native 16-bit integer VCG sum packet
-as `gs(8, 2)`: eight group slots whose values occupy 16-bit positions
-`0, 2, 4, ..., 14`. Consumers could select those positions directly and pack
-only when needed. This is a follow-up exploration, not a new result layout
-selected by the current reduction implementation; the existing `gs(8)`
-contract and its normalization remain in place.
+The layout capability table selects `gs(8, 2)` for native 16-bit integer
+addition, independently of consumers. Operation kind and element width are
+part of the query: native floating-point addition and integer max/min retain
+`gs(8)`. Scalar `vcadd` paths retain their existing row-local layout.
 
-Existing `gs(8)` / `gs(8, 2)` conversion rows provide part of the machinery,
-but do not prove that every consumer can materialize the new producer layout.
-A separate change must distinguish integer addition and element width in the
-reduction capability rules, then audit grouped stores, broadcasts, subsequent
-reductions, casts, masks, and multi-part partial-sum combines. Early validation,
-layout selection, and final conversion must agree on the executable cases.
+Two- and four-block native reductions combine their 32-bit partial sums with
+32-bit predicates, then expose the low halfwords as `gs(8, 2)`. The arithmetic
+still returns a logical 16-bit result modulo 2^16. The unused high halfwords
+are unspecified padding; consumers must not read them as logical values or
+assume they are zero.
 
-The investigation should compare complete producer/consumer chains, including
-direct group stores and reduce-broadcast-store sequences. For example,
-`ui16 L=64, group=8` produces eight group values; the preferred `ls(2)` store
-for 64 elements describes the subsequent broadcast output, not those eight
-input slots. It does not by itself establish a redundant pack/unpack pair.
-Strided source slots can also add broadcast-index arithmetic. Measure `vpack`
-counts together with total instructions, dependencies, register pressure, and
-device timings, and rerun the integer overflow, empty/tail/holey-mask, direct
-store, and broadcast device cases before claiming a benefit.
+Consumers use the regular layout support and `ensure_layout` machinery.
+A 16-to-32 integer extension reads even halfword lanes with `vcvt EVEN`:
+`ui16(65535 + 1)` extends to `0`, and `si16(32767 + 1)` extends to `-32768`.
+It must not return the full hardware sum. A store or broadcast can consume
+the strided slots directly when its layout supports them, or request a
+conversion to consecutive slots. Multiple consumers share the same producer
+layout and request their own necessary conversions.
+
+This removes the former single-use cast-to-store peephole from
+`vpto-optimize-vcvt`. It does not promise that every complete consumer chain
+contains fewer instructions or runs faster. See the
+[native sum layout design and validation](../../designs/a5-vcg-integer-native-layout.md).
 
 
 ---
@@ -138,26 +138,32 @@ store, and broadcast device cases before claiming a benefit.
 
   | Result | Type | Description |
   |---|---|---|
-  | `result` | `!pto.vmi.vreg<C×T>` | Compact scalar vector (`C = 1` if no group) |
+  | `result` | `!pto.vmi.vreg<C×T>` | One logical scalar per group in the assigned layout (`C = 1` if no group) |
 
 - **attributes:**
 
   | Attribute | Values | Default | Description |
   |---|---|---|---|
-  | `group` | `1`, `2`, `4`, `8` | `1` (full reduce) | Number of sub-groups |
+  | `group` | Positive `C` dividing `L`, subject to the shape support above | `1` (full reduce) | Number of sub-groups |
   | `reassoc` | *(unit attr)* | *(absent)* | Permit reassociation (**required** for fp sources) |
   | `pmode` | `"zero"` | `"zero"` | Inactive-result behavior |
 
-- **datatypes:** full reduce — `i32`, `f16`/`f32`; grouped reduce — `i8`/`i16`/`i32`, `f16`/`f32`
+- **datatypes:** `i8`/`i16`/`i32` (signless, signed, unsigned), `f16`/`f32`,
+  subject to the shape limits and internal 8-bit extension described above.
 - **lowering to `pto.mi`:**
 
   | Group / W | Category | Physical lowering | `#mi` | `dep` |
   |---|---|---|---|---|
   | No group (`C=1`), `K=1` | B | `1 × pto.vcadd` | `1` | `1` |
   | No group, `K>1` (fold) | B | `(K-1) × vadd` + `1 × vcadd` | `K` | `K` |
-  | No group, `K>1` (partial) | B | `K × vcadd` + combine | `K` | `1+⌈log₂K⌉` |
-  | `group=8` (W=32B, VLane-aligned) | B | `K × pto.vcgadd` | `K` | `1` |
-  | `group=2/4` (W=64B/128B aligned) | B | `(k-1) × vadd` fold + `vcgadd` | `K+k-1` | `k` |
+  | No group, `K>1` (partial) | B | `K × vcadd` + `(K-1) × vadd` | `2K-1` | `1+⌈log₂K⌉` |
+  | W=32B, VLane-aligned | B | `K × pto.vcgadd` (eight groups per full packet) | `K` | `1` |
+  | W=64B/128B, `k=2/4` fragments per group | B | Per result packet: `k × vcgadd` + `(k-1) × vadd` | `2k-1` | `1+⌈log₂k⌉` |
+
+  Layout-conversion and consumer instructions are not included in these
+  native-path counts. Equivalent-mask source folding is optional and applies
+  only when legal. Native 16-bit integer `vcgadd` retains the partial-result
+  form with 32-bit adds and `b32` masks; it is excluded from source folding.
 
 - **example:**
   ```mlir
@@ -165,7 +171,7 @@ store, and broadcast device cases before claiming a benefit.
   %sum = pto.vmi.vcadd %x, %mask {reassoc}
       : !pto.vmi.vreg<64×f32>, !pto.vmi.mask<64> -> !pto.vmi.vreg<1×f32>
 
-  // Grouped: 256-lane → 8 groups of 32, each VLane-aligned (W=32B)
+  // Grouped: 256 f16 lanes → 8 groups of 32, two VLanes per group (W=64B)
   %sums = pto.vmi.vcadd %x, %mask {group = 8, reassoc}
       : !pto.vmi.vreg<256×f16>, !pto.vmi.mask<256> -> !pto.vmi.vreg<8×f16>
   ```
