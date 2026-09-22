@@ -736,13 +736,11 @@ def _live_before_stmt(stmt, live_after) -> set[str]:
     if isinstance(stmt, ast.While):
         test_info = _name_info(stmt.test)
         body_info = _name_info(stmt.body)
-        else_info = _name_info(stmt.orelse)
-        assigned = body_info.stores | else_info.stores
         loop_live = set(live_after) | set(test_info.loads) | set(body_info.loads)
         return (
-            (set(live_after) - assigned)
+            set(live_after)
             | set(test_info.loads)
-            | (_live_before_block(stmt.body, loop_live) - assigned)
+            | _live_before_block(stmt.body, loop_live)
             | _live_before_block(stmt.orelse, set(live_after))
         )
     info = _name_info(stmt)

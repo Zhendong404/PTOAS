@@ -104,6 +104,18 @@ def runtime_while_probe(limit: pto.i32):
 
 
 @pto.jit(target="a5")
+def issue_1558_if_value_carried_only_inside_while(limit: pto.i32):
+    value = pto.const(0, dtype=pto.i32)
+    if limit > 0:
+        value = limit + pto.const(1, dtype=pto.i32)
+    index = pto.const(0, dtype=pto.i32)
+    while index < limit:
+        value = value + index
+        index = index + pto.const(1, dtype=pto.i32)
+    _ = index
+
+
+@pto.jit(target="a5")
 def runtime_while_break_continue(limit: pto.i32):
     value = pto.const(0, dtype=pto.i32)
     while value < limit:
@@ -764,6 +776,9 @@ def _check_unguarded_tail_fixtures():
 
 
 def main():
+    text = issue_1558_if_value_carried_only_inside_while.compile().mlir_text()
+    assert re.search(r"scf\.if .*-> \(i32\)", text)
+    assert _while_iter_arg_count(text) == 2
     _check_dead_tail_exception_paths()
     _check_runtime_loop_shapes()
     _check_loop_carry_contract()
