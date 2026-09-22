@@ -22,4 +22,4 @@ module {
   }
 }
 
-// CHECK: 'pto.vmi.vmula' op requires f16, bf16, f32, or i8/i16/i32 VMI element type
+// CHECK: 'pto.vmi.vmula' op requires f16, bf16, f32, i16, or i32 VMI element type; A5 does not support i8/u8 vmula

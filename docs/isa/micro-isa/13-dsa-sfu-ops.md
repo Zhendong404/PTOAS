@@ -188,6 +188,8 @@ for (int i = 0; i < N; i++)
 - **outputs:** `%result` is the multiply-accumulate result.
 - **constraints and limitations:** `pto.vmula` is a fused multiply-accumulate
   operation and is not always interchangeable with separate `vmul` plus `vadd`.
+  A5 supports `i16`, `u16`, `i32`, `u32`, `f16`, `bf16`, and `f32` operands;
+  `i8` and `u8` operands are not supported.
 
 ---
 

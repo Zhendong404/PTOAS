@@ -1284,9 +1284,11 @@ LogicalResult VMIVmulaOp::verify() {
   if (failed(verifyBF16x2ComputeElementType(getOperation(), eltTy))) {
     return failure();
   }
-  if (!isVMIF16BF16OrF32Type(eltTy) && !isVMIAnyI8I16I32Type(eltTy)) {
+  // A5 has no native S8/U8 VMULA encoding.  Reject narrow integer forms here
+  // instead of allowing lowering to emit RV_VMULA with an unsupported S8 type.
+  if (!isVMII16I32OrF16BF16F32Type(eltTy)) {
     return emitOpError(
-        "requires f16, bf16, f32, or i8/i16/i32 VMI element type");
+        "requires f16, bf16, f32, i16, or i32 VMI element type; A5 does not support i8/u8 vmula");
   }
 
   if (accType != lhsType || lhsType != rhsType || rhsType != resultType) {

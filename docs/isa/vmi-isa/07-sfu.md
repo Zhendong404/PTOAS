@@ -234,7 +234,8 @@
   | `rhs` | `!pto.vmi.vreg<L×T>` | Second multiply operand |
   | `mask` | `!pto.vmi.mask<L>` | Governing predicate |
 
-- **datatypes:** `i8`–`i32`, `f16`, `bf16`, `f32`
+- **datatypes:** `i16`, `u16`, `i32`, `u32`, `f16`, `bf16`, `f32`. A5 does
+  not support `i8` or `u8` VMULA operands.
 - **lowering to `pto.mi`:**
   ```
   K × pto.vmula

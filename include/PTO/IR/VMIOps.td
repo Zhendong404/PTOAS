@@ -1769,7 +1769,8 @@ def VMIVmulaOp : VMI_Op<"vmula", [Pure]> {
     Computes acc = acc + lhs * rhs in a single hardware instruction.
     The accumulator operand comes first to match hardware FMA semantics.
 
-    Supports both floating-point (f16/bf16/f32) and integer (i8-i32) types.
+    Supports floating-point (f16/bf16/f32) and integer (i16/i32) types.
+    A5 does not provide an i8/u8 VMULA encoding.
     The mask operand is optional. When present, it predicates the VPTO vmula;
     otherwise lowering supplies an all-active predicate.
 

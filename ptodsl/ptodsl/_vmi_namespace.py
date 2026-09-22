@@ -199,6 +199,16 @@ def _is_vmi_float_element_type(type_obj) -> bool:
     )
 
 
+def _is_vmi_vmula_element_type(type_obj) -> bool:
+    if IntegerType.isinstance(type_obj):
+        return IntegerType(type_obj).width in (16, 32)
+    return (
+        F16Type.isinstance(type_obj)
+        or BF16Type.isinstance(type_obj)
+        or F32Type.isinstance(type_obj)
+    )
+
+
 def _isinstance_pto_type(type_obj, type_name: str) -> bool:
     type_cls = getattr(_pto, type_name, None)
     if type_cls is None:
@@ -1276,6 +1286,12 @@ class _VMINamespace:
 
     @staticmethod
     def vmula(acc, lhs, rhs, mask, *, pmode=None, loc=None, ip=None):
+        element_type = _vmi_element_type(_type_of(acc), context="pto.vmi.vmula(...)")
+        if not _is_vmi_vmula_element_type(element_type):
+            raise TypeError(
+                "pto.vmi.vmula(...) requires f16, bf16, f32, i16, or i32 "
+                f"vector elements; got {element_type}"
+            )
         return _call_value(
             "vmula",
             _type_of(acc),

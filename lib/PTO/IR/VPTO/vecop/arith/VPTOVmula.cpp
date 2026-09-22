@@ -27,5 +27,10 @@ LogicalResult VmulaOp::verify() {
       getAcc().getType() != getResult().getType()) {
     return emitOpError("requires acc, lhs, rhs, and result to share one vector type");
   }
+  auto accType = cast<VRegType>(getAcc().getType());
+  if (auto intType = dyn_cast<IntegerType>(accType.getElementType());
+      intType && intType.getWidth() == mlir::pto::kValue8) {
+    return emitOpError("does not support i8/u8 VMULA on A5; use i16 or i32");
+  }
   return success();
 }

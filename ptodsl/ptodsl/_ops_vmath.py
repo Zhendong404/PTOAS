@@ -772,6 +772,12 @@ def vaxpy(alpha, x, y, mask):
 def vmula(acc, lhs, rhs, mask):
     """``pto.vmula`` – fused ``acc + lhs * rhs`` under mask."""
     _reject_low_precision_vreg_operands(acc, lhs, rhs, context="pto.vmula(...)")
+    _, elem_type = _infer_vreg_metadata(unwrap_surface_value(acc))
+    if IntegerType.isinstance(elem_type) and IntegerType(elem_type).width == 8:
+        raise TypeError(
+            "pto.vmula(...) does not support i8/u8 vector elements on A5; "
+            "use i16 or i32"
+        )
     return wrap_surface_value(
         _pto.VmulaOp(
             unwrap_surface_value(acc).type,
