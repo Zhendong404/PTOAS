@@ -425,21 +425,31 @@ void PTOCanonicalizeIRPass::normalizeSyncBlockOps(func::FuncOp func, IRRewriter&
     }
     auto mode0 = IntegerAttr::get(IntegerType::get(func.getContext(), 32), 0);
     auto mode2 = IntegerAttr::get(IntegerType::get(func.getContext(), 32), 2);
+    auto normalizeDynamicEventId = [&](Operation *op, Value eventId) -> Value {
+        if (!eventId || eventId.getType().isIndex()) {
+            return eventId;
+        }
+        return rewriter.create<arith::IndexCastOp>(op->getLoc(), rewriter.getIndexType(), eventId);
+    };
     for (SetCrossBlockOp op : crossSets) {
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<SyncSetOp>(op, op.getPipe(), op.getEventIdAttr(), mode0, op.getEventIdDyn());
+        Value eventId = normalizeDynamicEventId(op, op.getEventIdDyn());
+        rewriter.replaceOpWithNewOp<SyncSetOp>(op, op.getPipe(), op.getEventIdAttr(), mode0, eventId);
     }
     for (WaitCrossBlockOp op : crossWaits) {
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<SyncWaitOp>(op, op.getPipe(), op.getEventIdAttr(), mode0, op.getEventIdDyn());
+        Value eventId = normalizeDynamicEventId(op, op.getEventIdDyn());
+        rewriter.replaceOpWithNewOp<SyncWaitOp>(op, op.getPipe(), op.getEventIdAttr(), mode0, eventId);
     }
     for (SetIntraBlockOp op : intraSets) {
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<SyncSetOp>(op, op.getPipe(), op.getEventIdAttr(), mode2, op.getEventIdDyn());
+        Value eventId = normalizeDynamicEventId(op, op.getEventIdDyn());
+        rewriter.replaceOpWithNewOp<SyncSetOp>(op, op.getPipe(), op.getEventIdAttr(), mode2, eventId);
     }
     for (WaitIntraBlockOp op : intraWaits) {
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<SyncWaitOp>(op, op.getPipe(), op.getEventIdAttr(), mode2, op.getEventIdDyn());
+        Value eventId = normalizeDynamicEventId(op, op.getEventIdDyn());
+        rewriter.replaceOpWithNewOp<SyncWaitOp>(op, op.getPipe(), op.getEventIdAttr(), mode2, eventId);
     }
 }
 

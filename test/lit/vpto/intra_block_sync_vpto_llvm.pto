@@ -27,6 +27,12 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.set_intra_block <PIPE_V>, %event_id : i32
     return
   }
+
+  func.func @cross_block_sync_dynamic_i32(%event_id: i32) attributes {pto.kernel} {
+    pto.set_cross_block <PIPE_V>, %event_id : i32
+    pto.wait_cross_block <PIPE_V>, %event_id : i32
+    return
+  }
 }
 
 // CHECK-LABEL: llvm.func @sync_static_dynamic_mix_aiv
@@ -45,3 +51,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-LABEL: llvm.func @intra_block_sync_v_dynamic_mix_aiv
 // CHECK: llvm.mlir.constant(1 : i64) : i64
 // CHECK: llvm.call @llvm.hivm.SET.INTRA.BLOCK.mode
+
+// CHECK-LABEL: llvm.func @cross_block_sync_dynamic_i32_mix_aiv
+// CHECK: llvm.call @llvm.hivm.SET.CROSS.CORE
+// CHECK: llvm.call @llvm.hivm.WAIT.FLAG.DEV.PIPE.REG
