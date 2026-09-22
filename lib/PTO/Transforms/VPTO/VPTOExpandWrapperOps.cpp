@@ -1138,6 +1138,38 @@ struct ExpandUvldPattern : public OpRewritePattern<pto::UvldOp> {
   }
 };
 
+struct ExpandA5Bf16VmulsPattern : public OpRewritePattern<pto::VmulsOp> {
+  DmaArch arch;
+
+  ExpandA5Bf16VmulsPattern(MLIRContext *ctx, DmaArch arch)
+      : OpRewritePattern(ctx), arch(arch) {}
+
+  LogicalResult matchAndRewrite(pto::VmulsOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = dyn_cast<pto::VRegType>(op.getResult().getType());
+    if (arch != DmaArch::A5 || !resultType ||
+        !resultType.getElementType().isBF16()) {
+      return failure();
+    }
+
+    // Bisheng cannot select the A5 bf16 vmuls intrinsic because its scalar
+    // and vector operands use registers of different widths. Expand before
+    // scheduling so the scheduler sees the real vdup and vmul costs.
+    Value broadcast =
+        rewriter
+            .create<pto::VdupOp>(op.getLoc(), resultType, op.getScalar(),
+                                 op.getMask(), /*position=*/nullptr)
+            .getResult();
+    Value product =
+        rewriter
+            .create<pto::VmulOp>(op.getLoc(), resultType, op.getInput(),
+                                 broadcast, op.getMask())
+            .getResult();
+    rewriter.replaceOp(op, product);
+    return success();
+  }
+};
+
 struct ExpandDmaLoadPattern : public OpRewritePattern<pto::MteGmUbOp> {
   DmaArch dmaArch;
   explicit ExpandDmaLoadPattern(MLIRContext *ctx, DmaArch arch)
@@ -1918,6 +1950,8 @@ struct VPTOExpandWrapperOpsPass
     RewritePatternSet patterns(&getContext());
     patterns.add(std::make_unique<ExpandDmaLoadPattern>(&getContext(), dmaArch));
     patterns.add(std::make_unique<ExpandDmaStorePattern>(&getContext(), dmaArch));
+    patterns.add(
+        std::make_unique<ExpandA5Bf16VmulsPattern>(&getContext(), dmaArch));
     patterns.add<ExpandUvldPattern,
                  ExpandMteUbUbPattern, ExpandMteUbL1Pattern, ExpandCubeLoadPattern,
                  ExpandCubeStorePattern, ExpandBiasLoadPattern,
