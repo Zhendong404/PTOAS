@@ -19,6 +19,10 @@ static bool isBF16PairElementCount(int64_t elementCount) {
   return elementCount == 64 || elementCount == 128 || elementCount == 256;
 }
 
+static bool isBF16ReduceResultElementCount(int64_t elementCount) {
+  return elementCount == 2 || elementCount == 4 || elementCount == 8;
+}
+
 struct OneToNVMIExtFOpPattern : OneToNOpConversionPattern<VMIExtFOp> {
   using OneToNOpConversionPattern<VMIExtFOp>::OneToNOpConversionPattern;
 
@@ -881,6 +885,94 @@ private:
     return true;
   }
 
+  FailureOr<bool> tryLowerGroupSlotBF16ReduceNarrowing(
+      VMITruncFOp op, ValueRange sourceParts, ArrayRef<Type> resultTypes,
+      VMILayoutAttr sourceLayout, VMILayoutAttr resultLayout,
+      OneToNPatternRewriter &rewriter) const {
+    auto sourceVMIType = cast<VMIVRegType>(op.getSource().getType());
+    auto resultVMIType = cast<VMIVRegType>(op.getResult().getType());
+    StringAttr rounding = op->getAttrOfType<StringAttr>("rounding");
+    bool supportedLogicalShape =
+        sourceVMIType.getElementType().isF32() &&
+        resultVMIType.getElementType().isBF16() &&
+        sourceVMIType.getElementCount() == resultVMIType.getElementCount() &&
+        isBF16ReduceResultElementCount(sourceVMIType.getElementCount());
+    bool supportedLayouts =
+        sourceLayout && resultLayout && sourceLayout.isGroupSlots() &&
+        resultLayout.isGroupSlots() &&
+        sourceLayout.getNumGroups() == resultLayout.getNumGroups() &&
+        sourceLayout.getSlots() == resultLayout.getSlots() &&
+        (sourceLayout.getSlots() == 1 || sourceLayout.getSlots() == 8) &&
+        sourceLayout.getNumGroups() == sourceVMIType.getElementCount();
+    bool applicable = supportedLogicalShape && supportedLayouts && rounding &&
+                      rounding.getValue() == "Z" && !sourceParts.empty() &&
+                      !resultTypes.empty() &&
+                      sourceParts.size() == resultTypes.size();
+    if (!applicable) {
+      return false;
+    }
+
+    auto sourceType = dyn_cast<VRegType>(sourceParts.front().getType());
+    if (!sourceType || !sourceType.getElementType().isF32()) {
+      return rewriter.notifyMatchFailure(
+          op, "BF16 group-slot narrowing requires F32 physical sources");
+    }
+    for (Value sourcePart : sourceParts) {
+      if (sourcePart.getType() != sourceType) {
+        return rewriter.notifyMatchFailure(
+            op, "BF16 group-slot narrowing sources must have matching types");
+      }
+    }
+
+    for (Type resultType : resultTypes) {
+      auto resultVRegType = dyn_cast<VRegType>(resultType);
+      if (!resultVRegType || !resultVRegType.getElementType().isBF16() ||
+          resultVRegType.getElementCount() !=
+              sourceType.getElementCount() * kPairWidth) {
+        return rewriter.notifyMatchFailure(
+            op, "BF16 group-slot narrowing requires matching physical widths");
+      }
+    }
+
+    Type carrierElementType = IntegerType::get(
+        rewriter.getContext(), kElementBits16,
+        IntegerType::SignednessSemantics::Signless);
+    VRegType carrierType = VRegType::get(
+        rewriter.getContext(), sourceType.getElementCount() * kPairWidth,
+        carrierElementType);
+    FailureOr<Value> zero =
+        createZeroVector(op.getLoc(), carrierType, rewriter);
+    if (failed(zero)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to build BF16 group-slot narrowing zero vector");
+    }
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [sourcePart, physicalResultType] :
+         llvm::zip_equal(sourceParts, resultTypes)) {
+      FailureOr<Value> carrier =
+          bitcastVReg(op.getLoc(), sourcePart, carrierType, rewriter);
+      if (failed(carrier)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to bitcast BF16 group-slot narrowing source");
+      }
+      auto pair = rewriter.create<VdintlvOp>(
+          op.getLoc(), TypeRange{carrierType, carrierType}, *carrier, *zero);
+      FailureOr<Value> result = bitcastVReg(
+          op.getLoc(), pair.getHigh(), cast<VRegType>(physicalResultType),
+          rewriter);
+      if (failed(result)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to bitcast BF16 group-slot narrowing result");
+      }
+      results.push_back(*result);
+    }
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return true;
+  }
+
   LogicalResult lowerGroupSlotTrunc(
       VMITruncFOp op, ValueRange sourceParts, ArrayRef<Type> resultTypes,
       VMILayoutAttr sourceLayout, VMILayoutAttr resultLayout,
@@ -897,6 +989,14 @@ private:
         sourceParts.size() != resultTypes.size();
     if (invalidShape) {
       return rewriter.notifyMatchFailure(op, "unsupported group-slot truncf shape");
+    }
+    FailureOr<bool> reduceNarrowing = tryLowerGroupSlotBF16ReduceNarrowing(
+        op, sourceParts, resultTypes, sourceLayout, resultLayout, rewriter);
+    if (failed(reduceNarrowing)) {
+      return failure();
+    }
+    if (*reduceNarrowing) {
+      return success();
     }
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
