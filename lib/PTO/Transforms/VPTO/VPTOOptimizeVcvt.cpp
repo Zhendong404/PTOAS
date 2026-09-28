@@ -408,13 +408,60 @@ struct FoldU32ToU16ExtractionPattern : public OpRewritePattern<VcvtOp> {
   }
 };
 
+// A NORM b16 store consumes the logical bf16 lane stream, but an EVEN vcvt
+// leaves each payload in the lower 16-bit sublane. Promote such a store to
+// PK_B32, which extracts those sublanes directly, and widen its mask to b32.
+struct PromoteEvenBF16StoreToPkB32Pattern : OpRewritePattern<VcvtOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(VcvtOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->hasOneUse()) {
+      return failure();
+    }
+    auto inputType = dyn_cast<VRegType>(op.getInput().getType());
+    auto resultType = dyn_cast<VRegType>(op.getResult().getType());
+    if (!inputType || !resultType || !inputType.getElementType().isF32() ||
+        !resultType.getElementType().isBF16()) {
+      return failure();
+    }
+    std::optional<StringRef> part = op.getPart();
+    if (!part || *part != "EVEN" || !isAllTrueMask(op.getMask())) {
+      return failure();
+    }
+
+    Operation *user = *op->user_begin();
+    auto store = dyn_cast<VstsOp>(user);
+    if (!store || store.getValue() != op.getResult() || store.getDistAttr()) {
+      return failure();
+    }
+    auto maskType = dyn_cast<MaskType>(store.getMask().getType());
+    if (!maskType || maskType.getGranularity() != "b16") {
+      return failure();
+    }
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(store);
+    auto b32MaskType = MaskType::get(rewriter.getContext(), "b32");
+    Value mask32 =
+        rewriter
+            .create<PunpackOp>(store.getLoc(), b32MaskType, store.getMask(),
+                               rewriter.getStringAttr("LOWER"))
+            .getResult();
+    store.getMaskMutable().set(mask32);
+    store.setDistAttr(rewriter.getStringAttr("PK_B32"));
+    return success();
+  }
+};
+
 struct VPTOOptimizeVcvtPass
     : public pto::impl::VPTOOptimizeVcvtBase<VPTOOptimizeVcvtPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.add<CanonicalizeEquivalentPartPattern,
                  FoldZeroGapExtensionPattern,
-                 FoldU32ToU16ExtractionPattern>(&getContext());
+                 FoldU32ToU16ExtractionPattern,
+                 PromoteEvenBF16StoreToPkB32Pattern>(&getContext());
     if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
     }

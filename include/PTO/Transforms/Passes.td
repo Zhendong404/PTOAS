@@ -1338,6 +1338,10 @@ def VMIToVPTO : Pass<"vmi-to-vpto", "ModuleOp"> {
   }];
   let constructor = "mlir::pto::createVMIToVPTOPass()";
   let options = [
+    Option<"enableVmiFastmath", "vmi-fastmath", "bool",
+           /*default=*/"false",
+           "Enable VMI conversion fast paths that may change NaN results, "
+           "including f32-to-bf16 narrowing.">,
     Option<"enableStableGatherMaskedLoad",
            "enable-stable-gather-masked-load", "bool",
            /*default=*/"false",
