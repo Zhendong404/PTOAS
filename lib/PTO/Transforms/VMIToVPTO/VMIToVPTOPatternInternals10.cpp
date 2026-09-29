@@ -149,15 +149,18 @@ private:
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    for (size_t half = 0; half < plan.resultsPerSource; ++half) {
-      for (size_t sourceIndex = 0; sourceIndex < sourceParts.size();
-           ++sourceIndex) {
+    // Result physical parts are source-major: both widened halves of the first
+    // source come before the halves of the next source. Iterating half-major
+    // here transposes multi-source results and shifts every part after the
+    // first source.
+    for (size_t sourceIndex = 0; sourceIndex < sourceParts.size();
+         ++sourceIndex) {
+      for (size_t half = 0; half < plan.resultsPerSource; ++half) {
         Value carrier = half == 0 ? interleaved[sourceIndex].first
                                   : interleaved[sourceIndex].second;
         FailureOr<Value> result = bitcastVReg(
-            op.getLoc(), carrier, resultTypes[half * sourceParts.size() +
-                                               sourceIndex],
-            rewriter);
+            op.getLoc(), carrier,
+            resultTypes[sourceIndex * plan.resultsPerSource + half], rewriter);
         if (failed(result)) {
           return rewriter.notifyMatchFailure(
               op, "failed to bitcast BF16 pair widening result");

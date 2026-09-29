@@ -125,8 +125,12 @@ module {
 // CHECK: pto.vdintlv
 // CHECK-NOT: pto.vcvt
 // CHECK-LABEL: func.func @ext_d2(
-// CHECK: pto.vintlv
-// CHECK: pto.vintlv
+// CHECK: %[[LOW0:.*]], %[[HIGH0:.*]] = pto.vintlv
+// CHECK: %[[LOW1:.*]], %[[HIGH1:.*]] = pto.vintlv
+// CHECK: pto.vbitcast %[[LOW0]]
+// CHECK: pto.vbitcast %[[HIGH0]]
+// CHECK: pto.vbitcast %[[LOW1]]
+// CHECK: pto.vbitcast %[[HIGH1]]
 // CHECK-NOT: pto.vcvt
 // CHECK-LABEL: func.func @ext_d4(
 // CHECK: pto.vintlv
