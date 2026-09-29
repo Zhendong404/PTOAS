@@ -39,9 +39,13 @@ enum class CastTypeClass {
   // Packed E2M1 pairs widened to the register-only BF16-pair carrier.
   // Deliberately narrower than a generic "packed float" class: the only
   // 8-bit -> 32-bit packed-float cast in practice is f4E2M1x2 -> bf16x2.
-  // f4E1M2x2 stays on the stock default row {c(), d(4)} (factor 4, still
-  // value-correct, just no compact form), so no wider predicate is needed.
+  // Dense FP8/HiF8 widening has its own DenseFP8ToF32 class below and prefers
+  // the compact ls(4) -> contiguous carrier.
   F4E2M1x2ToBF16x2,
+  // Dense FP8/HiF8 widened to F32.  These casts prefer the compact
+  // lane-stride-4 source form (UNPK4-style carrier) and a contiguous result,
+  // which lets the widening select the valid byte lanes with one vcvt part.
+  DenseFP8ToF32,
   // F32 <-> BF16 casts. These may use an equal-layout carrier independently
   // of the conversion's rounding/fastmath lowering choice.
   BF16F32,
@@ -161,12 +165,14 @@ inline bool matchesCastTypeClass(CastTypeClass typeClass, Type sourceType,
            cast<IntegerType>(resultType).isUnsigned();
   case CastTypeClass::F4E2M1x2ToBF16x2:
     // Only the exact packed pair -> packed pair widening is eligible for the
-    // ls(4)/UNPK4 compact form.  A dense 8-bit cast at 128 elements must keep
-    // the stock {c(), d(4)} preferred row, otherwise the solver flips its
-    // result preference from d(4) to c() and downstream conflict diagnostics
-    // change (see vmi_layout_assignment_multi_return_conflict_invalid.pto).
+    // packed-pair-specific layout relation.  Dense FP8/HiF8 widening is a
+    // separate class below and intentionally prefers ls(4) -> c.
     return isa<pto::F4E2M1x2Type>(sourceType) &&
            pto::isPTOBF16x2Type(resultType);
+  case CastTypeClass::DenseFP8ToF32:
+    return (pto::isPTOFloat8Type(sourceType) ||
+            pto::isPTOHiFloat8Type(sourceType)) &&
+           resultType.isF32();
   case CastTypeClass::BF16F32:
     return (sourceType.isF32() && resultType.isBF16()) ||
            (sourceType.isBF16() && resultType.isF32());
@@ -184,6 +190,7 @@ inline unsigned getCastTypeClassSpecificity(CastTypeClass typeClass) {
   case CastTypeClass::IntegerToUnsigned:
     return 2;
   case CastTypeClass::F4E2M1x2ToBF16x2:
+  case CastTypeClass::DenseFP8ToF32:
   case CastTypeClass::BF16F32:
     return 3;
   }
