@@ -163,6 +163,10 @@ static constexpr LegalCastLayoutPattern kLegalCastLayoutPatterns[] = {
     {bits<32>(), bits<16>(), d(2), c()},
     {bits<32>(), bits<16>(), c(), ls(2)},
     {bits<32>(), bits<16>(), d(4), d(2)},
+    // Four-way F32 partition to a full contiguous BF16 register. The lowering
+    // first packs d(4) -> d(2), then materializes d(2) -> contiguous.
+    {bits<32>(), bits<16>(), d(4), c(), CastTypeClass::BF16F32,
+     N<128, 256>()},
 
     // 4x widening/narrowing.
     {bits<8>(), bits<32>(), c(), d(4)},

@@ -1383,6 +1383,77 @@ private:
     return true;
   }
 
+  // F32 d(4) -> BF16 contiguous is a composite narrowing: the source has four
+  // modulo-4 lane partitions while the result occupies one full BF16 register.
+  // First use the existing d(4) -> d(2) narrowing relation to pack the four
+  // source parts into two BF16 parts, then reuse the d(2) -> contiguous
+  // materialization to interleave those two parts into logical lane order.
+  FailureOr<bool> tryLowerDeinterleaved4ToContiguousBF16(
+      VMITruncFOp op, ValueRange sourceParts,
+      const TruncFPhysicalPlan &physicalPlan, VMILayoutAttr sourceLayout,
+      VMILayoutAttr resultLayout,
+      OneToNPatternRewriter &rewriter) const {
+    bool applies =
+        physicalPlan.sourceBits == kElementBits32 &&
+        physicalPlan.resultBits == kElementBits16 && sourceLayout &&
+        sourceLayout.isDeinterleaved() && sourceLayout.getFactor() == 4 &&
+        sourceLayout.getLaneStride() == 1 && resultLayout &&
+        resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
+        sourceParts.size() == 4 && physicalPlan.resultTypes.size() <= 2;
+    if (!applies) {
+      return false;
+    }
+
+    Type resultElementType =
+        physicalPlan.resultTypes.front().getElementType();
+    FailureOr<int64_t> lanesPerPart =
+        getDataLanesPerPart(resultElementType);
+    if (failed(lanesPerPart)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to determine BF16 lanes per physical part");
+    }
+    VRegType intermediateType = VRegType::get(
+        rewriter.getContext(), *lanesPerPart, resultElementType);
+    SmallVector<VRegType, 2> intermediateTypes = {intermediateType,
+                                                  intermediateType};
+
+    FailureOr<Value> sourceMask = createAllTrueMaskForVReg(
+        op.getLoc(), physicalPlan.sourceViewType, rewriter);
+    if (failed(sourceMask)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "failed to build truncf masks");
+    }
+    StringAttr rnd = rewriter.getStringAttr(getTruncFRoundMode(
+        op, physicalPlan.resultTypes.front().getElementType()));
+    StringAttr sat = op->getAttrOfType<StringAttr>("saturate");
+    static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
+    SmallVector<Value, 2> intermediateResults;
+    intermediateResults.reserve(intermediateTypes.size());
+    for (size_t part = 0; part < intermediateTypes.size(); ++part) {
+      FailureOr<Value> result = buildNarrowTruncResult(
+          op, sourceParts, intermediateTypes[part], kEvenOddParts, part,
+          /*sourceFactor=*/kPairWidth, /*resultLaneStride=*/1,
+          physicalPlan.sourceViewType, physicalPlan.sourceIsPackedBF16x2,
+          *sourceMask, rnd, sat, rewriter);
+      if (failed(result)) {
+        return failure();
+      }
+      intermediateResults.push_back(*result);
+    }
+
+    SmallVector<Type> finalResultTypes(physicalPlan.resultTypes.begin(),
+                                       physicalPlan.resultTypes.end());
+    FailureOr<SmallVector<Value>> results =
+        materializeDeinterleaved2ToContiguous(
+            op, intermediateResults, finalResultTypes, rewriter);
+    if (failed(results)) {
+      return failure();
+    }
+    replaceOpWithFlatConvertedValues(rewriter, op, *results,
+                                     *this->getTypeConverter());
+    return true;
+  }
+
   // Dense factor-N narrowing for the residual truncf shapes the composite
   // forms above did not claim.
   LogicalResult lowerGenericTruncNarrowing(
@@ -1442,6 +1513,16 @@ private:
       return failure();
     }
     if (*denseLaneStride) {
+      return success();
+    }
+    FailureOr<bool> deinterleaved4ToContiguous =
+        tryLowerDeinterleaved4ToContiguousBF16(
+            op, sourceParts, *physicalPlan, sourceLayout, resultLayout,
+            rewriter);
+    if (failed(deinterleaved4ToContiguous)) {
+      return failure();
+    }
+    if (*deinterleaved4ToContiguous) {
       return success();
     }
     FailureOr<bool> spineCompositeNarrowing = tryLowerSpineCompositeNarrowing(
