@@ -458,7 +458,12 @@ inline VMIGroupStoreLayoutFact materializeGroupStoreLayoutFact(
     MLIRContext *ctx, const GroupStoreLayoutPattern &pattern,
     GroupLayoutKey key) {
   VMIGroupStoreLayoutFact fact;
-  fact.valueLayout = materializeLayoutPattern(ctx, pattern.valueLayout);
+  // Group-slot value layouts need the group count to materialize; derive it from
+  // the key so a store row can request e.g. `gs(numGroups, 8)`.
+  int64_t numGroups =
+      key.groupSize > 0 ? key.elementCount / key.groupSize : 0;
+  fact.valueLayout =
+      materializeLayoutPattern(ctx, pattern.valueLayout, numGroups);
   fact.blockClass = getGroupBlockClassFromPattern(pattern.block);
   fact.groupSize = key.groupSize;
   fact.lanesPerPart = key.lanesPerPart;

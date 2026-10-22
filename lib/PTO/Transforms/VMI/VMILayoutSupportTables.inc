@@ -32,6 +32,19 @@ static constexpr EnsureLayoutPattern kEnsureLayoutPatterns[] = {
     {bits<8, 16, 32, 64>(), anyN(), gsFit(), c()},
     {bits<8, 16, 32, 64>(), anyN(), c(), gsFit()},
 
+    // A `slots = 1` group-slot value hands back one physical part per group,
+    // each carrying its group value in lane zero, so its dense counterpart is a
+    // single carrier whose lanes 0..N-1 hold those values.  The conversion is an
+    // N-part -> 1-part repack instead of a lane relabel, which is why it needs
+    // its own row and materializer (the per-group vdup(LOWEST) + vsel stitch the
+    // compact group reduce uses).  Only the forward direction is registered: the
+    // reverse is a 1 -> N split that no producer needs yet.
+    {bits<8, 16, 32, 64>(), anyN(), gs(1), c()},
+    // The single-carrier packet form is the same physical placement as the
+    // dense short vector, so the same repack bridges to it; keeping the packet
+    // form lets a group store address one element per row with a row stride.
+    {bits<8, 16, 32, 64>(), anyN(), gs(1), gsFit()},
+
     // A 128-element 16-bit value is a sub-chunk carrier: the tail group
     // reduction reaches its deinterleaved=2 source only through this bridge,
     // so the 16-bit row must admit the shorter element count the 32-bit row

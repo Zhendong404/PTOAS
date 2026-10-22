@@ -111,11 +111,23 @@ getPreferredGroupSlotStoreFact(const VMILayoutSupport &support,
   // form for it.  One carrier per group stays as the fallback: a group reduce
   // over whole parts really does produce one part per group, and only the
   // slots = 1 group_store lowering can pack that back together.
+  // A unit row stride writes the group values back to back, which is what a
+  // dense short vector already holds in one carrier.  A small value is also
+  // already one carrier, so the packet form is a register forward for it at any
+  // row stride; only a value that already spans one part per group has to fall
+  // back to the slots = 1 form.
   SmallVector<int64_t, mlir::pto::kValue2> slotCandidates;
-  if (rowStride && *rowStride == 1) {
-    slotCandidates.push_back(mlir::pto::kValue8);
+  if (numGroups == 1) {
+    // A single logical point: the 1PT point store writes it at the exact
+    // element address (predicate ignored, no alignment requirement), so keep
+    // the slots = 1 form instead of the packet form.
+    slotCandidates.push_back(1);
+  } else {
+    if (rowStride && *rowStride == 1) {
+      slotCandidates.push_back(mlir::pto::kValue8);
+    }
+    slotCandidates.push_back(1);
   }
-  slotCandidates.push_back(1);
   for (int64_t slots : slotCandidates) {
     VMILayoutAttr layout = VMILayoutAttr::getGroupSlots(
         valueType.getContext(), numGroups, slots);

@@ -719,6 +719,71 @@ static bool isElementDeinterleavedDataLayout(VMILayoutAttr layout,
          layout.getLaneStride() == 1;
 }
 
+/// Materializes `gs(N, slots = 1) -> contiguous`.
+///
+/// A `slots = 1` group-slot value hands back one physical part per group, each
+/// carrying its group value in lane zero, while its dense counterpart is a
+/// single carrier whose lanes 0..N-1 hold those values.  That is an N-part ->
+/// 1-part repack, so it cannot be a lane relabel: rebuild the packet with the
+/// same per-group `vdup(LOWEST)` + `vsel(lane range)` stitch the compact group
+/// reduce uses.  Only lane zero of each source part is live.
+static FailureOr<std::optional<SmallVector<Value>>>
+materializeGroupSlots1ToContiguous(Operation *op, ValueRange sourceParts,
+                                   TypeRange resultTypes,
+                                   VMILayoutAttr sourceLayout,
+                                   VMILayoutAttr resultLayout,
+                                   PatternRewriter &rewriter) {
+  bool slotsOneSource = sourceLayout && sourceLayout.isGroupSlots() &&
+                        sourceLayout.getSlots() == 1 &&
+                        sourceLayout.getLaneStride() == 1;
+  if (!slotsOneSource || resultTypes.size() != 1) {
+    return std::optional<SmallVector<Value>>{};
+  }
+  auto resultType = dyn_cast<VRegType>(resultTypes.front());
+  if (!resultType) {
+    return std::optional<SmallVector<Value>>{};
+  }
+  FailureOr<int64_t> lanesPerPart =
+      getDataLanesPerPart(resultType.getElementType());
+  bool denseResult = resultLayout && resultLayout.isContiguous() &&
+                     resultLayout.getLaneStride() == 1;
+  bool packetResult = succeeded(lanesPerPart) && resultLayout &&
+                      isVMISingleCarrierGroupSlots(resultLayout, *lanesPerPart);
+  if (!denseResult && !packetResult) {
+    return std::optional<SmallVector<Value>>{};
+  }
+  int64_t numGroups = sourceLayout.getNumGroups();
+  if (numGroups <= 0 ||
+      static_cast<int64_t>(sourceParts.size()) != numGroups) {
+    (void)rewriter.notifyMatchFailure(
+        op, "group-slots slots=1 materialization requires one source part per "
+            "group");
+    return failure();
+  }
+  FailureOr<MaskType> resultMaskType =
+      getMaskTypeForVReg(resultType, rewriter.getContext());
+  if (failed(resultMaskType)) {
+    (void)rewriter.notifyMatchFailure(
+        op, "group-slots slots=1 materialization requires a vector mask type");
+    return failure();
+  }
+  // Group 0 is already in lane zero; stitch every later group into lane `group`.
+  Value packet = sourceParts.front();
+  for (int64_t group = 1; group < numGroups; ++group) {
+    FailureOr<Value> slotMask = createLaneRangeMask(
+        op->getLoc(), *resultMaskType, group, group + 1, rewriter);
+    if (failed(slotMask)) {
+      return failure();
+    }
+    Value splat = rewriter.create<VdupOp>(
+        op->getLoc(), resultType, sourceParts[group], *slotMask,
+        rewriter.getStringAttr("LOWEST"));
+    packet = rewriter.create<VselOp>(op->getLoc(), resultType, splat, packet,
+                                     *slotMask);
+  }
+  return std::optional<SmallVector<Value>>{SmallVector<Value>{packet}};
+}
+
 static FailureOr<SmallVector<Value>> materializeDeint4DataToContiguous(
     Operation *op, ValueRange sourceParts, TypeRange resultTypes,
     PatternRewriter &rewriter) {
@@ -896,6 +961,13 @@ tryDataLayoutMaterializers(const DataLayoutMaterializationContext &context) {
           context.sourceVMIElementType, context.rewriter);
   if (didHandleDataLayoutMaterialization(laneStride)) {
     return laneStride;
+  }
+  DataLayoutMaterializationResult groupSlots1 =
+      materializeGroupSlots1ToContiguous(
+          context.op, context.sourceParts, context.resultTypes,
+          context.sourceLayout, context.resultLayout, context.rewriter);
+  if (didHandleDataLayoutMaterialization(groupSlots1)) {
+    return groupSlots1;
   }
   return materializeDataLayoutViaContiguous(
       context.op, context.sourceParts, context.resultTypes,
